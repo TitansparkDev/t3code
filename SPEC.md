@@ -18,6 +18,11 @@ Codex, Claude, Cursor, Grok, OpenCode, and Antigravity.
   background loop or by an explicit refresh action.
 - T3 Connect stores its managed public endpoint with the cloud link, and web pairing links can use
   that endpoint when it is available. Web and mobile cloud linking preserve the endpoint.
+- Desktop release builds include the public T3 Connect configuration by default and use the
+  production relay at `https://relay.t3.codes`; release variables can override it for a
+  self-hosted relay.
+- Desktop Connections settings can create a standard pairing link, show a QR code, and let the
+  user choose the public T3 Connect endpoint instead of a loopback address.
 - OmniCode is available as a built-in theme on web and mobile, with matching light and dark
   palettes.
 - Desktop update feeds are published from the fork's GitHub releases, including the Windows and

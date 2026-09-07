@@ -168,6 +168,9 @@ Full glossary with file links: `docs/internals/glossary.md`
 
 ## Recent request log
 
+- 2026-09-07 — Merged upstream main, fixed release builds to embed public T3 Connect settings,
+  verified Antigravity recovery/Claude peak indicators/update behavior, and published v0.0.46
+  Windows/Linux installers. Custom Cloudflare relay deployment remains pending account auth.
 - 2026-09-06 — Completed cross-surface T3 Connect pairing endpoint persistence, Antigravity saved-
   credential recovery, Claude peak-time indicators, and OmniCode mobile theme support.
 - 2026-09-05 — Pulled upstream's native Antigravity support, restored the fork's AGY limits path,

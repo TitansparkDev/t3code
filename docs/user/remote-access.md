@@ -9,6 +9,12 @@ T3 Connect makes an environment available to your other devices without setting
 up router forwarding. In the desktop app on the host, open **Settings →
 Connections**, sign in, and enable **T3 Connect** for that environment.
 
+To pair a phone with a Windows or Linux desktop host, create a pairing link in
+**Settings → Connections**, press **Share**, select **T3 Connect** when more than
+one endpoint is offered, and scan the QR code with the phone. The phone must use
+the mobile app's **Add environment** flow. Do not choose a loopback endpoint such
+as `127.0.0.1`; it only works on the host machine.
+
 For a command-line host, run:
 
 ```bash
