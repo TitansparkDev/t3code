@@ -823,7 +823,6 @@ export function ProviderInstanceCard({
     <>
       <SettingsSection
         title={displayName}
-        description={editorStatusNode}
         icon={titleIconWithQuotaNode}
         headerAction={editorHeaderAction}
       >
