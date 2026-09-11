@@ -76,6 +76,8 @@ const SettingsSourceControlRoute = SettingsSourceControlRouteImport.update({
 const SettingsScheduledTasksRoute = SettingsScheduledTasksRouteImport.update({
   id: '/scheduled-tasks',
   path: '/scheduled-tasks',
+  getParentRoute: () => SettingsRoute,
+} as any)
 const SettingsSnapShotRoute = SettingsSnapShotRouteImport.update({
   id: '/snap-shot',
   path: '/snap-shot',
@@ -383,6 +385,8 @@ declare module '@tanstack/react-router' {
       path: '/scheduled-tasks'
       fullPath: '/settings/scheduled-tasks'
       preLoaderRoute: typeof SettingsScheduledTasksRouteImport
+      parentRoute: typeof SettingsRoute
+    }
     '/settings/snap-shot': {
       id: '/settings/snap-shot'
       path: '/snap-shot'

@@ -89,6 +89,85 @@ interface ModelScopedWindow {
   readonly resets_at: string | null;
 }
 
+interface SpendBudget {
+  readonly usedMinor: number;
+  readonly limitMinor: number;
+  readonly currency: string;
+  readonly exponent: number;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isMinorInt(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+function readMoney(
+  value: unknown,
+):
+  | { readonly amountMinor: number; readonly currency: string; readonly exponent: number }
+  | undefined {
+  if (
+    !isRecord(value) ||
+    !isMinorInt(value.amount_minor) ||
+    typeof value.currency !== "string" ||
+    !isMinorInt(value.exponent)
+  ) {
+    return undefined;
+  }
+  return { amountMinor: value.amount_minor, currency: value.currency, exponent: value.exponent };
+}
+
+function readSpendBudget(rateLimits: object): SpendBudget | undefined {
+  const { spend, extra_usage: extraUsage } = rateLimits as {
+    readonly spend?: unknown;
+    readonly extra_usage?: unknown;
+  };
+  if (isRecord(spend) && spend.enabled === true) {
+    const used = readMoney(spend.used);
+    const limit = readMoney(spend.limit);
+    if (
+      used &&
+      limit &&
+      limit.amountMinor > 0 &&
+      used.currency === limit.currency &&
+      used.exponent === limit.exponent
+    ) {
+      return {
+        usedMinor: used.amountMinor,
+        limitMinor: limit.amountMinor,
+        currency: limit.currency,
+        exponent: limit.exponent,
+      };
+    }
+  }
+  if (isRecord(extraUsage) && extraUsage.is_enabled === true) {
+    const limit = extraUsage.monthly_limit;
+    const used = extraUsage.used_credits;
+    if (isMinorInt(limit) && limit > 0 && isMinorInt(used)) {
+      return {
+        usedMinor: used,
+        limitMinor: limit,
+        currency: typeof extraUsage.currency === "string" ? extraUsage.currency : "USD",
+        exponent: isMinorInt(extraUsage.decimal_places) ? extraUsage.decimal_places : 2,
+      };
+    }
+  }
+  return undefined;
+}
+
+function spendWindow(budget: SpendBudget): ServerProviderUsageWindow {
+  return {
+    id: "monthly_spend",
+    kind: "monthly",
+    label: "Monthly spend",
+    usedPercent: clampPercent((budget.usedMinor * 100) / budget.limitMinor),
+    spend: budget,
+  };
+}
+
 function readModelScoped(rateLimits: object): ReadonlyArray<ModelScopedWindow> {
   const raw = (rateLimits as { readonly model_scoped?: unknown }).model_scoped;
   if (!Array.isArray(raw)) return [];
@@ -159,9 +238,19 @@ export function claudeUsageResponseToLimits(input: {
   readonly checkedAt: string;
 }): { readonly limits: ServerProviderUsageLimits; readonly names: ClaudeScopedLimitNames } {
   const { response, checkedAt } = input;
-  if (!response.rate_limits_available || !response.rate_limits) {
+  if (!response.rate_limits_available) {
     return {
       limits: makeUnavailableUsageLimits({ checkedAt, reason: "unsupported" }),
+      names: { overageIncluded: undefined },
+    };
+  }
+  if (!response.rate_limits) {
+    return {
+      limits: makeUnavailableUsageLimits({
+        checkedAt,
+        reason: "probeFailed",
+        message: "Claude returned no usage data; keeping the last known limits.",
+      }),
       names: { overageIncluded: undefined },
     };
   }
@@ -183,6 +272,8 @@ export function claudeUsageResponseToLimits(input: {
     // skipped would let a mid-turn event open a row the probe never showed.
     overageIncluded ??= entry.display_name;
   }
+  const budget = readSpendBudget(response.rate_limits);
+  if (budget) windows.push(spendWindow(budget));
   return {
     limits: makeUsageLimits({ checkedAt, windows }),
     names: { overageIncluded },

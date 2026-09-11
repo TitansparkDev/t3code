@@ -168,6 +168,9 @@ Full glossary with file links: `docs/internals/glossary.md`
 
 ## Recent request log
 
+- 2026-09-11 — Synced upstream main, improved Antigravity direct quota collection and Gemini versus
+  Claude/GPT display, added Claude budget resilience, separated Codex workspaces, and prepared the
+  v0.0.47 Windows/Linux release.
 - 2026-09-07 — Merged upstream main, fixed release builds to embed public T3 Connect settings,
   verified Antigravity recovery/Claude peak indicators/update behavior, and published v0.0.46
   Windows/Linux installers. Custom Cloudflare relay deployment remains pending account auth.
@@ -177,5 +180,3 @@ Full glossary with file links: `docs/internals/glossary.md`
   and prepared Linux and Windows desktop installers for the fork.
 - 2026-09-05 — Published the installers to the GitHub Release and added a verified local publish
   command so future desktop builds cannot be mistaken for completed releases.
-- 2026-09-05 — Fixed Antigravity stop/auth false positives, made Linux unattended updates wait for
-  idle agents, and added a tag-driven workflow that builds and verifies Windows/Linux release assets.

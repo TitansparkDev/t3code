@@ -21,8 +21,18 @@ function sortWindows(
   return [...windows].toSorted(
     (left, right) =>
       WINDOW_KIND_ORDER[left.kind] - WINDOW_KIND_ORDER[right.kind] ||
+      usageWindowGroup(left) - usageWindowGroup(right) ||
+      (left.windowDurationMins ?? Number.MAX_SAFE_INTEGER) -
+        (right.windowDurationMins ?? Number.MAX_SAFE_INTEGER) ||
       left.id.localeCompare(right.id),
   );
+}
+
+function usageWindowGroup(window: ServerProviderUsageWindow): number {
+  const label = window.label.toLowerCase();
+  if (label.includes("gemini") || label.includes("google")) return 0;
+  if (label.includes("claude") || label.includes("gpt")) return 1;
+  return 2;
 }
 
 export function makeUsageLimits(input: {
@@ -82,6 +92,9 @@ export function applyUsageLimitsUpdate(input: {
       ...(window.windowDurationMins === undefined && existing?.windowDurationMins !== undefined
         ? { windowDurationMins: existing.windowDurationMins }
         : {}),
+      ...(window.spend === undefined && existing?.spend !== undefined
+        ? { spend: existing.spend }
+        : {}),
     };
     if (existing === undefined || !usageWindowEquals(existing, next)) {
       merged.set(window.id, next);
@@ -104,7 +117,11 @@ function usageWindowEquals(a: ServerProviderUsageWindow, b: ServerProviderUsageW
     a.label === b.label &&
     a.usedPercent === b.usedPercent &&
     a.resetsAt === b.resetsAt &&
-    a.windowDurationMins === b.windowDurationMins
+    a.windowDurationMins === b.windowDurationMins &&
+    a.spend?.usedMinor === b.spend?.usedMinor &&
+    a.spend?.limitMinor === b.spend?.limitMinor &&
+    a.spend?.currency === b.spend?.currency &&
+    a.spend?.exponent === b.spend?.exponent
   );
 }
 

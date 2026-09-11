@@ -2,6 +2,7 @@ import { withAgentDeviceEnvironment } from "../../mcp/McpProviderSession.ts";
 import { AntigravitySettings, ProviderDriverKind, ProviderSetupError } from "@t3tools/contracts";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Crypto from "effect/Crypto";
+import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -10,6 +11,7 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
+import { HttpClient } from "effect/unstable/http";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 import type { AcpError } from "effect-acp/errors";
 
@@ -42,7 +44,11 @@ import { removeAntigravitySessionFiles } from "../acp/AntigravitySessionFiles.ts
 import { ProviderDriverError } from "../Errors.ts";
 import { makeAntigravityAdapter } from "../Layers/AntigravityAdapter.ts";
 import { makeAntigravityProvider } from "../Layers/AntigravityProvider.ts";
-import { readAntigravityUsage } from "./AntigravityQuota.ts";
+import {
+  antigravityUsageToProviderLimits,
+  readAntigravityUsageLimits,
+} from "./AntigravityQuota.ts";
+import { makeUsageLimits } from "../providerUsageLimits.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import * as ModelManifest from "../ModelManifest.ts";
 import {
@@ -63,6 +69,7 @@ export type AntigravityDriverEnv =
   | ChildProcessSpawner.ChildProcessSpawner
   | Crypto.Crypto
   | FileSystem.FileSystem
+  | HttpClient.HttpClient
   | ModelManifest.ModelManifest
   | Path.Path
   | ProviderEventLoggers
@@ -80,6 +87,7 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
       const crypto = yield* Crypto.Crypto;
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
+      const httpClient = yield* HttpClient.HttpClient;
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const serverConfig = yield* ServerConfig;
       const installation = yield* AntigravityInstallation;
@@ -305,6 +313,21 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
         probe,
         auth: { type: auth.authMethod, label: antigravityAuthLabel(auth.authMethod) },
         recoverAuth: authFlow.refresh,
+        usageLimits: Effect.gen(function* () {
+          const checkedAt = DateTime.formatIso(yield* DateTime.now);
+          const update = yield* readAntigravityUsageLimits({
+            environment: processEnvironment,
+            profileDirectory,
+            fallbackToCli: false,
+          }).pipe(
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
+            Effect.provideService(Path.Path, path),
+            Effect.provideService(HttpClient.HttpClient, httpClient),
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          );
+          const limits = update ? antigravityUsageToProviderLimits(update) : undefined;
+          return limits ? makeUsageLimits({ checkedAt, windows: limits.windows }) : undefined;
+        }),
         supportsTextGeneration: isAntigravityTextGenerationAvailable(profileDirectory).pipe(
           Effect.provideService(FileSystem.FileSystem, fileSystem),
           Effect.provideService(Path.Path, path),
@@ -334,10 +357,15 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
         onAvailableCommands: provider.onAvailableCommands,
         onAuthRequired: provider.onAuthRequired,
         refreshQuota: () =>
-          readAntigravityUsage({
+          readAntigravityUsageLimits({
             environment: processEnvironment,
             profileDirectory,
-          }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner)),
+          }).pipe(
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
+            Effect.provideService(Path.Path, path),
+            Effect.provideService(HttpClient.HttpClient, httpClient),
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          ),
         ...(loggers.native ? { nativeEventLogger: loggers.native } : {}),
       });
       const textGeneration = yield* makeAntigravityTextGeneration({

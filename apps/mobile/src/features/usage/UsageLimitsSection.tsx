@@ -12,6 +12,7 @@ import {
   elapsedShare,
   formatDuration,
   formatResetsIn,
+  formatSpend,
   limitsNotice,
   paceOf,
   remainingPercent,
@@ -31,8 +32,15 @@ const PACE_LABEL = { ahead: "ahead of pace", on: "on pace", under: "under pace" 
 type Driver = ServerProvider["driver"];
 
 /** The series colour the usage chart uses for this driver, so the two views read as one. */
-function useBarColor(driver: Driver): string | null {
-  const colors = useProviderColors();
+function providerBarColor(
+  driver: Driver,
+  label: string | undefined,
+  colors: ReturnType<typeof useProviderColors>,
+): string | null {
+  if (driver === "antigravity") {
+    const normalized = label?.toLowerCase() ?? "";
+    return normalized.includes("claude") || normalized.includes("gpt") ? "#34d399" : "#4f8cff";
+  }
   const kind: UsageProviderKind | null =
     driver === "codex" ? "codex" : driver === "claudeAgent" ? "claude" : null;
   return kind ? colors[kind] : null;
@@ -54,7 +62,7 @@ function WindowRow(props: {
   const elapsed = elapsedShare(window, now);
   const timeLeft = elapsed === null ? null : Math.round((1 - elapsed) * 100);
   const pace = paceOf(window, now);
-  const resetsIn = formatResetsIn(window, now);
+  const resetsIn = window.spend ? `${formatSpend(window.spend)} used` : formatResetsIn(window, now);
   return (
     <View className="gap-1">
       <View className="flex-row items-baseline justify-between gap-3">
@@ -89,8 +97,15 @@ function WindowRow(props: {
       </View>
       {pace || resetsIn ? (
         <View className="flex-row justify-between gap-3">
-          <Text className="text-xs text-foreground-tertiary">{pace ? PACE_LABEL[pace] : ""}</Text>
-          <Text className="text-xs tabular-nums text-foreground-tertiary">{resetsIn ?? ""}</Text>
+          <Text className="min-w-0 flex-1 text-xs text-foreground-tertiary">
+            {pace ? PACE_LABEL[pace] : ""}
+          </Text>
+          <Text
+            numberOfLines={2}
+            className="max-w-[65%] text-right text-xs tabular-nums text-foreground-tertiary"
+          >
+            {resetsIn ?? ""}
+          </Text>
         </View>
       ) : null}
     </View>
@@ -136,7 +151,7 @@ export function AccountLimits(props: {
   readonly footer?: ReactNode;
 }) {
   const { limits, now, dense = false } = props;
-  const color = useBarColor(props.driver);
+  const colors = useProviderColors();
   if (!limits) return null;
   const notice = limitsNotice(limits);
   const padding = dense ? "px-4 py-3" : "p-4";
@@ -166,7 +181,12 @@ export function AccountLimits(props: {
       ) : (
         <View className="gap-3">
           {limits.windows.map((window) => (
-            <WindowRow key={window.id} window={window} color={color} now={now} />
+            <WindowRow
+              key={window.id}
+              window={window}
+              color={providerBarColor(props.driver, window.label, colors)}
+              now={now}
+            />
           ))}
         </View>
       )}

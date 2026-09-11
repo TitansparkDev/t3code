@@ -3701,11 +3701,23 @@ export default function ChatView(props: ChatViewProps) {
     const { activeThread, phase, setThreadError } = interruptContextRef.current;
     const input = buildRunningThreadTurnInterruptInput(activeThread, phase);
     if (!input || !activeThread) return;
+    const target: InterruptingTurnTarget = {
+      environmentId: activeThread.environmentId,
+      threadId: activeThread.id,
+      turnId: input.turnId ?? null,
+    };
+    if (isSameInterruptTarget(interruptingTurnRef.current, target)) return;
+    interruptingTurnRef.current = target;
+    setInterruptingTurn(target);
     const result = await interruptThreadTurn({
       environmentId: activeThread.environmentId,
       input,
     });
     if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+      if (isSameInterruptTarget(interruptingTurnRef.current, target)) {
+        interruptingTurnRef.current = null;
+        setInterruptingTurn(null);
+      }
       const error = squashAtomCommandFailure(result);
       setThreadError(
         activeThread.id,
@@ -7525,40 +7537,6 @@ export default function ChatView(props: ChatViewProps) {
         currentThreadKey === activeThreadKey ? null : currentThreadKey,
       );
       resetLocalDispatch();
-    }
-  };
-
-  const onInterrupt = async () => {
-    if (!activeThread) return;
-    const input = buildThreadTurnInterruptInput(activeThread);
-    const target: InterruptingTurnTarget = {
-      environmentId,
-      threadId: activeThread.id,
-      // The provider-facing input uses the session's active id when one is
-      // available. For UI identity, retain the latest running turn fallback
-      // too; otherwise a projection that lost activeTurnId would allow a
-      // second click before the backend reconciliation arrives.
-      turnId: activeRunningTurnId,
-    };
-    if (isSameInterruptTarget(interruptingTurnRef.current, target)) return;
-    interruptingTurnRef.current = target;
-    setInterruptingTurn(target);
-    const result = await interruptThreadTurn({
-      environmentId,
-      input,
-    });
-    if (result._tag === "Failure") {
-      if (isSameInterruptTarget(interruptingTurnRef.current, target)) {
-        interruptingTurnRef.current = null;
-        setInterruptingTurn(null);
-      }
-      if (!isAtomCommandInterrupted(result)) {
-        const error = squashAtomCommandFailure(result);
-        setThreadError(
-          target.threadId,
-          error instanceof Error ? error.message : "Failed to interrupt the current turn.",
-        );
-      }
     }
   };
 

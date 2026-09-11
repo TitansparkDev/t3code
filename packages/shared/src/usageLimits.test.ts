@@ -332,6 +332,36 @@ describe("pools", () => {
   };
   const laptop = { entry: { target: { label: "Laptop" } } };
 
+  it("keeps same-email Codex workspaces separate by account id and plan", () => {
+    const first = provider({
+      instanceId: ProviderInstanceId.make("codex-personal"),
+      auth: {
+        status: "authenticated",
+        email: "same@example.com",
+        accountId: "workspace-personal",
+        label: "ChatGPT Plus",
+      },
+      usageLimits: { checkedAt, windows: [{ ...window, usedPercent: 20 }] },
+    });
+    const second = provider({
+      instanceId: ProviderInstanceId.make("codex-business"),
+      auth: {
+        status: "authenticated",
+        email: "same@example.com",
+        accountId: "workspace-business",
+        label: "ChatGPT Business",
+      },
+      usageLimits: { checkedAt, windows: [{ ...window, usedPercent: 80 }] },
+    });
+    const input = new Map([
+      [EnvironmentId.make("env-a"), { ...laptop, serverConfig: { providers: [first, second] } }],
+    ]);
+
+    expect(
+      collectLimitAccounts(input).map((account) => account.limits.windows[0]?.usedPercent),
+    ).toEqual([20, 80]);
+  });
+
   it("merges one account reported natively on two environments and by a hub into one entry", () => {
     const native = provider({
       driver: claude,

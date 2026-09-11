@@ -7,6 +7,7 @@ import {
   collectLimitPools,
   formatDuration,
   formatResetsIn,
+  formatSpend,
   remainingPercent,
   type LimitAccount,
   type LimitPoolWindow,
@@ -34,6 +35,18 @@ function accountName(account: LimitAccount) {
   if (!account.email) return DRIVER_LABEL[account.driver] ?? String(account.driver);
   const [local = "", domain = ""] = account.email.split("@");
   return `${local[0] ?? ""}${domain[0] ?? ""}`.toUpperCase() || "Account";
+}
+
+function providerBarColor(
+  driver: string,
+  label: string,
+  colors: ReturnType<typeof useProviderColors>,
+): string {
+  if (driver === "antigravity") {
+    const normalized = label.toLowerCase();
+    return normalized.includes("claude") || normalized.includes("gpt") ? "#34d399" : "#4f8cff";
+  }
+  return driver === "claudeAgent" ? colors.claude : colors.codex;
 }
 
 /** The spent share comes back at reset. SVG keeps the hatching static on both platforms. */
@@ -146,7 +159,9 @@ function PoolWindowCard({
         {pool.columns.map(({ account, window }, index) => {
           if (!window) return null;
           const credits = account.limits.resetCredits?.availableCount ?? 0;
-          const resetsIn = formatResetsIn(window, now);
+          const resetsIn = window.spend
+            ? `${formatSpend(window.spend)} used`
+            : formatResetsIn(window, now);
           return (
             <Pressable
               key={account.key}
@@ -246,7 +261,7 @@ export function UsageLimitsSection({
               <PoolWindowCard
                 key={`${window.kind}:${window.id}`}
                 pool={window}
-                color={pool.driver === "claudeAgent" ? colors.claude : colors.codex}
+                color={providerBarColor(pool.driver, window.label, colors)}
                 now={now}
                 environmentIds={
                   selectedEnvironmentIds === null ? null : [...selectedEnvironmentIds]

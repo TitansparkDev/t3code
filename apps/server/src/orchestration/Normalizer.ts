@@ -241,14 +241,23 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
             });
           }
 
-          const persistedAttachment = {
-            type: attachment.type,
-            id: attachmentId,
-            name: attachment.name,
-            mimeType: parsed.mimeType.toLowerCase(),
-            sizeBytes: bytes.byteLength,
-            ...(attachment.source ? { source: attachment.source } : {}),
-          };
+          const persistedAttachment =
+            attachment.type === "image"
+              ? {
+                  type: "image" as const,
+                  id: attachmentId,
+                  name: attachment.name,
+                  mimeType: parsed.mimeType.toLowerCase(),
+                  sizeBytes: bytes.byteLength,
+                  ...(attachment.source ? { source: attachment.source } : {}),
+                }
+              : {
+                  type: "file" as const,
+                  id: attachmentId,
+                  name: attachment.name,
+                  mimeType: parsed.mimeType.toLowerCase(),
+                  sizeBytes: bytes.byteLength,
+                };
 
           const attachmentPath = resolveAttachmentPath({
             attachmentsDir: serverConfig.attachmentsDir,

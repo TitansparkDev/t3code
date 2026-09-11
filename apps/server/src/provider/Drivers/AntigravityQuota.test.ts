@@ -1,8 +1,72 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { parseAntigravityUsage } from "./AntigravityQuota.ts";
+import { directQuotaGroups, parseAntigravityUsage } from "./AntigravityQuota.ts";
 
 describe("parseAntigravityUsage", () => {
+  it("maps the direct Google quota summary into separate Gemini and Claude/GPT windows", () => {
+    const result = directQuotaGroups({
+      groups: [
+        {
+          displayName: "Gemini models",
+          buckets: [
+            {
+              bucketId: "gemini-weekly",
+              window: "weekly",
+              remainingFraction: 0.72,
+              resetTime: "2026-09-15T00:00:00Z",
+            },
+          ],
+        },
+        {
+          displayName: "Claude and GPT models",
+          buckets: [
+            {
+              bucketId: "claude-gpt-5h",
+              window: "5h",
+              remainingFraction: 0.41,
+            },
+            {
+              bucketId: "claude-gpt-weekly",
+              window: "weekly",
+              remainingFraction: 0.88,
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(result).toEqual({
+      groups: [
+        {
+          key: "gemini",
+          displayName: "Gemini",
+          windows: [
+            {
+              id: "gemini-weekly",
+              label: "Weekly",
+              usedPercent: 28,
+              windowDurationMins: 10_080,
+              resetsAt: "2026-09-15T00:00:00Z",
+            },
+          ],
+        },
+        {
+          key: "claude-gpt",
+          displayName: "Claude & GPT",
+          windows: [
+            { id: "claude-gpt-5h", label: "5-hour", usedPercent: 59, windowDurationMins: 300 },
+            {
+              id: "claude-gpt-weekly",
+              label: "Weekly",
+              usedPercent: 12,
+              windowDurationMins: 10_080,
+            },
+          ],
+        },
+      ],
+    });
+  });
+
   it("reads the structured usage response and keeps the two quota groups", () => {
     const result = parseAntigravityUsage(
       JSON.stringify({

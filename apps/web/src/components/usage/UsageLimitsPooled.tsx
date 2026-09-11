@@ -4,6 +4,7 @@ import {
   collectLimitPools,
   formatDuration,
   formatResetsIn,
+  formatSpend,
   type LimitAccount,
   type LimitPool,
   type LimitPoolMember,
@@ -182,6 +183,7 @@ function SegmentPopover({
       </div>
       <div className="flex flex-col gap-1 border-t border-border/60 pt-2.5">
         <Row label="Left">{remaining}%</Row>
+        {window.spend ? <Row label="Spend">{formatSpend(window.spend)}</Row> : null}
         {window.resetsAt ? (
           <Row label="Resets">
             {formatUpcomingTimestamp(window.resetsAt, timestampFormat, now)}
@@ -509,7 +511,6 @@ function PoolWindowCard({
 }
 
 function PoolSection({ pool, now }: { readonly pool: LimitPool; readonly now: number }) {
-  const color = barColor(pool.driver);
   const label = getDriverOption(pool.driver)?.label ?? String(pool.driver);
   const claudePeak = pool.driver === "claudeAgent" && isClaudePeakTime(now);
   return (
@@ -534,7 +535,12 @@ function PoolSection({ pool, now }: { readonly pool: LimitPool; readonly now: nu
         ) : null}
       </h2>
       {pool.windows.map((window) => (
-        <PoolWindowCard key={`${window.kind}:${window.id}`} pool={window} color={color} now={now} />
+        <PoolWindowCard
+          key={`${window.kind}:${window.id}`}
+          pool={window}
+          color={barColor(pool.driver, window.label)}
+          now={now}
+        />
       ))}
     </section>
   );

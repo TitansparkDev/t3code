@@ -12,6 +12,7 @@ import {
   elapsedShare,
   formatDuration,
   formatResetsIn,
+  formatSpend,
   type LimitPace,
   paceOf,
   remainingPercent,
@@ -45,7 +46,11 @@ const PACE: Record<LimitPace, { readonly label: string; readonly icon: typeof Ga
 };
 
 /** The series colour the cost chart uses for this driver, so the two views read as one. */
-export function barColor(driver: ServerProvider["driver"]): string {
+export function barColor(driver: ServerProvider["driver"], label?: string): string {
+  if (driver === "antigravity") {
+    const normalized = label?.toLowerCase() ?? "";
+    return normalized.includes("claude") || normalized.includes("gpt") ? "#34d399" : "#4f8cff";
+  }
   const kind: UsageProviderKind | undefined =
     driver === "codex" ? "codex" : driver === "claudeAgent" ? "claude" : undefined;
   return kind ? PROVIDER_PRESENTATION[kind].color : "var(--foreground)";
@@ -93,10 +98,11 @@ function WindowBar({
   // The fill is quota left, so the even-spending mark is the time left.
   const timeLeft = elapsed === null ? null : Math.round((1 - elapsed) * 100);
   const resetsIn = formatResetsIn(window, now);
+  const spent = window.spend ? `${formatSpend(window.spend)} used` : null;
   const resetsAt = window.resetsAt
     ? formatUpcomingTimestamp(window.resetsAt, timestampFormat, now)
     : null;
-  const summary = `${window.label}: ${remaining}% left${
+  const summary = `${window.label}: ${spent ? `${spent}, ` : ""}${remaining}% left${
     timeLeft === null ? "" : `, ${timeLeft}% of the window left`
   }${resetsIn ? `, ${resetsIn}` : ""}`;
 
@@ -130,6 +136,7 @@ function WindowBar({
       <TooltipPopup side="top" className="max-w-72 text-xs">
         <div className="flex flex-col gap-0.5">
           <span className="text-foreground">
+            {spent ? `${spent} · ` : ""}
             {remaining}% left{timeLeft !== null ? ` · ${timeLeft}% of the window left` : ""}
           </span>
           {timeLeft !== null ? (
@@ -162,7 +169,6 @@ export function LimitWindows({
   readonly now: number;
   readonly compact?: boolean;
 }) {
-  const color = barColor(driver);
   return (
     <div
       className={
@@ -174,6 +180,31 @@ export function LimitWindows({
       {windows.map((window) => {
         const pace = paceOf(window, now);
         const resetsIn = formatResetsIn(window, now);
+        const detail = window.spend ? `${formatSpend(window.spend)} used` : (resetsIn ?? "");
+        if (window.spend) {
+          return (
+            <div
+              key={window.id}
+              className="col-span-3 grid min-w-0 grid-cols-2 items-center gap-x-3 gap-y-0.5"
+            >
+              <span className="col-span-2 flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs">
+                <span className="min-w-0 wrap-anywhere whitespace-normal text-muted-foreground">
+                  {window.label}
+                </span>
+                <span className="ms-auto shrink-0 font-medium text-foreground tabular-nums">
+                  {remainingPercent(window)}% left
+                </span>
+              </span>
+              <WindowBar color={barColor(driver, window.label)} window={window} now={now} />
+              <span className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground tabular-nums">
+                {pace ? <PaceIcon pace={pace} /> : null}
+                <span className="ms-auto min-w-0 text-right wrap-anywhere whitespace-normal">
+                  {detail}
+                </span>
+              </span>
+            </div>
+          );
+        }
         return (
           <Fragment key={window.id}>
             <span className="flex min-w-0 items-center gap-2 text-xs">
@@ -182,10 +213,10 @@ export function LimitWindows({
                 {remainingPercent(window)}% left
               </span>
             </span>
-            <WindowBar color={color} window={window} now={now} />
+            <WindowBar color={barColor(driver, window.label)} window={window} now={now} />
             <span className="flex items-center gap-2 text-xs whitespace-nowrap text-muted-foreground tabular-nums">
               {pace ? <PaceIcon pace={pace} /> : null}
-              <span className="ms-auto shrink-0">{resetsIn ?? ""}</span>
+              <span className="ms-auto shrink-0">{detail}</span>
             </span>
           </Fragment>
         );
@@ -316,17 +347,17 @@ export function ResetCredits({
 
 /**
  * Subscription quota across every connected environment's providers and hubs,
- * pooled per provider. Countdowns anchor to render time rather than ticking: a
- * live clock would repaint the page every minute for no decision-changing gain.
+ * pooled per provider. The page advances `now` on explicit refresh rather than
+ * ticking: a live clock would repaint the page for no decision-changing gain.
  */
 export function UsageLimitsSection({
   selectedEnvironmentIds,
+  now,
 }: {
   readonly selectedEnvironmentIds: ReadonlySet<EnvironmentId> | null;
+  readonly now: number;
 }) {
   const presentations = useAtomValue(environmentPresentations.presentationsAtom);
-  // Anchored once per mount on purpose: countdowns must not tick (see above).
-  const [now] = useState(() => Date.now());
   const selected =
     selectedEnvironmentIds === null
       ? presentations

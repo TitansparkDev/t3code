@@ -14,6 +14,7 @@ import {
   isProviderAvailable,
   type ServerProvider,
   type ServerProviderUsageLimits,
+  type ServerProviderUsageSpend,
   type ServerProviderUsageWindow,
   type UsageLimitSourceSnapshot,
   type UsageLimitSourceSnapshots,
@@ -99,10 +100,16 @@ export function collectLimitSources(
     readonly hiddenAccountCount: number;
   }
 > {
+  const accountKey = makeAccountKey(Array.from(presentations.values(), (p) => p.serverConfig));
   const nativeAccounts = new Set<string>();
   for (const presentation of presentations.values()) {
     for (const provider of providersWithLimits(presentation.serverConfig?.providers ?? [])) {
-      const key = accountKey(provider.driver, provider.auth.email);
+      const key = accountKey(
+        provider.driver,
+        provider.auth.email,
+        provider.auth.accountId,
+        provider.auth.label,
+      );
       if (
         key !== null &&
         provider.usageLimits?.windows.length &&
@@ -130,7 +137,7 @@ export function collectLimitSources(
   return perEnvironment.flatMap(({ environmentId, environmentLabel, sources }) =>
     sources.map((source) => {
       const accounts = source.accounts.filter((account) => {
-        const key = accountKey(account.driver, account.email);
+        const key = accountKey(account.driver, account.email, account.accountId, account.plan);
         return key === null || !nativeAccounts.has(key);
       });
       return {
@@ -145,9 +152,70 @@ export function collectLimitSources(
   );
 }
 
-function accountKey(driver: ServerProvider["driver"], email: string | undefined): string | null {
-  const normalizedEmail = email?.trim().toLowerCase();
-  return normalizedEmail ? `${driver}:${normalizedEmail}` : null;
+function makeAccountKey(
+  configs: Iterable<{
+    readonly providers?: readonly ServerProvider[] | undefined;
+    readonly usageLimitSources?: UsageLimitSourceSnapshots | undefined;
+  } | null>,
+) {
+  const idsByEmail = new Map<string, Set<string>>();
+  const plansByEmail = new Map<string, Set<string>>();
+  const baseKey = (driver: ServerProvider["driver"], email: string | undefined) => {
+    const normalized = email?.trim().toLowerCase();
+    return normalized ? `${driver}:${normalized}` : null;
+  };
+  for (const config of configs) {
+    const identities = [
+      ...(config?.providers ?? []).map((provider) => ({
+        driver: provider.driver,
+        email: provider.auth.email,
+        accountId: provider.auth.accountId,
+        plan: provider.auth.label,
+      })),
+      ...(config?.usageLimitSources ?? []).flatMap((source) =>
+        source.accounts.map((account) => ({
+          driver: account.driver,
+          email: account.email,
+          accountId: account.accountId,
+          plan: account.plan,
+        })),
+      ),
+    ];
+    for (const identity of identities) {
+      const key = baseKey(identity.driver, identity.email);
+      if (!key) continue;
+      if (identity.accountId?.trim()) {
+        const ids = idsByEmail.get(key) ?? new Set<string>();
+        ids.add(identity.accountId.trim());
+        idsByEmail.set(key, ids);
+      }
+      if (identity.plan?.trim()) {
+        const plans = plansByEmail.get(key) ?? new Set<string>();
+        plans.add(identity.plan.trim());
+        plansByEmail.set(key, plans);
+      }
+    }
+  }
+  return (
+    driver: ServerProvider["driver"],
+    email: string | undefined,
+    accountId?: string,
+    plan?: string,
+  ) => {
+    const base = baseKey(driver, email);
+    if (!base) return null;
+    const ids = idsByEmail.get(base);
+    const resolvedId =
+      accountId?.trim() || (ids?.size === 1 ? ids.values().next().value : undefined);
+    if (resolvedId) return `${driver}:account:${resolvedId}:${email!.trim().toLowerCase()}`;
+    if (driver === "codex" && plan?.trim()) {
+      const plans = plansByEmail.get(base);
+      // Same-email Codex workspaces with different plans are independent even
+      // when an older auth file has no workspace id yet.
+      if (plans && plans.size > 1) return `${base}:plan:${plan.trim().toLowerCase()}`;
+    }
+    return base;
+  };
 }
 
 /**
@@ -187,6 +255,7 @@ export interface LimitAccount {
 export function collectLimitAccounts(
   presentations: Parameters<typeof collectLimitSources>[0],
 ): readonly LimitAccount[] {
+  const accountKey = makeAccountKey(Array.from(presentations.values(), (p) => p.serverConfig));
   const accounts = new Map<string, LimitAccount>();
   const creditSources = new Map<string, LimitAccount>();
   const hubRedeems = new Map<string, LimitAccount>();
@@ -254,8 +323,12 @@ export function collectLimitAccounts(
     for (const provider of providersWithLimits(presentation.serverConfig?.providers ?? [])) {
       if (!provider.usageLimits || limitsNotice(provider.usageLimits) !== null) continue;
       merge(
-        accountKey(provider.driver, provider.auth.email) ??
-          `${environmentId}:${provider.instanceId}`,
+        accountKey(
+          provider.driver,
+          provider.auth.email,
+          provider.auth.accountId,
+          provider.auth.label,
+        ) ?? `${environmentId}:${provider.instanceId}`,
         {
           key: `${environmentId}:${provider.instanceId}`,
           driver: provider.driver,
@@ -282,27 +355,31 @@ export function collectLimitAccounts(
         : source.label;
       for (const account of source.accounts) {
         if (limitsNotice(account.usageLimits) !== null) continue;
-        merge(accountKey(account.driver, account.email) ?? `${source.id}:${account.id}`, {
-          key: `${source.id}:${account.id}`,
-          driver: account.driver,
-          displayName: account.email ? null : account.id.replace(/\.json$/i, ""),
-          email: account.email,
-          plan: account.plan,
-          accentColor: undefined,
-          environments: [],
-          sourceLabel,
-          redeem: account.usageLimits.resetCredits?.nextCreditId
-            ? {
-                environmentId,
-                input: {
-                  sourceId: source.id,
-                  accountId: account.id,
-                  creditId: account.usageLimits.resetCredits.nextCreditId,
-                },
-              }
-            : null,
-          limits: account.usageLimits,
-        });
+        merge(
+          accountKey(account.driver, account.email, account.accountId, account.plan) ??
+            `${source.id}:${account.id}`,
+          {
+            key: `${source.id}:${account.id}`,
+            driver: account.driver,
+            displayName: account.email ? null : account.id.replace(/\.json$/i, ""),
+            email: account.email,
+            plan: account.plan,
+            accentColor: undefined,
+            environments: [],
+            sourceLabel,
+            redeem: account.usageLimits.resetCredits?.nextCreditId
+              ? {
+                  environmentId,
+                  input: {
+                    sourceId: source.id,
+                    accountId: account.id,
+                    creditId: account.usageLimits.resetCredits.nextCreditId,
+                  },
+                }
+              : null,
+            limits: account.usageLimits,
+          },
+        );
       }
     }
   }
@@ -504,6 +581,24 @@ export function remainingPercent(window: ServerProviderUsageWindow): number {
   return Math.round(100 - Math.max(0, Math.min(100, window.usedPercent)));
 }
 
+export function formatSpend(spend: ServerProviderUsageSpend): string {
+  const exponent = Math.min(spend.exponent, 20);
+  const scale = 10 ** exponent;
+  let format: (minor: number) => string;
+  try {
+    const currency = new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: spend.currency,
+      minimumFractionDigits: exponent,
+      maximumFractionDigits: exponent,
+    });
+    format = (minor) => currency.format(minor / scale);
+  } catch {
+    format = (minor) => `${(minor / scale).toFixed(exponent)} ${spend.currency}`;
+  }
+  return `${format(spend.usedMinor)} of ${format(spend.limitMinor)}`;
+}
+
 function resetMillis(window: ServerProviderUsageWindow): number | null {
   if (window.resetsAt === undefined) return null;
   const at = Date.parse(window.resetsAt);
@@ -642,6 +737,7 @@ export function collectProviderUsageLimits(
   sources: UsageLimitSourceSnapshots,
   now: number,
 ): UsageLimitsReport | null {
+  const accountKey = makeAccountKey([{ providers, usageLimitSources: sources }]);
   const selected = providers.find((provider) => provider.instanceId === instanceId);
   if (!selected || !hasProviderUsageLimits(selected.driver, providers, sources)) return null;
   const native = providersWithLimits(providers).filter(
@@ -649,7 +745,12 @@ export function collectProviderUsageLimits(
   );
   const nativeAccounts = new Set(
     native.flatMap((provider) => {
-      const key = accountKey(provider.driver, provider.auth.email);
+      const key = accountKey(
+        provider.driver,
+        provider.auth.email,
+        provider.auth.accountId,
+        provider.auth.label,
+      );
       return key && provider.usageLimits?.windows.length && !provider.usageLimits.unavailable
         ? [key]
         : [];
@@ -659,13 +760,18 @@ export function collectProviderUsageLimits(
   const notices: string[] = [];
   for (const provider of native) {
     if (!provider.usageLimits) continue;
-    const key = accountKey(provider.driver, provider.auth.email);
+    const key = accountKey(
+      provider.driver,
+      provider.auth.email,
+      provider.auth.accountId,
+      provider.auth.label,
+    );
     const hubCredits = sources
       .flatMap((source) => source.accounts.map((account) => ({ source, account })))
       .filter(
         ({ account }) =>
           key !== null &&
-          accountKey(account.driver, account.email) === key &&
+          accountKey(account.driver, account.email, account.accountId, account.plan) === key &&
           account.usageLimits.resetCredits &&
           !limitsNotice(account.usageLimits),
       )
@@ -712,7 +818,7 @@ export function collectProviderUsageLimits(
   for (const source of sources) {
     const matching = source.accounts.filter((account) => account.driver === selected.driver);
     for (const account of matching) {
-      const key = accountKey(account.driver, account.email);
+      const key = accountKey(account.driver, account.email, account.accountId, account.plan);
       if (key && nativeAccounts.has(key)) continue;
       accounts.push({
         id: `${source.id}:${account.id}`,

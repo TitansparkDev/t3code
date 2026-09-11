@@ -175,6 +175,31 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         ),
       );
 
+      // The background quota loop must be able to refresh an idle Codex
+      // instance. Turn telemetry is not a reliable source because a provider
+      // can sit unused while its subscription window changes or resets.
+      const refreshQuota = () =>
+        Effect.gen(function* () {
+          const { client } = yield* withCodexAppServerClient({
+            binaryPath: effectiveConfig.binaryPath,
+            homePath: effectiveConfig.homePath,
+            launchArgs: resolveCodexLaunchArgs(effectiveConfig.launchArgs, processEnv),
+            cwd: process.cwd(),
+            environment: processEnv,
+          });
+          const account = yield* client.request("account/read", {});
+          if (account.requiresOpenaiAuth === false || account.account?.type === "apiKey") {
+            return undefined;
+          }
+          const response = yield* client.request("account/rateLimits/read", undefined);
+          return response.rateLimits;
+        }).pipe(
+          Effect.scoped,
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          Effect.timeout("5 seconds"),
+          Effect.orElseSucceed(() => undefined),
+        );
+
       // `makeCodexAdapter` and `makeCodexTextGeneration` have `never` error
       // channels at construction time — their failure modes are all on the
       // per-operation closures they return. No `mapError` wrapper is needed
@@ -184,6 +209,7 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
       const adapter = yield* makeCodexAdapter(effectiveConfig, {
         instanceId,
         environment: processEnv,
+        refreshQuota,
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
       });
       const textGeneration = yield* makeCodexTextGeneration(effectiveConfig, processEnv);

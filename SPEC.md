@@ -10,8 +10,16 @@ Codex, Claude, Cursor, Grok, OpenCode, and Antigravity.
   for authentication, model discovery, permissions, turns, and session resume.
 - Provider instances are isolated by instance ID, including Antigravity profiles and quota state.
 - The web and desktop clients show subscription limits in the AGY limits section when Antigravity
-  publishes Gemini and Claude/GPT windows. Quota refresh is read-only and does not start a coding
-  turn.
+  publishes Gemini and Claude/GPT windows. Gemini windows are shown in blue; Claude/GPT windows
+  are shown in green, including separate five-hour and weekly buckets. Quota refresh is read-only
+  and does not start a coding turn. The sidebar Usage icon previews pooled headroom and reset
+  timing on hover or keyboard focus, and opens the Limits view when selected.
+- Codex quota refreshes can run while an instance is idle, so reset times do not wait for the next
+  prompt. Native Codex accounts are identified by workspace account ID when available, with plan
+  separation as a fallback for older same-email accounts.
+- Claude subscription limits preserve the last successful bars when a usage request is throttled.
+  Enterprise and extra-usage spending budgets appear as monthly currency windows when rolling
+  windows are unavailable.
 - Claude usage sections show whether the current time is in Anthropic's weekday peak window of
   05:00–11:00 Pacific on web and mobile.
 - Quota data is kept separate from thread state, keyed by provider instance, and refreshed on a

@@ -117,6 +117,63 @@ describe("claudeUsageResponseToLimits", () => {
       },
     ]);
   });
+
+  it("maps an Enterprise spending budget when rolling windows are null", () => {
+    expect(
+      claudeUsageResponseToLimits({
+        checkedAt,
+        response: {
+          rate_limits_available: true,
+          rate_limits: {
+            five_hour: null,
+            seven_day: null,
+            extra_usage: {
+              is_enabled: true,
+              monthly_limit: 50000,
+              used_credits: 4631,
+              utilization: 9.262,
+              currency: "USD",
+              ...({ decimal_places: 2 } as object),
+            },
+            ...({
+              spend: {
+                used: { amount_minor: 4631, currency: "USD", exponent: 2 },
+                limit: { amount_minor: 50000, currency: "USD", exponent: 2 },
+                enabled: true,
+              },
+            } as object),
+          },
+        },
+      }).limits,
+    ).toEqual({
+      checkedAt,
+      windows: [
+        {
+          id: "monthly_spend",
+          kind: "monthly",
+          label: "Monthly spend",
+          usedPercent: 9.262,
+          spend: { usedMinor: 4631, limitMinor: 50000, currency: "USD", exponent: 2 },
+        },
+      ],
+    });
+  });
+
+  it("keeps a last-known-limits marker when Claude returns null usage data", () => {
+    expect(
+      claudeUsageResponseToLimits({
+        checkedAt,
+        response: { rate_limits_available: true, rate_limits: null },
+      }).limits,
+    ).toEqual({
+      checkedAt,
+      windows: [],
+      unavailable: {
+        reason: "probeFailed",
+        message: "Claude returned no usage data; keeping the last known limits.",
+      },
+    });
+  });
 });
 
 describe("claudeRateLimitEventToUpdate", () => {

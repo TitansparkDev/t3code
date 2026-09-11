@@ -9,6 +9,15 @@ import {
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import { UsageLimitSourceId } from "./usageLimitSourceId.ts";
 
+/** A provider-reported spending budget, stored in minor currency units. */
+export const ServerProviderUsageSpend = Schema.Struct({
+  usedMinor: NonNegativeInt,
+  limitMinor: NonNegativeInt,
+  currency: TrimmedNonEmptyString,
+  exponent: NonNegativeInt,
+});
+export type ServerProviderUsageSpend = typeof ServerProviderUsageSpend.Type;
+
 /**
  * One rolling quota window a subscription provider reports for the signed-in
  * account, e.g. Claude's five-hour session or Codex's weekly allowance.
@@ -24,6 +33,7 @@ export const ServerProviderUsageWindow = Schema.Struct({
   usedPercent: Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 100 })),
   resetsAt: Schema.optional(IsoDateTime),
   windowDurationMins: Schema.optional(NonNegativeInt),
+  spend: Schema.optional(ServerProviderUsageSpend),
 });
 export type ServerProviderUsageWindow = typeof ServerProviderUsageWindow.Type;
 
@@ -83,6 +93,8 @@ export const UsageLimitSourceAccount = Schema.Struct({
   email: Schema.optional(TrimmedNonEmptyString),
   /** Plan as the matching provider would label it (`ChatGPT Pro 20x Subscription`). */
   plan: Schema.optional(TrimmedNonEmptyString),
+  /** Provider-native account/workspace identity when the provider exposes one. */
+  accountId: Schema.optional(TrimmedNonEmptyString),
   usageLimits: ServerProviderUsageLimits,
 });
 export type UsageLimitSourceAccount = typeof UsageLimitSourceAccount.Type;
