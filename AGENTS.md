@@ -169,7 +169,7 @@ Full glossary with file links: `docs/internals/glossary.md`
 ## Recent request log
 
 - 2026-09-11 — Synced upstream main, improved Antigravity direct quota collection and Gemini versus
-  Claude/GPT display, added Claude budget resilience, separated Codex workspaces, and prepared the
+  Claude/GPT display, added Claude budget resilience, separated Codex workspaces, and published the
   v0.0.47 Windows/Linux release.
 - 2026-09-07 — Merged upstream main, fixed release builds to embed public T3 Connect settings,
   verified Antigravity recovery/Claude peak indicators/update behavior, and published v0.0.46

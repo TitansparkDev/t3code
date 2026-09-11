@@ -1,13 +1,5 @@
 # Plan
 
-### 2026-09-11 — Usage limits and desktop release
-
-#### Other
-
-- [ ] Publish the verified v0.0.47 Windows and Linux desktop installers.
-  - [ ] Build the Linux AppImage and Windows NSIS installer.
-  - [ ] Upload both installers and updater manifests to the GitHub release.
-
 ### 2026-09-07 — Custom Cloudflare relay
 
 #### Bugs
