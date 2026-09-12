@@ -168,6 +168,7 @@ Full glossary with file links: `docs/internals/glossary.md`
 
 ## Recent request log
 
+- 2026-09-12 — Updated the Ubuntu desktop AppImage and managed server to the fork's v0.0.47 release, then restarted both.
 - 2026-09-11 — Synced upstream main, improved Antigravity direct quota collection and Gemini versus
   Claude/GPT display, added Claude budget resilience, separated Codex workspaces, and published the
   v0.0.47 Windows/Linux release.
