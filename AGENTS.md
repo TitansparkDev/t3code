@@ -168,16 +168,8 @@ Full glossary with file links: `docs/internals/glossary.md`
 
 ## Recent request log
 
+- 2026-09-13 — Split the requested 15-feature master integration into dependency-aware segments for parallel agents, with full source-PR audits and a final integration gate.
 - 2026-09-12 — Updated the Ubuntu desktop AppImage and managed server to the fork's v0.0.47 release, then restarted both.
 - 2026-09-11 — Synced upstream main, improved Antigravity direct quota collection and Gemini versus
   Claude/GPT display, added Claude budget resilience, separated Codex workspaces, and published the
   v0.0.47 Windows/Linux release.
-- 2026-09-07 — Merged upstream main, fixed release builds to embed public T3 Connect settings,
-  verified Antigravity recovery/Claude peak indicators/update behavior, and published v0.0.46
-  Windows/Linux installers. Custom Cloudflare relay deployment remains pending account auth.
-- 2026-09-06 — Completed cross-surface T3 Connect pairing endpoint persistence, Antigravity saved-
-  credential recovery, Claude peak-time indicators, and OmniCode mobile theme support.
-- 2026-09-05 — Pulled upstream's native Antigravity support, restored the fork's AGY limits path,
-  and prepared Linux and Windows desktop installers for the fork.
-- 2026-09-05 — Published the installers to the GitHub Release and added a verified local publish
-  command so future desktop builds cannot be mistaken for completed releases.
