@@ -174,6 +174,7 @@ import {
   restoreComposerDraftSnapshotState,
   restoreCloudComposerDrafts,
   retargetNewTaskDraft,
+  setComposerDraftModelSelection,
   setComposerDraftText,
   setComposerDraftAttachmentUpload,
   waitForComposerDraftsLoaded,
@@ -955,6 +956,20 @@ describe("mobile composer drafts", () => {
     } finally {
       composerDraftFileMocks.setWriteError(null);
     }
+  });
+
+  it("remembers a model selection changed in an existing thread", () => {
+    const draftKey = "environment-1:thread-1";
+    const modelSelection = {
+      instanceId: ProviderInstanceId.make("codex"),
+      model: "gpt-5.6-sol",
+      options: [{ id: "reasoningEffort", value: "xhigh" }],
+    };
+
+    setComposerDraftModelSelection(draftKey, modelSelection);
+
+    expect(getComposerDraftSnapshot(draftKey).modelSelection).toEqual(modelSelection);
+    expect(appAtomRegistry.get(stickyComposerModelSelectionAtom)).toEqual(modelSelection);
   });
 
   it("rejects persisted images without image bytes or a file URI", () => {
