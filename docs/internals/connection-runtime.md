@@ -66,9 +66,192 @@ not advance the cached cursor beyond the applied data, and an old scope must not
 overwrite its successor's cache. Preserve pagination data on reuse, but clear
 canceled loading state.
 
-The [RPC boundary](../../packages/client-runtime/src/rpc/client.ts) resolves
-requests against the current session at execution time. Durable subscriptions
-follow replacement sessions. After a transport failure they wait for the
-supervisor; an expected domain failure may resubscribe on the same healthy
-session. Reconnection does not automatically replay mutations, whose retry and
-idempotency rules belong to the operation.
+- During establishment, `waitForEstablishmentInterrupt` consumes and **ignores**
+  plain application activation. Restarting an in-flight attempt because the app
+  came to the foreground would only delay it. The exception is
+  `application-active-reconnect`, which mobile emits after a meaningful
+  background suspension; it interrupts establishment and resets the retry
+  ladder, because the OS may have silently killed the socket underneath the
+  attempt.
+- Credential changes interrupt establishment only for relay targets, where a new
+  credential changes what is being established.
+- Explicit disconnect, explicit retry, and going offline interrupt establishment
+  in every case.
+- While waiting out backoff, application activation resets the retry ladder so a
+  foregrounded app reconnects immediately instead of serving the remaining
+  delay.
+- Once connected, `monitorConnectedLease` handles plain activation by probing
+  the existing session (`lease.session.probe`, with a shorter timeout for
+  mobile's `application-active-probe`) rather than reconnecting; a healthy
+  session survives foregrounding. Android emits `application-active-preserved`
+  when its foreground service and Headless JS runtime both report ready. That
+  reason uses the same bounded mobile probe, preserves the session generation on
+  success, and replaces the lease immediately if the probe fails. It does not
+  force shell or thread subscriptions to restart. `application-active-reconnect`
+  skips the probe and replaces the lease outright.
+
+The UI derives `available`, `offline`, `connecting`, `reconnecting`,
+`connected`, and `error` from supervisor state plus explicit data-sync state.
+It does not infer connection health from cached data or the existence of a
+transport object. An environment becomes `connected` after the socket opens and
+the initial config RPC succeeds, proving that the server is responsive. Shell
+and thread synchronization are independent data states. A healthy RPC transport
+with a failed shell subscription is shown as connected with a synchronization
+error, not as a reconnect that is not actually scheduled.
+
+## Data Boundary
+
+Finite requests, durable subscriptions, and commands are separate APIs:
+
+- Query atoms revalidate when the RPC generation changes.
+- Subscription atoms switch to replacement sessions.
+- Subscription failure handling in [rpc/client.ts][client] distinguishes two
+  cases. A transport failure (`isTransportFailure`: every failure is an RPC
+  client error) ends the inner subscription without resubscribing, so the outer
+  stream waits for the supervisor to supply a replacement session. A handled
+  domain failure runs `onExpectedFailure` and, when
+  `retryExpectedFailureAfter` is set, sleeps and resubscribes on the **same**
+  session. A healthy transport is never torn down for a domain failure.
+- Mutations resolve the current environment runtime at execution time.
+- Shell and thread snapshots are available while offline.
+- Sync status is explicit and independent per domain. Shell status is `empty`,
+  `cached`, `synchronizing`, or `live`, with a separate `error` field; there is
+  no `failed` status. Thread status adds `deleted`.
+- Cached shell and thread projections are never allowed to overwrite newer live
+  data during a fast reconnect.
+- Domain atom factories route effects through the environment registry and
+  resolve the current scoped service at execution time. Project and thread
+  commands are Atom factories under `src/state`
+  (`createProjectEnvironmentAtoms`, `createThreadEnvironmentAtoms`), as are the
+  shell and thread state factories (`createEnvironmentShellAtoms`,
+  `createEnvironmentThreadStateAtoms`).
+- Web and mobile own their Atom runtimes, React hooks, and feature composition.
+
+The Promise bridge exists only at the React/Atom boundary. Runtime and business
+logic remain Effect-native.
+
+## Platform Layers
+
+Web and mobile provide:
+
+- network status and network-change streams;
+- application lifecycle wakeups;
+- cloud session credentials;
+- device identity;
+- platform registrations;
+- persistent catalog, credential, shell, and thread stores;
+- HTTP, crypto, and telemetry layers.
+
+Platform layers adapt operating-system capabilities. They do not implement
+connection policy. `EnvironmentOwnedDataCleanup` is part of this contract: on
+removal the registry clears its cache and calls the platform implementation, so
+web clears composer drafts and mobile clears drafts plus the thread outbox.
+
+Mobile cloud sign-out first saves relay drafts and queued messages in the local
+composer store under the owning account. These saved copies retain attachment
+files during cleanup and remain outside the active composer and upload queue.
+Signing back into that account restores them before relay credentials activate.
+Directly paired environments keep their drafts and outbox when cloud sign-out runs.
+
+Mobile composer attachments upload over HTTP while their environment is connected,
+with at most three concurrent transfers. Drafts retain local image data or an owned
+file URI alongside the pending upload ID. Sending verifies and reuses that ID, or
+uploads the local bytes again if it expired. Disconnecting cancels active transfers
+without discarding drafts; reconnecting resumes preparation. Older servers without
+attachment-upload support continue to receive inline images.
+
+## Source Boundaries
+
+Applications must import explicit package subpaths; the package intentionally
+has no root export. The subpaths are documented in
+[packages/client-runtime/README.md](../../packages/client-runtime/README.md),
+with the `exports` map in that package's `package.json` as the authoritative
+list. Files that are not exported are implementation details.
+
+## Application Boundary
+
+The application root mounts the shared connection layer, creates its own Atom
+runtime, and selects the domain atom factories required by that platform. Web
+and mobile may expose different hooks and features without changing connection
+ownership.
+
+Application code must not construct RPC clients, retry loops, or raw
+orchestration commands. Persistence paths belong to the platform registration
+and cache stores, with explicit migration or invalidation policy.
+
+### Android background ownership
+
+Android can add a second application-root owner without adding a second
+connection runtime. The opt-in **Keep connected in background** setting starts a
+`remoteMessaging` foreground service in the normal application process. React
+Native Headless JS cold-starts the existing mobile runtime and acquires
+reference-counted leases against the same process-wide `appAtomRegistry` used by
+the UI. Mounting the UI and background task together therefore still produces
+one supervisor and one transport per saved environment.
+
+The headless root retains:
+
+- the environment catalog, server configurations, and shell state for every
+  saved environment;
+- aggregate thread-shell state;
+- full detail for the last-opened thread and threads whose sessions are
+  `starting` or `running`; and
+- the shared, reference-counted thread-outbox drain worker.
+
+It does not retain every historical thread body. Once running work settles and
+is not the last-opened thread, the existing idle lifetime and persistence rules
+remain authoritative.
+
+T3 Connect authentication has matching `ui` and `background` owners. UI
+ownership wins while the app is visible. A cold headless start loads the
+persisted Clerk session and installs its token provider into the existing
+`managedRelaySessionAtom`; direct and Tailscale startup is not blocked when
+Clerk is signed out, unconfigured, or temporarily unavailable. Sign-out and
+account switches hold every background bootstrap, including scheduled retries
+and cold headless starts, until the previous account's cleanup settles, so the
+next account's relay session is never published before that cleanup finishes.
+There is no background-only relay transport or authentication path.
+
+The service is deliberately opt-in and defaults off. While enabled, Android
+requires a silent ongoing notification. React Native owns a partial CPU wake
+lock for the headless task, and the native service holds a best-effort
+high-performance Wi-Fi lock. These locks and the continuously active network
+connections have an intentional battery and data cost. A battery-optimization
+exemption improves survival under device power management, but declining it
+does not silently turn the feature off.
+
+The service uses sticky restart behavior and restores an enabled preference
+after package replacement or boot once credential-protected storage is
+available. Android force-stop remains absolute: no receiver or service may
+restart the app until the user launches it again. The app also cannot restart a
+separately stopped Tailscale VPN.
+
+At introduction, the direct/Tailscale path was exercised on a physical Android
+device across lock, Doze, task removal, network transitions, package replacement,
+and reboot. Cold T3 Connect ownership and token refresh have automated coverage,
+but were not live-validated against a configured relay account on that device.
+
+## Verification
+
+Core state-machine tests use `@effect/vitest` and deterministic service layers.
+Required coverage includes:
+
+- offline startup and online wakeup;
+- forever retry with the 16-second cap;
+- explicit retry interrupting backoff;
+- authentication wakeups;
+- involuntary close and reconnect;
+- explicit removal clearing all owned state;
+- relay token reuse and refresh;
+- progressive relay discovery;
+- shell and thread cache hydration;
+- durable subscriptions switching sessions;
+- command metadata and idempotent queued-command metadata.
+
+[layer]: ../../packages/client-runtime/src/connection/layer.ts
+[resolver]: ../../packages/client-runtime/src/connection/resolver.ts
+[driver]: ../../packages/client-runtime/src/connection/driver.ts
+[registry]: ../../packages/client-runtime/src/connection/registry.ts
+[supervisor]: ../../packages/client-runtime/src/connection/supervisor.ts
+[session]: ../../packages/client-runtime/src/rpc/session.ts
+[client]: ../../packages/client-runtime/src/rpc/client.ts

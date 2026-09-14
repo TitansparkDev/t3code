@@ -21,6 +21,11 @@ export async function flushThreadOutbox(): Promise<void> {
   await flushThreadOutboxWrites();
 }
 
+/** Starts loading the persisted queue without making React wait for it. */
+export function ensureThreadOutboxLoaded(): void {
+  void threadOutboxManager.load();
+}
+
 export function enqueueThreadOutboxMessage(message: QueuedThreadMessage): Promise<void> {
   return threadOutboxManager.enqueue(message);
 }

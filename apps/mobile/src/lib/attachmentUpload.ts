@@ -149,6 +149,8 @@ export interface PreparedTurnAttachments {
   readonly draftAttachments: ReadonlyArray<DraftComposerAttachment>;
   /** Every pending upload backing this turn (reused and newly minted). */
   readonly pendingAttachmentIds: ReadonlyArray<string>;
+  /** Deletes pending uploads once the delivered turn owns the bytes. */
+  readonly releaseUploads: () => Promise<void>;
 }
 
 export type PrepareTurnAttachmentsResult =
@@ -304,6 +306,7 @@ export async function prepareTurnAttachments(input: {
     attachments,
     draftAttachments,
     pendingAttachmentIds,
+    releaseUploads: () => releasePendingAttachmentUploads(environmentId, pendingAttachmentIds),
   });
 
   if (input.attachments.length === 0 || (files.length === 0 && !input.supportsImageUploads)) {
