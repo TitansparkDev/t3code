@@ -47,5 +47,13 @@
 
 - [ ] Authenticate the workspace to the user's Cloudflare account and provision the custom T3
       Connect relay/domain.
-  - [ ] User completes the one-time Cloudflare login and supplies the domain name if it is not
-        discoverable from the account.
+  - [x] Complete Cloudflare device login and identify the account's only active zone,
+        `artnas.net`.
+  - [ ] Create a scoped Cloudflare API token with the relay's required Workers, Queues, Hyperdrive,
+        Tunnel, DNS, and zone permissions; keep it in the local ignored relay environment and never
+        commit or send it through chat.
+  - [ ] Confirm `artnas.net` is the intended API and managed-endpoint zone, then provide the
+        non-Cloudflare relay credentials: PlanetScale, Axiom, and Clerk; add APNs and/or FCM only
+        when push delivery is wanted.
+  - [ ] Run a production dry-run, deploy the `prod` stage, verify `relay.artnas.net` and managed
+        endpoint DNS, and update the client public configuration from the deployment outputs.
