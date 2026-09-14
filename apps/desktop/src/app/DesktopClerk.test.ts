@@ -2,6 +2,7 @@ import { assert, describe, it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import { beforeEach, vi } from "vite-plus/test";
 
 const { createClerkBridgeMock, storageAdapter, storageMock } = vi.hoisted(() => ({
@@ -28,6 +29,7 @@ import * as ElectronApp from "../electron/ElectronApp.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as DesktopClerk from "./DesktopClerk.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
+import type * as Electron from "electron";
 
 const makeDesktopClerkLayer = (isDevelopment = true, events: string[] = []) => {
   const environment = DesktopEnvironment.DesktopEnvironment.of({
@@ -163,6 +165,43 @@ describe("DesktopClerk", () => {
       assert.isTrue(Exit.isSuccess(exit));
       assert.equal(quit.mock.calls.length, 0);
       assert.deepEqual(registeredEvents, ["second-instance"]);
+    }).pipe(
+      Effect.provide(makeDesktopClerkLayer()),
+      Effect.provideService(ElectronApp.ElectronApp, electronApp),
+      Effect.provideService(ElectronWindow.ElectronWindow, electronWindow),
+    );
+  });
+
+  it.effect("reveals the focused window when a second instance is launched", () => {
+    storageMock.mockReturnValue(storageAdapter);
+    createClerkBridgeMock.mockReturnValue({ cleanup: vi.fn(), isPrimaryInstance: true });
+    let secondInstance: (() => void) | undefined;
+    const electronApp = {
+      on: (eventName: string, listener: () => void) =>
+        Effect.sync(() => {
+          if (eventName === "second-instance") secondInstance = listener;
+        }),
+    } as unknown as ElectronApp.ElectronApp["Service"];
+    const focusedWindow = {} as Electron.BrowserWindow;
+    const revealedWindows: Electron.BrowserWindow[] = [];
+    const electronWindow = {
+      focusedMainOrFirst: Effect.succeed(Option.some(focusedWindow)),
+      reveal: (window: Electron.BrowserWindow) =>
+        Effect.sync(() => {
+          revealedWindows.push(window);
+        }),
+    } as unknown as ElectronWindow.ElectronWindow["Service"];
+
+    return Effect.gen(function* () {
+      const clerk = yield* DesktopClerk.DesktopClerk;
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          yield* clerk.configure;
+          secondInstance?.();
+          yield* Effect.yieldNow;
+          assert.deepEqual(revealedWindows, [focusedWindow]);
+        }),
+      );
     }).pipe(
       Effect.provide(makeDesktopClerkLayer()),
       Effect.provideService(ElectronApp.ElectronApp, electronApp),

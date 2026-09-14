@@ -13,6 +13,7 @@ import { type DesktopSnapShotEvent, DEFAULT_CLIENT_SETTINGS } from "@t3tools/con
 import * as DesktopAssets from "../app/DesktopAssets.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import { makeComponentLogger } from "../app/DesktopObservability.ts";
+import * as DesktopState from "../app/DesktopState.ts";
 import * as ElectronMenu from "../electron/ElectronMenu.ts";
 import { getDesktopUrl } from "../electron/ElectronProtocol.ts";
 import * as ElectronShell from "../electron/ElectronShell.ts";
@@ -59,6 +60,7 @@ type WindowTitleBarOptions = Pick<
 
 type DesktopWindowRuntimeServices =
   | DesktopEnvironment.DesktopEnvironment
+  | DesktopState.DesktopState
   | DesktopAssets.DesktopAssets
   | DesktopAppSettings.DesktopAppSettings
   | DesktopClientSettings.DesktopClientSettings
@@ -79,6 +81,7 @@ export class DesktopWindow extends Context.Service<
   DesktopWindow,
   {
     readonly createMain: Effect.Effect<Electron.BrowserWindow, DesktopWindowError>;
+    readonly createNewWindow: Effect.Effect<Electron.BrowserWindow, DesktopWindowError>;
     readonly ensureMain: Effect.Effect<Electron.BrowserWindow, DesktopWindowError>;
     readonly revealOrCreateMain: Effect.Effect<Electron.BrowserWindow, DesktopWindowError>;
     readonly activate: Effect.Effect<void, DesktopWindowError>;
@@ -293,6 +296,7 @@ function bindFirstRevealTrigger(
 /** @public Service construction is part of the canonical Effect module API. */
 export const make = Effect.gen(function* () {
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
+  const desktopState = yield* DesktopState.DesktopState;
   const assets = yield* DesktopAssets.DesktopAssets;
   const electronMenu = yield* ElectronMenu.ElectronMenu;
   const electronShell = yield* ElectronShell.ElectronShell;
@@ -308,6 +312,10 @@ export const make = Effect.gen(function* () {
   // createMainIfBackendReady, which gates the post-readiness window
   // open in development and the macOS "activate without windows" path.
   const backendReadyRef = yield* Ref.make(false);
+  // Electron's global BrowserWindow list also includes transient popup windows.
+  // Keep a product-owned registry so activation and renderer events only target
+  // T3 windows, and so closing one independent window cannot replace another.
+  const windowsRef = yield* Ref.make<readonly Electron.BrowserWindow[]>([]);
   // The transient "Connecting to WSL" splash window, tracked separately so it
   // is never mistaken for the real main window.
   const splashWindowRef = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
@@ -339,20 +347,43 @@ export const make = Effect.gen(function* () {
       ),
     );
 
-  const currentMainWindow = electronWindow.currentMainOrFirst.pipe(Effect.flatMap(withoutSplash));
-  const focusedMainWindow = electronWindow.focusedMainOrFirst.pipe(Effect.flatMap(withoutSplash));
+  const liveRegisteredWindows = Effect.gen(function* () {
+    const windows = yield* Ref.get(windowsRef);
+    const live = windows.filter((window) => !window.isDestroyed());
+    if (live.length !== windows.length) {
+      yield* Ref.set(windowsRef, live);
+    }
+    return live;
+  });
 
-  const createWindow = Effect.fn("desktop.window.createWindow")(function* (): Effect.fn.Return<
-    Electron.BrowserWindow,
-    DesktopWindowError
-  > {
+  const currentMainWindow = Effect.gen(function* () {
+    const main = yield* electronWindow.main;
+    const windows = yield* liveRegisteredWindows;
+    if (Option.isSome(main) && (windows.length === 0 || windows.includes(main.value))) {
+      return main;
+    }
+    return Option.fromNullishOr(windows[0] ?? null);
+  }).pipe(Effect.flatMap(withoutSplash));
+
+  const focusedMainWindow = Effect.gen(function* () {
+    const focused = yield* electronWindow.focusedMainOrFirst;
+    const windows = yield* liveRegisteredWindows;
+    if (Option.isSome(focused) && (windows.length === 0 || windows.includes(focused.value))) {
+      return focused;
+    }
+    return yield* currentMainWindow;
+  }).pipe(Effect.flatMap(withoutSplash));
+
+  const createWindow = Effect.fn("desktop.window.createWindow")(function* (
+    independent = false,
+  ): Effect.fn.Return<Electron.BrowserWindow, DesktopWindowError> {
     yield* previewManager.getBrowserSession();
     const applicationUrl = getDesktopUrl(environment.isDevelopment);
     const iconPaths = yield* assets.iconPaths;
     const iconOption = getIconOption(iconPaths, environment.platform);
     const shouldUseDarkColors = yield* electronTheme.shouldUseDarkColors;
     const persistedSettings = yield* desktopSettings.get;
-    const persistedBounds = persistedSettings.mainWindowBounds;
+    const persistedBounds = independent ? null : persistedSettings.mainWindowBounds;
     const displayBoundsResult = yield* Effect.sync(() => {
       try {
         return {
@@ -399,13 +430,15 @@ export const make = Effect.gen(function* () {
         webviewTag: true,
       },
     });
+    yield* Ref.set(desktopState.windowCreated, true);
 
     if (environment.platform === "darwin") {
       window.setAutoHideCursor(false);
     }
     let boundsPersistFiber: Fiber.Fiber<void, never> | undefined;
     let pendingBoundsPersistFiber: Fiber.Fiber<void, never> | undefined;
-    let boundsPersistenceEnabled = persistedBounds === null || restoredPersistedBounds;
+    let boundsPersistenceEnabled =
+      !independent && (persistedBounds === null || restoredPersistedBounds);
     const readPersistableBounds = (): DesktopAppSettings.DesktopWindowBounds | null => {
       if (window.isDestroyed()) {
         return null;
@@ -424,7 +457,7 @@ export const make = Effect.gen(function* () {
     const fallbackWindowBounds = boundsPersistenceEnabled ? null : readPersistableBounds();
     const fallbackWindowMaximized = persistedSettings.mainWindowMaximized;
     const persistCurrentBounds = (): Fiber.Fiber<void, never> | undefined => {
-      if (!boundsPersistenceEnabled) {
+      if (independent || !boundsPersistenceEnabled) {
         return pendingBoundsPersistFiber;
       }
       const bounds = readPersistableBounds();
@@ -444,6 +477,7 @@ export const make = Effect.gen(function* () {
       return pendingBoundsPersistFiber;
     };
     const scheduleBoundsPersist = () => {
+      if (independent) return;
       if (!boundsPersistenceEnabled) {
         const currentBounds = readPersistableBounds();
         if (
@@ -488,7 +522,9 @@ export const make = Effect.gen(function* () {
         fiber === undefined ? Effect.void : Fiber.join(fiber).pipe(Effect.asVoid),
       ),
     );
-    flushMainWindowBounds = flushBoundsPersist;
+    if (!independent) {
+      flushMainWindowBounds = flushBoundsPersist;
+    }
 
     yield* previewManager.setMainWindow(window);
     window.webContents.on("will-attach-webview", (event, webPreferences, params) => {
@@ -797,7 +833,7 @@ export const make = Effect.gen(function* () {
       }
       // Reveal the real window, then close the connecting splash (if any) so the
       // two don't overlap and there's no blank gap between them.
-      if (persistedSettings.mainWindowMaximized) {
+      if (!independent && persistedSettings.mainWindowMaximized) {
         window.maximize();
       }
       void runPromise(Effect.andThen(electronWindow.reveal(window), dismissConnectingSplash));
@@ -811,18 +847,45 @@ export const make = Effect.gen(function* () {
     window.on("closed", () => {
       clearDevelopmentLoadRetry();
       clearBoundsPersist();
+      void runPromise(
+        Ref.update(windowsRef, (windows) => windows.filter((candidate) => candidate !== window)),
+      );
       void runPromise(electronWindow.clearMain(Option.some(window)));
     });
 
+    yield* Ref.update(windowsRef, (windows) =>
+      windows.includes(window) ? windows : [...windows, window],
+    );
     return window;
   });
 
   const createMain = Effect.gen(function* () {
+    if (yield* Ref.get(desktopState.quitting)) {
+      return yield* Effect.interrupt;
+    }
     const window = yield* createWindow();
+    if (yield* Ref.get(desktopState.quitting)) {
+      yield* electronWindow.destroyAll;
+      return yield* Effect.interrupt;
+    }
     yield* electronWindow.setMain(window);
     yield* logWindowInfo("main window created");
     return window;
   }).pipe(Effect.withSpan("desktop.window.createMain"));
+
+  const createNewWindow = Effect.gen(function* () {
+    if (yield* Ref.get(desktopState.quitting)) {
+      return yield* Effect.interrupt;
+    }
+    const window = yield* createWindow(true);
+    if (yield* Ref.get(desktopState.quitting)) {
+      yield* electronWindow.destroyAll;
+      return yield* Effect.interrupt;
+    }
+    yield* electronWindow.reveal(window);
+    yield* logWindowInfo("independent window created", { windowId: window.id });
+    return window;
+  }).pipe(Effect.withSpan("desktop.window.createNewWindow"));
 
   const ensureMain = Effect.gen(function* () {
     const existingWindow = yield* currentMainWindow;
@@ -839,6 +902,7 @@ export const make = Effect.gen(function* () {
   }).pipe(Effect.withSpan("desktop.window.revealOrCreateMain"));
 
   const createMainIfBackendReady = Effect.gen(function* () {
+    if (yield* Ref.get(desktopState.quitting)) return;
     const backendReady = yield* Ref.get(backendReadyRef);
     if (!backendReady) return;
     const existingWindow = yield* currentMainWindow;
@@ -847,6 +911,7 @@ export const make = Effect.gen(function* () {
   }).pipe(Effect.withSpan("desktop.window.createMainIfBackendReady"));
 
   const showConnectingSplash = Effect.gen(function* () {
+    if (yield* Ref.get(desktopState.quitting)) return;
     // Only when nothing is shown yet: no real window, no existing splash.
     const existingSplash = yield* Ref.get(splashWindowRef);
     if (Option.isSome(existingSplash)) return;
@@ -873,6 +938,7 @@ export const make = Effect.gen(function* () {
         sandbox: true,
       },
     });
+    yield* Ref.set(desktopState.windowCreated, true);
     yield* Ref.set(splashWindowRef, Option.some(splash));
     splash.once("closed", () => {
       void runPromise(Ref.set(splashWindowRef, Option.none()));
@@ -897,7 +963,7 @@ export const make = Effect.gen(function* () {
     payload: unknown,
     { reveal = true }: { readonly reveal?: boolean } = {},
   ) {
-    const existingWindow = yield* reveal ? focusedMainWindow : electronWindow.main;
+    const existingWindow = yield* focusedMainWindow;
     if (Option.isNone(existingWindow) && (!reveal || !(yield* Ref.get(backendReadyRef)))) return;
     const targetWindow = Option.isSome(existingWindow) ? existingWindow.value : yield* ensureMain;
     if (targetWindow.isDestroyed()) return;
@@ -918,15 +984,17 @@ export const make = Effect.gen(function* () {
 
   return DesktopWindow.of({
     createMain,
+    createNewWindow,
     ensureMain,
     revealOrCreateMain,
     prepareCaptureReveal: Effect.gen(function* () {
-      const existingWindow = yield* currentMainWindow;
+      const existingWindow = yield* focusedMainWindow;
       if (Option.isSome(existingWindow)) {
         yield* electronWindow.prepareReveal(existingWindow.value);
       }
     }),
     activate: Effect.gen(function* () {
+      if (yield* Ref.get(desktopState.quitting)) return;
       const existingWindow = yield* currentMainWindow;
       if (Option.isSome(existingWindow)) {
         yield* electronWindow.reveal(existingWindow.value);

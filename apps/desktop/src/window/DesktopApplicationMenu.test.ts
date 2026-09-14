@@ -77,6 +77,9 @@ const desktopUpdatesLayer = Layer.succeed(DesktopUpdates.DesktopUpdates, {
 const makeDesktopWindowLayer = (selectedAction: Deferred.Deferred<string>) =>
   Layer.succeed(DesktopWindow.DesktopWindow, {
     createMain: Effect.die("unexpected createMain"),
+    createNewWindow: Deferred.succeed(selectedAction, "new-window").pipe(
+      Effect.as({} as Electron.BrowserWindow),
+    ),
     ensureMain: Effect.die("unexpected ensureMain"),
     revealOrCreateMain: Effect.die("unexpected revealOrCreateMain"),
     activate: Effect.void,
@@ -151,6 +154,36 @@ describe("DesktopApplicationMenu", () => {
 
       settingsClick({} as Electron.MenuItem, {} as Electron.BrowserWindow, {} as KeyboardEvent);
       assert.equal(yield* Deferred.await(selectedAction), "open-settings");
+    }),
+  );
+
+  it.effect("routes File > New Window through DesktopWindow", () =>
+    Effect.gen(function* () {
+      const selectedAction = yield* Deferred.make<string>();
+      const applicationMenuTemplate =
+        yield* Deferred.make<readonly Electron.MenuItemConstructorOptions[]>();
+
+      yield* configureMenu(selectedAction, applicationMenuTemplate);
+
+      const template = yield* Deferred.await(applicationMenuTemplate);
+      const fileMenu = template.find((item) => item.label === "File");
+      assert.isDefined(fileMenu);
+      if (!Array.isArray(fileMenu.submenu)) {
+        throw new Error("Expected File menu submenu to be an array.");
+      }
+      const newWindowItem = fileMenu.submenu.find((item) => item.label === "New Window");
+      assert.isDefined(newWindowItem);
+      assert.equal(newWindowItem.accelerator, "CmdOrCtrl+Shift+N");
+      if (typeof newWindowItem.click !== "function") {
+        throw new Error("Expected New Window menu item to have a click handler.");
+      }
+
+      newWindowItem.click(
+        {} as Electron.MenuItem,
+        {} as Electron.BrowserWindow,
+        {} as KeyboardEvent,
+      );
+      assert.equal(yield* Deferred.await(selectedAction), "new-window");
     }),
   );
 

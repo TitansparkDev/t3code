@@ -139,7 +139,10 @@ export const make = Effect.gen(function* () {
       yield* electronApp.on("second-instance", () => {
         void runPromise(
           Effect.gen(function* () {
-            const mainWindow = yield* electronWindow.currentMainOrFirst;
+            // External activations (including protocol callbacks and CLI
+            // launches) stay in the one shared app process and surface the
+            // focused T3 window instead of creating another backend.
+            const mainWindow = yield* electronWindow.focusedMainOrFirst;
             if (Option.isSome(mainWindow)) {
               yield* electronWindow.reveal(mainWindow.value);
             }
