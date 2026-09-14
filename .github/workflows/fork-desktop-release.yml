@@ -22,8 +22,8 @@ env:
   T3CODE_DESKTOP_UPDATE_REPOSITORY: ${{ github.repository }}
 
 jobs:
-  linux-node-pty:
-    name: Build Linux node-pty for Windows WSL support
+  linux-cli-archive:
+    name: Build Linux CLI archive for Windows WSL support
     runs-on: ubuntu-latest
     steps:
       - name: Check out release tag
@@ -38,24 +38,59 @@ jobs:
           cache: true
           run-install: false
 
-      - name: Install dependencies
-        run: vp install --filter=t3...
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
 
-      - name: Build Linux node-pty
+      - name: Install dependencies
+        run: vp install --filter=t3... --filter=@t3tools/scripts... --filter=@t3tools/web...
+
+      - name: Build web client and server executable
+        shell: bash
+        env:
+          VP_NODE_VERSION: "26.8.2"
+        run: |
+          set -euo pipefail
+          vp run --filter=@t3tools/web build
+          node apps/server/scripts/cli.ts build --verbose
+          node apps/server/scripts/cli.ts build-exe --verbose
+
+      - name: Build Linux resource monitor
         shell: bash
         run: |
           set -euo pipefail
-          pty_pkg="$(node -e "console.log(require.resolve('node-pty/package.json', { paths: ['$GITHUB_WORKSPACE/apps/server'] }))")"
-          pty_dir="$(dirname "$pty_pkg")"
-          (cd "$pty_dir" && npx --yes node-gyp rebuild)
-          mkdir -p wsl-prebuild
-          cp "$pty_dir/build/Release/pty.node" wsl-prebuild/pty.node
+          cargo build \
+            --locked \
+            --release \
+            --manifest-path native/resource-monitor/Cargo.toml \
+            --target x86_64-unknown-linux-gnu
+          mkdir -p "$RUNNER_TEMP/cli-resource-monitor/linux-x64"
+          cp native/resource-monitor/target/x86_64-unknown-linux-gnu/release/t3-resource-monitor \
+            "$RUNNER_TEMP/cli-resource-monitor/linux-x64/t3-resource-monitor"
 
-      - name: Upload node-pty
+      - name: Build and smoke-test Linux CLI archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.tag }}"
+          if [[ -z "$tag" ]]; then tag="$GITHUB_REF_NAME"; fi
+          version="${tag#v}"
+          node scripts/build-cli-archive.ts \
+            --platform linux \
+            --arch x64 \
+            --version "$version" \
+            --resource-monitor-dir "$RUNNER_TEMP/cli-resource-monitor" \
+            --output-dir release-cli
+          node scripts/smoke-cli-archive.ts \
+            --archive release-cli/* \
+            --expect-version "$version"
+
+      - name: Upload Linux CLI archive
         uses: actions/upload-artifact@v7
         with:
-          name: fork-wsl-node-pty
-          path: wsl-prebuild/pty.node
+          name: fork-wsl-runtime
+          path: release-cli/*
           if-no-files-found: error
 
   linux:
@@ -143,7 +178,7 @@ jobs:
 
   windows:
     name: Windows installer
-    needs: linux-node-pty
+    needs: linux-cli-archive
     runs-on: windows-latest
     steps:
       - name: Check out release tag
@@ -193,11 +228,11 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Download Linux node-pty
+      - name: Download Linux CLI archive for WSL
         uses: actions/download-artifact@v8
         with:
-          name: fork-wsl-node-pty
-          path: wsl-prebuild
+          name: fork-wsl-runtime
+          path: wsl-runtime
 
       - name: Install dependencies
         run: vp install --filter=@t3tools/desktop... --filter=t3... --filter=@t3tools/scripts...
@@ -216,7 +251,7 @@ jobs:
             --target nsis \
             --arch x64 \
             --build-version "$version" \
-            --wsl-prebuild "$GITHUB_WORKSPACE/wsl-prebuild/pty.node"
+            --wsl-runtime "$GITHUB_WORKSPACE"/wsl-runtime/t3-*-linux-x64.tar.gz
           mkdir -p release-publish
           cp release/*.exe release/*.blockmap release/*.yml release-publish/
 
