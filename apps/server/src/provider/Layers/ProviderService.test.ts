@@ -374,6 +374,10 @@ function makeRecordingAnalytics() {
 
 function makeStaticInstanceRegistry(
   entries: ReadonlyArray<readonly [ProviderInstanceId, ProviderAdapterShape<ProviderAdapterError>]>,
+  continuationKeyForInstance: (
+    instanceId: ProviderInstanceId,
+    adapter: ProviderAdapterShape<ProviderAdapterError>,
+  ) => string = (instanceId, adapter) => `${adapter.provider}:instance:${instanceId}`,
 ): ProviderAdapterRegistry.ProviderAdapterRegistry["Service"] {
   const adapters = new Map(entries);
   const unsupported = (instanceId: ProviderInstanceId) =>
@@ -396,7 +400,7 @@ function makeStaticInstanceRegistry(
             enabled: true,
             continuationIdentity: {
               driverKind: adapter.provider,
-              continuationKey: `${adapter.provider}:instance:${instanceId}`,
+              continuationKey: continuationKeyForInstance(instanceId, adapter),
             },
           })
         : Effect.fail(unsupported(instanceId));
@@ -3231,6 +3235,130 @@ routing.layer("ProviderServiceLive routing", (it) => {
 
         NodeFS.rmSync(tempDir, { recursive: true, force: true });
       }).pipe(Effect.provide(NodeServices.layer)),
+  );
+});
+
+const compatibleReplacementOriginal = makeFakeCodexAdapter();
+const compatibleReplacementAdapter = makeFakeCodexAdapter();
+const compatibleReplacementOriginalInstanceId = ProviderInstanceId.make(
+  "codex-compatible-original",
+);
+const compatibleReplacementInstanceId = ProviderInstanceId.make("codex-compatible-replacement");
+const compatibleReplacementRouting = makeProviderServiceLayer({
+  registry: makeStaticInstanceRegistry(
+    [
+      [compatibleReplacementOriginalInstanceId, compatibleReplacementOriginal.adapter],
+      [compatibleReplacementInstanceId, compatibleReplacementAdapter.adapter],
+    ],
+    () => "codex:/shared-home",
+  ),
+});
+
+compatibleReplacementRouting.layer("ProviderServiceLive compatible replacement", (it) => {
+  it.effect("stops a compatible provider instance before starting its replacement", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-compatible-provider-replacement");
+      const order: string[] = [];
+      const cleanupStarted = yield* Deferred.make<void>();
+      const cleanupFinished = yield* Deferred.make<void>();
+
+      compatibleReplacementOriginal.stopSession.mockImplementationOnce(() =>
+        Effect.gen(function* () {
+          yield* Deferred.succeed(cleanupStarted, undefined);
+          yield* Deferred.await(cleanupFinished);
+          order.push("stop-original-complete");
+        }),
+      );
+      compatibleReplacementAdapter.startSession.mockImplementationOnce((input) =>
+        Effect.gen(function* () {
+          order.push("start-replacement");
+          return yield* Effect.succeed({
+            provider: CODEX_DRIVER,
+            providerInstanceId: compatibleReplacementInstanceId,
+            status: "ready" as const,
+            runtimeMode: input.runtimeMode,
+            threadId: input.threadId,
+            resumeCursor: input.resumeCursor,
+            cwd: input.cwd ?? process.cwd(),
+            createdAt: "2026-01-01T00:00:00.000Z",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+          });
+        }),
+      );
+
+      const initial = yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: compatibleReplacementOriginalInstanceId,
+        threadId,
+        cwd: fixtureCwd("project-compatible-provider-replacement"),
+        runtimeMode: "full-access",
+      });
+
+      const replacementFiber = yield* provider
+        .startSession(threadId, {
+          provider: CODEX_DRIVER,
+          providerInstanceId: compatibleReplacementInstanceId,
+          threadId,
+          cwd: fixtureCwd("project-compatible-provider-replacement"),
+          resumeCursor: initial.resumeCursor,
+          runtimeMode: "full-access",
+        })
+        .pipe(Effect.forkChild);
+
+      yield* Deferred.await(cleanupStarted);
+      assert.equal(compatibleReplacementAdapter.startSession.mock.calls.length, 0);
+      yield* Deferred.succeed(cleanupFinished, undefined);
+      yield* Fiber.join(replacementFiber);
+
+      assert.deepEqual(order, ["stop-original-complete", "start-replacement"]);
+    }),
+  );
+
+  it.effect("does not start a replacement when stale session cleanup fails", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+      const threadId = asThreadId("thread-provider-replacement-cleanup-failure");
+
+      compatibleReplacementOriginal.stopSession.mockImplementationOnce(() =>
+        Effect.fail(
+          new ProviderAdapterRequestError({
+            provider: CODEX_DRIVER,
+            method: "stopSession",
+            detail: "simulated stale session cleanup failure",
+          }),
+        ),
+      );
+      compatibleReplacementAdapter.startSession.mockClear();
+
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: compatibleReplacementOriginalInstanceId,
+        threadId,
+        cwd: fixtureCwd("project-provider-replacement-cleanup-failure"),
+        runtimeMode: "full-access",
+      });
+
+      const failure = yield* provider
+        .startSession(threadId, {
+          provider: CODEX_DRIVER,
+          providerInstanceId: compatibleReplacementInstanceId,
+          threadId,
+          cwd: fixtureCwd("project-provider-replacement-cleanup-failure"),
+          resumeCursor: { threadId: "native-thread" },
+          runtimeMode: "full-access",
+        })
+        .pipe(Effect.flip);
+
+      assert.instanceOf(failure, ProviderAdapterRequestError);
+      assert.equal(compatibleReplacementAdapter.startSession.mock.calls.length, 0);
+      const binding = yield* directory.getBinding(threadId);
+      assert.equal(
+        Option.getOrUndefined(binding)?.providerInstanceId,
+        compatibleReplacementOriginalInstanceId,
+      );
+    }),
   );
 });
 

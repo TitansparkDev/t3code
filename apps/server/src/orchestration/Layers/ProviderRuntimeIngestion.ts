@@ -1498,6 +1498,24 @@ const make = Effect.gen(function* () {
       const thread = yield* resolveThreadRuntimeContext(event.threadId);
       if (!thread) return;
 
+      // A replacement session can be bound before the old adapter's shutdown
+      // event reaches this worker. That old exit must not stop or clear the
+      // replacement session's state.
+      if (
+        event.type === "session.exited" &&
+        event.providerInstanceId !== undefined &&
+        thread.session?.providerInstanceId !== undefined &&
+        !sameId(thread.session.providerInstanceId, event.providerInstanceId)
+      ) {
+        yield* Effect.logWarning("ignored stale provider session exit", {
+          eventId: event.eventId,
+          threadId: thread.id,
+          eventProviderInstanceId: event.providerInstanceId,
+          currentProviderInstanceId: thread.session.providerInstanceId,
+        });
+        return;
+      }
+
       const now = event.createdAt;
       const eventTurnId = toTurnId(event.turnId);
       const activeTurnId = thread.session?.activeTurnId ?? null;

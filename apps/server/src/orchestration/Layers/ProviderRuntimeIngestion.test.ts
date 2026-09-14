@@ -1058,6 +1058,50 @@ describe("ProviderRuntimeIngestion", () => {
     }),
   );
 
+  it("ignores a delayed session exit from the previous provider instance", async () => {
+    const harness = await createHarness();
+    const threadId = asThreadId("thread-1");
+    const replacementInstanceId = ProviderInstanceId.make("codex-replacement");
+    const oldInstanceId = ProviderInstanceId.make("codex-original");
+    const now = "2026-01-01T00:00:01.000Z";
+
+    await harness.dispatch({
+      type: "thread.session.set",
+      commandId: CommandId.make("cmd-session-set-replacement-instance"),
+      threadId,
+      session: {
+        threadId,
+        status: "ready",
+        providerName: "codex",
+        providerInstanceId: replacementInstanceId,
+        runtimeMode: "approval-required",
+        activeTurnId: null,
+        lastError: null,
+        updatedAt: now,
+      },
+      createdAt: now,
+    });
+
+    await harness.emitAndDrain([
+      {
+        type: "session.exited",
+        eventId: asEventId("evt-delayed-old-instance-exit"),
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: oldInstanceId,
+        threadId,
+        createdAt: "2026-01-01T00:00:02.000Z",
+        payload: {},
+      },
+    ]);
+
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(thread?.session?.status).toBe("ready");
+    expect(thread?.session?.providerInstanceId).toBe(replacementInstanceId);
+    expect(
+      thread?.activities.some((activity) => activity.id === "evt-delayed-old-instance-exit"),
+    ).toBe(false);
+  });
+
   it("does not clear active turn when session/thread started arrives mid-turn", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
