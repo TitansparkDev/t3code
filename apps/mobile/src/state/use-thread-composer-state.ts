@@ -47,6 +47,7 @@ import {
   mergeComposerDraftContent,
   removeComposerDraftAttachment,
   scheduleUnusedComposerAttachmentCleanup,
+  setComposerDraftModelSelection,
   setComposerDraftText,
   updateComposerDraftSettings,
   useComposerDraft,
@@ -574,12 +575,12 @@ export function useThreadComposerState() {
       const provider = selectedEnvironmentRuntime?.serverConfig?.providers.find(
         (candidate) => candidate.instanceId === value.instanceId,
       );
-      updateComposerDraftSettings(selectedThreadKey, {
-        modelSelection: value,
-        ...(provider?.showInteractionModeToggle === false
-          ? { interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE }
-          : {}),
-      });
+      setComposerDraftModelSelection(selectedThreadKey, value);
+      if (provider?.showInteractionModeToggle === false) {
+        updateComposerDraftSettings(selectedThreadKey, {
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        });
+      }
     },
     [selectedEnvironmentRuntime?.serverConfig, selectedThreadKey],
   );

@@ -46,6 +46,8 @@ import {
   type AndroidHeaderAction,
 } from "../../components/AndroidScreenHeader";
 import { LoadingScreen } from "../../components/LoadingScreen";
+import { resolveDevServerUrl, type ResolvedDevServer } from "../../lib/devServers";
+import { tryOpenExternalUrl } from "../../lib/openExternalUrl";
 import { scopedThreadKey } from "../../lib/scopedEntities";
 import { uuidv4 } from "../../lib/uuid";
 import { NATIVE_LIQUID_GLASS_SUPPORTED } from "../../native/native-glass";
@@ -56,6 +58,8 @@ import {
   useRemoteConnectionStatus,
   useRemoteEnvironmentRuntime,
 } from "../../state/use-remote-environment-registry";
+import { useThreadDevServers } from "../../state/preview";
+import { usePreparedConnection } from "../../state/session";
 import { useKnownTerminalSessions } from "../../state/use-terminal-session";
 import { useSelectedThreadDetailState } from "../../state/use-thread-detail";
 import { useThreadSelection } from "../../state/use-thread-selection";
@@ -401,12 +405,39 @@ function ThreadRouteContent(
     [knownTerminalSessions, selectedThreadProject?.workspaceRoot],
   );
   const selectedThreadDetailWorktreePath = selectedThreadDetail?.worktreePath ?? null;
+  const linkedDevServers = useThreadDevServers({
+    environmentId: selectedThread?.environmentId ?? null,
+    threadId: selectedThread?.id ?? null,
+  });
+  const preparedConnection = usePreparedConnection(selectedThread?.environmentId ?? null);
+  const devServers = useMemo(() => {
+    const httpBaseUrl = Option.isSome(preparedConnection)
+      ? preparedConnection.value.httpBaseUrl
+      : null;
+    return linkedDevServers.map((server) => resolveDevServerUrl(httpBaseUrl, server));
+  }, [linkedDevServers, preparedConnection]);
+  const devServersOptionsVersion = useMemo(
+    () => devServers.map((entry) => `${entry.url}:${entry.reachable}`),
+    [devServers],
+  );
   const handleReconnectEnvironment = useCallback(() => {
     if (!environmentId) {
       return;
     }
     onReconnectEnvironment(environmentId);
   }, [environmentId, onReconnectEnvironment]);
+  const handleOpenDevServer = useCallback(async (resolved: ResolvedDevServer) => {
+    if (!resolved.reachable) {
+      Alert.alert(
+        "Dev server unreachable",
+        "This dev server cannot be reached from this device over the current connection.",
+      );
+      return;
+    }
+    if (!(await tryOpenExternalUrl(resolved.url, "dev-server"))) {
+      Alert.alert("Unable to open dev server", "The dev server URL could not be opened.");
+    }
+  }, []);
 
   const handleForkHandoff = useCallback(
     async (target: HandoffTargetOption) => {
@@ -877,6 +908,8 @@ function ThreadRouteContent(
         )
       : [],
     terminalSessions: terminalMenuSessions,
+    devServers,
+    onOpenDevServer: handleOpenDevServer,
     showDirectFileControl: layout.usesSplitView,
     onOpenTerminal: handleOpenTerminal,
     onOpenNewTerminal: handleOpenNewTerminal,
@@ -1008,6 +1041,13 @@ function ThreadRouteContent(
         onPress: props.onReturnToThread,
       });
     }
+    if (layout.usesSplitView) {
+      actions.push({
+        accessibilityLabel: panes.primarySidebarVisible ? "Maximize chat" : "Show threads",
+        icon: panes.primarySidebarVisible ? "arrow.up.left.and.arrow.down.right" : "sidebar.left",
+        onPress: togglePrimarySidebar,
+      });
+    }
     if (selectedThreadCwd !== null) {
       actions.push({
         accessibilityLabel: "Open files",
@@ -1020,6 +1060,14 @@ function ThreadRouteContent(
         accessibilityLabel: "Open terminal",
         icon: "terminal",
         onPress: () => handleOpenTerminal(null),
+      });
+    }
+    if (devServers.length > 0) {
+      const firstReachable = devServers.find((resolved) => resolved.reachable) ?? devServers[0]!;
+      actions.push({
+        accessibilityLabel: "Open dev server",
+        icon: "globe",
+        onPress: () => void handleOpenDevServer(firstReachable),
       });
     }
     if (handoffLineage !== null) {
@@ -1051,18 +1099,23 @@ function ThreadRouteContent(
     }
     return actions;
   }, [
+    devServers,
     fileInspector.supported,
     handleOpenFilesInspector,
     handleOpenTerminal,
     handleOpenGitInspector,
+    handleOpenDevServer,
     handleToggleInspector,
+    layout.usesSplitView,
     openHandoffTargetPicker,
     handleOpenHandoffThread,
     handoffLineage,
     props.onReturnToThread,
+    panes.primarySidebarVisible,
     selectedThreadCwd,
     selectedThreadDetail,
     selectedThreadProject?.workspaceRoot,
+    togglePrimarySidebar,
   ]);
 
   const handleEditFailedCreation = useCallback(async () => {
@@ -1233,7 +1286,7 @@ function ThreadRouteContent(
         onSelect={(target) => void handleForkHandoff(target)}
       />
       <NativeStackScreenOptions
-        optionsVersion={threadGitControlProps.projectScripts}
+        optionsVersion={[threadGitControlProps.projectScripts, devServersOptionsVersion]}
         options={{
           // Android draws its own in-flow header (AndroidScreenHeader below);
           // the native stack header stays iOS-only.

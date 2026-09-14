@@ -85,6 +85,7 @@ function makeDesktopWindowLayer(
 ) {
   return Layer.succeed(DesktopWindow.DesktopWindow, {
     createMain: Effect.die("unexpected window creation"),
+    createNewWindow: Effect.die("unexpected window creation"),
     ensureMain: Effect.die("unexpected window creation"),
     revealOrCreateMain: Effect.die("unexpected window creation"),
     activate: input.activate ?? Effect.void,
@@ -250,6 +251,52 @@ describe("DesktopLifecycle", () => {
           appListeners.get("activate")?.();
 
           assert.equal(activationCount, 0);
+        }),
+      ).pipe(Effect.provide(layer));
+    }),
+  );
+
+  it.effect("ignores early window-all-closed and quits after an owned window existed", () =>
+    Effect.gen(function* () {
+      const appListeners = new Map<string, (...args: readonly unknown[]) => void>();
+      let quitCount = 0;
+      const environmentLayer = Layer.succeed(DesktopEnvironment.DesktopEnvironment, {
+        platform: "linux",
+        isDevelopment: false,
+      } as DesktopEnvironment.DesktopEnvironment["Service"]);
+      const layer = DesktopLifecycle.layer.pipe(
+        Layer.provideMerge(
+          makeElectronAppLayer(
+            appListeners,
+            Effect.sync(() => {
+              quitCount += 1;
+            }),
+          ),
+        ),
+        Layer.provideMerge(electronThemeLayer),
+        Layer.provideMerge(makeElectronWindowLayer()),
+        Layer.provideMerge(makeDesktopWindowLayer()),
+        Layer.provideMerge(environmentLayer),
+        Layer.provideMerge(DesktopShutdown.layer),
+        Layer.provideMerge(DesktopState.layer),
+      );
+
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const lifecycle = yield* DesktopLifecycle.DesktopLifecycle;
+          const state = yield* DesktopState.DesktopState;
+          yield* lifecycle.register;
+
+          appListeners.get("window-all-closed")?.();
+          yield* Effect.yieldNow;
+          assert.equal(quitCount, 0);
+          assert.isFalse(yield* Ref.get(state.quitting));
+
+          yield* Ref.set(state.windowCreated, true);
+          appListeners.get("window-all-closed")?.();
+          yield* Effect.yieldNow;
+          assert.equal(quitCount, 1);
+          assert.isTrue(yield* Ref.get(state.quitting));
         }),
       ).pipe(Effect.provide(layer));
     }),

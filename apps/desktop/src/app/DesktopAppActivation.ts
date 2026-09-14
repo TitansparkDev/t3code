@@ -18,6 +18,7 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 
+import { webContents as electronWebContents, type WebContents } from "electron";
 import type * as Electron from "electron";
 
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
@@ -206,7 +207,7 @@ export class DesktopAppActivation extends Context.Service<
   DesktopAppActivation,
   {
     readonly start: Effect.Effect<void, DesktopAppActivationStartError, Scope.Scope>;
-    readonly setRendererReady: (ready: boolean) => Effect.Effect<void>;
+    readonly setRendererReady: (ready: boolean, rendererId?: number) => Effect.Effect<void>;
     readonly complete: (response: DesktopAppActivationResponse) => Effect.Effect<void>;
   }
 >()("@t3tools/desktop/app/DesktopAppActivation") {}
@@ -269,37 +270,47 @@ export const make = Effect.gen(function* () {
           Effect.ensuring(Effect.sync(() => broker.close())),
         ),
     ).pipe(Effect.asVoid),
-    setRendererReady: Effect.fn("DesktopAppActivation.setRendererReady")(function* (ready) {
-      if (!ready) {
-        clearRegisteredRenderer();
-        return;
-      }
-      const main = yield* electronWindow.main;
-      if (Option.isNone(main)) return;
-      const webContents = main.value.webContents;
-      if (webContents.isDestroyed()) return;
+    setRendererReady: Effect.fn("DesktopAppActivation.setRendererReady")(
+      function* (ready, rendererId) {
+        if (!ready) {
+          clearRegisteredRenderer();
+          return;
+        }
+        // The IPC sender is authoritative: a secondary window can finish
+        // loading while the primary window is focused. Non-IPC callers keep the
+        // focused-window fallback for compatibility with the service API.
+        const renderer: WebContents | undefined =
+          rendererId === undefined
+            ? Option.getOrUndefined(
+                yield* electronWindow.focusedMainOrFirst.pipe(
+                  Effect.map(Option.map((window) => window.webContents)),
+                ),
+              )
+            : (electronWebContents.fromId(rendererId) ?? undefined);
+        if (renderer === undefined || renderer.isDestroyed()) return;
 
-      if (registeredWebContents !== webContents) {
-        clearRegisteredRenderer();
-        registeredWebContents = webContents;
-        const onUnavailable = () => clearRegisteredRenderer();
-        const onNavigation = (
-          event: Electron.Event<Electron.WebContentsDidStartNavigationEventParams>,
-        ) => {
-          if (event.isMainFrame && !event.isSameDocument) clearRegisteredRenderer();
-        };
-        webContents.on("did-start-navigation", onNavigation);
-        webContents.once("destroyed", onUnavailable);
-        detachRendererListeners = () => {
-          webContents.removeListener("did-start-navigation", onNavigation);
-          webContents.removeListener("destroyed", onUnavailable);
-        };
-      }
+        if (registeredWebContents !== renderer) {
+          clearRegisteredRenderer();
+          registeredWebContents = renderer;
+          const onUnavailable = () => clearRegisteredRenderer();
+          const onNavigation = (
+            event: Electron.Event<Electron.WebContentsDidStartNavigationEventParams>,
+          ) => {
+            if (event.isMainFrame && !event.isSameDocument) clearRegisteredRenderer();
+          };
+          renderer.on("did-start-navigation", onNavigation);
+          renderer.once("destroyed", onUnavailable);
+          detachRendererListeners = () => {
+            renderer.removeListener("did-start-navigation", onNavigation);
+            renderer.removeListener("destroyed", onUnavailable);
+          };
+        }
 
-      broker.registerRenderer((request) => {
-        webContents.send(DESKTOP_APP_ACTIVATION_REQUEST_CHANNEL, request);
-      });
-    }),
+        broker.registerRenderer((request) => {
+          renderer.send(DESKTOP_APP_ACTIVATION_REQUEST_CHANNEL, request);
+        });
+      },
+    ),
     complete: (response) => Effect.sync(() => broker.complete(response)),
   });
 });

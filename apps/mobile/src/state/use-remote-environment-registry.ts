@@ -6,6 +6,7 @@ import { useCallback, useMemo } from "react";
 import { Alert } from "react-native";
 
 import { useConnectionController } from "../features/connection/useConnectionController";
+import { useAtomCommand } from "./use-atom-command";
 import { environmentPresentations } from "./presentation";
 import { useWorkspaceState } from "../state/workspace";
 import type { SavedRemoteConnection } from "../lib/connection";
@@ -110,6 +111,9 @@ export function useRemoteConnectionStatus() {
 
 export function useRemoteConnections() {
   const controller = useConnectionController();
+  const refreshProviders = useAtomCommand(serverEnvironment.refreshProviders, {
+    reportFailure: false,
+  });
   const connectionPairingUrl = useAtomValue(connectionPairingUrlAtom);
   const pendingConnectionError = useAtomValue(pendingConnectionErrorAtom);
   const { connectedEnvironments, connectionError, connectionState } = useRemoteConnectionStatus();
@@ -139,6 +143,10 @@ export function useRemoteConnections() {
   const onReconnectEnvironment = useCallback(
     (environmentId: EnvironmentId) => controller.retryEnvironment(environmentId),
     [controller],
+  );
+  const onRefreshProviders = useCallback(
+    (environmentId: EnvironmentId) => refreshProviders({ environmentId, input: {} }),
+    [refreshProviders],
   );
   const onUpdateEnvironment = useCallback(
     (
@@ -184,6 +192,7 @@ export function useRemoteConnections() {
     onChangeConnectionPairingUrl,
     onConnectPress,
     onReconnectEnvironment,
+    onRefreshProviders,
     onUpdateEnvironment,
     onRemoveEnvironmentPress,
   };
