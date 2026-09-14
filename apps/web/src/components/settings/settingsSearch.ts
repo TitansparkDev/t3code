@@ -736,6 +736,7 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/keybindings": null,
   "/settings/providers": null,
   "/settings/integrations": null,
+  "/settings/scheduled-tasks": null,
   "/settings/source-control": "environment-defaults",
   "/settings/connections": "connections",
   "/settings/archived": "project-defaults",

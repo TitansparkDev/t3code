@@ -8974,8 +8974,6 @@ export default function ChatView(props: ChatViewProps) {
     },
     [cancelVideoPreviewRequest],
   );
-  const onSendRef = useRef(onSend);
-  onSendRef.current = onSend;
   useEffect(() => {
     if (
       !activeThreadKey ||

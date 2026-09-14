@@ -37,6 +37,18 @@ vi.mock("expo-file-system", () => ({
       return entry.base64;
     }
 
+    get size(): number | null {
+      const entry = files.get(this.uri);
+      if (!entry || entry.deleted) return null;
+      return Buffer.from(entry.base64, "base64").byteLength;
+    }
+
+    async copy(destination: { readonly uri: string }): Promise<void> {
+      const entry = files.get(this.uri);
+      if (!entry || entry.deleted) throw new Error("missing file");
+      files.set(destination.uri, { ...entry });
+    }
+
     delete(): void {
       const entry = files.get(this.uri);
       if (entry) {
@@ -48,8 +60,13 @@ vi.mock("expo-file-system", () => ({
       files.set(this.uri, { base64: "", deleted: false });
     }
 
-    write(text: string): void {
-      files.set(this.uri, { base64: "", deleted: false, text });
+    write(data: string, options?: { readonly encoding?: string }): void {
+      files.set(
+        this.uri,
+        options?.encoding === "base64"
+          ? { base64: data, deleted: false }
+          : { base64: "", deleted: false, text: data },
+      );
     }
 
     moveSync(destination: { readonly uri: string }): void {
@@ -62,13 +79,14 @@ vi.mock("expo-file-system", () => ({
   Directory: class {
     readonly uri: string;
 
-    constructor(parent: string, name: string) {
-      this.uri = `${parent}/${name}`;
+    constructor(parent: string | { readonly uri: string }, name: string) {
+      this.uri = `${typeof parent === "string" ? parent : parent.uri}/${name}`;
     }
 
     create(): void {}
   },
-  Paths: { document: "file:///documents" },
+  FileMode: { ReadOnly: "r", WriteOnly: "w" },
+  Paths: { document: { uri: "file:///documents" } },
 }));
 
 vi.mock("./uuid", () => ({
@@ -143,7 +161,7 @@ describe("native pasted image cleanup", () => {
     expect(isOwnedPastedImageUri("https://example.com/t3-composer-paste/id.png")).toBe(false);
   });
 
-  it("converts owned files to data-backed previews and deletes the source", async () => {
+  it("copies owned files into durable attachment storage and deletes the source", async () => {
     const uri =
       "file:///private/var/mobile/Containers/Data/Application/app/tmp/t3-composer-paste/id.png";
     files.set(uri, { base64: "aGVsbG8=", deleted: false });
@@ -154,12 +172,21 @@ describe("native pasted image cleanup", () => {
     });
 
     expect(attachments).toEqual([
-      expect.objectContaining({
-        dataUrl: "data:image/png;base64,aGVsbG8=",
-        previewUri: "data:image/png;base64,aGVsbG8=",
-      }),
+      {
+        id: "attachment-id",
+        type: "image",
+        name: "pasted-image.png",
+        mimeType: "image/png",
+        sizeBytes: 5,
+        fileUri: "file:///documents/t3-composer-attachments/attachment-id-pasted-image.png",
+        previewUri: "file:///documents/t3-composer-attachments/attachment-id-pasted-image.png",
+      },
     ]);
     expect(files.get(uri)?.deleted).toBe(true);
+    expect(
+      files.get("file:///documents/t3-composer-attachments/attachment-id-pasted-image.png")
+        ?.deleted,
+    ).toBe(false);
   });
 
   it("deletes rejected and overflow owned files without deleting user-owned files", async () => {

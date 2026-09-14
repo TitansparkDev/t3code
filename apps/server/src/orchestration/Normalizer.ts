@@ -154,13 +154,14 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
     if (canonicalCommand.type === "thread.turn.start") {
       const clientAttachmentIds = new Set<string>();
       for (const attachment of attachments) {
-        if (attachment.id === undefined) continue;
-        if (clientAttachmentIds.has(attachment.id)) {
+        const clientAttachmentId = "id" in attachment ? attachment.id : undefined;
+        if (clientAttachmentId === undefined) continue;
+        if (clientAttachmentIds.has(clientAttachmentId)) {
           return yield* new OrchestrationDispatchCommandError({
             message: `Attachment '${attachment.name}' cannot be sent: duplicate attachment id.`,
           });
         }
-        clientAttachmentIds.add(attachment.id);
+        clientAttachmentIds.add(clientAttachmentId);
       }
     }
     const claimedAttachmentPaths: string[] = [];
@@ -300,7 +301,7 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
                 }),
             ),
           );
-          if (attachment.id !== undefined) {
+          if ("id" in attachment && attachment.id !== undefined) {
             finalAttachmentIdByClientId.set(attachment.id, attachmentId);
           }
 

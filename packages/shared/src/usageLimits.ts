@@ -16,6 +16,7 @@ import {
   type ServerProviderUsageLimits,
   type ServerProviderUsageSpend,
   type ServerProviderUsageWindow,
+  type UsageLimitSourceSnapshot,
   type UsageLimitSourceSnapshots,
 } from "@t3tools/contracts";
 
@@ -42,6 +43,38 @@ export function providersWithLimits(
   );
 }
 
+export interface LimitsGroup {
+  readonly environmentId: EnvironmentId;
+  /** Null while only one environment is connected; there is nothing to tell apart. */
+  readonly environmentLabel: string | null;
+  readonly providers: readonly ServerProvider[];
+}
+
+/**
+ * One group per connected environment with a provider reporting limits.
+ * Provider snapshots come from the config stream every client already holds,
+ * so opening the view costs no extra request.
+ */
+export function collectLimitsGroups(
+  presentations: ReadonlyMap<
+    EnvironmentId,
+    {
+      readonly entry: { readonly target: { readonly label: string } };
+      readonly serverConfig: {
+        readonly providers?: readonly ServerProvider[] | undefined;
+      } | null;
+    }
+  >,
+): readonly LimitsGroup[] {
+  const groups: LimitsGroup[] = [];
+  for (const [environmentId, presentation] of presentations) {
+    const providers = providersWithLimits(presentation.serverConfig?.providers ?? []);
+    if (providers.length === 0) continue;
+    groups.push({ environmentId, environmentLabel: presentation.entry.target.label, providers });
+  }
+  return groups.length > 1 ? groups : groups.map((group) => ({ ...group, environmentLabel: null }));
+}
+
 export type LimitPresentations = ReadonlyMap<
   EnvironmentId,
   {
@@ -50,9 +83,8 @@ export type LimitPresentations = ReadonlyMap<
       readonly providers?: readonly ServerProvider[] | undefined;
       readonly usageLimitSources?: UsageLimitSourceSnapshots | undefined;
     } | null;
-  };
-  return groups.length > 1 ? groups : groups.map((group) => ({ ...group, environmentLabel: null }));
-}
+  }
+>;
 
 /**
  * Every usage-limit source across connected environments, keyed so two
@@ -231,9 +263,7 @@ export interface LimitAccount {
  * entry per distinct account. The freshest reads supply windows and credits;
  * native instances supply names and environment labels.
  */
-export function collectLimitAccounts(
-  presentations: LimitPresentations,
-): readonly LimitAccount[] {
+export function collectLimitAccounts(presentations: LimitPresentations): readonly LimitAccount[] {
   const accountKey = makeAccountKey(Array.from(presentations.values(), (p) => p.serverConfig));
   const accounts = new Map<string, LimitAccount>();
   const creditSources = new Map<string, LimitAccount>();
