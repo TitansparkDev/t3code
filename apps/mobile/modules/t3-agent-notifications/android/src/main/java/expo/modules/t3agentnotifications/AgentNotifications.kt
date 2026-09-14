@@ -141,8 +141,8 @@ object AgentNotifications {
       // so a delivery retry cannot surface them after the app backgrounds.
       if (!ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
         val title = data["alert_title"].orEmpty().take(120)
-        // Grouped alerts list up to five 120-character thread titles.
-        val body = data["alert_body"].orEmpty().take(608)
+        // The relay fits the full response to FCM's encoded payload budget.
+        val body = data["alert_body"].orEmpty().take(4096)
         val id = alertId.hashCode()
         val notification = base(context, ALERT_CHANNEL)
           .setContentTitle(title).setContentText(body)
@@ -212,7 +212,9 @@ object AgentNotifications {
       if (lines.isEmpty()) body else lines.joinToString("\n")
     )
     val notification = base(context, ACTIVITY_CHANNEL)
-      .setContentTitle(data["activity_title"].orEmpty().take(120))
+      .setContentTitle(
+        data["activity_title"]?.takeIf { it.isNotBlank() }?.take(120) ?: "Agent activity"
+      )
       .setContentText(body)
       .setStyle(style)
       .setOngoing(active).setOnlyAlertOnce(true).setSilent(true)
@@ -220,6 +222,9 @@ object AgentNotifications {
       // Live Updates must remain uncolorized to qualify for promotion.
       .setColorized(false)
       .setRequestPromotedOngoing(active)
+      .setShortCriticalText(
+        if (active) data["activity_chip"]?.takeIf { it.isNotBlank() }?.take(7) ?: "Active" else null
+      )
       .setContentIntent(contentIntent(context, scheme, data["activity_path"], ACTIVITY_ID))
       .setDeleteIntent(dismissIntent)
       .addAction(0, "Dismiss", dismissIntent)

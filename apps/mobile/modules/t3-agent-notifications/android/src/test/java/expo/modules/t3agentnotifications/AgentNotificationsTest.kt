@@ -117,6 +117,19 @@ class AgentNotificationsTest {
   }
 
   @Test
+  fun completionAlertDisplaysLongFinalAnswer() {
+    val answer = "The change is complete.\n\n" + "Tests pass. ".repeat(120)
+    AgentNotifications.receive(context, update("long-answer", false) + ("alert_body" to answer))
+
+    val alert = manager.activeNotifications.single()
+    assertEquals(answer, alert.notification.extras.getString(Notification.EXTRA_BIG_TEXT))
+    assertEquals(
+      "t3code-dev://threads/environment/thread",
+      shadowOf(alert.notification.contentIntent).savedIntent.dataString
+    )
+  }
+
+  @Test
   fun retryOfForegroundSuppressedAlertDoesNotAppearAfterBackgrounding() {
     lifecycle.currentState = Lifecycle.State.RESUMED
     val suppressed = update("foreground-completion", false)
@@ -397,6 +410,46 @@ class AgentNotificationsTest {
     assertFalse(card.extras.getBoolean(NotificationCompat.EXTRA_COLORIZED))
     assertTrue(card.flags and Notification.FLAG_ONGOING_EVENT != 0)
     assertEquals(Notification.VISIBILITY_PRIVATE, card.visibility)
+  }
+
+  @Test
+  fun liveUpdateChipChangesWithActivityAndClearsOnCompletion() {
+    lifecycle.currentState = Lifecycle.State.RESUMED
+    AgentNotifications.receive(context, update("work", true))
+    assertEquals(
+      "Active",
+      manager.activeNotifications.single().notification.extras
+        .getString(NotificationCompat.EXTRA_SHORT_CRITICAL_TEXT)
+    )
+    AgentNotifications.receive(context, update("input", true) + ("activity_chip" to "Review"))
+    val activeCard = manager.activeNotifications.single().notification
+    assertEquals(
+      "Review",
+      activeCard.extras.getString(NotificationCompat.EXTRA_SHORT_CRITICAL_TEXT)
+    )
+    assertTrue(NotificationCompat.isRequestPromotedOngoing(activeCard))
+
+    AgentNotifications.receive(
+      context,
+      update("done", false) + mapOf(
+        "activity_chip" to "Review",
+        "activity_expires_at" to (System.currentTimeMillis() + 900000).toString()
+      )
+    )
+    val finishedCard = manager.activeNotifications.single().notification
+    assertEquals(null, finishedCard.extras.getString(NotificationCompat.EXTRA_SHORT_CRITICAL_TEXT))
+    assertFalse(NotificationCompat.isRequestPromotedOngoing(finishedCard))
+    assertFalse(finishedCard.flags and Notification.FLAG_ONGOING_EVENT != 0)
+  }
+
+  @Test
+  fun blankTitleCannotMakeAnActivityIneligibleForPromotion() {
+    lifecycle.currentState = Lifecycle.State.RESUMED
+    AgentNotifications.receive(context, update("work", true) + ("activity_title" to "  "))
+    assertEquals(
+      "Agent activity",
+      manager.activeNotifications.single().notification.extras.getString(Notification.EXTRA_TITLE)
+    )
   }
 
   @Test

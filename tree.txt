@@ -21027,6 +21027,7 @@ infra/relay/src/agentActivity/apnsDeliveryJobs.test.ts
 infra/relay/src/agentActivity/apnsDeliveryJobs.ts
 infra/relay/src/agentActivity/apnsJwt.ts
 infra/relay/src/agentActivity/fcmPayloads.ts
+infra/relay/src/agentActivity/notificationText.ts
 infra/relay/src/auth/DpopProofs.test.ts
 infra/relay/src/auth/DpopProofs.ts
 infra/relay/src/auth/DpopProofs.verifyAndConsume.test.ts
@@ -21212,6 +21213,8 @@ packages/client-runtime/src/markdownImages.test.ts
 packages/client-runtime/src/markdownImages.ts
 packages/client-runtime/src/markdownLinks.test.ts
 packages/client-runtime/src/markdownLinks.ts
+packages/client-runtime/src/markdownPlainText.test.ts
+packages/client-runtime/src/markdownPlainText.ts
 packages/client-runtime/src/mediaActions.ts
 packages/client-runtime/src/mediaReference.test.ts
 packages/client-runtime/src/mediaReference.ts

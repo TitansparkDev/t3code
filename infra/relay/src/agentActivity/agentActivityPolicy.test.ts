@@ -4,9 +4,12 @@ import type { RelayAgentActivityState } from "@t3tools/contracts/relay";
 import { makeAggregateState } from "./agentActivityAggregate.ts";
 import {
   attentionTransitionRows,
+  alertForActivityRows,
   terminalTransitionRows,
   shouldAlertForActivity,
 } from "./agentActivityAlerts.ts";
+import { notificationForActivity } from "./agentActivityPayloads.ts";
+import { jsonByteLength } from "./notificationText.ts";
 
 const state: RelayAgentActivityState = {
   environmentId: EnvironmentId.make("env"),
@@ -31,6 +34,51 @@ const aggregate = (states: RelayAgentActivityState[]) =>
   makeAggregateState({ activeStates: states, terminalState: null, nowMs: 0 })!;
 
 describe("shared agent activity policy", () => {
+  it("uses the final answer for a single completion and keeps grouped alerts concise", () => {
+    const row = aggregate([
+      {
+        ...state,
+        phase: "completed",
+        completionResponse: "**Fixed.**\n\n- Tests pass\n- Ready to review",
+      },
+    ]).activities[0]!;
+    const expected = { title: "Thread", body: "Fixed.\n\n• Tests pass\n• Ready to review" };
+    expect(notificationForActivity(row)).toMatchObject(expected);
+    expect(alertForActivityRows([row])).toEqual(expected);
+    expect(alertForActivityRows([row, { ...row, threadTitle: "Second" }])).toEqual({
+      title: "2 agents finished",
+      body: "Thread, Second",
+    });
+    for (const completionResponse of [undefined, "  ", "<!-- empty -->"]) {
+      expect(
+        notificationForActivity({ ...row, completionBody: undefined, completionResponse }).body,
+      ).toBe("Done: Project");
+    }
+    expect(notificationForActivity({ ...row, phase: "failed", status: "Failed" }).body).toBe(
+      "Failed: Project",
+    );
+  });
+
+  it("bounds several long answers before they enter aggregate state", () => {
+    const next = aggregate(
+      Array.from({ length: 5 }, (_, index) => ({
+        ...state,
+        threadId: ThreadId.make(`thread-${index}`),
+        phase: "completed" as const,
+        completionResponse: "🤖".repeat(16000),
+      })),
+    );
+    expect(jsonByteLength(next)).toBeLessThan(25000);
+    expect(next.activities).toHaveLength(5);
+    expect(
+      notificationForActivity({
+        ...next.activities[0]!,
+        completionBody: undefined,
+        completionResponse: "Keep `**literal**`.",
+      }),
+    ).toMatchObject({ body: "Keep **literal**." });
+  });
+
   it.each(["waiting_for_approval", "waiting_for_input"] as const)(
     "keeps an older %s ahead of five running rows",
     (phase) => {
