@@ -31,6 +31,12 @@ Codex, Claude, Cursor, Grok, OpenCode, and Antigravity.
   through the background maintenance loop or explicit environment-scoped actions. Connection
   establishment allows slow valid setup to finish for up to 45 seconds, while health probes keep
   their existing shorter deadlines.
+- Mobile composer images from picks, clipboard pastes, and native shares are copied into
+  app-owned files. Drafts and queued messages persist only file metadata and references; older
+  inline image drafts remain readable. Owned copies are size-checked and cleaned up when drafts,
+  queued sends, retries, or review composers release them.
+- Mobile model and provider-option changes update the current composer draft and the remembered
+  default together, so a choice made in an existing thread is used by later new threads.
 - T3 Connect stores its managed public endpoint with the cloud link, and web pairing links can use
   that endpoint when it is available. Web and mobile cloud linking preserve the endpoint.
 - Desktop release builds include the public T3 Connect configuration by default and use the

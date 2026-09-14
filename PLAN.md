@@ -13,15 +13,15 @@
   - [x] Add or update focused tests. Run only the relevant server, client-runtime, and mobile checks.
   - [x] Commit this segment on its own branch and give the integrator the commit hash, changed-file list, test results, open risks, and PR differences.
 
-- [ ] Segment C — Make mobile draft images file-backed and repair draft preference persistence.
-  - [ ] Inspect PRs [#9727](https://github.com/pingdotgg/t3code/pull/9727) and [#9372](https://github.com/pingdotgg/t3code/pull/9372), including every commit, changed file, review comment, unresolved thread, check result, and linked issue.
-  - [ ] Compare both PRs with the current fork and current upstream code. Identify code that already landed, stale assumptions, conflicts with fork changes, missing migrations, missing cleanup, and regressions before applying anything.
-  - [ ] Move draft image payloads from SQLite JSON to app-owned files and store only lightweight references in the draft and outbox data.
-  - [ ] Design a safe outbox v4 migration for existing inline images, missing files, cancelled sends, retries, thread deletion, draft replacement, and app upgrades.
-  - [ ] Make model and reasoning-effort changes save immediately and persist as the defaults for later threads. Remove the Android confirmation action without removing a clear way to dismiss the screen.
-  - [ ] Check storage permissions, file lifecycle, retry behavior, process restart, offline use, and iOS compatibility even though Android is the primary target.
-  - [ ] Add or update focused tests. Run only the relevant mobile state and storage checks.
-  - [ ] Commit this segment on its own branch and give the integrator the commit hash, changed-file list, test results, open risks, and PR differences.
+- [x] Segment C — Make mobile draft images file-backed and repair draft preference persistence.
+  - [x] Inspect PRs [#9727](https://github.com/pingdotgg/t3code/pull/9727) and [#9372](https://github.com/pingdotgg/t3code/pull/9372), including every commit, changed file, review comment, unresolved thread, check result, and linked issue.
+  - [x] Compare both PRs with the current fork and current upstream code. Identify code that already landed, stale assumptions, conflicts with fork changes, missing migrations, missing cleanup, and regressions before applying anything.
+  - [x] Move draft image payloads from SQLite JSON to app-owned files and store only lightweight references in the draft and outbox data.
+  - [x] Design a safe outbox v4 migration for existing inline images, missing files, cancelled sends, retries, thread deletion, draft replacement, and app upgrades.
+  - [x] Make model and reasoning-effort changes save immediately and persist as the defaults for later threads. The current fork has no Android confirmation action in this flow, so no dismissal control was removed.
+  - [x] Check storage permissions, file lifecycle, retry behavior, process restart, offline use, and iOS compatibility; no new native permission or native module was needed.
+  - [x] Add or update focused tests. Run only the relevant mobile state and storage checks.
+  - [x] Commit this segment on its own branch and give the integrator the commit hash, changed-file list, test results, open risks, and PR differences.
 
 - [ ] Segment H — Add Android background connection support after Segment B lands.
   - [ ] Inspect PR [#5179](https://github.com/pingdotgg/t3code/pull/5179), including every commit, changed file, review comment, unresolved thread, check result, and linked issue.

@@ -170,5 +170,7 @@ Full glossary with file links: `docs/internals/glossary.md`
 
 - 2026-09-14 — Implemented Segment B reconnect stabilization and mobile per-environment provider
   refresh across local, T3 Connect, settings, and onboarding surfaces, with focused verification.
+- 2026-09-14 — Implemented Segment C of the master integration: file-backed mobile image drafts,
+  safe attachment cleanup, and remembered model-option persistence.
 - 2026-09-13 — Split the requested 15-feature master integration into dependency-aware segments for parallel agents, with full source-PR audits and a final integration gate.
 - 2026-09-12 — Updated the Ubuntu desktop AppImage and managed server to the fork's v0.0.47 release, then restarted both.

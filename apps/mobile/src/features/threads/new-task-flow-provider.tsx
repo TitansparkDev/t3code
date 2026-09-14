@@ -52,8 +52,8 @@ import {
   replaceComposerDraftAttachments,
   retargetNewTaskDraft,
   scheduleUnusedComposerAttachmentCleanup,
+  setComposerDraftModelSelection,
   setComposerDraftText,
-  setStickyComposerModelSelection,
   updateComposerDraftSettings,
   useComposerDraft,
   useStickyComposerModelSelection,
@@ -532,13 +532,12 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       const provider = selectedEnvironmentServerConfig?.providers.find(
         (candidate) => candidate.instanceId === selection.instanceId,
       );
-      updateComposerDraftSettings(selectedProjectDraftKey, {
-        modelSelection: selection,
-        ...(provider?.showInteractionModeToggle === false
-          ? { interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE }
-          : {}),
-      });
-      setStickyComposerModelSelection(selection);
+      setComposerDraftModelSelection(selectedProjectDraftKey, selection);
+      if (provider?.showInteractionModeToggle === false) {
+        updateComposerDraftSettings(selectedProjectDraftKey, {
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        });
+      }
     },
     [modelOptions, selectedEnvironmentServerConfig, selectedProjectDraftKey],
   );
@@ -553,10 +552,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
             instanceId: selectedModel.instanceId,
             model: selectedModel.model,
           };
-      updateComposerDraftSettings(selectedProjectDraftKey, {
-        modelSelection: nextSelection,
-      });
-      setStickyComposerModelSelection(nextSelection);
+      setComposerDraftModelSelection(selectedProjectDraftKey, nextSelection);
     },
     [selectedModel, selectedProjectDraftKey],
   );
