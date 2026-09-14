@@ -196,6 +196,18 @@ describe("mobile connection storage", () => {
     });
   });
 
+  it("persists the Markdown preview default", async () => {
+    await expect(savePreferencesPatch({ markdownPreviewEnabled: true })).resolves.toEqual({
+      markdownPreviewEnabled: true,
+    });
+    await expect(loadPreferences()).resolves.toEqual({ markdownPreviewEnabled: true });
+
+    await expect(savePreferencesPatch({ markdownPreviewEnabled: false })).resolves.toEqual({
+      markdownPreviewEnabled: false,
+    });
+    await expect(loadPreferences()).resolves.toEqual({ markdownPreviewEnabled: false });
+  });
+
   it("persists Material You independently for each appearance", async () => {
     const themes = { lightThemeId: "material-you", darkThemeId: "ocean" } as const;
     await savePreferencesPatch(themes);

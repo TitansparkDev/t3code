@@ -1,6 +1,8 @@
 import { NativeHeaderToolbar, NativeStackScreenOptions } from "../../native/StackHeader";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import type { MenuAction } from "@react-native-menu/menu";
+import { useAtomSet, useAtomValue } from "@effect/atom-react";
+import { AsyncResult } from "effect/unstable/reactivity";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Platform, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -36,6 +38,7 @@ import { useMediaActions, type MediaActionsSource } from "../../lib/mediaActions
 import { useThreadSelection } from "../../state/use-thread-selection";
 import { useSelectedThreadWorktree } from "../../state/use-selected-thread-worktree";
 import { useEnvironmentQuery } from "../../state/query";
+import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
 import { projectEnvironment } from "../../state/projects";
 import type { AssetUrlFailureReason } from "../../state/asset-url-state";
 import {
@@ -52,6 +55,7 @@ import { useAppearancePreferences } from "../settings/appearance/AppearancePrefe
 import { ThreadRouteScreen } from "../threads/ThreadRouteScreen";
 import { FileMarkdownPreview } from "./FileMarkdownPreview";
 import { FileTreeBrowser } from "./FileTreeBrowser";
+import { canToggleMarkdownPreview, resolveFileViewMode, type FileViewMode } from "./file-view-mode";
 import { preloadWorkspaceFileContents } from "./preload-workspace-file";
 import { SourceFileSurface } from "./SourceFileSurface";
 import { ThreadFileNavigatorPane } from "./thread-file-navigator-pane";
@@ -67,8 +71,6 @@ import {
   isVideoPreviewFile,
 } from "./filePath";
 import { useWorkspaceFileAssetUrlState } from "./workspaceFileAssetUrl";
-
-type FileViewMode = "preview" | "source";
 
 function firstRouteParam(value: string | string[] | undefined): string | null {
   if (Array.isArray(value)) {
@@ -92,15 +94,6 @@ function normalizeRouteLine(value: string | null): number | null {
   }
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
-}
-
-function defaultViewMode(path: string | null): FileViewMode {
-  return path !== null &&
-    (isWorkspaceBrowserPreviewPath(path) ||
-      isWorkspaceImagePreviewPath(path) ||
-      isVideoPreviewFile(path))
-    ? "preview"
-    : "source";
 }
 
 function FileContent(props: {
@@ -472,6 +465,19 @@ export function ThreadFilesTreeScreen(props: ThreadFilesRouteScreenProps) {
             onBack={handleReturnToThread}
             hideBottomBorder={materialYouStyleLayoutActive}
             actions={[
+              ...(layout.usesSplitView
+                ? [
+                    {
+                      accessibilityLabel: panes.primarySidebarVisible
+                        ? "Maximize files"
+                        : "Show threads",
+                      icon: panes.primarySidebarVisible
+                        ? ("arrow.up.left.and.arrow.down.right" as const)
+                        : ("sidebar.left" as const),
+                      onPress: togglePrimarySidebar,
+                    },
+                  ]
+                : []),
               {
                 accessibilityLabel: "Refresh files",
                 icon: "arrow.clockwise",
@@ -556,8 +562,10 @@ export function ThreadFilesTreeScreen(props: ThreadFilesRouteScreenProps) {
 export function ThreadFileScreen(props: ThreadFileRouteScreenProps) {
   useAdaptiveWorkspacePaneRole("inspector");
   const navigation = useNavigation();
-  const { fileInspector, panes, toggleAuxiliaryPane } = useAdaptiveWorkspaceLayout();
-  const iconColor = useUniwindTheme()["--color-icon"];
+  const { fileInspector, layout, panes, toggleAuxiliaryPane, togglePrimarySidebar } =
+    useAdaptiveWorkspaceLayout();
+  const fileTheme = useUniwindTheme();
+  const iconColor = fileTheme["--color-icon"];
   const isAndroid = Platform.OS === "android";
   const params = props.route.params;
   const relativePath = normalizeRoutePath(params.path);
@@ -577,14 +585,40 @@ export function ThreadFileScreen(props: ThreadFileRouteScreenProps) {
     relativePath !== null && !isVideoFile && isWorkspaceBrowserPreviewPath(relativePath);
   const isImageFile =
     relativePath !== null && !isVideoFile && isWorkspaceImagePreviewPath(relativePath);
+  const preferencesResult = useAtomValue(mobilePreferencesAtom);
+  const savePreferences = useAtomSet(updateMobilePreferencesAtom);
+  const markdownPreviewEnabled =
+    AsyncResult.isSuccess(preferencesResult) &&
+    preferencesResult.value.markdownPreviewEnabled === true;
+  const primaryColor = fileTheme["--color-primary"];
+  const isMarkdownFile = relativePath !== null && isMarkdownPreviewFile(relativePath);
   const canPreview =
     relativePath !== null &&
     (isMarkdownPreviewFile(relativePath) || isBrowserFile || isImageFile || isVideoFile);
-  const activeMode =
-    relativePath !== null && modeOverride?.path === relativePath
-      ? modeOverride.mode
-      : defaultViewMode(relativePath);
+  const activeMode = resolveFileViewMode({
+    path: relativePath,
+    targetLine,
+    modeOverride,
+    markdownPreviewEnabled,
+  });
   const resolvedActiveMode = isVideoFile ? "preview" : canPreview ? activeMode : "source";
+  const handleSetFileViewMode = useCallback(
+    (mode: FileViewMode) => {
+      if (relativePath === null || targetLine !== null) return;
+      setModeOverride({ path: relativePath, mode });
+      if (isMarkdownFile) {
+        void savePreferences({ markdownPreviewEnabled: mode === "preview" });
+      }
+    },
+    [isMarkdownFile, relativePath, savePreferences, setModeOverride, targetLine],
+  );
+  const handleToggleMarkdownMode = useCallback(() => {
+    if (!canToggleMarkdownPreview(relativePath, targetLine)) return;
+    const next: FileViewMode = resolvedActiveMode === "preview" ? "source" : "preview";
+    handleSetFileViewMode(next);
+  }, [handleSetFileViewMode, relativePath, resolvedActiveMode, targetLine]);
+  const markdownToggleLabel =
+    resolvedActiveMode === "preview" ? "Show markdown source" : "Show rendered markdown";
   const assetPreviewPath = isBrowserFile || isImageFile || isVideoFile ? relativePath : null;
   const assetPreview = useWorkspaceFileAssetUrlState({
     cwd,
@@ -693,7 +727,7 @@ export function ThreadFileScreen(props: ThreadFileRouteScreenProps) {
 
   const fileMenuActions = useMemo(() => {
     if (relativePath === null) return [];
-    const canToggleMode = canPreview && !isImageFile && !isVideoFile;
+    const canToggleMode = canPreview && !isImageFile && !isVideoFile && targetLine === null;
     return [
       canToggleMode
         ? ({
@@ -701,7 +735,7 @@ export function ThreadFileScreen(props: ThreadFileRouteScreenProps) {
             title: "Preview",
             icon: "eye",
             inline: true,
-            onPress: () => setModeOverride({ path: relativePath, mode: "preview" }),
+            onPress: () => handleSetFileViewMode("preview"),
           } as const)
         : null,
       canToggleMode
@@ -710,7 +744,7 @@ export function ThreadFileScreen(props: ThreadFileRouteScreenProps) {
             title: "Source",
             icon: "doc.text",
             inline: true,
-            onPress: () => setModeOverride({ path: relativePath, mode: "source" }),
+            onPress: () => handleSetFileViewMode("source"),
           } as const)
         : null,
       ...(mediaSource
@@ -779,6 +813,8 @@ export function ThreadFileScreen(props: ThreadFileRouteScreenProps) {
     isVideoFile,
     relativePath,
     resolvedActiveMode,
+    handleSetFileViewMode,
+    targetLine,
     mediaSource,
     mediaActions.actions,
   ]);
@@ -866,6 +902,27 @@ export function ThreadFileScreen(props: ThreadFileRouteScreenProps) {
           onBack={handleBack}
           trailing={
             <>
+              {layout.usesSplitView ? (
+                <AndroidHeaderIconButton
+                  accessibilityLabel={
+                    panes.primarySidebarVisible ? "Maximize file" : "Show threads"
+                  }
+                  icon={
+                    panes.primarySidebarVisible
+                      ? "arrow.up.left.and.arrow.down.right"
+                      : "sidebar.left"
+                  }
+                  onPress={togglePrimarySidebar}
+                />
+              ) : null}
+              {canToggleMarkdownPreview(relativePath, targetLine) ? (
+                <AndroidHeaderIconButton
+                  accessibilityLabel={markdownToggleLabel}
+                  icon={resolvedActiveMode === "preview" ? "doc.text" : "eye"}
+                  onPress={handleToggleMarkdownMode}
+                  filled={resolvedActiveMode === "preview"}
+                />
+              ) : null}
               {fileInspector.supported ? (
                 <AndroidHeaderIconButton
                   accessibilityLabel={
@@ -897,6 +954,15 @@ export function ThreadFileScreen(props: ThreadFileRouteScreenProps) {
         ) : null}
       </WorkspaceSidebarToolbar>
       <NativeHeaderToolbar placement="right">
+        {canToggleMarkdownPreview(relativePath, targetLine) ? (
+          <NativeHeaderToolbar.Button
+            accessibilityLabel={markdownToggleLabel}
+            icon={resolvedActiveMode === "preview" ? "doc.text" : "eye"}
+            onPress={handleToggleMarkdownMode}
+            separateBackground
+            tintColor={resolvedActiveMode === "preview" ? primaryColor : undefined}
+          />
+        ) : null}
         {fileInspector.supported ? (
           <NativeHeaderToolbar.Button
             accessibilityLabel={
