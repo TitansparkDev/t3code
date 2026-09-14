@@ -168,9 +168,9 @@ Full glossary with file links: `docs/internals/glossary.md`
 
 ## Recent request log
 
-- 2026-09-14 — Authorized Wrangler against the Cloudflare account, found the active `artnas.net`
-  zone, and recorded the remaining relay-token and external-service prerequisites without starting
-  a partial deployment.
+- 2026-09-14 — Clarified that the remote-access goal is direct Cloudflare Tunnel access to T3
+  servers, without the hosted relay or PlanetScale, Axiom, or Clerk accounts; replaced the relay
+  setup plan with the direct-tunnel plan.
 - 2026-09-14 — Audited and merged the verified A–G and J feature segments into `omni/main`; a
   post-merge typecheck caught and fixed a fork-handler typing mismatch that focused tests missed.
 - 2026-09-14 — Prepared the remaining plan around the active Android background-connection segment,

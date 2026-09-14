@@ -41,19 +41,21 @@
   - [ ] Update `SPEC.md`, `AGENTS.md`, `PLAN.md`, and `tree.txt` to match the final behavior, then
         make the final conventional commit and push only the verified result.
 
-### 2026-09-07 — Custom Cloudflare relay
+### 2026-09-14 — Direct Cloudflare Tunnel remote access
 
 #### Bugs
 
-- [ ] Authenticate the workspace to the user's Cloudflare account and provision the custom T3
-      Connect relay/domain.
-  - [x] Complete Cloudflare device login and identify the account's only active zone,
-        `artnas.net`.
-  - [ ] Create a scoped Cloudflare API token with the relay's required Workers, Queues, Hyperdrive,
-        Tunnel, DNS, and zone permissions; keep it in the local ignored relay environment and never
-        commit or send it through chat.
-  - [ ] Confirm `artnas.net` is the intended API and managed-endpoint zone, then provide the
-        non-Cloudflare relay credentials: PlanetScale, Axiom, and Clerk; add APNs and/or FCM only
-        when push delivery is wanted.
-  - [ ] Run a production dry-run, deploy the `prod` stage, verify `relay.artnas.net` and managed
-        endpoint DNS, and update the client public configuration from the deployment outputs.
+- [ ] Add direct remote access for T3 servers through Cloudflare Tunnel, using the existing
+      `artnas.net` zone and no hosted T3 Connect relay.
+  - [ ] Choose an unused HTTPS hostname for each reachable desktop or server and record the local
+        T3 server port for each host; do not reuse the existing tunnel records without identifying
+        their owners.
+  - [ ] Create and configure a Cloudflare Tunnel route for each host, install `cloudflared` as a
+        host service, and confirm the route reaches only the local T3 server.
+  - [ ] Generate a pairing link whose public base URL uses the tunnel hostname, then verify the
+        mobile connection flow over HTTPS and WebSocket upgrade with the existing T3 pairing token.
+  - [ ] Add concise remote-access documentation covering host uptime, pairing, reconnect behavior,
+        and the fact that disconnected mobile push notifications remain a separate T3 Connect
+        feature.
+  - [ ] Run focused server and mobile checks, then update `SPEC.md`, `AGENTS.md`, `PLAN.md`, and
+        `tree.txt` to match the supported direct-tunnel behavior.
