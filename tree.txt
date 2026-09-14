@@ -18574,6 +18574,7 @@ apps/mobile/src/features/terminal/terminalUiState.ts
 apps/mobile/src/features/threads/ComposerCommandPopover.tsx
 apps/mobile/src/features/threads/ComposerFeedback.tsx
 apps/mobile/src/features/threads/ComposerUsageLimits.tsx
+apps/mobile/src/features/threads/ForkThreadSheet.tsx
 apps/mobile/src/features/threads/GitActionProgressOverlay.tsx
 apps/mobile/src/features/threads/HandoffTargetPicker.tsx
 apps/mobile/src/features/threads/NewTaskContextPickerScreens.tsx
@@ -18638,6 +18639,8 @@ apps/mobile/src/features/threads/sidebar-navigation-shell.tsx
 apps/mobile/src/features/threads/thread-dev-server-indicator.tsx
 apps/mobile/src/features/threads/thread-feed-live-follow.test.ts
 apps/mobile/src/features/threads/thread-feed-live-follow.ts
+apps/mobile/src/features/threads/thread-fork.test.ts
+apps/mobile/src/features/threads/thread-fork.ts
 apps/mobile/src/features/threads/thread-inspector-content-stack.tsx
 apps/mobile/src/features/threads/thread-list-items.tsx
 apps/mobile/src/features/threads/thread-list-v2-items.tsx
@@ -18853,6 +18856,7 @@ apps/mobile/src/state/session.ts
 apps/mobile/src/state/shell.ts
 apps/mobile/src/state/sourceControl.ts
 apps/mobile/src/state/terminal.ts
+apps/mobile/src/state/thread-fork.ts
 apps/mobile/src/state/thread-order.test.ts
 apps/mobile/src/state/thread-order.ts
 apps/mobile/src/state/thread-outbox-manager.ts
@@ -19162,6 +19166,7 @@ apps/server/src/orchestration/decider.settled.test.ts
 apps/server/src/orchestration/decider.snoozed.test.ts
 apps/server/src/orchestration/decider.titleRegeneration.test.ts
 apps/server/src/orchestration/decider.ts
+apps/server/src/orchestration/decider.usageLimitResume.test.ts
 apps/server/src/orchestration/decider.userInputDismiss.test.ts
 apps/server/src/orchestration/http.ts
 apps/server/src/orchestration/projector.pinned.test.ts
@@ -19270,6 +19275,8 @@ apps/server/src/persistence/Migrations/049_ProjectionThreadsActiveOrderKey.test.
 apps/server/src/persistence/Migrations/049_ProjectionThreadsActiveOrderKey.ts
 apps/server/src/persistence/Migrations/050_ProjectionThreadPullRequests.test.ts
 apps/server/src/persistence/Migrations/050_ProjectionThreadPullRequests.ts
+apps/server/src/persistence/Migrations/051_ProjectionThreadUsageLimitResume.test.ts
+apps/server/src/persistence/Migrations/051_ProjectionThreadUsageLimitResume.ts
 apps/server/src/persistence/ProjectionThreadPullRequests.ts
 apps/server/src/persistence/ProviderSessionRuntime.ts
 apps/server/src/persistence/RepositoryErrorCorrelation.test.ts
@@ -19486,6 +19493,8 @@ apps/server/src/provider/testFixtures/codexMultiAgentWire.json
 apps/server/src/provider/testUtils/providerAdapterRegistryMock.ts
 apps/server/src/provider/testUtils/providerRegistryMock.ts
 apps/server/src/provider/unavailableProviderSnapshot.ts
+apps/server/src/provider/usageLimits.test.ts
+apps/server/src/provider/usageLimits.ts
 apps/server/src/provider/userInputAttachments.test.ts
 apps/server/src/provider/userInputAttachments.ts
 apps/server/src/pullRequest/AzureDevOpsPullRequestCli.test.ts
@@ -19649,6 +19658,8 @@ apps/server/src/textGeneration/TextGenerationPresets.ts
 apps/server/src/textGeneration/TextGenerationPrompts.test.ts
 apps/server/src/textGeneration/TextGenerationPrompts.ts
 apps/server/src/textGeneration/TextGenerationUtils.ts
+apps/server/src/threadFork.test.ts
+apps/server/src/threadFork.ts
 apps/server/src/usage/UsageLimitSources.ts
 apps/server/src/usage/UsageService.test.ts
 apps/server/src/usage/UsageService.ts
@@ -20361,6 +20372,8 @@ apps/web/src/components/sidebar/SidebarUpdateReleaseNotes.test.tsx
 apps/web/src/components/sidebar/SidebarUpdateReleaseNotes.tsx
 apps/web/src/components/threadActionMenu.logic.test.ts
 apps/web/src/components/threadActionMenu.logic.ts
+apps/web/src/components/threadFork/ForkThreadDialog.test.tsx
+apps/web/src/components/threadFork/ForkThreadDialog.tsx
 apps/web/src/components/threadSidebarWidth.ts
 apps/web/src/components/ui/alert-dialog.tsx
 apps/web/src/components/ui/alert.tsx
@@ -20765,6 +20778,7 @@ apps/web/src/state/sourceControlActions.ts
 apps/web/src/state/terminal.ts
 apps/web/src/state/terminalSessions.test.ts
 apps/web/src/state/terminalSessions.ts
+apps/web/src/state/threadFork.ts
 apps/web/src/state/threads.ts
 apps/web/src/state/usage.test.tsx
 apps/web/src/state/usage.ts
@@ -20796,6 +20810,8 @@ apps/web/src/test/reactHookHarness.ts
 apps/web/src/themeBoot.test.ts
 apps/web/src/themePalette.test.ts
 apps/web/src/themePalette.ts
+apps/web/src/threadFork.logic.test.ts
+apps/web/src/threadFork.logic.ts
 apps/web/src/threadRoutes.test.ts
 apps/web/src/threadRoutes.ts
 apps/web/src/threadSelectionStore.test.ts
@@ -21173,6 +21189,7 @@ packages/client-runtime/src/operations/commands.ts
 packages/client-runtime/src/operations/index.ts
 packages/client-runtime/src/operations/projects.test.ts
 packages/client-runtime/src/operations/projects.ts
+packages/client-runtime/src/operations/threadFork.ts
 packages/client-runtime/src/pendingRequests.test.ts
 packages/client-runtime/src/pendingRequests.ts
 packages/client-runtime/src/platform/capabilities.ts
@@ -21287,6 +21304,8 @@ packages/client-runtime/src/state/threads-sync.test.ts
 packages/client-runtime/src/state/threads.ts
 packages/client-runtime/src/state/usage.test.ts
 packages/client-runtime/src/state/usage.ts
+packages/client-runtime/src/state/usageLimitResume.test.ts
+packages/client-runtime/src/state/usageLimitResume.ts
 packages/client-runtime/src/state/vcs.test.ts
 packages/client-runtime/src/state/vcs.ts
 packages/client-runtime/src/state/vcsAction.test.ts
@@ -21379,7 +21398,10 @@ packages/contracts/src/t3ProjectFile.test.ts
 packages/contracts/src/t3ProjectFile.ts
 packages/contracts/src/terminal.test.ts
 packages/contracts/src/terminal.ts
+packages/contracts/src/threadFork.test.ts
+packages/contracts/src/threadFork.ts
 packages/contracts/src/usage.ts
+packages/contracts/src/usageLimitResume.test.ts
 packages/contracts/src/usageLimitSourceId.ts
 packages/contracts/src/vcs.ts
 packages/contracts/tsconfig.json

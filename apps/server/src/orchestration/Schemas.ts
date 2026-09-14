@@ -13,6 +13,9 @@ import {
   ThreadUnsettledPayload as ContractsThreadUnsettledPayloadSchema,
   ThreadSnoozedPayload as ContractsThreadSnoozedPayloadSchema,
   ThreadUnsnoozedPayload as ContractsThreadUnsnoozedPayloadSchema,
+  ThreadUsageLimitResumeScheduledPayload as ContractsThreadUsageLimitResumeScheduledPayloadSchema,
+  ThreadUsageLimitResumeCancelledPayload as ContractsThreadUsageLimitResumeCancelledPayloadSchema,
+  ThreadUsageLimitResumeAttemptedPayload as ContractsThreadUsageLimitResumeAttemptedPayloadSchema,
   ThreadPinnedPayload as ContractsThreadPinnedPayloadSchema,
   ThreadUnpinnedPayload as ContractsThreadUnpinnedPayloadSchema,
   ThreadPinReorderedPayload as ContractsThreadPinReorderedPayloadSchema,
@@ -59,6 +62,12 @@ export const MessageSentPayloadSchema = ContractsThreadMessageSentPayloadSchema;
 export const ThreadProposedPlanUpsertedPayload = ContractsThreadProposedPlanUpsertedPayloadSchema;
 export const ThreadSessionSetPayload = ContractsThreadSessionSetPayloadSchema;
 export const ThreadTurnDiffCompletedPayload = ContractsThreadTurnDiffCompletedPayloadSchema;
+export const ThreadUsageLimitResumeScheduledPayload =
+  ContractsThreadUsageLimitResumeScheduledPayloadSchema;
+export const ThreadUsageLimitResumeCancelledPayload =
+  ContractsThreadUsageLimitResumeCancelledPayloadSchema;
+export const ThreadUsageLimitResumeAttemptedPayload =
+  ContractsThreadUsageLimitResumeAttemptedPayloadSchema;
 export const ThreadRevertedPayload = ContractsThreadRevertedPayloadSchema;
 export const ThreadActivityAppendedPayload = ContractsThreadActivityAppendedPayloadSchema;
 

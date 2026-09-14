@@ -166,6 +166,63 @@ describe("ProviderCommandReactor", () => {
     });
   });
 
+  it("cancels a queued usage-limit resume before its timer fires", async () => {
+    const harness = await createHarness();
+    const threadId = ThreadId.make("thread-1");
+    const createdAt = "2026-01-01T00:00:00.000Z";
+    const resumeAt = "2099-01-01T00:00:00.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-rate-limited-session"),
+        threadId,
+        session: {
+          threadId,
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          providerName: "codex",
+          status: "rate-limited",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: "Codex usage limit reached.",
+          lastErrorClass: "usage_limit",
+          retryAt: resumeAt,
+          updatedAt: createdAt,
+        },
+        createdAt,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.usage-limit-resume.schedule",
+        commandId: CommandId.make("cmd-schedule-rate-limit-resume"),
+        threadId,
+        resumeAt,
+      }),
+    );
+    await harness.drain();
+
+    expect(
+      (await harness.readModel()).threads.find((thread) => thread.id === threadId)
+        ?.usageLimitResume,
+    ).toEqual({ nextAttemptAt: resumeAt, attempt: 0 });
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.usage-limit-resume.cancel",
+        commandId: CommandId.make("cmd-cancel-rate-limit-resume"),
+        threadId,
+      }),
+    );
+    await harness.drain();
+
+    expect(
+      (await harness.readModel()).threads.find((thread) => thread.id === threadId)
+        ?.usageLimitResume,
+    ).toBeUndefined();
+    expect(harness.sendTurn).not.toHaveBeenCalled();
+  });
+
   async function createHarness(input?: {
     readonly baseDir?: string;
     readonly threadModelSelection?: ModelSelection;

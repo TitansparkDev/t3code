@@ -142,6 +142,8 @@ import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import { cn } from "~/lib/utils";
 import { EnvironmentMachineIcon } from "./EnvironmentMachineIcon";
 import { buildThreadActionMenuItems } from "./threadActionMenu.logic";
+import { openForkThreadDialog } from "../state/threadFork";
+import { hasAvailableForkModel, isThreadForkBusy } from "../threadFork.logic";
 import {
   animateSidebarLayoutChanges,
   applySidebarThreadDrop,
@@ -3976,6 +3978,14 @@ export default function Sidebar() {
         const supportsTitleRegeneration =
           serverConfigs.get(thread.environmentId)?.environment.capabilities
             .threadTitleRegeneration === true;
+        const environmentConfig = serverConfigs.get(thread.environmentId);
+        const supportsForking = environmentConfig?.environment.capabilities.threadForking === true;
+        const hasAvailableModel = hasAvailableForkModel({
+          providers: environmentConfig?.providers ?? [],
+          currentSelection: thread.modelSelection,
+        });
+        const isBusy = isThreadForkBusy(thread);
+        const canFork = supportsForking && !isBusy && hasAvailableModel;
         const isRegeneratingTitle = thread.titleRegeneration != null;
         const isSettled = settledThreadKeysRef.current.has(threadKey);
         const isSnoozed = snoozedThreadKeysRef.current.has(threadKey);
@@ -3993,11 +4003,13 @@ export default function Sidebar() {
               isRegeneratingTitle,
               isRunning:
                 thread.session?.status === "running" && thread.session.activeTurnId != null,
+              canFork,
               supports: {
                 settlement: supportsSettlement,
                 snooze: supportsSnooze,
                 pinning: supportsPinning,
                 titleRegeneration: supportsTitleRegeneration,
+                forking: supportsForking,
               },
               snoozePresets,
             }),
@@ -4047,6 +4059,9 @@ export default function Sidebar() {
             }
             return;
           }
+          case "fork":
+            openForkThreadDialog(threadRef);
+            return;
           case "settle":
             attemptSettle(threadRef);
             return;

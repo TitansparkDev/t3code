@@ -171,6 +171,7 @@ function ThreadNavigationSidebarPane(
     unpinThread,
     moveThread,
     regenerateThreadTitle,
+    forkThread,
   } = useThreadListActions();
   const threadListV2Enabled = useThreadListV2Enabled();
   const pendingTasks = usePendingNewTasks();
@@ -464,6 +465,15 @@ function ThreadNavigationSidebarPane(
     const supported = new Set<EnvironmentId>();
     for (const [environmentId, config] of serverConfigs) {
       if (config.environment.capabilities.threadTitleRegeneration === true) {
+        supported.add(environmentId);
+      }
+    }
+    return supported;
+  }, [serverConfigs]);
+  const forkingEnvironmentIds = useMemo(() => {
+    const supported = new Set<EnvironmentId>();
+    for (const [environmentId, config] of serverConfigs) {
+      if (config.environment.capabilities.threadForking === true) {
         supported.add(environmentId);
       }
     }
@@ -932,6 +942,8 @@ function ThreadNavigationSidebarPane(
               onArchiveThread={archiveThread}
               onRegenerateThreadTitle={regenerateThreadTitle}
               titleRegenerationSupported={titleRegenerationEnvironmentIds.has(thread.environmentId)}
+              forkSupported={forkingEnvironmentIds.has(thread.environmentId)}
+              onForkThread={forkThread}
               settlementSupported={settlementEnvironmentIds.has(thread.environmentId)}
               onSettleThread={settleThread}
               snoozeSupported={snoozeEnvironmentIds.has(thread.environmentId)}
@@ -1049,6 +1061,8 @@ function ThreadNavigationSidebarPane(
               onDeleteThread={confirmDeleteThread}
               onRegenerateThreadTitle={regenerateThreadTitle}
               titleRegenerationSupported={titleRegenerationEnvironmentIds.has(thread.environmentId)}
+              forkSupported={forkingEnvironmentIds.has(thread.environmentId)}
+              onForkThread={forkThread}
               onSelectThread={handleSelectThread}
               onSwipeableClose={handleSwipeableClose}
               onSwipeableWillOpen={handleSwipeableWillOpen}
@@ -1099,6 +1113,8 @@ function ThreadNavigationSidebarPane(
       shelfPreferencesLoaded,
       threadSearchMatchByKey,
       titleRegenerationEnvironmentIds,
+      forkingEnvironmentIds,
+      forkThread,
       settleThread,
       settlementEnvironmentIds,
       showMoreSettled,

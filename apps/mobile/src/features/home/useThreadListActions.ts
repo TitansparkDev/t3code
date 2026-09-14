@@ -27,6 +27,7 @@ import {
   threadDropLifecycle,
 } from "../threads/threadOrder";
 import { getThreadListV2OrderedSection } from "../threads/threadListV2";
+import { openForkThread } from "../../state/thread-fork";
 
 /** Version skew: never send settle/unsettle to a server that predates them
     (capability defaults false on decode for older servers). */
@@ -241,6 +242,7 @@ export function useThreadListActions(): {
     direction: ThreadMoveDestination,
   ) => Promise<boolean>;
   readonly regenerateThreadTitle: (thread: EnvironmentThreadShell) => Promise<boolean>;
+  readonly forkThread: (thread: EnvironmentThreadShell) => void;
 } {
   const executeAction = useThreadActionExecutor();
   const snoozeMutation = useAtomCommand(threadEnvironment.snooze, { reportFailure: false });
@@ -641,6 +643,10 @@ export function useThreadListActions(): {
     ],
   );
 
+  const forkThread = useCallback((thread: EnvironmentThreadShell) => {
+    openForkThread(thread);
+  }, []);
+
   const confirmDeleteThread = useConfirmDeleteThread(executeAction);
 
   return {
@@ -654,6 +660,7 @@ export function useThreadListActions(): {
     unpinThread,
     moveThread,
     regenerateThreadTitle,
+    forkThread,
   };
 }
 

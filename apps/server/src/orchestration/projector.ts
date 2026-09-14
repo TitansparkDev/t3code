@@ -49,6 +49,9 @@ import {
   ThreadUnarchivedPayload,
   ThreadUnsettledPayload,
   ThreadUnsnoozedPayload,
+  ThreadUsageLimitResumeScheduledPayload,
+  ThreadUsageLimitResumeCancelledPayload,
+  ThreadUsageLimitResumeAttemptedPayload,
   ThreadRevertedPayload,
   ThreadSessionSetPayload,
   ThreadTurnDiffCompletedPayload,
@@ -543,6 +546,56 @@ export function projectEvent(
           threads: updateThread(nextBase.threads, payload.threadId, {
             snoozedUntil: null,
             snoozedAt: null,
+            updatedAt: payload.updatedAt,
+          }),
+        })),
+      );
+
+    case "thread.usage-limit-resume-scheduled":
+      return decodeForEvent(
+        ThreadUsageLimitResumeScheduledPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            usageLimitResume: { nextAttemptAt: payload.resumeAt, attempt: payload.attempt },
+            updatedAt: payload.updatedAt,
+          }),
+        })),
+      );
+
+    case "thread.usage-limit-resume-cancelled":
+      return decodeForEvent(
+        ThreadUsageLimitResumeCancelledPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            usageLimitResume: null,
+            updatedAt: payload.updatedAt,
+          }),
+        })),
+      );
+
+    case "thread.usage-limit-resume-attempted":
+      return decodeForEvent(
+        ThreadUsageLimitResumeAttemptedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            ...(payload.shouldResume
+              ? { usageLimitResume: { nextAttemptAt: null, attempt: payload.attempt } }
+              : {}),
             updatedAt: payload.updatedAt,
           }),
         })),

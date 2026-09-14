@@ -2,6 +2,7 @@ import {
   type ChatAttachment,
   CommandId,
   EventId,
+  type IsoDateTime,
   type ModelSelection,
   type OrchestrationEvent,
   ProviderDriverKind,
@@ -28,6 +29,7 @@ import * as Option from "effect/Option";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as Fiber from "effect/Fiber";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 
 import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
@@ -38,6 +40,7 @@ import {
   ProviderWorkspaceMissingError,
 } from "../../provider/Errors.ts";
 import type { ProviderServiceError } from "../../provider/Errors.ts";
+import type { OrchestrationDispatchError } from "../Errors.ts";
 import { TextGeneration } from "../../textGeneration/TextGeneration.ts";
 import { ProviderAuthService } from "../../provider/Services/ProviderAuthService.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
@@ -60,6 +63,7 @@ import {
 } from "../../serverSettings.ts";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
+import { nextUsageLimitRetryAt, providerUsageLimitFromError } from "../../provider/usageLimits.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderAdapterValidationError = Schema.is(ProviderAdapterValidationError);
 const isProviderWorkspaceMissingError = Schema.is(ProviderWorkspaceMissingError);
@@ -76,7 +80,12 @@ type ProviderIntentEvent = Extract<
       | "thread.approval-response-requested"
       | "thread.user-input-response-requested"
       | "thread.session-stop-requested"
-      | "thread.settled";
+      | "thread.settled"
+      | "thread.deleted"
+      | "thread.archived"
+      | "thread.usage-limit-resume-scheduled"
+      | "thread.usage-limit-resume-cancelled"
+      | "thread.usage-limit-resume-attempted";
   }
 >;
 
@@ -365,6 +374,7 @@ const make = Effect.gen(function* () {
     }
   >();
   const stoppingThreadIds = new Set<ThreadId>();
+  const usageLimitResumeFibers = new Map<ThreadId, Fiber.Fiber<void, never>>();
 
   const appendProviderFailureActivity = (input: {
     readonly threadId: ThreadId;
@@ -507,24 +517,31 @@ const make = Effect.gen(function* () {
     readonly detail: string;
     readonly createdAt: string;
     readonly status?: "rate-limited";
+    readonly lastErrorClass?: "provider_error" | "usage_limit";
+    readonly retryAt?: IsoDateTime;
   }) {
     const thread = yield* resolveThreadShell(input.threadId);
     if (!thread) {
       return;
     }
     const session = thread.session;
-    yield* setThreadSession({
-      threadId: input.threadId,
-      session: {
-        ...(session ?? {
+    const baseSession = session
+      ? (({ lastErrorClass: _lastErrorClass, retryAt: _retryAt, ...rest }) => rest)(session)
+      : {
           threadId: input.threadId,
           providerName: null,
           providerInstanceId: thread.modelSelection.instanceId,
           runtimeMode: thread.runtimeMode,
-        }),
+        };
+    yield* setThreadSession({
+      threadId: input.threadId,
+      session: {
+        ...baseSession,
         status: input.status ?? (session?.status === "stopped" ? "stopped" : "error"),
         activeTurnId: null,
         lastError: input.detail,
+        lastErrorClass: input.lastErrorClass ?? "provider_error",
+        ...(input.retryAt !== undefined ? { retryAt: input.retryAt } : {}),
         updatedAt: input.createdAt,
       },
       createdAt: input.createdAt,
@@ -1321,12 +1338,19 @@ const make = Effect.gen(function* () {
       // A usage limit is not a fault: it gets its own session status and its
       // own wording so the thread can say "limit reached" rather than "failed".
       const rateLimited = isProviderRateLimitFailure(detail);
+      const usageLimit = providerUsageLimitFromError({ message: detail });
       const userFacingDetail = rateLimited ? formatProviderRateLimitFailure(detail) : detail;
       return setThreadSessionErrorOnTurnStartFailure({
         threadId: event.payload.threadId,
         detail: userFacingDetail,
         createdAt: event.payload.createdAt,
         ...(rateLimited ? { status: "rate-limited" as const } : {}),
+        ...(usageLimit !== null
+          ? {
+              lastErrorClass: "usage_limit" as const,
+              ...(usageLimit.retryAt !== undefined ? { retryAt: usageLimit.retryAt } : {}),
+            }
+          : {}),
       }).pipe(
         Effect.flatMap(() =>
           appendTurnStartFailure(
@@ -1571,6 +1595,236 @@ const make = Effect.gen(function* () {
       Effect.ensuring(resumed ? Deferred.succeed(resumed.sent, undefined) : Effect.void),
       Effect.forkScoped,
     );
+  });
+
+  const isRetryableUsageLimitResumeDispatchError = (error: OrchestrationDispatchError) =>
+    error._tag === "OrchestrationListenerCallbackError" || error._tag === "PersistenceSqlError";
+
+  const usageLimitResumeDispatchRetrySchedule = () =>
+    Schedule.exponential("1 second").pipe(
+      Schedule.modifyDelay(({ duration }) =>
+        Effect.succeed(Duration.min(duration, Duration.seconds(30))),
+      ),
+    );
+
+  const retryUsageLimitResumeDispatch = <A, R>(
+    effect: Effect.Effect<A, OrchestrationDispatchError, R>,
+    input: {
+      readonly threadId: ThreadId;
+      readonly operation: "attempt" | "retry" | "cancel";
+    },
+  ): Effect.Effect<A, OrchestrationDispatchError, R> =>
+    effect.pipe(
+      Effect.tapError((error) =>
+        Effect.logWarning("provider command reactor usage-limit dispatch failed", {
+          threadId: input.threadId,
+          operation: input.operation,
+          error,
+        }),
+      ),
+      Effect.retry({
+        while: isRetryableUsageLimitResumeDispatchError,
+        schedule: usageLimitResumeDispatchRetrySchedule(),
+      }),
+    );
+
+  const retryUsageLimitResumeRecoveryDispatch = <A, R>(
+    effect: Effect.Effect<A, OrchestrationDispatchError, R>,
+    threadId: ThreadId,
+  ): Effect.Effect<A, OrchestrationDispatchError, R> =>
+    effect.pipe(
+      Effect.tapError((error) =>
+        Effect.logWarning("provider command reactor usage-limit recovery dispatch failed", {
+          threadId,
+          error,
+        }),
+      ),
+      Effect.retry({
+        while: isRetryableUsageLimitResumeDispatchError,
+        schedule: usageLimitResumeDispatchRetrySchedule(),
+      }),
+    );
+
+  const scheduleUsageLimitResumeAttempt = Effect.fn("scheduleUsageLimitResumeAttempt")(function* (
+    threadId: ThreadId,
+    resumeAt: IsoDateTime,
+  ) {
+    const now = yield* DateTime.now;
+    const delayMillis = Math.max(0, Date.parse(resumeAt) - DateTime.toEpochMillis(now));
+    yield* Effect.sleep(Duration.millis(delayMillis));
+    const createdAt = DateTime.formatIso(yield* DateTime.now) as IsoDateTime;
+    yield* retryUsageLimitResumeDispatch(
+      orchestrationEngine.dispatch({
+        type: "thread.usage-limit-resume.attempt",
+        commandId: yield* serverCommandId("usage-limit-resume-attempt"),
+        threadId,
+        expectedAttemptAt: resumeAt,
+        createdAt,
+      }),
+      { threadId, operation: "attempt" },
+    );
+  });
+
+  const replaceUsageLimitResumeSchedule = Effect.fn("replaceUsageLimitResumeSchedule")(function* (
+    threadId: ThreadId,
+    resumeAt: IsoDateTime,
+  ) {
+    const previous = usageLimitResumeFibers.get(threadId);
+    if (previous !== undefined) {
+      yield* Fiber.interrupt(previous).pipe(Effect.ignore);
+    }
+    const fiber = yield* scheduleUsageLimitResumeAttempt(threadId, resumeAt).pipe(
+      Effect.catchCause((cause) =>
+        Cause.hasInterruptsOnly(cause)
+          ? Effect.void
+          : Effect.logWarning("provider command reactor usage-limit timer failed", {
+              threadId,
+              resumeAt,
+              cause: Cause.pretty(cause),
+            }),
+      ),
+      Effect.forkScoped,
+    );
+    usageLimitResumeFibers.set(threadId, fiber);
+  });
+
+  const cancelUsageLimitResumeSchedule = Effect.fn("cancelUsageLimitResumeSchedule")(function* (
+    threadId: ThreadId,
+  ) {
+    const fiber = usageLimitResumeFibers.get(threadId);
+    usageLimitResumeFibers.delete(threadId);
+    if (fiber !== undefined) {
+      yield* Fiber.interrupt(fiber).pipe(Effect.ignore);
+    }
+  });
+
+  const processUsageLimitResumeAttempted = Effect.fn("processUsageLimitResumeAttempted")(function* (
+    event: Extract<ProviderIntentEvent, { type: "thread.usage-limit-resume-attempted" }>,
+  ) {
+    if (!event.payload.shouldResume) return;
+
+    const resolveEligibleThread = Effect.fnUntraced(function* () {
+      const candidate = yield* resolveThreadDetail(event.payload.threadId);
+      const candidateResume = candidate?.usageLimitResume ?? null;
+      return candidate !== undefined &&
+        candidateResume !== null &&
+        candidateResume.nextAttemptAt === null &&
+        candidateResume.attempt === event.payload.attempt &&
+        candidate.deletedAt === null &&
+        candidate.archivedAt === null &&
+        candidate.settledOverride !== "settled"
+        ? Option.some(candidate)
+        : Option.none();
+    });
+
+    const initialThread = yield* resolveEligibleThread();
+    if (Option.isNone(initialThread)) return;
+    yield* ensureThreadWorktree(initialThread.value);
+    const preparedThread = yield* resolveEligibleThread();
+    if (Option.isNone(preparedThread)) return;
+
+    const retryOrCancel = (cause: Cause.Cause<unknown>) =>
+      Effect.gen(function* () {
+        if (Cause.hasInterruptsOnly(cause)) return;
+        const latestThread = yield* resolveThreadDetail(event.payload.threadId);
+        const latestUsageLimitResume = latestThread?.usageLimitResume ?? null;
+        if (
+          latestThread === undefined ||
+          latestUsageLimitResume === null ||
+          latestUsageLimitResume.nextAttemptAt !== null ||
+          latestUsageLimitResume.attempt !== event.payload.attempt ||
+          latestThread.deletedAt !== null ||
+          latestThread.archivedAt !== null ||
+          latestThread.settledOverride === "settled"
+        ) {
+          return;
+        }
+        const detail = formatFailureDetail(cause);
+        const usageLimit = providerUsageLimitFromError({ message: detail });
+        const createdAt = DateTime.formatIso(yield* DateTime.now) as IsoDateTime;
+        yield* setThreadSessionErrorOnTurnStartFailure({
+          threadId: event.payload.threadId,
+          detail,
+          createdAt,
+          ...(usageLimit !== null
+            ? {
+                lastErrorClass: "usage_limit" as const,
+                ...(usageLimit.retryAt !== undefined ? { retryAt: usageLimit.retryAt } : {}),
+              }
+            : {}),
+        }).pipe(
+          Effect.catchCause((reportingCause) =>
+            Cause.hasInterruptsOnly(reportingCause)
+              ? Effect.failCause(reportingCause)
+              : Effect.logWarning(
+                  "provider command reactor failed to report automatic-resume session error",
+                  { threadId: event.payload.threadId, cause: Cause.pretty(reportingCause) },
+                ),
+          ),
+        );
+        yield* appendProviderFailureActivity({
+          threadId: event.payload.threadId,
+          kind: "provider.turn.start.failed",
+          summary: "Automatic resume failed",
+          detail,
+          turnId: null,
+          createdAt,
+        }).pipe(
+          Effect.catchCause((reportingCause) =>
+            Cause.hasInterruptsOnly(reportingCause)
+              ? Effect.failCause(reportingCause)
+              : Effect.logWarning(
+                  "provider command reactor failed to report automatic-resume activity",
+                  { threadId: event.payload.threadId, cause: Cause.pretty(reportingCause) },
+                ),
+          ),
+        );
+        if (usageLimit !== null) {
+          yield* retryUsageLimitResumeDispatch(
+            orchestrationEngine.dispatch({
+              type: "thread.usage-limit-resume.retry",
+              commandId: yield* serverCommandId("usage-limit-resume-retry"),
+              threadId: event.payload.threadId,
+              resumeAt: nextUsageLimitRetryAt({
+                now: createdAt,
+                attempt: event.payload.attempt,
+                ...(usageLimit.retryAt !== undefined
+                  ? { providerRetryAt: usageLimit.retryAt }
+                  : {}),
+              }),
+              attempt: event.payload.attempt,
+              createdAt,
+            }),
+            { threadId: event.payload.threadId, operation: "retry" },
+          );
+        } else {
+          yield* retryUsageLimitResumeDispatch(
+            orchestrationEngine.dispatch({
+              type: "thread.usage-limit-resume.cancel",
+              commandId: yield* serverCommandId("usage-limit-resume-cancel"),
+              threadId: event.payload.threadId,
+            }),
+            { threadId: event.payload.threadId, operation: "cancel" },
+          );
+        }
+      });
+
+    const sendTurnRequest = yield* buildSendTurnRequestForThread({
+      threadId: event.payload.threadId,
+      messageText: "Continue from where you left off.",
+      interactionMode: preparedThread.value.interactionMode,
+      createdAt: event.occurredAt,
+    }).pipe(
+      Effect.map(Option.some),
+      Effect.catchCause((cause) =>
+        retryOrCancel(cause).pipe(Effect.forkScoped, Effect.as(Option.none())),
+      ),
+    );
+    if (Option.isNone(sendTurnRequest)) return;
+    yield* Effect.gen(function* () {
+      if (Option.isNone(yield* resolveEligibleThread())) return;
+      yield* providerService.sendTurn({ ...sendTurnRequest.value, continuation: true });
+    }).pipe(Effect.catchCause(retryOrCancel), Effect.forkScoped);
   });
 
   const processTurnInterruptRequested = Effect.fn("processTurnInterruptRequested")(function* (
@@ -1874,6 +2128,19 @@ const make = Effect.gen(function* () {
       case "thread.session-stop-requested":
         yield* processSessionStopRequested(event);
         return;
+      case "thread.deleted":
+      case "thread.archived":
+        yield* cancelUsageLimitResumeSchedule(event.payload.threadId);
+        return;
+      case "thread.usage-limit-resume-scheduled":
+        yield* replaceUsageLimitResumeSchedule(event.payload.threadId, event.payload.resumeAt);
+        return;
+      case "thread.usage-limit-resume-attempted":
+        yield* processUsageLimitResumeAttempted(event);
+        return;
+      case "thread.usage-limit-resume-cancelled":
+        yield* cancelUsageLimitResumeSchedule(event.payload.threadId);
+        return;
       case "thread.settled": {
         const thread = yield* projectionSnapshotQuery.getThreadShellById(event.payload.threadId);
         if (
@@ -1939,15 +2206,91 @@ const make = Effect.gen(function* () {
         event.type === "thread.approval-response-requested" ||
         event.type === "thread.user-input-response-requested" ||
         event.type === "thread.session-stop-requested" ||
-        event.type === "thread.settled"
+        event.type === "thread.settled" ||
+        event.type === "thread.deleted" ||
+        event.type === "thread.archived" ||
+        event.type === "thread.usage-limit-resume-scheduled" ||
+        event.type === "thread.usage-limit-resume-cancelled" ||
+        event.type === "thread.usage-limit-resume-attempted"
       ) {
         return yield* worker.enqueue(event);
       }
     });
 
-    // Subscribe before returning, even while event handling waits for server activation.
+    // Subscribe before reading recovery state. The subscription owns a queue,
+    // so events committed while the snapshot is being read cannot leave a
+    // newer durable resume without a matching timer.
     const domainEvents = yield* orchestrationEngine.subscribeDomainEvents;
+    const pendingUsageLimitResumes = yield* projectionSnapshotQuery.getCommandReadModel().pipe(
+      Effect.map((readModel) =>
+        readModel.threads.flatMap((thread) =>
+          thread.deletedAt !== null ||
+          thread.archivedAt !== null ||
+          thread.settledOverride === "settled" ||
+          thread.usageLimitResume == null
+            ? []
+            : [
+                {
+                  threadId: thread.id,
+                  resumeAt: thread.usageLimitResume.nextAttemptAt,
+                  attempt: thread.usageLimitResume.attempt,
+                  providerRetryAt: thread.session?.retryAt,
+                },
+              ],
+        ),
+      ),
+      Effect.catchCause((cause) =>
+        Cause.hasInterruptsOnly(cause)
+          ? Effect.interrupt
+          : Effect.logWarning("provider command reactor failed to restore usage-limit resumes", {
+              cause: Cause.pretty(cause),
+            }).pipe(Effect.as([])),
+      ),
+    );
+
+    yield* Effect.forEach(
+      pendingUsageLimitResumes,
+      ({ threadId, resumeAt }) =>
+        resumeAt === null ? Effect.void : replaceUsageLimitResumeSchedule(threadId, resumeAt),
+      { concurrency: "unbounded", discard: true },
+    );
     yield* forkParked(Stream.runForEach(domainEvents, processEvent));
+    yield* Effect.forEach(
+      pendingUsageLimitResumes,
+      ({ threadId, resumeAt, attempt, providerRetryAt }) =>
+        resumeAt !== null
+          ? Effect.void
+          : forkParked(
+              Effect.gen(function* () {
+                const createdAt = DateTime.formatIso(yield* DateTime.now) as IsoDateTime;
+                yield* retryUsageLimitResumeRecoveryDispatch(
+                  orchestrationEngine.dispatch({
+                    type: "thread.usage-limit-resume.retry",
+                    commandId: yield* serverCommandId("usage-limit-resume-recover"),
+                    threadId,
+                    resumeAt: nextUsageLimitRetryAt({
+                      now: createdAt,
+                      attempt,
+                      ...(providerRetryAt !== undefined ? { providerRetryAt } : {}),
+                    }),
+                    attempt,
+                    createdAt,
+                  }),
+                  threadId,
+                );
+              }).pipe(
+                Effect.catchCause((cause) =>
+                  Cause.hasInterruptsOnly(cause)
+                    ? Effect.interrupt
+                    : Effect.logWarning(
+                        "provider command reactor failed to recover an in-flight usage-limit resume",
+                        { threadId, cause: Cause.pretty(cause) },
+                      ),
+                ),
+              ),
+            ),
+      { concurrency: "unbounded", discard: true },
+    );
 
     // The domain event stream is hot, so work pending before this reactor
     // starts cannot be resumed. Correlated completions only clear the request

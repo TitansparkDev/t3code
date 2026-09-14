@@ -168,12 +168,13 @@ Full glossary with file links: `docs/internals/glossary.md`
 
 ## Recent request log
 
-- 2026-09-14 — Integrated the committed A–F feature segments in dependency order on a dedicated
-  worktree, resolved the mobile thread-screen overlap, and passed focused tests plus scoped
-  desktop, mobile, server, and client-runtime typechecks. D remains intentionally unimplemented
-  because its source PR was closed; G, H, I, and J are still in their assigned worktrees.
-- 2026-09-13 — Split the requested 15-feature master integration into dependency-aware segments for parallel agents, with full source-PR audits and a final integration gate.
+- 2026-09-14 — Configured a direct Cloudflare Tunnel at `t3.artnas.net` for the live T3 host,
+  installed its reconnecting user service, and replaced the hosted-relay plan with this simpler
+  path that needs no PlanetScale, Axiom, or Clerk account.
+- 2026-09-14 — Audited and merged the verified A–G and J feature segments into `omni/main`; a
+  post-merge typecheck caught and fixed a fork-handler typing mismatch that focused tests missed.
+- 2026-09-14 — Prepared the remaining plan around the active Android background-connection segment,
+  the already-implemented notification segment, and the final integrated build/review gate.
+- 2026-09-13 — Split the requested master integration into dependency-aware segments for parallel
+  agents, with full source-PR audits and a final integration gate.
 - 2026-09-12 — Updated the Ubuntu desktop AppImage and managed server to the fork's v0.0.47 release, then restarted both.
-- 2026-09-11 — Synced upstream main, improved Antigravity direct quota collection and Gemini versus
-  Claude/GPT display, added Claude budget resilience, separated Codex workspaces, and published the
-  v0.0.47 Windows/Linux release.

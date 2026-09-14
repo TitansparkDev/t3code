@@ -50,6 +50,17 @@ import { threadHasQueuedTurnStart } from "./ThreadSettlementPolicy.ts";
 const isScriptRunCommand = Schema.is(SCRIPT_RUN_COMMAND_PATTERN);
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
+
+function isStoppedByUsageLimit(thread: Pick<OrchestrationThread, "session">): boolean {
+  return (
+    (thread.session?.status === "error" || thread.session?.status === "rate-limited") &&
+    thread.session.lastErrorClass === "usage_limit"
+  );
+}
+
+function hasActiveSession(thread: Pick<OrchestrationThread, "session">): boolean {
+  return thread.session?.status === "starting" || thread.session?.status === "running";
+}
 const decodeUserInputRequestedPayload = Schema.decodeUnknownOption(UserInputRequestedPayload);
 const threadPullRequestLinksEqual = Schema.toEquivalence(Schema.NullOr(ThreadLinkedPullRequest));
 
@@ -400,13 +411,13 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.delete": {
-      yield* requireThread({
+      const thread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
       });
       const occurredAt = yield* nowIso;
-      return {
+      const deletedEvent: Omit<OrchestrationEvent, "sequence"> = {
         ...(yield* withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
@@ -419,16 +430,43 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           deletedAt: occurredAt,
         },
       };
+      if (thread.usageLimitResume == null) return deletedEvent;
+      const cancelledEvent: Omit<OrchestrationEvent, "sequence"> = {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.usage-limit-resume-cancelled",
+        payload: { threadId: command.threadId, updatedAt: occurredAt },
+      };
+      return thread.usageLimitResume.nextAttemptAt === null
+        ? [
+            cancelledEvent,
+            {
+              ...(yield* withEventBase({
+                aggregateKind: "thread",
+                aggregateId: command.threadId,
+                occurredAt,
+                commandId: command.commandId,
+              })),
+              type: "thread.turn-interrupt-requested",
+              payload: { threadId: command.threadId, createdAt: occurredAt },
+            },
+            deletedEvent,
+          ]
+        : [cancelledEvent, deletedEvent];
     }
 
     case "thread.archive": {
-      yield* requireThreadNotArchived({
+      const thread = yield* requireThreadNotArchived({
         readModel,
         command,
         threadId: command.threadId,
       });
       const occurredAt = yield* nowIso;
-      return {
+      const archivedEvent: Omit<OrchestrationEvent, "sequence"> = {
         ...(yield* withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
@@ -442,16 +480,43 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           updatedAt: occurredAt,
         },
       };
+      if (thread.usageLimitResume == null) return archivedEvent;
+      const cancelledEvent: Omit<OrchestrationEvent, "sequence"> = {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.usage-limit-resume-cancelled",
+        payload: { threadId: command.threadId, updatedAt: occurredAt },
+      };
+      return thread.usageLimitResume.nextAttemptAt === null
+        ? [
+            cancelledEvent,
+            {
+              ...(yield* withEventBase({
+                aggregateKind: "thread",
+                aggregateId: command.threadId,
+                occurredAt,
+                commandId: command.commandId,
+              })),
+              type: "thread.turn-interrupt-requested",
+              payload: { threadId: command.threadId, createdAt: occurredAt },
+            },
+            archivedEvent,
+          ]
+        : [cancelledEvent, archivedEvent];
     }
 
     case "thread.unarchive": {
-      yield* requireThreadArchived({
+      const thread = yield* requireThreadArchived({
         readModel,
         command,
         threadId: command.threadId,
       });
       const occurredAt = yield* nowIso;
-      return {
+      const unarchivedEvent: Omit<OrchestrationEvent, "sequence"> = {
         ...(yield* withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
@@ -464,6 +529,22 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           updatedAt: occurredAt,
         },
       };
+      // Archived schedules are intentionally not resumed. Unarchiving leaves
+      // the user in control and avoids reviving a parked provider silently.
+      if (thread.usageLimitResume == null) return unarchivedEvent;
+      return [
+        {
+          ...(yield* withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt,
+            commandId: command.commandId,
+          })),
+          type: "thread.usage-limit-resume-cancelled",
+          payload: { threadId: command.threadId, updatedAt: occurredAt },
+        },
+        unarchivedEvent,
+      ];
     }
 
     case "thread.settle":
@@ -586,6 +667,30 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             updatedAt: occurredAt,
           },
         });
+      }
+      if (thread.usageLimitResume != null) {
+        companionEvents.push({
+          ...(yield* withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt,
+            commandId: command.commandId,
+          })),
+          type: "thread.usage-limit-resume-cancelled",
+          payload: { threadId: command.threadId, updatedAt: occurredAt },
+        });
+        if (thread.usageLimitResume.nextAttemptAt === null) {
+          companionEvents.push({
+            ...(yield* withEventBase({
+              aggregateKind: "thread",
+              aggregateId: command.threadId,
+              occurredAt,
+              commandId: command.commandId,
+            })),
+            type: "thread.turn-interrupt-requested",
+            payload: { threadId: command.threadId, createdAt: occurredAt },
+          });
+        }
       }
       return companionEvents.length > 0 ? [settledEvent, ...companionEvents] : settledEvent;
     }
@@ -710,6 +815,189 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           threadId: command.threadId,
           reason: command.reason,
           updatedAt: alreadyAwake ? thread.updatedAt : occurredAt,
+        },
+      };
+    }
+
+    case "thread.usage-limit-resume.schedule": {
+      const thread = yield* requireThreadNotArchived({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (thread.deletedAt !== null || thread.settledOverride === "settled") {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `thread ${command.threadId} is not active and cannot schedule an automatic resume`,
+        });
+      }
+      if (!isStoppedByUsageLimit(thread)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `thread ${command.threadId} is not stopped by a usage limit`,
+        });
+      }
+      const occurredAt = yield* nowIso;
+      if (!(Date.parse(command.resumeAt) > Date.parse(occurredAt))) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `thread ${command.threadId} usage-limit resume time is not in the future`,
+        });
+      }
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.usage-limit-resume-scheduled",
+        payload: {
+          threadId: command.threadId,
+          resumeAt: command.resumeAt,
+          attempt: 0,
+          updatedAt: occurredAt,
+        },
+      };
+    }
+
+    case "thread.usage-limit-resume.retry": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const current = thread.usageLimitResume ?? null;
+      if (
+        thread.deletedAt !== null ||
+        thread.archivedAt !== null ||
+        thread.settledOverride === "settled"
+      ) {
+        return {
+          ...(yield* withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          })),
+          type: "thread.usage-limit-resume-cancelled",
+          payload: { threadId: command.threadId, updatedAt: command.createdAt },
+        };
+      }
+      const currentAttempt =
+        current !== null && current.nextAttemptAt === null && current.attempt === command.attempt;
+      if (!currentAttempt || !(Date.parse(command.resumeAt) > Date.parse(command.createdAt))) {
+        return current !== null && current.nextAttemptAt !== null
+          ? {
+              ...(yield* withEventBase({
+                aggregateKind: "thread",
+                aggregateId: command.threadId,
+                occurredAt: command.createdAt,
+                commandId: command.commandId,
+              })),
+              type: "thread.usage-limit-resume-scheduled" as const,
+              payload: {
+                threadId: command.threadId,
+                resumeAt: current.nextAttemptAt,
+                attempt: current.attempt,
+                updatedAt: thread.updatedAt,
+              },
+            }
+          : {
+              ...(yield* withEventBase({
+                aggregateKind: "thread",
+                aggregateId: command.threadId,
+                occurredAt: command.createdAt,
+                commandId: command.commandId,
+              })),
+              type: "thread.usage-limit-resume-cancelled" as const,
+              payload: { threadId: command.threadId, updatedAt: thread.updatedAt },
+            };
+      }
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.usage-limit-resume-scheduled",
+        payload: {
+          threadId: command.threadId,
+          resumeAt: command.resumeAt,
+          attempt: command.attempt + 1,
+          updatedAt: command.createdAt,
+        },
+      };
+    }
+
+    case "thread.usage-limit-resume.cancel": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const occurredAt = yield* nowIso;
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.usage-limit-resume-cancelled",
+        payload: {
+          threadId: command.threadId,
+          updatedAt:
+            thread.usageLimitResume === undefined || thread.usageLimitResume === null
+              ? thread.updatedAt
+              : occurredAt,
+        },
+      };
+    }
+
+    case "thread.usage-limit-resume.attempt": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const current = thread.usageLimitResume ?? null;
+      if (
+        current !== null &&
+        (thread.deletedAt !== null ||
+          thread.archivedAt !== null ||
+          thread.settledOverride === "settled" ||
+          hasActiveSession(thread))
+      ) {
+        return {
+          ...(yield* withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          })),
+          type: "thread.usage-limit-resume-cancelled",
+          payload: { threadId: command.threadId, updatedAt: command.createdAt },
+        };
+      }
+      const shouldResume =
+        current?.nextAttemptAt === command.expectedAttemptAt &&
+        Date.parse(command.expectedAttemptAt) <= Date.parse(command.createdAt);
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.usage-limit-resume-attempted",
+        payload: {
+          threadId: command.threadId,
+          expectedAttemptAt: command.expectedAttemptAt,
+          attempt: current?.attempt ?? 0,
+          shouldResume,
+          updatedAt: shouldResume ? command.createdAt : thread.updatedAt,
         },
       };
     }
@@ -1385,16 +1673,28 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           },
         });
       }
+      if (targetThread.usageLimitResume != null) {
+        lifecycleResetEvents.push({
+          ...(yield* withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          })),
+          type: "thread.usage-limit-resume-cancelled",
+          payload: { threadId: command.threadId, updatedAt: command.createdAt },
+        });
+      }
       return [...lifecycleResetEvents, userMessageEvent, turnStartRequestedEvent];
     }
 
     case "thread.turn.interrupt": {
-      yield* requireThread({
+      const thread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
       });
-      return {
+      const interruptEvent: Omit<OrchestrationEvent, "sequence"> = {
         ...(yield* withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
@@ -1408,6 +1708,20 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           createdAt: command.createdAt,
         },
       };
+      if (thread.usageLimitResume == null) return interruptEvent;
+      return [
+        {
+          ...(yield* withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          })),
+          type: "thread.usage-limit-resume-cancelled",
+          payload: { threadId: command.threadId, updatedAt: command.createdAt },
+        },
+        interruptEvent,
+      ];
     }
 
     case "thread.approval.respond": {

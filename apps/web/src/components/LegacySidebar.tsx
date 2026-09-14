@@ -119,6 +119,9 @@ import { useThreadActions } from "../hooks/useThreadActions";
 import { projectEnvironment } from "../state/projects";
 import { threadEnvironment, useEnvironmentThread } from "../state/threads";
 import { useEnvironment, useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
+import { useServerConfigs } from "../state/entities";
+import { openForkThreadDialog } from "../state/threadFork";
+import { hasAvailableForkModel, isThreadForkBusy } from "../threadFork.logic";
 import {
   buildThreadRouteParams,
   resolveActiveThreadRouteRef,
@@ -1171,6 +1174,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
   const threadSortOrder = useClientSettings<SidebarThreadSortOrder>(
     (settings) => settings.sidebarThreadSortOrder,
   );
+  const serverConfigs = useServerConfigs();
   const appSettingsConfirmThreadDelete = useClientSettings<boolean>(
     (settings) => settings.confirmThreadDelete,
   );
@@ -2238,10 +2242,21 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       );
       const threadWorkspacePath =
         thread.worktreePath ?? threadProject?.workspaceRoot ?? project.workspaceRoot ?? null;
+      const environmentConfig = serverConfigs.get(thread.environmentId);
+      const supportsForking = environmentConfig?.environment.capabilities.threadForking === true;
+      const hasAvailableModel = hasAvailableForkModel({
+        providers: environmentConfig?.providers ?? [],
+        currentSelection: thread.modelSelection,
+      });
+      const isBusy = isThreadForkBusy(thread);
+      const canFork = supportsForking && !isBusy && hasAvailableModel;
       const clicked = await api.contextMenu.show(
         [
           ...(thread.branch
             ? [{ id: "new-thread-on-branch", label: `New thread on ${thread.branch}` }]
+            : []),
+          ...(supportsForking
+            ? [{ id: "fork", label: "Fork thread", disabled: !canFork, icon: "git-fork" }]
             : []),
           { id: "rename", label: "Rename thread" },
           { id: "mark-unread", label: "Mark unread" },
@@ -2252,6 +2267,11 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
         ],
         position,
       );
+
+      if (clicked === "fork") {
+        openForkThreadDialog(threadRef);
+        return;
+      }
 
       if (clicked === "project-settings") {
         if (isMobile) setOpenMobile(false);

@@ -222,6 +222,7 @@ export const make = Effect.gen(function* () {
       threadSettlement: true,
       threadAutoSettlement: true,
       threadRestartContinuation: true,
+      threadUsageLimitResume: true,
       threadSnooze: true,
       environmentThemes: true,
       usageLimitSources: true,
@@ -234,6 +235,7 @@ export const make = Effect.gen(function* () {
       pullRequestStackActions: true,
       threadPullRequestLinking: true,
       environmentIcon: true,
+      threadForking: true,
       ...(serverSelfUpdate === null ? {} : { serverSelfUpdate }),
       ...(serverSelfUpdate === "boot-service" || desktopAppUpdate
         ? {
