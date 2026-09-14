@@ -40,22 +40,3 @@
         mobile pass behind explicit user permission and use disposable state, never live T3 userdata.
   - [ ] Update `SPEC.md`, `AGENTS.md`, `PLAN.md`, and `tree.txt` to match the final behavior, then
         make the final conventional commit and push only the verified result.
-
-### 2026-09-14 — Direct Cloudflare Tunnel remote access
-
-#### Bugs
-
-- [ ] Add direct remote access for T3 servers through Cloudflare Tunnel, using the existing
-      `artnas.net` zone and no hosted T3 Connect relay.
-  - [ ] Choose an unused HTTPS hostname for each reachable desktop or server and record the local
-        T3 server port for each host; do not reuse the existing tunnel records without identifying
-        their owners.
-  - [ ] Create and configure a Cloudflare Tunnel route for each host, install `cloudflared` as a
-        host service, and confirm the route reaches only the local T3 server.
-  - [ ] Generate a pairing link whose public base URL uses the tunnel hostname, then verify the
-        mobile connection flow over HTTPS and WebSocket upgrade with the existing T3 pairing token.
-  - [ ] Add concise remote-access documentation covering host uptime, pairing, reconnect behavior,
-        and the fact that disconnected mobile push notifications remain a separate T3 Connect
-        feature.
-  - [ ] Run focused server and mobile checks, then update `SPEC.md`, `AGENTS.md`, `PLAN.md`, and
-        `tree.txt` to match the supported direct-tunnel behavior.

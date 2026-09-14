@@ -67,6 +67,34 @@ created in Settings can only be copied from the client that created them while
 its Connections page stays open. If you leave or reload that page, create
 another link to share.
 
+### Cloudflare Tunnel
+
+Use a Cloudflare Tunnel when the phone must reach a T3 server over the public
+internet without router port forwarding or Tailscale. The host needs to stay
+powered on with both T3 and `cloudflared` running. Configure one public HTTPS
+hostname per host, routing it to the host's local T3 port, such as:
+
+```text
+https://desktop.example.com  →  http://127.0.0.1:<t3-port>
+```
+
+Then create a fresh pairing link with that public base URL:
+
+```bash
+npx t3 auth pairing create --base-url https://desktop.example.com
+```
+
+Open the link in the mobile app's **Add environment** flow. The T3 pairing
+credential authorizes the phone; Cloudflare Tunnel only provides the secure
+network path. This direct setup does not require a T3 Connect account, hosted
+relay, or relay database and identity services. Cloudflare Access is optional;
+if enabled, it must allow the mobile app's HTTPS and WebSocket requests.
+
+If the host goes offline, the phone cannot connect until it returns. Existing
+paired devices reconnect automatically when the host and tunnel are available
+again. Background push notifications while the phone is disconnected are a
+separate T3 Connect feature.
+
 ### Balance new threads across machines
 
 Auto balance is off by default. On web and desktop, enable it in

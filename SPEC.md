@@ -64,6 +64,9 @@ Codex, Claude, Cursor, Grok, OpenCode, and Antigravity.
   authenticated; servers without fork support hide the action.
 - T3 Connect stores its managed public endpoint with the cloud link, and web pairing links can use
   that endpoint when it is available. Web and mobile cloud linking preserve the endpoint.
+- Direct pairing also supports a user-managed public HTTPS endpoint, such as a Cloudflare Tunnel,
+  that routes to the local T3 server. The client uses the hostname directly; this path does not
+  require the hosted T3 Connect relay or its cloud services.
 - Desktop release builds include the public T3 Connect configuration by default and use the
   production relay at `https://relay.t3.codes`; release variables can override it for a
   self-hosted relay.

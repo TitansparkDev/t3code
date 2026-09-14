@@ -168,9 +168,9 @@ Full glossary with file links: `docs/internals/glossary.md`
 
 ## Recent request log
 
-- 2026-09-14 — Clarified that the remote-access goal is direct Cloudflare Tunnel access to T3
-  servers, without the hosted relay or PlanetScale, Axiom, or Clerk accounts; replaced the relay
-  setup plan with the direct-tunnel plan.
+- 2026-09-14 — Configured a direct Cloudflare Tunnel at `t3.artnas.net` for the live T3 host,
+  installed its reconnecting user service, and replaced the hosted-relay plan with this simpler
+  path that needs no PlanetScale, Axiom, or Clerk account.
 - 2026-09-14 — Audited and merged the verified A–G and J feature segments into `omni/main`; a
   post-merge typecheck caught and fixed a fork-handler typing mismatch that focused tests missed.
 - 2026-09-14 — Prepared the remaining plan around the active Android background-connection segment,
