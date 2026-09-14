@@ -7,6 +7,7 @@ import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
@@ -65,6 +66,8 @@ import {
   AssetWorkspaceContextResolutionError,
   RpcClientId,
   EnvironmentAuthorizationError,
+  isProviderAvailable,
+  ThreadForkError,
   ThreadId,
   type TerminalAttachStreamEvent,
   type TerminalError,
@@ -76,6 +79,7 @@ import {
   WsRpcGroup,
 } from "@t3tools/contracts";
 import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
+import * as PartitionedSemaphore from "effect/PartitionedSemaphore";
 import { HttpRouter, HttpServerRequest, HttpServerRespondable } from "effect/unstable/http";
 import { RpcSerialization, RpcServer } from "effect/unstable/rpc";
 
@@ -132,6 +136,16 @@ import * as ReviewService from "./review/ReviewService.ts";
 import * as ProjectSetupScriptRunner from "./project/ProjectSetupScriptRunner.ts";
 import * as AgentSessionScanner from "./project/AgentSessionScanner.ts";
 import { importRecentAgentThreads } from "./project/AgentSessionImporter.ts";
+import {
+  buildForkHandoffPrompt,
+  createForkCreateCommandId,
+  createForkMessageId,
+  createForkTurnCommandId,
+  defaultForkTitle,
+  formatConversationTranscript,
+  writeForkTranscriptAttachment,
+} from "./threadFork.ts";
+import { resolveAttachmentPathById } from "./attachmentStore.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import * as RemoteOpenTargets from "./environment/RemoteOpenTargets.ts";
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
@@ -168,6 +182,8 @@ import * as SessionStore from "./auth/SessionStore.ts";
 import { failEnvironmentAuthInvalid, failEnvironmentInternal } from "./auth/http.ts";
 import * as RelayClient from "@t3tools/shared/relayClient";
 const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
+
+const forkTargetLock = PartitionedSemaphore.makeUnsafe<ThreadId>({ permits: 1 });
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 const CONFIG_DISCOVERY_TIMEOUT = Duration.seconds(5);
@@ -487,6 +503,8 @@ const makeWsRpcLayer = (
     Effect.gen(function* () {
       const currentSessionId = currentSession.sessionId;
       const crypto = yield* Crypto.Crypto;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
       const sql = yield* SqlClient.SqlClient;
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
       /** A reference's host-level link key; the project's own host where the ref names none. */
@@ -2469,6 +2487,252 @@ const makeWsRpcLayer = (
             WS_METHODS.attachmentsDelete,
             deletePendingAttachment(input.attachmentId),
             { "rpc.aggregate": "workspace" },
+          ),
+        [WS_METHODS.threadsFork]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.threadsFork,
+            forkTargetLock.withPermit(input.targetThreadId)(
+              Effect.gen(function* () {
+                const sourceThreadOpt = yield* projectionSnapshotQuery.getThreadDetailById(
+                  input.sourceThreadId,
+                );
+                if (Option.isNone(sourceThreadOpt)) {
+                  return yield* new ThreadForkError({
+                    reason: "source_not_found",
+                    message: `Source thread '${input.sourceThreadId}' does not exist.`,
+                    sourceThreadId: input.sourceThreadId,
+                    projectId: input.projectId,
+                  });
+                }
+                const sourceThread = sourceThreadOpt.value;
+
+                if (sourceThread.projectId !== input.projectId) {
+                  return yield* new ThreadForkError({
+                    reason: "invalid_request",
+                    message: `Source thread '${input.sourceThreadId}' does not belong to project '${input.projectId}'.`,
+                    sourceThreadId: input.sourceThreadId,
+                    projectId: input.projectId,
+                  });
+                }
+
+                const projectOpt = yield* projectionSnapshotQuery.getProjectShellById(
+                  input.projectId,
+                );
+                if (Option.isNone(projectOpt)) {
+                  return yield* new ThreadForkError({
+                    reason: "project_not_found",
+                    message: `Project '${input.projectId}' does not exist.`,
+                    projectId: input.projectId,
+                  });
+                }
+
+                const isSessionRunning =
+                  sourceThread.session !== null &&
+                  (sourceThread.session.status === "running" ||
+                    sourceThread.session.status === "starting");
+                const [pendingTurnStart] = yield* sql<{ readonly exists: number }>`
+                    SELECT EXISTS(
+                      SELECT 1
+                      FROM projection_turns
+                      WHERE thread_id = ${input.sourceThreadId}
+                      AND state = 'pending'
+                    ) AS "exists"
+                `;
+                const isTurnBusy =
+                  (sourceThread.latestTurn !== null &&
+                    sourceThread.latestTurn.state === "running") ||
+                  pendingTurnStart?.exists === 1;
+                const isStreaming = sourceThread.messages.some((m) => m.streaming);
+
+                if (isSessionRunning || isTurnBusy || isStreaming) {
+                  return yield* new ThreadForkError({
+                    reason: "source_busy",
+                    message: `Source thread '${input.sourceThreadId}' is currently busy.`,
+                    sourceThreadId: input.sourceThreadId,
+                    projectId: input.projectId,
+                  });
+                }
+
+                if (input.targetThreadId === input.sourceThreadId) {
+                  return yield* new ThreadForkError({
+                    reason: "target_conflict",
+                    message: `Target thread ID '${input.targetThreadId}' cannot match source thread ID.`,
+                    sourceThreadId: input.sourceThreadId,
+                    targetThreadId: input.targetThreadId,
+                    projectId: input.projectId,
+                  });
+                }
+
+                const existingTargetOpt = yield* projectionSnapshotQuery.getThreadShellById(
+                  input.targetThreadId,
+                );
+                if (Option.isSome(existingTargetOpt)) {
+                  const existing = existingTargetOpt.value;
+                  if (existing.projectId === input.projectId) {
+                    const existingDetail = yield* projectionSnapshotQuery.getThreadDetailById(
+                      input.targetThreadId,
+                      { activityKinds: [] },
+                    );
+                    if (
+                      Option.isSome(existingDetail) &&
+                      existingDetail.value.messages.some(
+                        (message) => message.id === createForkMessageId(input.targetThreadId),
+                      )
+                    ) {
+                      return {
+                        threadId: input.targetThreadId,
+                        projectId: input.projectId,
+                      };
+                    }
+                  }
+                  return yield* new ThreadForkError({
+                    reason: "target_conflict",
+                    message: `Target thread '${input.targetThreadId}' already exists with conflicting parameters.`,
+                    targetThreadId: input.targetThreadId,
+                    projectId: input.projectId,
+                  });
+                }
+
+                const currentProviders = yield* providerRegistry.getProviders;
+                const targetProvider = currentProviders.find(
+                  (p) => p.instanceId === input.modelSelection.instanceId,
+                );
+                if (
+                  !targetProvider ||
+                  !targetProvider.enabled ||
+                  !targetProvider.installed ||
+                  targetProvider.auth.status !== "authenticated" ||
+                  targetProvider.status !== "ready" ||
+                  !isProviderAvailable(targetProvider)
+                ) {
+                  return yield* new ThreadForkError({
+                    reason: "provider_unavailable",
+                    message: `Provider instance '${input.modelSelection.instanceId}' is unavailable or unauthenticated.`,
+                    targetThreadId: input.targetThreadId,
+                    projectId: input.projectId,
+                  });
+                }
+
+                const inheritedAttachment = sourceThread.messages
+                  .flatMap((message) => message.attachments ?? [])
+                  .find(
+                    (attachment) =>
+                      attachment.type === "file" &&
+                      attachment.name === "conversation-transcript.md",
+                  );
+                const inheritedTranscript =
+                  inheritedAttachment === undefined
+                    ? undefined
+                    : yield* Effect.gen(function* () {
+                        const inheritedPath = resolveAttachmentPathById({
+                          attachmentsDir: config.attachmentsDir,
+                          attachmentId: inheritedAttachment.id,
+                        });
+                        if (inheritedPath === null) {
+                          return undefined;
+                        }
+                        return yield* fileSystem.readFileString(inheritedPath).pipe(
+                          Effect.map((value) => value.trim()),
+                          Effect.catch(() => Effect.succeed(undefined)),
+                        );
+                      });
+                const transcript = formatConversationTranscript(sourceThread, {
+                  inheritedTranscript,
+                });
+
+                const storedTranscript = writeForkTranscriptAttachment({
+                  attachmentsDir: config.attachmentsDir,
+                  targetThreadId: input.targetThreadId,
+                  transcript,
+                });
+                if (storedTranscript === null) {
+                  return yield* new ThreadForkError({
+                    reason: "internal_error",
+                    message: "Failed to resolve the fork transcript attachment path.",
+                    sourceThreadId: input.sourceThreadId,
+                    targetThreadId: input.targetThreadId,
+                    projectId: input.projectId,
+                  });
+                }
+                const { attachment: transcriptAttachment } = storedTranscript;
+                yield* fileSystem.makeDirectory(path.dirname(storedTranscript.filePath), {
+                  recursive: true,
+                });
+                yield* fileSystem.writeFileString(storedTranscript.filePath, transcript);
+
+                const now = yield* nowIso;
+                const title = input.title ?? defaultForkTitle(sourceThread.title);
+                const runtimeMode = input.runtimeMode ?? sourceThread.runtimeMode ?? "full-access";
+                const interactionMode =
+                  input.interactionMode ?? sourceThread.interactionMode ?? "default";
+                const branch = input.branch !== undefined ? input.branch : sourceThread.branch;
+                const worktreePath =
+                  input.worktreePath !== undefined ? input.worktreePath : sourceThread.worktreePath;
+
+                const createThreadCmd: OrchestrationCommand = {
+                  type: "thread.create",
+                  commandId: createForkCreateCommandId(input.targetThreadId),
+                  threadId: input.targetThreadId,
+                  projectId: input.projectId,
+                  title,
+                  modelSelection: input.modelSelection,
+                  runtimeMode,
+                  interactionMode,
+                  branch,
+                  worktreePath,
+                  createdAt: input.createdAt ?? now,
+                };
+
+                const created = yield* dispatchFromClient(createThreadCmd);
+                yield* threadDeletionReactor.drainThrough(created.sequence);
+
+                const handoffPrompt = buildForkHandoffPrompt({
+                  sourceTitle: sourceThread.title,
+                });
+                const turnCommandId = createForkTurnCommandId(input.targetThreadId);
+                const messageId = createForkMessageId(input.targetThreadId);
+
+                const startTurnCmd: OrchestrationCommand = {
+                  type: "thread.turn.start",
+                  commandId: turnCommandId,
+                  threadId: input.targetThreadId,
+                  message: {
+                    messageId,
+                    role: "user",
+                    text: handoffPrompt,
+                    attachments: [transcriptAttachment],
+                  },
+                  modelSelection: input.modelSelection,
+                  runtimeMode,
+                  interactionMode,
+                  createdAt: input.createdAt ?? now,
+                };
+
+                yield* dispatchFromClient(startTurnCmd);
+
+                yield* recordClientCommandAnalytics(createThreadCmd);
+                yield* recordClientCommandAnalytics(startTurnCmd);
+
+                return {
+                  threadId: input.targetThreadId,
+                  projectId: input.projectId,
+                  messageId,
+                };
+              }),
+            ),
+            Effect.mapError((error) =>
+              error instanceof ThreadForkError
+                ? error
+                : new ThreadForkError({
+                    reason: "internal_error",
+                    message: "Failed to fork the conversation.",
+                    sourceThreadId: input.sourceThreadId,
+                    targetThreadId: input.targetThreadId,
+                    projectId: input.projectId,
+                    cause: error,
+                  }),
+            ),
+            { "rpc.aggregate": "orchestration" },
           ),
         [WS_METHODS.agentSessionsScan]: () =>
           observeRpcEffect(WS_METHODS.agentSessionsScan, agentSessionScanner.scan, {

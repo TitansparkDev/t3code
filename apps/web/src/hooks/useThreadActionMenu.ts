@@ -19,13 +19,17 @@ import { stackedThreadToast, toastManager } from "../components/ui/toast";
 import { threadEnvironment } from "../state/threads";
 import { useAtomCommand } from "../state/use-atom-command";
 import {
+  readEnvironmentSupportsForking,
   readEnvironmentSupportsPinning,
   readEnvironmentSupportsSettlement,
   readEnvironmentSupportsSnooze,
   readEnvironmentSupportsTitleRegeneration,
   readThreadShell,
   useProjects,
+  useServerConfigs,
 } from "../state/entities";
+import { openForkThreadDialog } from "../state/threadFork";
+import { hasAvailableForkModel, isThreadForkBusy } from "../threadFork.logic";
 import { usePrimaryEnvironmentId } from "../state/environments";
 import { readLocalApi } from "../localApi";
 import {
@@ -69,6 +73,7 @@ export function useThreadActionMenu(input: {
   const { threadRef, projectCwd, onStartRename } = input;
   const router = useRouter();
   const projects = useProjects();
+  const serverConfigs = useServerConfigs();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
   const logicalProjectKeyByPhysicalKey = useMemo(
@@ -129,11 +134,22 @@ export function useThreadActionMenu(input: {
         const thread = readThreadShell(threadRef);
         if (!thread) return;
         const now = new Date();
+        const serverConfig = serverConfigs.get(threadRef.environmentId);
+        const supportsForking =
+          serverConfig?.environment.capabilities.threadForking === true ||
+          readEnvironmentSupportsForking(threadRef.environmentId);
+        const hasAvailableModel = hasAvailableForkModel({
+          providers: serverConfig?.providers ?? [],
+          currentSelection: thread.modelSelection,
+        });
+        const isBusy = isThreadForkBusy(thread);
+        const canFork = supportsForking && !isBusy && hasAvailableModel;
         const supports = {
           settlement: readEnvironmentSupportsSettlement(threadRef.environmentId),
           snooze: readEnvironmentSupportsSnooze(threadRef.environmentId),
           pinning: readEnvironmentSupportsPinning(threadRef.environmentId),
           titleRegeneration: readEnvironmentSupportsTitleRegeneration(threadRef.environmentId),
+          forking: supportsForking,
         };
         const isRegeneratingTitle = thread.titleRegeneration != null;
         const snoozePresets = resolveSnoozePresets(now, timestampFormat);
@@ -145,6 +161,7 @@ export function useThreadActionMenu(input: {
           canSnoozeNow: canSnooze(thread, { now: now.toISOString() }),
           isRegeneratingTitle,
           isRunning: thread.session?.status === "running" && thread.session.activeTurnId != null,
+          canFork,
           supports,
           snoozePresets,
         });
@@ -222,6 +239,9 @@ export function useThreadActionMenu(input: {
             }
             return;
           }
+          case "fork":
+            openForkThreadDialog(threadRef);
+            return;
           case "settle":
             await reportFailure("Failed to settle thread", () => settleThread(threadRef));
             return;

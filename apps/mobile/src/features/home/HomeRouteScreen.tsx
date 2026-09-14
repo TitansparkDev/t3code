@@ -52,6 +52,7 @@ export function HomeRouteScreen() {
     moveThread,
     regenerateThreadTitle,
     unsettleThread,
+    forkThread,
   } = useThreadListActions();
   const pendingTasks = usePendingNewTasks();
   const { openPendingTask, confirmDeletePendingTask } = usePendingTaskListActions();
@@ -206,6 +207,7 @@ export function HomeRouteScreen() {
           onUnpinThread={unpinThread}
           onMoveThread={moveThread}
           onRegenerateThreadTitle={regenerateThreadTitle}
+          onForkThread={forkThread}
           onEnvironmentChange={setSelectedEnvironmentId}
           onProjectChange={setSelectedProjectKey}
           onOpenSettings={() =>

@@ -236,6 +236,15 @@ export function readEnvironmentSupportsActiveReorder(environmentId: EnvironmentI
   );
 }
 
+/** Whether the environment's server understands thread.fork.
+    Same version-skew contract as settlement. */
+export function readEnvironmentSupportsForking(environmentId: EnvironmentId): boolean {
+  return (
+    appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)?.environment.capabilities
+      .threadForking === true
+  );
+}
+
 export function readEnvironmentThreadRefs(
   environmentId: EnvironmentId,
 ): ReadonlyArray<ScopedThreadRef> {

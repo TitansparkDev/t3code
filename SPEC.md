@@ -51,6 +51,11 @@ Codex, Claude, Cursor, Grok, OpenCode, and Antigravity.
   queued sends, retries, or review composers release them.
 - Mobile model and provider-option changes update the current composer draft and the remembered
   default together, so a choice made in an existing thread is used by later new threads.
+- Idle, settled conversations can be forked from web, desktop, and mobile into a fresh thread.
+  Forking preserves the source, hands the new provider a bounded Markdown transcript, omits tool
+  internals and binary attachment data while retaining attachment names, and blocks active or
+  pending source work. The target provider and model must be enabled, installed, ready, and
+  authenticated; servers without fork support hide the action.
 - T3 Connect stores its managed public endpoint with the cloud link, and web pairing links can use
   that endpoint when it is available. Web and mobile cloud linking preserve the endpoint.
 - Desktop release builds include the public T3 Connect configuration by default and use the
