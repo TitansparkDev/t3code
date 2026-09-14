@@ -39,10 +39,11 @@
         work may be included.
   - [x] Resolve the post-merge Segment G fork-handler typecheck errors in `apps/server/src/ws.ts`
         and add focused coverage for the corrected RPC error/options shapes.
-  - [ ] Re-run targeted tests and typechecks for the affected server, contracts, client-runtime,
-        web, desktop, and mobile packages. Review migrations, event compatibility, provider coverage,
-        fork-plus-usage-limit-resume behavior, connection ownership, mobile storage, Android services,
-        notifications, and Electron shutdown behavior together.
+  - [x] Re-run targeted typechecks for the affected server, relay, contracts, client-runtime, web,
+        desktop, and mobile packages. Existing Effect suggestions are non-blocking.
+  - [ ] Review migrations, event compatibility, provider coverage, fork-plus-usage-limit-resume
+        behavior, connection ownership, mobile storage, Android services, notifications, and Electron
+        shutdown behavior together.
   - [x] Run the Android debug build after all native changes land. Keep the final real-client web or
         mobile pass behind explicit user permission and use disposable state, never live T3 userdata.
   - [x] Update `SPEC.md`, `AGENTS.md`, `PLAN.md`, and `tree.txt` to match the final behavior, then
