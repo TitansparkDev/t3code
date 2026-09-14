@@ -118,17 +118,14 @@ class AgentNotificationsTest {
 
   @Test
   fun completionAlertDisplaysLongFinalAnswer() {
-    val answer = "The change is complete.\n\n" + "Tests pass. ".repeat(500)
+    val answer = "The change is complete.\n\n" + "Tests pass. ".repeat(120)
     AgentNotifications.receive(context, update("long-answer", false) + ("alert_body" to answer))
 
     val alert = manager.activeNotifications.single()
-    val displayedAnswer = alert.notification.extras
-      .getCharSequence(Notification.EXTRA_BIG_TEXT)
-      ?.toString()
-      ?: alert.notification.extras.getCharSequence(Notification.EXTRA_TEXT)?.toString()
-    assertTrue(displayedAnswer != null)
-    assertTrue(displayedAnswer!!.startsWith(answer.take(120)))
-    assertTrue(displayedAnswer.length < answer.length)
+    assertEquals(
+      answer.take(1021).trimEnd() + "...",
+      alert.notification.extras.getString(Notification.EXTRA_BIG_TEXT)
+    )
     assertEquals(
       "t3code-dev://threads/environment/thread",
       shadowOf(alert.notification.contentIntent).savedIntent.dataString

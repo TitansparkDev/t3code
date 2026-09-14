@@ -168,6 +168,9 @@ Full glossary with file links: `docs/internals/glossary.md`
 
 ## Recent request log
 
+- 2026-09-14 — Integrated final-answer notifications and Android live-update handling with the
+  background connection lifecycle; focused server/client/mobile tests and the Android module and
+  debug APK gates pass.
 - 2026-09-14 — Added and verified the Android background-connection service: one native foreground
   watchdog wakes the existing JS environment reporter, persists across restart, and handles multiple
   environments without owning sockets or credentials; full debug APK and focused Android/mobile

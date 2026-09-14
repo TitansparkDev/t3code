@@ -20,22 +20,20 @@
 #### Visual
 
 - [x] Segment I — Land final-answer notifications and Android live update chips after H lands.
-  - [x] Rebase or cherry-pick the already-implemented Segment I branch onto the merged main line
-        after H, and resolve shared contract, mobile, and Android conflicts by intent.
+  - [x] Cherry-pick the already-implemented Segment I branch onto the verified H commit in the
+        dedicated integration worktree, and resolve shared contract, mobile, and Android conflicts
+        by intent.
   - [x] Verify final-answer privacy and length limits, empty and Markdown replies, repeated events,
         concurrent environments, foreground transitions, permission denial, cleanup, and older Android
-        fallback behavior against the H connection lifecycle.
-  - [x] Run the focused server, relay, client-runtime, mobile, and Android checks; commit the
-        integrated result with the exact verification and any environment limitations. Verification:
-        129 server tests, 64 relay tests, 8 client/mobile tests, 92 Android notification tests across
-        API 24/26/33/36, server/relay/client-runtime/mobile typechecks, and a successful Android debug
-        APK build. No emulator was attached; existing Effect suggestions and the Android SDK XML-version
-        warning remain non-blocking.
+        fallback behavior against the H connection lifecycle. Android notification text is explicitly
+        bounded to the platform-safe 1024-character alert limit.
+  - [x] Run the focused server, client-runtime, mobile, and Android checks; commit the integrated
+        result with the exact verification and any environment limitations.
 
 #### Other
 
 - [ ] Segment K — Complete the final integration and release gate.
-  - [x] Integrate H and then I into `omni/main`; A–G and J are already merged, and no partial H
+  - [ ] Integrate H and then I into `omni/main`; A–G and J are already merged, and no partial H
         work may be included.
   - [x] Resolve the post-merge Segment G fork-handler typecheck errors in `apps/server/src/ws.ts`
         and add focused coverage for the corrected RPC error/options shapes.
@@ -46,5 +44,5 @@
         shutdown behavior together.
   - [x] Run the Android debug build after all native changes land. Keep the final real-client web or
         mobile pass behind explicit user permission and use disposable state, never live T3 userdata.
-  - [x] Update `SPEC.md`, `AGENTS.md`, `PLAN.md`, and `tree.txt` to match the final behavior, then
+  - [ ] Update `SPEC.md`, `AGENTS.md`, `PLAN.md`, and `tree.txt` to match the final behavior, then
         make the final conventional commit and push only the verified result.
