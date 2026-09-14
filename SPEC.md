@@ -24,6 +24,13 @@ Codex, Claude, Cursor, Grok, OpenCode, and Antigravity.
   05:00–11:00 Pacific on web and mobile.
 - Quota data is kept separate from thread state, keyed by provider instance, and refreshed on a
   background loop or by an explicit refresh action.
+- Mobile connection, Settings → Environments, and T3 Connect onboarding rows expose a
+  connected-environment-only “Refresh providers” action. It reports progress, success, and
+  failures, ignores interrupted commands, and suppresses repeated taps while a refresh is active.
+- Server config subscriptions serve the cached provider snapshot; provider refreshes continue
+  through the background maintenance loop or explicit environment-scoped actions. Connection
+  establishment allows slow valid setup to finish for up to 45 seconds, while health probes keep
+  their existing shorter deadlines.
 - T3 Connect stores its managed public endpoint with the cloud link, and web pairing links can use
   that endpoint when it is available. Web and mobile cloud linking preserve the endpoint.
 - Desktop release builds include the public T3 Connect configuration by default and use the
