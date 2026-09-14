@@ -17818,6 +17818,7 @@ apps/desktop/src/ipc/DesktopIpc.test.ts
 apps/desktop/src/ipc/DesktopIpc.ts
 apps/desktop/src/ipc/DesktopIpcHandlers.ts
 apps/desktop/src/ipc/channels.ts
+apps/desktop/src/ipc/methods/appActivation.test.ts
 apps/desktop/src/ipc/methods/appActivation.ts
 apps/desktop/src/ipc/methods/clientSettings.ts
 apps/desktop/src/ipc/methods/connectionCatalog.ts
@@ -18634,6 +18635,7 @@ apps/mobile/src/features/threads/sidebar-filter-button.tsx
 apps/mobile/src/features/threads/sidebar-header-actions.tsx
 apps/mobile/src/features/threads/sidebar-native-header-items.ts
 apps/mobile/src/features/threads/sidebar-navigation-shell.tsx
+apps/mobile/src/features/threads/thread-dev-server-indicator.tsx
 apps/mobile/src/features/threads/thread-feed-live-follow.test.ts
 apps/mobile/src/features/threads/thread-feed-live-follow.ts
 apps/mobile/src/features/threads/thread-inspector-content-stack.tsx
@@ -18707,6 +18709,8 @@ apps/mobile/src/lib/connection.test.ts
 apps/mobile/src/lib/connection.ts
 apps/mobile/src/lib/copyTextWithHaptic.test.ts
 apps/mobile/src/lib/copyTextWithHaptic.ts
+apps/mobile/src/lib/devServers.test.ts
+apps/mobile/src/lib/devServers.ts
 apps/mobile/src/lib/filePreview.test.ts
 apps/mobile/src/lib/filePreview.ts
 apps/mobile/src/lib/foreground-handoff.test.ts
@@ -18828,6 +18832,7 @@ apps/mobile/src/state/pending-thread-creation.ts
 apps/mobile/src/state/preferences.test.ts
 apps/mobile/src/state/preferences.ts
 apps/mobile/src/state/presentation.ts
+apps/mobile/src/state/preview.ts
 apps/mobile/src/state/project-grouping.logic.ts
 apps/mobile/src/state/project-grouping.test.ts
 apps/mobile/src/state/project-grouping.ts
@@ -20890,6 +20895,7 @@ docs/user/appearance.md
 docs/user/background-service.md
 docs/user/browser-import.md
 docs/user/composer.md
+docs/user/dev-servers.md
 docs/user/devices.md
 docs/user/install.md
 docs/user/keybindings.md

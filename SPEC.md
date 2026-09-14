@@ -9,6 +9,11 @@ Codex, Claude, Cursor, Grok, OpenCode, and Antigravity.
 - Provider sessions use the provider-native adapter protocol. Antigravity uses Google's ACP server
   for authentication, model discovery, permissions, turns, and session resume.
 - Provider instances are isolated by instance ID, including Antigravity profiles and quota state.
+- Desktop supports independent T3 windows from File → New Window (`CmdOrCtrl+Shift+N`). All windows
+  share one background server; the primary window owns the persisted bounds and app shutdown state.
+- Mobile thread rows and thread detail surfaces show linked development servers. Trusted private
+  connection hosts replace environment loopback URLs while public, relay, tunnel, and unreachable
+  hosts remain unchanged or disabled rather than being guessed reachable.
 - The web and desktop clients show subscription limits in the AGY limits section when Antigravity
   publishes Gemini and Claude/GPT windows. Gemini windows are shown in blue; Claude/GPT windows
   are shown in green, including separate five-hour and weekly buckets. Quota refresh is read-only

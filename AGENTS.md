@@ -168,6 +168,8 @@ Full glossary with file links: `docs/internals/glossary.md`
 
 ## Recent request log
 
+- 2026-09-14 — Integrated and verified Segments A–F on a dedicated coordinator worktree with focused
+  tests, package typechecks, native static checks, and web/Electron builds.
 - 2026-09-14 — Implemented Segment E mobile interface fixes: persistent Markdown preview/source
   mode, Material You alpha-safe native review colors, and reversible Android split-view sidebar
   controls.
