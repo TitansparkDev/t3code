@@ -168,6 +168,10 @@ Full glossary with file links: `docs/internals/glossary.md`
 
 ## Recent request log
 
+- 2026-09-14 — Merged the latest upstream mainline and verified fork feature segments into the
+  configured default branch `omni/main`, repaired the fork desktop release workflow's Windows WSL
+  runtime handoff, and published v0.0.48 with Linux AppImage, Windows NSIS installer, updater
+  metadata, and a verified Android debug APK.
 - 2026-09-14 — Integrated final-answer notifications and Android live-update handling with the
   background connection lifecycle; focused server/client/mobile tests and the Android module and
   debug APK gates pass.
