@@ -25,6 +25,23 @@ const NATIVE_RGBA_COLOR =
 
 export const NATIVE_REVIEW_DIFF_CONTENT_WIDTH = 2_800;
 
+/** Render headerless selections without guessing file line numbers from selection indices. */
+export function buildNativeReviewSnippetRows(
+  comment: Pick<ReviewInlineComment, "id" | "diff" | "fenceLanguage">,
+): NativeReviewDiffRow[] {
+  if ((comment.fenceLanguage ?? "diff") !== "diff" || !comment.diff.trim()) return [];
+  const lines = comment.diff.replace(/\r\n/g, "\n").replace(/\n$/, "").split("\n");
+  if (lines.some((line) => !/^[ +-]/.test(line) || /^(---|\+\+\+) /.test(line))) return [];
+  return lines.map((line, index) => ({
+    kind: "line",
+    id: `${comment.id}:snippet:${index}`,
+    content: line.slice(1),
+    change: line[0] === "+" ? "add" : line[0] === "-" ? "delete" : "context",
+    oldLineNumber: null,
+    newLineNumber: null,
+  }));
+}
+
 function opaqueNativeHexColor(color: string, background: string): string {
   const hex = NATIVE_HEX_COLOR.exec(color);
   if (hex && hex[4] === undefined) return color;
@@ -40,8 +57,10 @@ function opaqueNativeHexColor(color: string, background: string): string {
         ? Number.parseInt(components[4], 16) / 255
         : Math.min(1, Math.max(0, Number(components[4])));
   const channels = [1, 2, 3].map((index) => {
-    const foreground = hex ? Number.parseInt(components[index], 16) : Number(components[index]);
-    const behind = Number.parseInt(backgroundHex[index], 16);
+    const foreground = hex
+      ? Number.parseInt(components[index] ?? "0", 16)
+      : Number(components[index] ?? "0");
+    const behind = Number.parseInt(backgroundHex[index] ?? "0", 16);
     return Math.round(foreground * alpha + behind * (1 - alpha));
   });
   return `#${channels.map((channel) => channel.toString(16).padStart(2, "0")).join("")}`;
@@ -346,6 +365,9 @@ function addNativeWordDiffRanges(
     for (let pairIndex = 0; pairIndex < pairedCount; pairIndex += 1) {
       const deletedRowIndex = deletedRowIndexes[pairIndex];
       const addedRowIndex = addedRowIndexes[pairIndex];
+      if (deletedRowIndex === undefined || addedRowIndex === undefined) {
+        continue;
+      }
       const deletedRow = nextRows[deletedRowIndex];
       const addedRow = nextRows[addedRowIndex];
       if (!deletedRow?.content || !addedRow?.content) {

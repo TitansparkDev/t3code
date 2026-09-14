@@ -11,6 +11,7 @@ import { AppText as Text } from "../../components/AppText";
 import { cn } from "../../lib/cn";
 import { useRemoteConnections } from "../../state/use-remote-environment-registry";
 import { ConnectionEnvironmentRow } from "./ConnectionEnvironmentRow";
+import { GitHubRoutingSettings } from "./GitHubRoutingSettings";
 
 export function ConnectionsRouteScreen() {
   const {
@@ -18,6 +19,7 @@ export function ConnectionsRouteScreen() {
     onReconnectEnvironment,
     onRefreshProviders,
     onRemoveEnvironmentPress,
+    onSetEnvironmentEnabled,
     onUpdateEnvironment,
   } = useRemoteConnections();
   const navigation = useNavigation();
@@ -76,6 +78,7 @@ export function ConnectionsRouteScreen() {
                   onReconnect={onReconnectEnvironment}
                   onRefreshProviders={onRefreshProviders}
                   onRemove={onRemoveEnvironmentPress}
+                  onSetEnabled={onSetEnvironmentEnabled}
                   onUpdate={onUpdateEnvironment}
                 />
               </View>
@@ -97,6 +100,7 @@ export function ConnectionsRouteScreen() {
             </Text>
           </View>
         )}
+        <GitHubRoutingSettings />
       </ScrollView>
     </View>
   );
