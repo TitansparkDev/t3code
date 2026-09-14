@@ -43,14 +43,6 @@
   - [ ] Add or update focused Electron tests. Run the targeted desktop build or checks without launching browser automation.
   - [ ] Commit this segment on its own branch and give the integrator the commit hash, changed-file list, test results, and open risks.
 
-- [ ] Segment D — Add the web context token badge.
-  - [ ] Inspect PR [#11450](https://github.com/pingdotgg/t3code/pull/11450), including every commit, changed file, review comment, unresolved thread, check result, and linked issue.
-  - [ ] Compare the PR with the current fork and current upstream code. Confirm the context snapshot meaning, units, provider coverage, layout assumptions, and performance before applying anything.
-  - [ ] Show the latest processed token count below the composer without causing extra activity scans or renders.
-  - [ ] Handle missing usage data, narrow windows, long values, compact mode, desktop wrapping, and providers that report incomplete counts.
-  - [ ] Add or update focused tests. Run only the relevant web checks.
-  - [ ] Commit this segment on its own branch and give the integrator the commit hash, changed-file list, test results, open risks, and PR differences.
-
 - [ ] Segment E — Apply the independent mobile interface fixes.
   - [ ] Inspect PRs [#10648](https://github.com/pingdotgg/t3code/pull/10648), [#11445](https://github.com/pingdotgg/t3code/pull/11445), and [#11339](https://github.com/pingdotgg/t3code/pull/11339), including every commit, changed file, review comment, unresolved thread, check result, and linked issue.
   - [ ] Compare all three PRs with the current fork and current upstream code. Identify code that already landed, stale assumptions, accessibility gaps, layout conflicts, missing tests, and regressions before applying anything.
