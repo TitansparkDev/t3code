@@ -181,4 +181,6 @@ Full glossary with file links: `docs/internals/glossary.md`
   the already-implemented notification segment, and the final integrated build/review gate.
 - 2026-09-13 — Split the requested master integration into dependency-aware segments for parallel
   agents, with full source-PR audits and a final integration gate.
+- 2026-09-14 — Implemented Segment I: final-answer relay notifications, bounded Markdown-to-plain-
+  text payloads, Android 16 Live Update chips/settings, and focused server/relay/mobile tests.
 - 2026-09-12 — Updated the Ubuntu desktop AppImage and managed server to the fork's v0.0.47 release, then restarted both.

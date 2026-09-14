@@ -18,9 +18,11 @@ import * as HttpClientResponse from "effect/unstable/http/HttpClientResponse";
 import type { ApnsCredentials } from "../Config.ts";
 import * as ApnsClient from "./ApnsClient.ts";
 import * as ApnsProviderTokens from "./ApnsProviderTokens.ts";
+import { jsonByteLength } from "./notificationText.ts";
 
 const isApnsJwtSigningError = Schema.is(ApnsClient.ApnsJwtSigningError);
 const isApnsHttpRequestError = Schema.is(ApnsClient.ApnsHttpRequestError);
+const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 const TestLayer = ApnsClient.layer.pipe(
   Layer.provide(ApnsProviderTokens.layer),
@@ -53,6 +55,44 @@ describe("ApnsClient", () => {
       },
     ],
   };
+
+  it.effect("bounds final answers and keeps them out of widget props", () =>
+    Effect.gen(function* () {
+      const apns = yield* ApnsClient.ApnsClient;
+      const body = 'Checked "quotes", \\ paths and 🤖. '.repeat(300);
+      const notification = {
+        title: "Thread",
+        body,
+        environmentId: EnvironmentId.make("env"),
+        threadId: ThreadId.make("thread"),
+        deepLink: "/threads/env/thread",
+      };
+      const push = apns.makePushNotificationRequest({ token: "token", notification });
+      expect(jsonByteLength(push.payload)).toBeLessThanOrEqual(4096);
+      expect(push.payload).toMatchObject({ deepLink: notification.deepLink });
+
+      const request = apns.makeLiveActivityRequest({
+        token: "token",
+        event: "update",
+        nowEpochSeconds: 0,
+        nowIso: DateTime.formatIso(now),
+        state: {
+          ...state,
+          activities: Array.from({ length: 5 }, (_, index) => ({
+            ...state.activities[0]!,
+            threadId: ThreadId.make(`thread-${index}`),
+            threadTitle: "🤖".repeat(60),
+            projectTitle: "漢".repeat(120),
+            completionBody: body,
+          })),
+        },
+        alert: { title: "Thread", body },
+      });
+      expect(jsonByteLength(request.payload)).toBeLessThanOrEqual(4096);
+      expect(encodeJson(request.payload)).not.toContain("completionBody");
+      expect(request.payload).toMatchObject({ aps: { alert: { sound: "default" } } });
+    }).pipe(Effect.provide(TestLayer)),
+  );
 
   it.effect("requests an update push token when remotely starting a Live Activity", () =>
     Effect.gen(function* () {

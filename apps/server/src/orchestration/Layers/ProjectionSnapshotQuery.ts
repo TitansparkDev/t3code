@@ -1277,6 +1277,45 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       ),
   });
 
+  // Bound the raw Markdown before it crosses the signed relay payload. The
+  // full answer remains in the thread projection; notifications only need a
+  // small, latest-turn excerpt.
+  const getThreadCompletionResponseRow = SqlSchema.findOneOption({
+    Request: ThreadIdLookupInput,
+    Result: Schema.Struct({ text: Schema.String }),
+    execute: ({ threadId }) => sql`
+      SELECT substr(messages.text, 1, 16000) ||
+        CASE WHEN length(messages.text) > 16000 THEN '…' ELSE '' END AS text
+      FROM projection_turns AS turns
+      JOIN projection_thread_messages AS messages
+        ON messages.thread_id = turns.thread_id
+        AND messages.message_id = turns.assistant_message_id
+        AND messages.turn_id = turns.turn_id
+      WHERE turns.rowid = (
+        SELECT rowid FROM projection_turns
+        WHERE thread_id = ${threadId}
+        ORDER BY COALESCE(started_at, requested_at) DESC, rowid DESC
+        LIMIT 1
+      )
+        AND turns.state = 'completed'
+        AND messages.role = 'assistant'
+        AND messages.is_streaming = 0
+    `,
+  });
+
+  const getThreadCompletionResponse: ProjectionSnapshotQueryShape["getThreadCompletionResponse"] = (
+    threadId,
+  ) =>
+    getThreadCompletionResponseRow({ threadId }).pipe(
+      Effect.map(Option.map((row) => row.text)),
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.getThreadCompletionResponse:query",
+          "ProjectionSnapshotQuery.getThreadCompletionResponse:decodeRow",
+        ),
+      ),
+    );
+
   const getTurnStartMessageRow = SqlSchema.findOneOption({
     Request: TurnStartMessageLookupInput,
     Result: ProjectionTurnStartMessageDbRowSchema,
@@ -3675,6 +3714,7 @@ pending_approval_requests AS (
       );
 
   return {
+    getThreadCompletionResponse,
     getCommandReadModel,
     getUserInputActivity,
     getSnapshot,

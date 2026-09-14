@@ -67,6 +67,11 @@ Codex, Claude, Cursor, Grok, OpenCode, and Antigravity.
   internals and binary attachment data while retaining attachment names, and blocks active or
   pending source work. The target provider and model must be enabled, installed, ready, and
   authenticated; servers without fork support hide the action.
+- Agent-awareness completion alerts include a bounded plain-text excerpt of the completed
+  assistant answer when one exists, with concise status fallbacks for empty answers and grouped
+  alerts. Android ongoing activity notifications show Active or Review chips while work is live.
+- Android 16+ exposes a Live Update Settings entry for the system promotion controls; older Android
+  versions keep the ordinary ongoing notification behavior and use the existing app settings path.
 - T3 Connect stores its managed public endpoint with the cloud link, and web pairing links can use
   that endpoint when it is available. Web and mobile cloud linking preserve the endpoint.
 - Direct pairing also supports a user-managed public HTTPS endpoint, such as a Cloudflare Tunnel,
