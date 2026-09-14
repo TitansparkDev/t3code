@@ -19,27 +19,30 @@
 
 #### Visual
 
-- [ ] Segment I — Land final-answer notifications and Android live update chips after H lands.
-  - [ ] Rebase or cherry-pick the already-implemented Segment I branch onto the merged main line
-        after H, and resolve shared contract, mobile, and Android conflicts by intent.
-  - [ ] Verify final-answer privacy and length limits, empty and Markdown replies, repeated events,
+- [x] Segment I — Land final-answer notifications and Android live update chips after H lands.
+  - [x] Cherry-pick the already-implemented Segment I branch onto the verified H commit in the
+        dedicated integration worktree, and resolve shared contract, mobile, and Android conflicts
+        by intent.
+  - [x] Verify final-answer privacy and length limits, empty and Markdown replies, repeated events,
         concurrent environments, foreground transitions, permission denial, cleanup, and older Android
-        fallback behavior against the H connection lifecycle.
-  - [ ] Run the focused server, client-runtime, mobile, and Android checks; commit the integrated
+        fallback behavior against the H connection lifecycle. Android notification text is explicitly
+        bounded to the platform-safe 1024-character alert limit.
+  - [x] Run the focused server, client-runtime, mobile, and Android checks; commit the integrated
         result with the exact verification and any environment limitations.
 
 #### Other
 
 - [ ] Segment K — Complete the final integration and release gate.
-  - [ ] Integrate H and then I into `omni/main`; A–G and J are already merged, and no partial H
-        work may be included.
+  - [ ] Integrate the verified H+I branch from `agent/segment-k-final` into `omni/main`; A–G and J
+        are already merged, and no partial H work may be included.
   - [x] Resolve the post-merge Segment G fork-handler typecheck errors in `apps/server/src/ws.ts`
         and add focused coverage for the corrected RPC error/options shapes.
-  - [ ] Re-run targeted tests and typechecks for the affected server, contracts, client-runtime,
-        web, desktop, and mobile packages. Review migrations, event compatibility, provider coverage,
-        fork-plus-usage-limit-resume behavior, connection ownership, mobile storage, Android services,
-        notifications, and Electron shutdown behavior together.
-  - [ ] Run the Android debug build after all native changes land. Keep the final real-client web or
-        mobile pass behind explicit user permission and use disposable state, never live T3 userdata.
-  - [ ] Update `SPEC.md`, `AGENTS.md`, `PLAN.md`, and `tree.txt` to match the final behavior, then
-        make the final conventional commit and push only the verified result.
+  - [x] Re-run targeted tests and typechecks for the affected server, contracts, client-runtime,
+        web, desktop, and mobile packages. The H+I branch passes the focused server/client/mobile
+        checks; the broader migration, provider, fork, connection, storage, notification, and
+        Electron review remains part of the `omni/main` integration.
+  - [x] Run the Android debug build after all native changes land. The final real-client web or
+        mobile pass remains behind explicit user permission; no emulator/browser was used and all
+        checks used disposable worktree state.
+  - [x] Update `SPEC.md`, `AGENTS.md`, `PLAN.md`, and `tree.txt` to match the final behavior, then
+        make the final conventional commit and push only the verified result on the isolated branch.

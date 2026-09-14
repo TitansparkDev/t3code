@@ -168,6 +168,9 @@ Full glossary with file links: `docs/internals/glossary.md`
 
 ## Recent request log
 
+- 2026-09-14 — Integrated final-answer notifications and Android live-update handling with the
+  background connection lifecycle; focused server/client/mobile tests and the Android module and
+  debug APK gates pass.
 - 2026-09-14 — Added and verified the Android background-connection service: one native foreground
   watchdog wakes the existing JS environment reporter, persists across restart, and handles multiple
   environments without owning sockets or credentials; full debug APK and focused Android/mobile
@@ -181,4 +184,3 @@ Full glossary with file links: `docs/internals/glossary.md`
   the already-implemented notification segment, and the final integrated build/review gate.
 - 2026-09-13 — Split the requested master integration into dependency-aware segments for parallel
   agents, with full source-PR audits and a final integration gate.
-- 2026-09-12 — Updated the Ubuntu desktop AppImage and managed server to the fork's v0.0.47 release, then restarted both.

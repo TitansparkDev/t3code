@@ -122,7 +122,10 @@ class AgentNotificationsTest {
     AgentNotifications.receive(context, update("long-answer", false) + ("alert_body" to answer))
 
     val alert = manager.activeNotifications.single()
-    assertEquals(answer, alert.notification.extras.getString(Notification.EXTRA_BIG_TEXT))
+    assertEquals(
+      answer.take(1021).trimEnd() + "...",
+      alert.notification.extras.getString(Notification.EXTRA_BIG_TEXT)
+    )
     assertEquals(
       "t3code-dev://threads/environment/thread",
       shadowOf(alert.notification.contentIntent).savedIntent.dataString

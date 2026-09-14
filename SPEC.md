@@ -40,6 +40,10 @@ Codex, Claude, Cursor, Grok, OpenCode, and Antigravity.
   all environments, shows a low-priority ongoing notification, wakes the reporter periodically, and
   restores its desired state after device restart. It stops when the app returns to the foreground or
   no environments remain; notification permission and OEM battery policies can still limit delivery.
+- Agent-awareness notifications can include bounded plain-text completion answers. Android activity
+  cards are suppressed while the app is foregrounded, group updates by environment, expire stale
+  activity, and deep-link back to the related thread; Android 16 live-update settings have a
+  compatibility fallback on older devices.
 - Mobile Markdown file screens can switch between rendered preview and source mode. The choice is
   remembered on the device, while files opened at a source line always stay in source mode and hide
   the mode controls. Unsupported, binary, missing, and truncated files retain the existing source

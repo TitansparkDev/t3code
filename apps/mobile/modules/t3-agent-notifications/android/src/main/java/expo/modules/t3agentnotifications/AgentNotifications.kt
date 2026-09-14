@@ -51,6 +51,7 @@ object AgentNotifications {
   private const val ALERT_TAG = "t3-agent-alert"
   private const val ACTIVITY_ID = 73001
   private const val MAX_MESSAGE_AGE_MS = 10 * 60 * 1000L
+  private const val MAX_ALERT_BODY_LENGTH = 1024
   private const val RUNNING_LIFETIME_MS = 2 * 60 * 60 * 1000L
   private const val MAX_LIFETIME_MS = 24 * 60 * 60 * 1000L
 
@@ -142,7 +143,7 @@ object AgentNotifications {
       if (!ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
         val title = data["alert_title"].orEmpty().take(120)
         // The relay fits the full response to FCM's encoded payload budget.
-        val body = data["alert_body"].orEmpty().take(4096)
+        val body = fitAlertBody(data["alert_body"].orEmpty())
         val id = alertId.hashCode()
         val notification = base(context, ALERT_CHANNEL)
           .setContentTitle(title).setContentText(body)
@@ -282,6 +283,12 @@ object AgentNotifications {
       TextUtils.TruncateAt.END
     )
     return "$prefix$title$separator$project"
+  }
+
+  private fun fitAlertBody(value: String): String {
+    val trimmed = value.trim()
+    if (trimmed.length <= MAX_ALERT_BODY_LENGTH) return trimmed
+    return trimmed.take(MAX_ALERT_BODY_LENGTH - 3).trimEnd() + "..."
   }
 
   private fun manager(context: Context) = context.getSystemService(NotificationManager::class.java)
