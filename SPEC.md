@@ -8,6 +8,12 @@ Codex, Claude, Cursor, Grok, OpenCode, and Antigravity.
 
 - Provider sessions use the provider-native adapter protocol. Antigravity uses Google's ACP server
   for authentication, model discovery, permissions, turns, and session resume.
+- When Codex, Claude, or OpenCode reports a usage limit, the server classifies that failure
+  separately and preserves the provider reset time when one is available. Web can schedule a
+  durable automatic resume, resume immediately, or cancel it; after a restart or remote client
+  action, the server restores the schedule and uses bounded backoff if the provider still rejects
+  the continuation. Other providers remain compatible with the optional state without opting into
+  automatic resume until their adapter exposes equivalent reset metadata.
 - Provider instances are isolated by instance ID, including Antigravity profiles and quota state.
 - Desktop supports independent T3 windows from File → New Window (`CmdOrCtrl+Shift+N`). All windows
   share one background server; the primary window owns the persisted bounds and app shutdown state.

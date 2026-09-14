@@ -181,5 +181,8 @@ Full glossary with file links: `docs/internals/glossary.md`
 - 2026-09-14 — Implemented Segment G cross-provider conversation forks in an isolated worktree:
   typed contracts, bounded transcript handoff, fresh provider sessions, web and mobile actions,
   and focused tests for all six provider adapters.
+- 2026-09-14 — Implemented Segment J on a separate worktree: typed durable usage-limit resume
+  state, provider classification and reset persistence, restart-safe retries and cancellation, and
+  web controls.
 - 2026-09-13 — Split the requested 15-feature master integration into dependency-aware segments for parallel agents, with full source-PR audits and a final integration gate.
 - 2026-09-12 — Updated the Ubuntu desktop AppImage and managed server to the fork's v0.0.47 release, then restarted both.

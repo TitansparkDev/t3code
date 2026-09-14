@@ -47,6 +47,7 @@ import {
 import { type EnvironmentConnectionPresentation } from "@t3tools/client-runtime/connection";
 import { wasBootstrapThreadDeleted } from "@t3tools/client-runtime/errors";
 import { type CodexArtifactTemplate } from "@t3tools/client-runtime/codex-artifact-templates";
+import { initialUsageLimitResumeAt } from "@t3tools/client-runtime/state/usage-limit-resume";
 import { effectiveSnoozed, threadWokeAt } from "@t3tools/client-runtime/state/thread-settled";
 import {
   parseCodexFeedbackCommand,
@@ -369,6 +370,7 @@ import {
   dismissThreadErrorBannerForSession,
   getThreadErrorBannerKey,
   isThreadErrorBannerDismissedForSession,
+  isProviderRateLimitError,
   shouldShowThreadErrorBanner,
   ThreadErrorBanner,
 } from "./chat/ThreadErrorBanner";
@@ -1474,6 +1476,12 @@ export default function ChatView(props: ChatViewProps) {
     reportFailure: false,
   });
   const startThreadTurn = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
+  const scheduleUsageLimitResume = useAtomCommand(threadEnvironment.scheduleUsageLimitResume, {
+    reportFailure: false,
+  });
+  const cancelUsageLimitResume = useAtomCommand(threadEnvironment.cancelUsageLimitResume, {
+    reportFailure: false,
+  });
   const createAttachmentAssetUrl = useAtomQueryRunner(assetEnvironment.createUrl, {
     reportFailure: false,
     refresh: true,
@@ -1887,6 +1895,61 @@ export default function ChatView(props: ChatViewProps) {
   // session.lastError. Bump a tick so the banner hides immediately. Mirrors
   // the branch mismatch banner.
   const [, setThreadErrorBannerDismissTick] = useState(0);
+  const usageLimitResume = activeServerThread?.usageLimitResume ?? null;
+  const isUsageLimitError =
+    activeServerThread?.session?.lastErrorClass === "usage_limit" ||
+    (threadError !== null && isProviderRateLimitError(threadError));
+  const [usageLimitResumePending, setUsageLimitResumePending] = useState(false);
+  const dispatchUsageLimitResume = useCallback(
+    async (resumeAt: string, action: string) => {
+      if (!activeServerThread) return;
+      setUsageLimitResumePending(true);
+      const result = await scheduleUsageLimitResume({
+        environmentId: activeServerThread.environmentId,
+        input: {
+          threadId: activeServerThread.id,
+          resumeAt,
+        },
+      });
+      setUsageLimitResumePending(false);
+      if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+        toastManager.add({
+          type: "error",
+          title: `Could not ${action} automatic resume`,
+          description: chatActionErrorMessage(squashAtomCommandFailure(result)),
+        });
+      }
+    },
+    [activeServerThread, scheduleUsageLimitResume],
+  );
+  const handleScheduleUsageLimitResume = useCallback(
+    () =>
+      dispatchUsageLimitResume(
+        initialUsageLimitResumeAt(activeServerThread?.session?.retryAt),
+        "schedule",
+      ),
+    [activeServerThread?.session?.retryAt, dispatchUsageLimitResume],
+  );
+  const handleResumeNowUsageLimit = useCallback(
+    () => dispatchUsageLimitResume(new Date(Date.now() + 2_000).toISOString(), "schedule"),
+    [dispatchUsageLimitResume],
+  );
+  const handleCancelUsageLimitResume = useCallback(async () => {
+    if (!activeServerThread) return;
+    setUsageLimitResumePending(true);
+    const result = await cancelUsageLimitResume({
+      environmentId: activeServerThread.environmentId,
+      input: { threadId: activeServerThread.id },
+    });
+    setUsageLimitResumePending(false);
+    if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+      toastManager.add({
+        type: "error",
+        title: "Could not cancel automatic resume",
+        description: chatActionErrorMessage(squashAtomCommandFailure(result)),
+      });
+    }
+  }, [activeServerThread, cancelUsageLimitResume]);
   const runtimeMode = composerRuntimeMode ?? activeThread?.runtimeMode ?? DEFAULT_RUNTIME_MODE;
   const isLocalDraftThread = !isServerThread && localDraftThread !== undefined;
   const canCheckoutPullRequestIntoThread = isLocalDraftThread;
@@ -8865,6 +8928,13 @@ export default function ChatView(props: ChatViewProps) {
 
         <ThreadErrorBanner
           error={visibleThreadError}
+          usageLimitResume={isUsageLimitError ? usageLimitResume : undefined}
+          usageLimitResumePending={usageLimitResumePending}
+          onScheduleUsageLimitResume={
+            isUsageLimitError ? handleScheduleUsageLimitResume : undefined
+          }
+          onResumeNowUsageLimit={isUsageLimitError ? handleResumeNowUsageLimit : undefined}
+          onCancelUsageLimitResume={isUsageLimitError ? handleCancelUsageLimitResume : undefined}
           onDismiss={() => {
             setThreadError(activeThread.id, null);
             dismissThreadErrorBannerForSession(threadErrorBannerKey);
@@ -8905,6 +8975,15 @@ export default function ChatView(props: ChatViewProps) {
               />
               <ThreadErrorBanner
                 error={visibleThreadError}
+                usageLimitResume={isUsageLimitError ? usageLimitResume : undefined}
+                usageLimitResumePending={usageLimitResumePending}
+                onScheduleUsageLimitResume={
+                  isUsageLimitError ? handleScheduleUsageLimitResume : undefined
+                }
+                onResumeNowUsageLimit={isUsageLimitError ? handleResumeNowUsageLimit : undefined}
+                onCancelUsageLimitResume={
+                  isUsageLimitError ? handleCancelUsageLimitResume : undefined
+                }
                 onDismiss={() => {
                   setThreadError(activeThread.id, null);
                   dismissThreadErrorBannerForSession(threadErrorBannerKey);

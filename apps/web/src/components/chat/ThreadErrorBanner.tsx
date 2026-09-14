@@ -1,4 +1,5 @@
 import { memo } from "react";
+import type { ThreadUsageLimitResume } from "@t3tools/contracts";
 import { isProviderRateLimitFailure } from "@t3tools/shared/providerRateLimit";
 import { Alert, AlertAction, AlertDescription } from "../ui/alert";
 import { Button } from "../ui/button";
@@ -41,11 +42,22 @@ export function isProviderRateLimitError(error: string): boolean {
 export const ThreadErrorBanner = memo(function ThreadErrorBanner({
   error,
   onDismiss,
+  usageLimitResume,
+  onScheduleUsageLimitResume,
+  onResumeNowUsageLimit,
+  onCancelUsageLimitResume,
+  usageLimitResumePending,
 }: {
   error: string | null;
-  onDismiss?: () => void;
+  onDismiss?: (() => void) | undefined;
+  usageLimitResume?: ThreadUsageLimitResume | null | undefined;
+  onScheduleUsageLimitResume?: (() => void) | undefined;
+  onResumeNowUsageLimit?: (() => void) | undefined;
+  onCancelUsageLimitResume?: (() => void) | undefined;
+  usageLimitResumePending?: boolean | undefined;
 }) {
   if (!error) return null;
+  const showUsageLimitResume = isProviderRateLimitError(error) || usageLimitResume !== undefined;
   return (
     <div className="pointer-events-auto mx-auto w-fit max-w-[min(48rem,calc(100%-2rem))] pt-3">
       <Alert
@@ -62,17 +74,70 @@ export const ThreadErrorBanner = memo(function ThreadErrorBanner({
               {error}
             </TooltipPopup>
           </Tooltip>
-          {isProviderRateLimitError(error) && (
+          {showUsageLimitResume && (
             <div className="mt-1 text-xs text-muted-foreground">
-              Send again after the provider reset window.
+              {usageLimitResume?.nextAttemptAt === null
+                ? "Resuming automatically…"
+                : usageLimitResume?.nextAttemptAt !== undefined
+                  ? `Will resume at ${new Date(usageLimitResume.nextAttemptAt).toLocaleTimeString(
+                      [],
+                      {
+                        hour: "numeric",
+                        minute: "2-digit",
+                      },
+                    )}.`
+                  : "Resume automatically after the provider reset window."}
             </div>
           )}
         </AlertDescription>
-        {onDismiss && (
-          <AlertAction>
-            <Button variant="ghost" size="icon-xs" aria-label="Dismiss error" onClick={onDismiss}>
-              <XIcon className="text-destructive" />
-            </Button>
+        {(onScheduleUsageLimitResume ||
+          onResumeNowUsageLimit ||
+          onCancelUsageLimitResume ||
+          onDismiss) && (
+          <AlertAction className="flex items-center gap-1">
+            {usageLimitResume?.nextAttemptAt === null ? null : (
+              <>
+                {onResumeNowUsageLimit && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    aria-label="Resume now"
+                    disabled={usageLimitResumePending}
+                    onClick={onResumeNowUsageLimit}
+                  >
+                    Resume now
+                  </Button>
+                )}
+                {usageLimitResume?.nextAttemptAt
+                  ? onCancelUsageLimitResume && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        aria-label="Cancel automatic resume"
+                        disabled={usageLimitResumePending}
+                        onClick={onCancelUsageLimitResume}
+                      >
+                        Cancel
+                      </Button>
+                    )
+                  : onScheduleUsageLimitResume && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        aria-label="Resume automatically"
+                        disabled={usageLimitResumePending}
+                        onClick={onScheduleUsageLimitResume}
+                      >
+                        Resume automatically
+                      </Button>
+                    )}
+              </>
+            )}
+            {onDismiss && (
+              <Button variant="ghost" size="icon-xs" aria-label="Dismiss error" onClick={onDismiss}>
+                <XIcon className="text-destructive" />
+              </Button>
+            )}
           </AlertAction>
         )}
       </Alert>

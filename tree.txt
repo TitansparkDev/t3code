@@ -19166,6 +19166,7 @@ apps/server/src/orchestration/decider.settled.test.ts
 apps/server/src/orchestration/decider.snoozed.test.ts
 apps/server/src/orchestration/decider.titleRegeneration.test.ts
 apps/server/src/orchestration/decider.ts
+apps/server/src/orchestration/decider.usageLimitResume.test.ts
 apps/server/src/orchestration/decider.userInputDismiss.test.ts
 apps/server/src/orchestration/http.ts
 apps/server/src/orchestration/projector.pinned.test.ts
@@ -19274,6 +19275,8 @@ apps/server/src/persistence/Migrations/049_ProjectionThreadsActiveOrderKey.test.
 apps/server/src/persistence/Migrations/049_ProjectionThreadsActiveOrderKey.ts
 apps/server/src/persistence/Migrations/050_ProjectionThreadPullRequests.test.ts
 apps/server/src/persistence/Migrations/050_ProjectionThreadPullRequests.ts
+apps/server/src/persistence/Migrations/051_ProjectionThreadUsageLimitResume.test.ts
+apps/server/src/persistence/Migrations/051_ProjectionThreadUsageLimitResume.ts
 apps/server/src/persistence/ProjectionThreadPullRequests.ts
 apps/server/src/persistence/ProviderSessionRuntime.ts
 apps/server/src/persistence/RepositoryErrorCorrelation.test.ts
@@ -19490,6 +19493,8 @@ apps/server/src/provider/testFixtures/codexMultiAgentWire.json
 apps/server/src/provider/testUtils/providerAdapterRegistryMock.ts
 apps/server/src/provider/testUtils/providerRegistryMock.ts
 apps/server/src/provider/unavailableProviderSnapshot.ts
+apps/server/src/provider/usageLimits.test.ts
+apps/server/src/provider/usageLimits.ts
 apps/server/src/provider/userInputAttachments.test.ts
 apps/server/src/provider/userInputAttachments.ts
 apps/server/src/pullRequest/AzureDevOpsPullRequestCli.test.ts
@@ -21299,6 +21304,8 @@ packages/client-runtime/src/state/threads-sync.test.ts
 packages/client-runtime/src/state/threads.ts
 packages/client-runtime/src/state/usage.test.ts
 packages/client-runtime/src/state/usage.ts
+packages/client-runtime/src/state/usageLimitResume.test.ts
+packages/client-runtime/src/state/usageLimitResume.ts
 packages/client-runtime/src/state/vcs.test.ts
 packages/client-runtime/src/state/vcs.ts
 packages/client-runtime/src/state/vcsAction.test.ts
@@ -21394,6 +21401,7 @@ packages/contracts/src/terminal.ts
 packages/contracts/src/threadFork.test.ts
 packages/contracts/src/threadFork.ts
 packages/contracts/src/usage.ts
+packages/contracts/src/usageLimitResume.test.ts
 packages/contracts/src/usageLimitSourceId.ts
 packages/contracts/src/vcs.ts
 packages/contracts/tsconfig.json

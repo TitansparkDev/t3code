@@ -58,6 +58,7 @@ import {
   toOpenCodeQuestionAnswers,
   type OpenCodeServerConnection,
 } from "../opencodeRuntime.ts";
+import { providerUsageLimitFromError } from "../usageLimits.ts";
 import * as Option from "effect/Option";
 
 const PROVIDER = ProviderDriverKind.make("opencode");
@@ -2685,7 +2686,12 @@ export function makeOpenCodeAdapter(
             type: "runtime.error",
             payload: {
               message,
-              class: "provider_error",
+              class: providerUsageLimitFromError({
+                message,
+                detail: event.properties.error,
+              })
+                ? "usage_limit"
+                : "provider_error",
               detail: event.properties.error,
             },
           });

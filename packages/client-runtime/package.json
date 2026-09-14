@@ -179,6 +179,10 @@
       "types": "./src/state/usage.ts",
       "default": "./src/state/usage.ts"
     },
+    "./state/usage-limit-resume": {
+      "types": "./src/state/usageLimitResume.ts",
+      "default": "./src/state/usageLimitResume.ts"
+    },
     "./state/server": {
       "types": "./src/state/server.ts",
       "default": "./src/state/server.ts"

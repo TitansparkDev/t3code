@@ -86,16 +86,16 @@
   - [x] Add or update focused contract, server, web, and mobile tests.
   - [x] Commit this segment on its own branch and give the integrator the commit hash, changed-file list, test results, open risks, and PR differences.
 
-- [ ] Segment J — Add durable automatic resume after a provider limit resets, after Segment G lands.
-  - [ ] Inspect PR [#8577](https://github.com/pingdotgg/t3code/pull/8577), including every commit, changed file, review comment, unresolved thread, check result, and linked issue.
-  - [ ] Compare the PR with the integrated fork and current upstream code. Identify stale event shapes, provider classification gaps, timer durability risks, missing cancellation paths, missing tests, and regressions before applying anything.
-  - [ ] Add typed scheduled, attempted, and cancelled states. Keep timer decisions pure and put provider-specific error classification at adapter boundaries.
-  - [ ] Persist reset timing and dispatch one hidden continuation when the limit resets. Apply bounded exponential backoff when the provider still rejects work.
-  - [ ] Cancel or replace the schedule when the user resumes, sends a new prompt, changes provider through a fork, settles or deletes the thread, removes the environment, or another device acts first.
-  - [ ] Show the scheduled state on web with Resume now and Cancel actions. Ensure mobile can safely observe the new contract even if it has no new control.
-  - [ ] Check clock changes, process restart, duplicate timers, stale receipts, concurrent devices, all providers, unknown reset times, and remote connection modes.
-  - [ ] Add focused decider, reactor, persistence, contract, and web tests that wait on receipts and worker drains rather than time-based polling.
-  - [ ] Commit this segment on its own branch and give the integrator the commit hash, changed-file list, test results, open risks, and PR differences.
+- [x] Segment J — Add durable automatic resume after a provider limit resets, after Segment G lands.
+  - [x] Inspect PR [#8577](https://github.com/pingdotgg/t3code/pull/8577), including every commit, changed file, review comment, unresolved thread, check result, and linked issue.
+  - [x] Compare the PR with the integrated fork and current upstream code. Identify stale event shapes, provider classification gaps, timer durability risks, missing cancellation paths, missing tests, and regressions before applying anything.
+  - [x] Add typed scheduled, attempted, and cancelled states. Keep timer decisions pure and put provider-specific error classification at adapter boundaries.
+  - [x] Persist reset timing and dispatch one hidden continuation when the limit resets. Apply bounded exponential backoff when the provider still rejects work.
+  - [x] Cancel or replace the schedule when the user resumes, sends a new prompt, changes provider through a fork, settles or deletes the thread, removes the environment, or another device acts first.
+  - [x] Show the scheduled state on web with Resume now and Cancel actions. Ensure mobile can safely observe the new contract even if it has no new control.
+  - [x] Check clock changes, process restart, duplicate timers, stale receipts, concurrent devices, all providers, unknown reset times, and remote connection modes.
+  - [x] Add focused decider, reactor, persistence, contract, and web tests that wait on receipts and worker drains rather than time-based polling.
+  - [x] Commit this segment on its own branch and give the integrator the commit hash, changed-file list, test results, open risks, and PR differences.
 
 - [ ] Segment K — Integrate and verify all completed segments.
   - [ ] Use one clean integration branch. Merge or cherry-pick one reviewed segment at a time in dependency order: A, B, C, D, F, E, H, G, J, then I.
