@@ -16,6 +16,7 @@ import {
   RuntimeMode,
   ThreadLinkedPullRequest,
   ThreadId,
+  ThreadUsageLimitResume,
   TurnId,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
@@ -45,6 +46,9 @@ export const ProjectionThread = Schema.Struct({
   unsettledAt: Schema.NullOr(IsoDateTime),
   snoozedUntil: Schema.NullOr(IsoDateTime),
   snoozedAt: Schema.NullOr(IsoDateTime),
+  // Optional so repository callers and pre-resume projections can omit the
+  // nullable column while the migration is being rolled forward.
+  usageLimitResume: Schema.optional(Schema.NullOr(ThreadUsageLimitResume)),
   pinnedAt: Schema.NullOr(IsoDateTime),
   pinOrderKey: Schema.optional(Schema.NullOr(Schema.String)),
   activeOrderKey: Schema.optional(Schema.NullOr(Schema.String)),

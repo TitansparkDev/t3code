@@ -215,6 +215,44 @@ export function applyThreadDetailEvent(
         },
       };
 
+    case "thread.usage-limit-resume-scheduled":
+      return {
+        kind: "updated",
+        thread: {
+          ...thread,
+          usageLimitResume: {
+            nextAttemptAt: event.payload.resumeAt,
+            attempt: event.payload.attempt,
+          },
+          updatedAt: event.payload.updatedAt,
+        },
+      };
+
+    case "thread.usage-limit-resume-cancelled":
+      return {
+        kind: "updated",
+        thread: {
+          ...thread,
+          usageLimitResume: null,
+          updatedAt: event.payload.updatedAt,
+        },
+      };
+
+    case "thread.usage-limit-resume-attempted":
+      return event.payload.shouldResume
+        ? {
+            kind: "updated",
+            thread: {
+              ...thread,
+              usageLimitResume: {
+                nextAttemptAt: null,
+                attempt: event.payload.attempt,
+              },
+              updatedAt: event.payload.updatedAt,
+            },
+          }
+        : { kind: "unchanged" };
+
     case "thread.pinned":
       return {
         kind: "updated",

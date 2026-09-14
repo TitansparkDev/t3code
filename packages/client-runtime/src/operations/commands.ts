@@ -36,6 +36,9 @@ export type DeleteThreadInput = CommandInput<"thread.delete">;
 export type ArchiveThreadInput = CommandInput<"thread.archive">;
 export type UnarchiveThreadInput = CommandInput<"thread.unarchive">;
 export type SettleThreadInput = CommandInput<"thread.settle">;
+export type ScheduleThreadUsageLimitResumeInput =
+  CommandInput<"thread.usage-limit-resume.schedule">;
+export type CancelThreadUsageLimitResumeInput = CommandInput<"thread.usage-limit-resume.cancel">;
 export type UnsettleThreadInput = CommandInput<"thread.unsettle">;
 export type SnoozeThreadInput = CommandInput<"thread.snooze">;
 export type UnsnoozeThreadInput = CommandInput<"thread.unsnooze">;
@@ -184,6 +187,30 @@ export const unsettleThread: (input: UnsettleThreadInput) => CommandEffect = Eff
     commandId: yield* commandId(input),
   });
 });
+
+export const scheduleThreadUsageLimitResume: (
+  input: ScheduleThreadUsageLimitResumeInput,
+) => CommandEffect = Effect.fn("EnvironmentCommands.scheduleThreadUsageLimitResume")(
+  function* (input) {
+    return yield* dispatch({
+      ...input,
+      type: "thread.usage-limit-resume.schedule",
+      commandId: yield* commandId(input),
+    });
+  },
+);
+
+export const cancelThreadUsageLimitResume: (
+  input: CancelThreadUsageLimitResumeInput,
+) => CommandEffect = Effect.fn("EnvironmentCommands.cancelThreadUsageLimitResume")(
+  function* (input) {
+    return yield* dispatch({
+      ...input,
+      type: "thread.usage-limit-resume.cancel",
+      commandId: yield* commandId(input),
+    });
+  },
+);
 
 export const snoozeThread: (input: SnoozeThreadInput) => CommandEffect = Effect.fn(
   "EnvironmentCommands.snoozeThread",

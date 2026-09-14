@@ -9,6 +9,7 @@ import {
   classifyTaskAgentKind,
   EventId,
   isToolLifecycleItemType,
+  ProviderDriverKind,
   ThreadId,
   type ThreadTokenUsageSnapshot,
   TurnId,
@@ -57,6 +58,7 @@ import {
   formatProviderRateLimitFailure,
   isProviderRateLimitFailure,
 } from "../providerRateLimit.ts";
+import { nextUsageLimitRetryAt, providerUsageLimitFromError } from "../../provider/usageLimits.ts";
 
 const providerTurnKey = (threadId: ThreadId, turnId: TurnId) => `${threadId}:${turnId}`;
 const providerTaskKey = (threadId: ThreadId, taskId: string) => `${threadId}:${taskId}`;
@@ -435,6 +437,8 @@ export function runtimeEventToActivities(
           summary: isRateLimited ? "Provider usage limit reached" : "Runtime error",
           payload: {
             message: truncateDetail(event.payload.message),
+            ...(event.payload.class !== undefined ? { class: event.payload.class } : {}),
+            ...(event.payload.retryAt !== undefined ? { retryAt: event.payload.retryAt } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -1594,9 +1598,14 @@ const make = Effect.gen(function* () {
                 normalizeRuntimeTurnState(event.payload.state) === "failed"
               ? event.payload.errorMessage
               : undefined;
+        const lifecycleUsageLimit =
+          lifecycleRateLimitDetail === undefined
+            ? null
+            : providerUsageLimitFromError({ message: lifecycleRateLimitDetail });
         const eventIsRateLimited =
-          lifecycleRateLimitDetail !== undefined &&
-          isProviderRateLimitFailure(lifecycleRateLimitDetail);
+          lifecycleUsageLimit !== null ||
+          (lifecycleRateLimitDetail !== undefined &&
+            isProviderRateLimitFailure(lifecycleRateLimitDetail));
         // A rate-limit failure is a user-visible latch. Providers commonly
         // redraw `ready` or `started` after rejecting a turn; those passive
         // lifecycle events must not erase the recovery state. A new turn is
@@ -1654,6 +1663,24 @@ const make = Effect.gen(function* () {
                 : status === "ready" || status === "interrupted"
                   ? null
                   : (thread.session?.lastError ?? null);
+        const lifecycleErrorClass =
+          event.type === "turn.completed" &&
+          normalizeRuntimeTurnState(event.payload.state) === "failed" &&
+          thread.session?.lastErrorClass !== undefined
+            ? thread.session.lastErrorClass
+            : retainsRateLimit || eventIsRateLimited
+              ? ("usage_limit" as const)
+              : status === "error"
+                ? ("provider_error" as const)
+                : undefined;
+        const lifecycleRetryAt =
+          event.type === "turn.completed" &&
+          normalizeRuntimeTurnState(event.payload.state) === "failed" &&
+          thread.session?.retryAt !== undefined
+            ? thread.session.retryAt
+            : retainsRateLimit
+              ? thread.session?.retryAt
+              : lifecycleUsageLimit?.retryAt;
 
         if (shouldApplyThreadLifecycle) {
           if (event.type === "turn.started" && acceptedTurnStartedSourcePlan !== null) {
@@ -1690,9 +1717,29 @@ const make = Effect.gen(function* () {
               runtimeMode: thread.session?.runtimeMode ?? "full-access",
               activeTurnId: nextActiveTurnId,
               lastError,
+              ...(lifecycleErrorClass !== undefined ? { lastErrorClass: lifecycleErrorClass } : {}),
+              ...(lifecycleRetryAt !== undefined ? { retryAt: lifecycleRetryAt } : {}),
               updatedAt: now,
             },
             createdAt: now,
+          });
+        }
+      }
+
+      if (
+        shouldApplyThreadLifecycle &&
+        event.type === "turn.completed" &&
+        thread.usageLimitResume != null
+      ) {
+        const completedState = normalizeRuntimeTurnState(event.payload.state);
+        const resumeIsInFlight = thread.usageLimitResume.nextAttemptAt === null;
+        const awaitsTrailingRuntimeError =
+          completedState === "failed" && event.provider === ProviderDriverKind.make("opencode");
+        if (resumeIsInFlight && (completedState !== "failed" || !awaitsTrailingRuntimeError)) {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.usage-limit-resume.cancel",
+            commandId: yield* providerCommandId(event, "usage-limit-resume-completed"),
+            threadId: thread.id,
           });
         }
       }
@@ -1965,7 +2012,15 @@ const make = Effect.gen(function* () {
 
       if (event.type === "runtime.error") {
         const runtimeErrorMessage = event.payload.message;
-        const eventIsRateLimited = isProviderRateLimitFailure(runtimeErrorMessage);
+        const usageLimit = providerUsageLimitFromError({
+          message: runtimeErrorMessage,
+          detail: event.payload.detail,
+          ...(event.payload.retryAt !== undefined ? { retryAt: event.payload.retryAt } : {}),
+        });
+        const eventIsRateLimited =
+          event.payload.class === "usage_limit" ||
+          usageLimit !== null ||
+          isProviderRateLimitFailure(runtimeErrorMessage);
         const retainsRateLimit = thread.session?.status === "rate-limited";
 
         const shouldApplyRuntimeError = !STRICT_PROVIDER_LIFECYCLE_GUARD
@@ -1992,10 +2047,44 @@ const make = Effect.gen(function* () {
                 : eventIsRateLimited
                   ? formatProviderRateLimitFailure(runtimeErrorMessage)
                   : runtimeErrorMessage,
+              lastErrorClass:
+                retainsRateLimit || eventIsRateLimited
+                  ? "usage_limit"
+                  : (event.payload.class ?? "provider_error"),
+              ...(usageLimit?.retryAt !== undefined
+                ? { retryAt: usageLimit.retryAt }
+                : retainsRateLimit && thread.session?.retryAt !== undefined
+                  ? { retryAt: thread.session.retryAt }
+                  : {}),
               updatedAt: now,
             },
             createdAt: now,
           });
+        }
+
+        if (shouldApplyRuntimeError && thread.usageLimitResume?.nextAttemptAt === null) {
+          if (eventIsRateLimited) {
+            yield* orchestrationEngine.dispatch({
+              type: "thread.usage-limit-resume.retry",
+              commandId: yield* providerCommandId(event, "usage-limit-resume-retry"),
+              threadId: thread.id,
+              resumeAt: nextUsageLimitRetryAt({
+                now,
+                attempt: thread.usageLimitResume.attempt,
+                ...(usageLimit?.retryAt !== undefined
+                  ? { providerRetryAt: usageLimit.retryAt }
+                  : {}),
+              }),
+              attempt: thread.usageLimitResume.attempt,
+              createdAt: now,
+            });
+          } else {
+            yield* orchestrationEngine.dispatch({
+              type: "thread.usage-limit-resume.cancel",
+              commandId: yield* providerCommandId(event, "usage-limit-resume-cancel"),
+              threadId: thread.id,
+            });
+          }
         }
       }
 

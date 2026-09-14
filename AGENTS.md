@@ -168,6 +168,9 @@ Full glossary with file links: `docs/internals/glossary.md`
 
 ## Recent request log
 
+- 2026-09-14 — Implemented Segment J on a separate worktree: typed durable usage-limit resume
+  state, provider classification and reset persistence, restart-safe retries and cancellation, and
+  web controls.
 - 2026-09-13 — Split the requested 15-feature master integration into dependency-aware segments for parallel agents, with full source-PR audits and a final integration gate.
 - 2026-09-12 — Updated the Ubuntu desktop AppImage and managed server to the fork's v0.0.47 release, then restarted both.
 - 2026-09-11 — Synced upstream main, improved Antigravity direct quota collection and Gemini versus
