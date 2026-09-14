@@ -1,1 +1,3 @@
+git ls-files > tree.txt
+git add tree.txt
 vp staged
