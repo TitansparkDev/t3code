@@ -35,6 +35,7 @@ function makeThread(messages: ReadonlyArray<OrchestrationMessage>): Orchestratio
     proposedPlans: [],
     activities: [],
     checkpoints: [],
+    pullRequests: [],
     session: null,
   };
 }

@@ -168,21 +168,11 @@ Full glossary with file links: `docs/internals/glossary.md`
 
 ## Recent request log
 
-- 2026-09-14 — Integrated and verified Segments A–F on a dedicated coordinator worktree with focused
-  tests, package typechecks, native static checks, and web/Electron builds.
-- 2026-09-14 — Implemented Segment E mobile interface fixes: persistent Markdown preview/source
-  mode, Material You alpha-safe native review colors, and reversible Android split-view sidebar
-  controls.
-- 2026-09-14 — Implemented Segment B reconnect stabilization and mobile per-environment provider
-  refresh across local, T3 Connect, settings, and onboarding surfaces, with focused verification.
-- 2026-09-14 — Implemented Segment C of the master integration: file-backed mobile image drafts,
-  safe attachment cleanup, and remembered model-option persistence.
-- 2026-09-14 — Audited Segment D against PR #11450, kept processed totals in the approved usage details, and added web regression coverage instead of a persistent composer badge.
-- 2026-09-14 — Implemented Segment G cross-provider conversation forks in an isolated worktree:
-  typed contracts, bounded transcript handoff, fresh provider sessions, web and mobile actions,
-  and focused tests for all six provider adapters.
-- 2026-09-14 — Implemented Segment J on a separate worktree: typed durable usage-limit resume
-  state, provider classification and reset persistence, restart-safe retries and cancellation, and
-  web controls.
+- 2026-09-14 — Audited and merged the verified A–G and J feature segments into `omni/main`; a
+  post-merge typecheck caught and fixed a fork-handler typing mismatch that focused tests missed.
+- 2026-09-14 — Prepared the remaining plan around the active Android background-connection segment,
+  the already-implemented notification segment, and the final integrated build/review gate.
+- 2026-09-13 — Split the requested master integration into dependency-aware segments for parallel
+  agents, with full source-PR audits and a final integration gate.
 - 2026-09-13 — Split the requested 15-feature master integration into dependency-aware segments for parallel agents, with full source-PR audits and a final integration gate.
 - 2026-09-12 — Updated the Ubuntu desktop AppImage and managed server to the fork's v0.0.47 release, then restarted both.
