@@ -190,4 +190,4 @@ Full glossary with file links: `docs/internals/glossary.md`
   agents, with full source-PR audits and a final integration gate.
 - 2026-09-14 — Implemented Segment I: final-answer relay notifications, bounded Markdown-to-plain-
   text payloads, Android 16 Live Update chips/settings, and focused server/relay/mobile tests.
-- 2026-09-12 — Updated the Ubuntu desktop AppImage and managed server to the fork's v0.0.47 release, then restarted both.
+- 2026-09-14 — Updated the Ubuntu desktop AppImage and managed server to the fork's v0.0.48 release, preserved recoverable v0.0.47 backups, and verified the backend is serving after restart.
