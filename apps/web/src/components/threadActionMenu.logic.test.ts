@@ -106,4 +106,46 @@ describe("buildThreadActionMenuItems", () => {
     );
     expect(archiveItem?.disabled).toBe(true);
   });
+
+  it("shows fork action when threadForking capability is supported", () => {
+    const items = buildThreadActionMenuItems({
+      ...baseState,
+      supports: { ...baseState.supports, forking: true },
+      canFork: true,
+    });
+    const forkItem = items.find((item) => item.id === "fork");
+    expect(forkItem).toBeDefined();
+    expect(forkItem).toMatchObject({
+      id: "fork",
+      label: "Fork thread",
+      icon: "git-fork",
+      disabled: false,
+    });
+  });
+
+  it("hides fork action when threadForking capability is absent or false", () => {
+    const items = buildThreadActionMenuItems({
+      ...baseState,
+      supports: { ...baseState.supports, forking: false },
+    });
+    expect(items.some((item) => item.id === "fork")).toBe(false);
+  });
+
+  it("disables fork action when thread is running or canFork is false", () => {
+    const runningFork = buildThreadActionMenuItems({
+      ...baseState,
+      isRunning: true,
+      supports: { ...baseState.supports, forking: true },
+      canFork: true,
+    }).find((item) => item.id === "fork");
+    expect(runningFork?.disabled).toBe(true);
+
+    const unavailableFork = buildThreadActionMenuItems({
+      ...baseState,
+      isRunning: false,
+      supports: { ...baseState.supports, forking: true },
+      canFork: false,
+    }).find((item) => item.id === "fork");
+    expect(unavailableFork?.disabled).toBe(true);
+  });
 });

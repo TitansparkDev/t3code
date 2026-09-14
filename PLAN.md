@@ -83,16 +83,16 @@
 
 #### Other
 
-- [ ] Segment G — Add cross-provider conversation forks.
-  - [ ] Inspect PR [#11096](https://github.com/pingdotgg/t3code/pull/11096), including every commit, changed file, review comment, unresolved thread, check result, and linked issue.
-  - [ ] Compare the PR with the current fork and current upstream code. Identify code that already landed, transcript format risks, provider-specific gaps, missing tests, and regressions before applying anything.
-  - [ ] Define the typed fork command and result across contracts, server, web, and mobile before wiring the interface.
-  - [ ] Build a bounded transcript handoff from persisted user and assistant turns. Preserve the original thread and create an independent provider session.
-  - [ ] Define treatment for tool calls, images, attachments, hidden turns, permissions, pending work, failed turns, context limits, unsupported providers, and deleted projects.
-  - [ ] Add fork actions to every suitable thread entry point on web and mobile. Show clear provider, model, progress, success, and failure states.
-  - [ ] Check Codex, Claude, Cursor, Grok, OpenCode, and Antigravity. Record an explicit supported or unsupported decision for each provider.
-  - [ ] Add or update focused contract, server, web, and mobile tests.
-  - [ ] Commit this segment on its own branch and give the integrator the commit hash, changed-file list, test results, open risks, and PR differences.
+- [x] Segment G — Add cross-provider conversation forks.
+  - [x] Inspect PR [#11096](https://github.com/pingdotgg/t3code/pull/11096), including every commit, changed file, review comment, unresolved thread, check result, and linked issue.
+  - [x] Compare the PR with the current fork and current upstream code. Identify code that already landed, transcript format risks, provider-specific gaps, missing tests, and regressions before applying anything.
+  - [x] Define the typed fork command and result across contracts, server, web, and mobile before wiring the interface.
+  - [x] Build a bounded transcript handoff from persisted user and assistant turns. Preserve the original thread and create an independent provider session.
+  - [x] Define treatment for tool calls, images, attachments, hidden turns, permissions, pending work, failed turns, context limits, unsupported providers, and deleted projects.
+  - [x] Add fork actions to every suitable thread entry point on web and mobile. Show clear provider, model, progress, success, and failure states.
+  - [x] Check Codex, Claude, Cursor, Grok, OpenCode, and Antigravity. Record an explicit supported or unsupported decision for each provider.
+  - [x] Add or update focused contract, server, web, and mobile tests.
+  - [x] Commit this segment on its own branch and give the integrator the commit hash, changed-file list, test results, open risks, and PR differences.
 
 - [ ] Segment J — Add durable automatic resume after a provider limit resets, after Segment G lands.
   - [ ] Inspect PR [#8577](https://github.com/pingdotgg/t3code/pull/8577), including every commit, changed file, review comment, unresolved thread, check result, and linked issue.

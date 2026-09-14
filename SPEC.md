@@ -24,6 +24,11 @@ Codex, Claude, Cursor, Grok, OpenCode, and Antigravity.
   05:00–11:00 Pacific on web and mobile.
 - Quota data is kept separate from thread state, keyed by provider instance, and refreshed on a
   background loop or by an explicit refresh action.
+- Idle, settled conversations can be forked from web, desktop, and mobile into a fresh thread.
+  Forking preserves the source, hands the new provider a bounded Markdown transcript, omits tool
+  internals and binary attachment data while retaining attachment names, and blocks active or
+  pending source work. The target provider and model must be enabled, installed, ready, and
+  authenticated; servers without fork support hide the action.
 - T3 Connect stores its managed public endpoint with the cloud link, and web pairing links can use
   that endpoint when it is available. Web and mobile cloud linking preserve the endpoint.
 - Desktop release builds include the public T3 Connect configuration by default and use the

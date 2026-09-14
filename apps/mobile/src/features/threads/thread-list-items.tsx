@@ -27,6 +27,7 @@ import { useThreadPr, type ThreadPrPresentation } from "../../state/use-thread-p
 import type { HomeGroupDisplayAction } from "../home/homeListItems";
 import { ThreadSwipeable } from "../home/thread-swipe-actions";
 import { buildThreadTitleRegenerationMenuItems } from "./thread-title-regeneration-menu";
+import { isThreadForkEligible } from "./thread-fork";
 import { QueuedMessageIcon } from "./queued-message-icon";
 import { resolveThreadStatus } from "./threadPresentation";
 import { ThreadSearchMatchExcerpt } from "./thread-search-match";
@@ -460,7 +461,9 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
   readonly onDeleteThread: (thread: EnvironmentThreadShell) => void;
   readonly onNewThreadOnBranch: (thread: EnvironmentThreadShell) => void;
   readonly onRegenerateThreadTitle: (thread: EnvironmentThreadShell) => void;
+  readonly onForkThread?: (thread: EnvironmentThreadShell) => void;
   readonly titleRegenerationSupported: boolean;
+  readonly forkSupported?: boolean;
   readonly onSwipeableWillOpen: (methods: SwipeableMethods) => void;
   readonly onSwipeableClose: (methods: SwipeableMethods) => void;
   readonly simultaneousSwipeGesture?: ComponentProps<
@@ -492,6 +495,7 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
     onDeleteThread,
     onRegenerateThreadTitle,
     onNewThreadOnBranch,
+    onForkThread,
   } = props;
   const status = resolveThreadStatus(thread);
   const pr = useThreadPr(thread);
@@ -508,6 +512,11 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
   const subtitleParts = [props.environmentLabel, thread.branch].filter((part): part is string =>
     Boolean(part),
   );
+
+  const canFork = isThreadForkEligible({
+    capabilities: { threadForking: props.forkSupported },
+    thread,
+  });
 
   const backgroundColor = compact ? screenColor : drawerColor;
   const effectiveSelectedBackground = materialYouStyleLayoutActive
@@ -550,6 +559,15 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
             },
           ]
         : []),
+      ...(canFork
+        ? [
+            {
+              id: "fork",
+              title: "Fork thread",
+              image: "arrow.triangle.branch",
+            },
+          ]
+        : []),
       THREAD_ROW_MENU_ACTIONS[0]!,
       ...buildThreadTitleRegenerationMenuItems({
         supported: props.titleRegenerationSupported,
@@ -557,7 +575,7 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
       }),
       THREAD_ROW_MENU_ACTIONS[1]!,
     ],
-    [props.titleRegenerationSupported, thread.branch, thread.titleRegeneration],
+    [canFork, props.titleRegenerationSupported, thread.branch, thread.titleRegeneration],
   );
   const primaryAction = useMemo(
     () => ({
@@ -571,11 +589,12 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
   const handleMenuAction = useCallback(
     ({ nativeEvent }: { readonly nativeEvent: { readonly event: string } }) => {
       if (nativeEvent.event === "new-thread-on-branch") onNewThreadOnBranch(thread);
+      if (nativeEvent.event === "fork") onForkThread?.(thread);
       if (nativeEvent.event === "archive") handleArchive();
       if (nativeEvent.event === "regenerate-title") handleRegenerateTitle();
       if (nativeEvent.event === "delete") handleDelete();
     },
-    [handleArchive, handleDelete, handleRegenerateTitle, onNewThreadOnBranch, thread],
+    [handleArchive, handleDelete, handleRegenerateTitle, onForkThread, onNewThreadOnBranch, thread],
   );
 
   const statusPill = effectiveStatus ? (
