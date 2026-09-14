@@ -190,10 +190,22 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
         type: "thread.message-sent",
         payload: {
           threadId: "thread-1" as ThreadId,
+          role: "user",
           streaming: false,
         },
       } as unknown as OrchestrationEvent),
     ).toBe(false);
+    expect(
+      AgentAwarenessRelay.shouldPublishAgentAwarenessEvent({
+        ...base,
+        type: "thread.message-sent",
+        payload: {
+          threadId: "thread-1" as ThreadId,
+          role: "assistant",
+          streaming: false,
+        },
+      } as unknown as OrchestrationEvent),
+    ).toBe(true);
     expect(
       AgentAwarenessRelay.shouldPublishAgentAwarenessEvent({
         ...base,
