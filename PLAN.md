@@ -4,15 +4,18 @@
 
 #### Bugs
 
-- [ ] Segment H — Finish Android background connection support in the active worktree.
-  - [ ] Finish the constrained Android debug build, or record the exact machine/toolchain blocker
+- [x] Segment H — Finish Android background connection support in the active worktree.
+  - [x] Finish the constrained Android debug build, or record the exact machine/toolchain blocker
         if the build cannot complete; confirm the new module compiles and the generated manifest has
         the service, boot receiver, permissions, notification channel, and wake handling.
-  - [ ] Review the staged and unstaged H changes together for foreground/background ownership,
+  - [x] Review the staged and unstaged H changes together for foreground/background ownership,
         retained-thread cleanup, relay-account transitions, logout, device restart, permission denial,
         battery restrictions, and multiple environments.
-  - [ ] Run the focused mobile, persistence, auth, outbox, wakeup, and shared-supervisor checks,
+  - [x] Run the focused mobile, persistence, auth, outbox, wakeup, and shared-supervisor checks,
         then commit the complete segment with its test results, changed-file list, and open risks.
+        Verification: Android debug APK, 16 Robolectric cases across API 24/26/33/36, and 114 focused
+        JS tests plus mobile typecheck/lint. Open risks are platform-specific OEM battery restrictions,
+        denied notification permission, and no attached emulator for an end-to-end device pass.
 
 #### Visual
 

@@ -18101,6 +18101,13 @@ apps/mobile/modules/t3-agent-notifications/android/src/main/java/expo/modules/t3
 apps/mobile/modules/t3-agent-notifications/android/src/main/java/expo/modules/t3agentnotifications/T3AgentNotificationsModule.kt
 apps/mobile/modules/t3-agent-notifications/android/src/test/java/expo/modules/t3agentnotifications/AgentNotificationsTest.kt
 apps/mobile/modules/t3-agent-notifications/expo-module.config.json
+apps/mobile/modules/t3-background-connection/android/build.gradle
+apps/mobile/modules/t3-background-connection/android/src/main/AndroidManifest.xml
+apps/mobile/modules/t3-background-connection/android/src/main/java/expo/modules/t3backgroundconnection/BackgroundConnectionBootReceiver.kt
+apps/mobile/modules/t3-background-connection/android/src/main/java/expo/modules/t3backgroundconnection/BackgroundConnectionService.kt
+apps/mobile/modules/t3-background-connection/android/src/main/java/expo/modules/t3backgroundconnection/T3BackgroundConnectionModule.kt
+apps/mobile/modules/t3-background-connection/android/src/test/java/expo/modules/t3backgroundconnection/BackgroundConnectionTest.kt
+apps/mobile/modules/t3-background-connection/expo-module.config.json
 apps/mobile/modules/t3-composer-editor/LICENSE
 apps/mobile/modules/t3-composer-editor/android/build.gradle
 apps/mobile/modules/t3-composer-editor/android/src/main/AndroidManifest.xml
@@ -18324,6 +18331,8 @@ apps/mobile/src/components/VideoPreviewModal.tsx
 apps/mobile/src/components/VideoThumbnailImage.tsx
 apps/mobile/src/components/projectFaviconCache.test.ts
 apps/mobile/src/components/projectFaviconCache.ts
+apps/mobile/src/connection/android-background.test.ts
+apps/mobile/src/connection/android-background.ts
 apps/mobile/src/connection/app-state-wakeups.test.ts
 apps/mobile/src/connection/app-state-wakeups.ts
 apps/mobile/src/connection/background-activity-scopes.ts

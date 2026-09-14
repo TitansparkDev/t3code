@@ -18,6 +18,11 @@ import { AppState, type AppStateStatus } from "react-native";
 
 import * as MobileStorage from "../persistence/mobile-storage";
 import {
+  configureAndroidBackgroundConnection,
+  shouldEnableAndroidBackgroundConnection,
+  subscribeAndroidBackgroundConnectionWake,
+} from "./android-background";
+import {
   observeMobileBackgroundActivitySubscription,
   onRetainedMobileBackgroundScopesChange,
   retainedMobileBackgroundScopes,
@@ -52,11 +57,22 @@ export const mobileBackgroundActivityReporterLayer = Layer.effectDiscard(
     const reportRequests = yield* Queue.sliding<void>(1);
     const requestReport = () => Queue.offerUnsafe(reportRequests, undefined);
     let appState = AppState.currentState;
+    // Null forces the first report to reconcile a service left behind by a
+    // previous process, such as after a device restart or a cold start.
+    let backgroundServiceEnabled: boolean | null = null;
 
     const report = Effect.gen(function* () {
       const observedAtMs = yield* Clock.currentTimeMillis;
       const active = appState === "active";
       const entries = yield* SubscriptionRef.get(registry.entries);
+      const shouldEnableBackgroundService = shouldEnableAndroidBackgroundConnection(
+        normalizeAppState(appState),
+        entries.size,
+      );
+      if (shouldEnableBackgroundService !== backgroundServiceEnabled) {
+        backgroundServiceEnabled = shouldEnableBackgroundService;
+        configureAndroidBackgroundConnection(shouldEnableBackgroundService);
+      }
       yield* Effect.forEach(
         entries.keys(),
         (environmentId) =>
@@ -91,12 +107,18 @@ export const mobileBackgroundActivityReporterLayer = Layer.effectDiscard(
           appState = nextState;
           requestReport();
         });
-        return { removeScopeListener, subscription };
+        const removeNativeWakeListener = subscribeAndroidBackgroundConnectionWake(requestReport);
+        return { removeNativeWakeListener, removeScopeListener, subscription };
       }),
-      ({ removeScopeListener, subscription }) =>
+      ({ removeNativeWakeListener, removeScopeListener, subscription }) =>
         Effect.sync(() => {
+          removeNativeWakeListener();
           removeScopeListener();
           subscription.remove();
+          if (backgroundServiceEnabled !== false) {
+            backgroundServiceEnabled = false;
+            configureAndroidBackgroundConnection(false);
+          }
         }),
     );
     yield* SubscriptionRef.changes(registry.entries).pipe(

@@ -168,6 +168,10 @@ Full glossary with file links: `docs/internals/glossary.md`
 
 ## Recent request log
 
+- 2026-09-14 — Added and verified the Android background-connection service: one native foreground
+  watchdog wakes the existing JS environment reporter, persists across restart, and handles multiple
+  environments without owning sockets or credentials; full debug APK and focused Android/mobile
+  checks pass.
 - 2026-09-14 — Configured a direct Cloudflare Tunnel at `t3.artnas.net` for the live T3 host,
   installed its reconnecting user service, and replaced the hosted-relay plan with this simpler
   path that needs no PlanetScale, Axiom, or Clerk account.

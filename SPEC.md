@@ -35,6 +35,11 @@ Codex, Claude, Cursor, Grok, OpenCode, and Antigravity.
   05:00–11:00 Pacific on web and mobile.
 - Quota data is kept separate from thread state, keyed by provider instance, and refreshed on a
   background loop or by an explicit refresh action.
+- On Android, mobile keeps the existing JavaScript-owned environment activity reporter alive while
+  the app is backgrounded and environments remain registered. One native foreground service covers
+  all environments, shows a low-priority ongoing notification, wakes the reporter periodically, and
+  restores its desired state after device restart. It stops when the app returns to the foreground or
+  no environments remain; notification permission and OEM battery policies can still limit delivery.
 - Mobile Markdown file screens can switch between rendered preview and source mode. The choice is
   remembered on the device, while files opened at a source line always stay in source mode and hide
   the mode controls. Unsupported, binary, missing, and truncated files retain the existing source
