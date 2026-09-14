@@ -4,24 +4,24 @@
 
 #### Bugs
 
-- [ ] Segment B — Stabilize reconnects and provider refresh before adding background connection work.
-  - [ ] Inspect PRs [#11456](https://github.com/pingdotgg/t3code/pull/11456) and [#7163](https://github.com/pingdotgg/t3code/pull/7163), including every commit, changed file, review comment, unresolved thread, check result, and linked issue.
-  - [ ] Compare both PRs with the current fork and current upstream code. Identify code that already landed, stale assumptions, conflicts with fork changes, missing tests, and regressions before applying anything.
-  - [ ] Remove redundant provider refreshes during WebSocket subscription setup and raise the client setup deadline only where slow valid connections need it.
-  - [ ] Add the mobile per-environment provider refresh action with clear busy, success, failure, offline, and repeated-tap behavior.
-  - [ ] Check local, remote, relay, tunnel, multi-device, and multi-environment behavior. Preserve provider instance isolation.
-  - [ ] Add or update focused tests. Run only the relevant server, client-runtime, and mobile checks.
-  - [ ] Commit this segment on its own branch and give the integrator the commit hash, changed-file list, test results, open risks, and PR differences.
+- [x] Segment B — Stabilize reconnects and provider refresh before adding background connection work.
+  - [x] Inspect PRs [#11456](https://github.com/pingdotgg/t3code/pull/11456) and [#7163](https://github.com/pingdotgg/t3code/pull/7163), including every commit, changed file, review comment, unresolved thread, check result, and linked issue.
+  - [x] Compare both PRs with the current fork and current upstream code. Identify code that already landed, stale assumptions, conflicts with fork changes, missing tests, and regressions before applying anything.
+  - [x] Remove redundant provider refreshes during WebSocket subscription setup and raise the client setup deadline only where slow valid connections need it.
+  - [x] Add the mobile per-environment provider refresh action with clear busy, success, failure, offline, and repeated-tap behavior.
+  - [x] Check local, remote, relay, tunnel, multi-device, and multi-environment behavior. Preserve provider instance isolation.
+  - [x] Add or update focused tests. Run only the relevant server, client-runtime, and mobile checks.
+  - [x] Commit this segment on its own branch and give the integrator the commit hash, changed-file list, test results, open risks, and PR differences.
 
-- [ ] Segment C — Make mobile draft images file-backed and repair draft preference persistence.
-  - [ ] Inspect PRs [#9727](https://github.com/pingdotgg/t3code/pull/9727) and [#9372](https://github.com/pingdotgg/t3code/pull/9372), including every commit, changed file, review comment, unresolved thread, check result, and linked issue.
-  - [ ] Compare both PRs with the current fork and current upstream code. Identify code that already landed, stale assumptions, conflicts with fork changes, missing migrations, missing cleanup, and regressions before applying anything.
-  - [ ] Move draft image payloads from SQLite JSON to app-owned files and store only lightweight references in the draft and outbox data.
-  - [ ] Design a safe outbox v4 migration for existing inline images, missing files, cancelled sends, retries, thread deletion, draft replacement, and app upgrades.
-  - [ ] Make model and reasoning-effort changes save immediately and persist as the defaults for later threads. Remove the Android confirmation action without removing a clear way to dismiss the screen.
-  - [ ] Check storage permissions, file lifecycle, retry behavior, process restart, offline use, and iOS compatibility even though Android is the primary target.
-  - [ ] Add or update focused tests. Run only the relevant mobile state and storage checks.
-  - [ ] Commit this segment on its own branch and give the integrator the commit hash, changed-file list, test results, open risks, and PR differences.
+- [x] Segment C — Make mobile draft images file-backed and repair draft preference persistence.
+  - [x] Inspect PRs [#9727](https://github.com/pingdotgg/t3code/pull/9727) and [#9372](https://github.com/pingdotgg/t3code/pull/9372), including every commit, changed file, review comment, unresolved thread, check result, and linked issue.
+  - [x] Compare both PRs with the current fork and current upstream code. Identify code that already landed, stale assumptions, conflicts with fork changes, missing migrations, missing cleanup, and regressions before applying anything.
+  - [x] Move draft image payloads from SQLite JSON to app-owned files and store only lightweight references in the draft and outbox data.
+  - [x] Design a safe outbox v4 migration for existing inline images, missing files, cancelled sends, retries, thread deletion, draft replacement, and app upgrades.
+  - [x] Make model and reasoning-effort changes save immediately and persist as the defaults for later threads. The current fork has no Android confirmation action in this flow, so no dismissal control was removed.
+  - [x] Check storage permissions, file lifecycle, retry behavior, process restart, offline use, and iOS compatibility even though Android is the primary target.
+  - [x] Add or update focused tests. Run only the relevant mobile state and storage checks.
+  - [x] Commit this segment on its own branch and give the integrator the commit hash, changed-file list, test results, open risks, and PR differences.
 
 - [ ] Segment H — Add Android background connection support after Segment B lands.
   - [ ] Inspect PR [#5179](https://github.com/pingdotgg/t3code/pull/5179), including every commit, changed file, review comment, unresolved thread, check result, and linked issue.
@@ -34,41 +34,41 @@
 
 #### Visual
 
-- [ ] Segment A — Add independent desktop windows.
-  - [ ] Inspect the current Electron lifecycle, menu, deep-link, update, shutdown, and server ownership code before changing it. Search current upstream and open issues for related multi-window work.
-  - [ ] Replace the single window reference with a registry that creates, focuses, restores, and removes windows safely.
-  - [ ] Add File → New Window with `CmdOrCtrl+Shift+N`. Define how CLI arguments, deep links, and second-instance events choose between a new window and an existing window.
-  - [ ] Keep one shared background server and prevent one window from stopping it while another window remains open.
-  - [ ] Check macOS close-versus-quit behavior, Windows and Linux last-window behavior, updater prompts, saved bounds, external links, and app shutdown.
-  - [ ] Add or update focused Electron tests. Run the targeted desktop build or checks without launching browser automation.
-  - [ ] Commit this segment on its own branch and give the integrator the commit hash, changed-file list, test results, and open risks.
+- [x] Segment A — Add independent desktop windows.
+  - [x] Inspect the current Electron lifecycle, menu, deep-link, update, shutdown, and server ownership code before changing it. Search current upstream and open issues for related multi-window work.
+  - [x] Replace the single window reference with a registry that creates, focuses, restores, and removes windows safely.
+  - [x] Add File → New Window with `CmdOrCtrl+Shift+N`. Define how CLI arguments, deep links, and second-instance events choose between a new window and an existing window.
+  - [x] Keep one shared background server and prevent one window from stopping it while another window remains open.
+  - [x] Check macOS close-versus-quit behavior, Windows and Linux last-window behavior, updater prompts, saved bounds, external links, and app shutdown.
+  - [x] Add or update focused Electron tests. Run the targeted desktop build or checks without launching browser automation.
+  - [x] Commit this segment on its own branch and give the integrator the commit hash, changed-file list, test results, and open risks.
 
-- [ ] Segment D — Add the web context token badge.
-  - [ ] Inspect PR [#11450](https://github.com/pingdotgg/t3code/pull/11450), including every commit, changed file, review comment, unresolved thread, check result, and linked issue.
-  - [ ] Compare the PR with the current fork and current upstream code. Confirm the context snapshot meaning, units, provider coverage, layout assumptions, and performance before applying anything.
-  - [ ] Show the latest processed token count below the composer without causing extra activity scans or renders.
-  - [ ] Handle missing usage data, narrow windows, long values, compact mode, desktop wrapping, and providers that report incomplete counts.
-  - [ ] Add or update focused tests. Run only the relevant web checks.
-  - [ ] Commit this segment on its own branch and give the integrator the commit hash, changed-file list, test results, open risks, and PR differences.
+- [x] Segment D — Keep processed-token totals in usage details; do not add a persistent composer badge.
+  - [x] Inspect PR [#11450](https://github.com/pingdotgg/t3code/pull/11450), including every commit, changed file, review comment, unresolved thread, check result, and linked issue.
+  - [x] Compare the PR with the current fork and current upstream code. The PR was closed by maintainers because a composer badge could be confused with current context occupancy and the metric is already available in usage details.
+  - [x] Retain the existing latest processed-token total in the context usage details without adding activity scans, renders, or a second persistent counter.
+  - [x] Handle missing usage data, invalid totals, and providers that report incomplete counts through focused regression coverage.
+  - [x] Add or update focused tests. Run only the relevant web checks.
+  - [x] Record the product decision in the integration handoff; no composer UI change is included.
 
-- [ ] Segment E — Apply the independent mobile interface fixes.
-  - [ ] Inspect PRs [#10648](https://github.com/pingdotgg/t3code/pull/10648), [#11445](https://github.com/pingdotgg/t3code/pull/11445), and [#11339](https://github.com/pingdotgg/t3code/pull/11339), including every commit, changed file, review comment, unresolved thread, check result, and linked issue.
-  - [ ] Compare all three PRs with the current fork and current upstream code. Identify code that already landed, stale assumptions, accessibility gaps, layout conflicts, missing tests, and regressions before applying anything.
-  - [ ] Add a persistent Markdown preview/source toggle for supported files, with a correct fallback for binary, large, missing, and unsupported files.
-  - [ ] Parse and blend 8-digit Material You colors correctly so ordinary text and unchanged diff lines remain readable in light and dark modes.
-  - [ ] Let tablet and foldable users collapse and restore the sidebar from both a thread and the empty detail view. Preserve phone navigation and layout state during rotation or resizing.
-  - [ ] Check accessibility labels, touch targets, focus, theme contrast, foldable size changes, and iOS behavior where shared code changes.
-  - [ ] Add or update focused tests. Run only the relevant mobile checks.
-  - [ ] Commit this segment on its own branch and give the integrator the commit hash, changed-file list, test results, open risks, and PR differences.
+- [x] Segment E — Apply the independent mobile interface fixes.
+  - [x] Inspect PRs [#10648](https://github.com/pingdotgg/t3code/pull/10648), [#11445](https://github.com/pingdotgg/t3code/pull/11445), and [#11339](https://github.com/pingdotgg/t3code/pull/11339), including every commit, changed file, review comment, unresolved thread, check result, and linked issue.
+  - [x] Compare all three PRs with the current fork and current upstream code. Identify code that already landed, stale assumptions, accessibility gaps, layout conflicts, missing tests, and regressions before applying anything.
+  - [x] Add a persistent Markdown preview/source toggle for supported files, with a correct fallback for binary, large, missing, and unsupported files.
+  - [x] Parse and blend 8-digit Material You colors correctly so ordinary text and unchanged diff lines remain readable in light and dark modes.
+  - [x] Let tablet and foldable users collapse and restore the sidebar from both a thread and the empty detail view. Preserve phone navigation and layout state during rotation or resizing.
+  - [x] Check accessibility labels, touch targets, focus, theme contrast, foldable size changes, and iOS behavior where shared code changes.
+  - [x] Add or update focused tests. Run only the relevant mobile checks.
+  - [x] Commit this segment on its own branch and give the integrator the commit hash, changed-file list, test results, open risks, and PR differences.
 
-- [ ] Segment F — Detect and open linked development servers on mobile.
-  - [ ] Inspect PR [#8562](https://github.com/pingdotgg/t3code/pull/8562), including every commit, changed file, review comment, unresolved thread, check result, and linked issue.
-  - [ ] Compare the PR with the current fork and current upstream code. Identify stale network assumptions, unsafe URL handling, platform gaps, missing tests, and regressions before applying anything.
-  - [ ] Show development server state on thread rows and open reachable URLs through the mobile browser flow.
-  - [ ] Rewrite loopback hosts only when the environment supplies a trusted reachable host. Preserve paths, protocols, IPv6, authentication, and non-loopback hosts.
-  - [ ] Check LAN, tailnet, relay, tunnel, offline, stale-process, multiple-server, and untrusted URL cases.
-  - [ ] Add or update focused tests. Run only the relevant mobile and contract checks.
-  - [ ] Commit this segment on its own branch and give the integrator the commit hash, changed-file list, test results, open risks, and PR differences.
+- [x] Segment F — Detect and open linked development servers on mobile.
+  - [x] Inspect PR [#8562](https://github.com/pingdotgg/t3code/pull/8562), including every commit, changed file, review comment, unresolved thread, check result, and linked issue.
+  - [x] Compare the PR with the current fork and current upstream code. Identify stale network assumptions, unsafe URL handling, platform gaps, missing tests, and regressions before applying anything.
+  - [x] Show development server state on thread rows and open reachable URLs through the mobile browser flow.
+  - [x] Rewrite loopback hosts only when the environment supplies a trusted reachable host. Preserve paths, protocols, IPv6, authentication, and non-loopback hosts.
+  - [x] Check LAN, tailnet, relay, tunnel, offline, stale-process, multiple-server, and untrusted URL cases.
+  - [x] Add or update focused tests. Run only the relevant mobile and contract checks.
+  - [x] Commit this segment on its own branch and give the integrator the commit hash, changed-file list, test results, open risks, and PR differences.
 
 - [ ] Segment I — Add final-answer notifications and Android live update chips after Segments B and H land.
   - [ ] Inspect PRs [#11025](https://github.com/pingdotgg/t3code/pull/11025) and [#11457](https://github.com/pingdotgg/t3code/pull/11457), including every commit, changed file, review comment, unresolved thread, check result, and linked issue.

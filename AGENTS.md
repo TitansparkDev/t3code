@@ -168,6 +168,10 @@ Full glossary with file links: `docs/internals/glossary.md`
 
 ## Recent request log
 
+- 2026-09-14 — Integrated the committed A–F feature segments in dependency order on a dedicated
+  worktree, resolved the mobile thread-screen overlap, and passed focused tests plus scoped
+  desktop, mobile, server, and client-runtime typechecks. D remains intentionally unimplemented
+  because its source PR was closed; G, H, I, and J are still in their assigned worktrees.
 - 2026-09-13 — Split the requested 15-feature master integration into dependency-aware segments for parallel agents, with full source-PR audits and a final integration gate.
 - 2026-09-12 — Updated the Ubuntu desktop AppImage and managed server to the fork's v0.0.47 release, then restarted both.
 - 2026-09-11 — Synced upstream main, improved Antigravity direct quota collection and Gemini versus

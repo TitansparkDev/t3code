@@ -24,6 +24,23 @@ Codex, Claude, Cursor, Grok, OpenCode, and Antigravity.
   05:00–11:00 Pacific on web and mobile.
 - Quota data is kept separate from thread state, keyed by provider instance, and refreshed on a
   background loop or by an explicit refresh action.
+- Desktop supports multiple independent windows from File → New Window or the
+  `CmdOrCtrl+Shift+N` shortcut. Windows share the background server and backend ownership, while
+  activation, deep links, saved bounds, and shutdown are tracked per window.
+- Reconnecting clients receive cached environment snapshots without starting redundant provider
+  refreshes. Mobile can refresh providers for one connected environment from connection,
+  settings, and onboarding screens, with busy, success, failure, and offline states.
+- Mobile composer images are copied into app-owned files. Drafts and queued messages keep only
+  lightweight file references, older inline image drafts remain readable, and owned files are
+  released when drafts, retries, queued sends, or review composers release them. Model and
+  provider-option changes update both the current draft and the remembered default.
+- Mobile Markdown files support a persisted rendered-preview/source toggle, while source-line
+  links stay in source mode and hide the toggle. Native review colors blend Material You
+  `#RRGGBBAA` values against the active surface so text and unchanged lines stay readable.
+- Android split-view thread, file, terminal, and empty-detail screens can hide and restore the
+  persistent thread sidebar. Mobile thread rows and headers can show linked development servers;
+  loopback URLs are rewritten only for trusted reachable connection hosts, while tunnel-only or
+  unknown connections remain visibly unreachable.
 - T3 Connect stores its managed public endpoint with the cloud link, and web pairing links can use
   that endpoint when it is available. Web and mobile cloud linking preserve the endpoint.
 - Desktop release builds include the public T3 Connect configuration by default and use the
