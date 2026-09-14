@@ -168,6 +168,9 @@ Full glossary with file links: `docs/internals/glossary.md`
 
 ## Recent request log
 
+- 2026-09-14 — Integrated the Android background-connection and agent-awareness notification
+  segments into the final K release-gate worktree; focused checks passed, while the Android build
+  remained blocked by the absent generated project, Gradle wrapper, and SDK tooling on this host.
 - 2026-09-14 — Configured a direct Cloudflare Tunnel at `t3.artnas.net` for the live T3 host,
   installed its reconnecting user service, and replaced the hosted-relay plan with this simpler
   path that needs no PlanetScale, Axiom, or Clerk account.
@@ -177,4 +180,3 @@ Full glossary with file links: `docs/internals/glossary.md`
   the already-implemented notification segment, and the final integrated build/review gate.
 - 2026-09-13 — Split the requested master integration into dependency-aware segments for parallel
   agents, with full source-PR audits and a final integration gate.
-- 2026-09-12 — Updated the Ubuntu desktop AppImage and managed server to the fork's v0.0.47 release, then restarted both.

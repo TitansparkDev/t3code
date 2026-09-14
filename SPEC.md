@@ -35,6 +35,17 @@ Codex, Claude, Cursor, Grok, OpenCode, and Antigravity.
   05:00–11:00 Pacific on web and mobile.
 - Quota data is kept separate from thread state, keyed by provider instance, and refreshed on a
   background loop or by an explicit refresh action.
+- Android mobile offers an opt-in “Keep connected in background” setting. When enabled, one silent
+  foreground service and one Headless JS task retain the existing connection runtime for saved
+  environments, active thread details, and the shared outbox; boot and package replacement use
+  bounded recovery, while Android force-stop remains a hard stop until the app is launched again.
+  Battery-optimization exemption is optional and improves recovery reliability without silently
+  disabling the feature when declined.
+- Agent-awareness completion alerts include a bounded plain-text excerpt of the completed
+  assistant answer when one exists, with concise status fallbacks for empty answers and grouped
+  alerts. Android ongoing activity notifications show Active or Review chips while work is live.
+- Android 16+ exposes a Live Update Settings entry for the system promotion controls; older Android
+  versions keep the ordinary ongoing notification behavior and use the existing app settings path.
 - Mobile Markdown file screens can switch between rendered preview and source mode. The choice is
   remembered on the device, while files opened at a source line always stay in source mode and hide
   the mode controls. Unsupported, binary, missing, and truncated files retain the existing source
