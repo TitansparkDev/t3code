@@ -1041,6 +1041,13 @@ function ThreadRouteContent(
         onPress: props.onReturnToThread,
       });
     }
+    if (layout.usesSplitView) {
+      actions.push({
+        accessibilityLabel: panes.primarySidebarVisible ? "Maximize chat" : "Show threads",
+        icon: panes.primarySidebarVisible ? "arrow.up.left.and.arrow.down.right" : "sidebar.left",
+        onPress: togglePrimarySidebar,
+      });
+    }
     if (selectedThreadCwd !== null) {
       actions.push({
         accessibilityLabel: "Open files",
@@ -1099,13 +1106,16 @@ function ThreadRouteContent(
     handleOpenGitInspector,
     handleOpenDevServer,
     handleToggleInspector,
+    layout.usesSplitView,
     openHandoffTargetPicker,
     handleOpenHandoffThread,
     handoffLineage,
     props.onReturnToThread,
+    panes.primarySidebarVisible,
     selectedThreadCwd,
     selectedThreadDetail,
     selectedThreadProject?.workspaceRoot,
+    togglePrimarySidebar,
   ]);
 
   const handleEditFailedCreation = useCallback(async () => {

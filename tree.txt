@@ -18407,6 +18407,8 @@ apps/mobile/src/features/files/WorkspaceFileImagePreview.tsx
 apps/mobile/src/features/files/WorkspaceFilePreviewError.tsx
 apps/mobile/src/features/files/WorkspaceFileVideoPreview.tsx
 apps/mobile/src/features/files/WorkspaceFileWebPreview.tsx
+apps/mobile/src/features/files/file-view-mode.test.ts
+apps/mobile/src/features/files/file-view-mode.ts
 apps/mobile/src/features/files/filePath.test.ts
 apps/mobile/src/features/files/filePath.ts
 apps/mobile/src/features/files/fileTree.test.ts

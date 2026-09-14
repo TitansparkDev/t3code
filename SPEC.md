@@ -24,6 +24,15 @@ Codex, Claude, Cursor, Grok, OpenCode, and Antigravity.
   05:00–11:00 Pacific on web and mobile.
 - Quota data is kept separate from thread state, keyed by provider instance, and refreshed on a
   background loop or by an explicit refresh action.
+- Mobile Markdown file screens can switch between rendered preview and source mode. The choice is
+  remembered on the device, while files opened at a source line always stay in source mode and hide
+  the mode controls. Unsupported, binary, missing, and truncated files retain the existing source
+  or error fallback with a partial-file warning where applicable.
+- Mobile native review colors flatten Material You `#RRGGBBAA` tokens against the active surface,
+  keeping text, unchanged lines, and labels readable in both light and dark appearances.
+- Android split-view thread, files, terminal, and empty-detail surfaces can hide and restore the
+  persistent thread sidebar on tablets and foldables. Phone navigation and iOS native sidebar
+  controls remain unchanged.
 - Mobile connection, Settings → Environments, and T3 Connect onboarding rows expose a
   connected-environment-only “Refresh providers” action. It reports progress, success, and
   failures, ignores interrupted commands, and suppresses repeated taps while a refresh is active.

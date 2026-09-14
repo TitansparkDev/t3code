@@ -25,6 +25,8 @@ export interface Preferences {
   readonly baseFontSize?: number;
   readonly terminalFontSize?: number | null;
   readonly markdownFontSize?: number;
+  /** Device-local default for opening Markdown files in rendered preview mode. */
+  readonly markdownPreviewEnabled?: boolean;
   readonly codeFontSize?: number | null;
   readonly codeWordBreak?: boolean;
   readonly connectOnboardingOptOutAccounts?: ReadonlyArray<string>;
@@ -95,6 +97,7 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     baseFontSize?: number;
     terminalFontSize?: number | null;
     markdownFontSize?: number;
+    markdownPreviewEnabled?: boolean;
     codeFontSize?: number | null;
     codeWordBreak?: boolean;
     connectOnboardingOptOutAccounts?: ReadonlyArray<string>;
@@ -144,6 +147,9 @@ function sanitizePreferences(parsed: Preferences): Preferences {
   }
   if (typeof parsed.markdownFontSize === "number") {
     preferences.markdownFontSize = parsed.markdownFontSize;
+  }
+  if (typeof parsed.markdownPreviewEnabled === "boolean") {
+    preferences.markdownPreviewEnabled = parsed.markdownPreviewEnabled;
   }
   if (typeof parsed.codeFontSize === "number" || parsed.codeFontSize === null) {
     preferences.codeFontSize = parsed.codeFontSize;

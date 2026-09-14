@@ -168,6 +168,9 @@ Full glossary with file links: `docs/internals/glossary.md`
 
 ## Recent request log
 
+- 2026-09-14 — Implemented Segment E mobile interface fixes: persistent Markdown preview/source
+  mode, Material You alpha-safe native review colors, and reversible Android split-view sidebar
+  controls.
 - 2026-09-14 — Implemented Segment B reconnect stabilization and mobile per-environment provider
   refresh across local, T3 Connect, settings, and onboarding surfaces, with focused verification.
 - 2026-09-14 — Implemented Segment C of the master integration: file-backed mobile image drafts,
