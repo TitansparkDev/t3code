@@ -22,6 +22,7 @@ import { jsonByteLength } from "./notificationText.ts";
 
 const isApnsJwtSigningError = Schema.is(ApnsClient.ApnsJwtSigningError);
 const isApnsHttpRequestError = Schema.is(ApnsClient.ApnsHttpRequestError);
+const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 const TestLayer = ApnsClient.layer.pipe(
   Layer.provide(ApnsProviderTokens.layer),
@@ -88,7 +89,7 @@ describe("ApnsClient", () => {
         alert: { title: "Thread", body },
       });
       expect(jsonByteLength(request.payload)).toBeLessThanOrEqual(4096);
-      expect(JSON.stringify(request.payload)).not.toContain("completionBody");
+      expect(encodeJson(request.payload)).not.toContain("completionBody");
       expect(request.payload).toMatchObject({ aps: { alert: { sound: "default" } } });
     }).pipe(Effect.provide(TestLayer)),
   );
