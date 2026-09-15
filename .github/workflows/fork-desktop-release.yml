@@ -176,6 +176,95 @@ jobs:
           path: release-publish/*
           if-no-files-found: error
 
+  android:
+    name: Android production APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Configure public T3 Connect build settings
+        shell: bash
+        env:
+          T3CODE_CLERK_PUBLISHABLE_KEY: ${{ vars.T3CODE_CLERK_PUBLISHABLE_KEY }}
+          T3CODE_CLERK_JWT_TEMPLATE: ${{ vars.T3CODE_CLERK_JWT_TEMPLATE }}
+          T3CODE_CLERK_CLI_OAUTH_CLIENT_ID: ${{ vars.T3CODE_CLERK_CLI_OAUTH_CLIENT_ID }}
+          T3CODE_RELAY_URL: ${{ vars.T3CODE_RELAY_URL }}
+        run: |
+          set -euo pipefail
+          cp .env.example .env
+          node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from "node:fs";
+
+          const values = {
+            T3CODE_CLERK_PUBLISHABLE_KEY: process.env.T3CODE_CLERK_PUBLISHABLE_KEY,
+            T3CODE_CLERK_JWT_TEMPLATE: process.env.T3CODE_CLERK_JWT_TEMPLATE,
+            T3CODE_CLERK_CLI_OAUTH_CLIENT_ID: process.env.T3CODE_CLERK_CLI_OAUTH_CLIENT_ID,
+            T3CODE_RELAY_URL: process.env.T3CODE_RELAY_URL,
+          };
+          let envFile = readFileSync(".env", "utf8");
+          for (const [key, rawValue] of Object.entries(values)) {
+            const value = rawValue?.trim();
+            if (!value) continue;
+            const line = `${key}=${value}`;
+            const pattern = new RegExp(`^${key}=.*$`, "m");
+            envFile = pattern.test(envFile)
+              ? envFile.replace(pattern, line)
+              : `${envFile.trimEnd()}\n${line}\n`;
+          }
+          writeFileSync(".env", envFile);
+          NODE
+
+      - name: Set up Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: false
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install dependencies
+        run: vp install --filter=@t3tools/mobile...
+
+      - name: Generate production Android project
+        working-directory: apps/mobile
+        env:
+          APP_VARIANT: production
+          EXPO_NO_GIT_STATUS: "1"
+        run: vp exec expo prebuild --platform android
+
+      - name: Build production APK
+        working-directory: apps/mobile/android
+        run: ./gradlew :app:assembleRelease --no-daemon --console=plain
+
+      - name: Collect Android release asset
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.tag }}"
+          if [[ -z "$tag" ]]; then tag="$GITHUB_REF_NAME"; fi
+          version="${tag#v}"
+          mkdir -p release-publish
+          cp apps/mobile/android/app/build/outputs/apk/release/app-release.apk \
+            "release-publish/t3code-android-${version}-production.apk"
+
+      - name: Upload Android release asset
+        uses: actions/upload-artifact@v7
+        with:
+          name: fork-android
+          path: release-publish/*
+          if-no-files-found: error
+
   windows:
     name: Windows installer
     needs: linux-cli-archive
@@ -264,7 +353,7 @@ jobs:
 
   publish:
     name: Publish GitHub release
-    needs: [linux, windows]
+    needs: [linux, windows, android]
     runs-on: ubuntu-latest
     steps:
       - name: Check out release tag
@@ -279,6 +368,12 @@ jobs:
           merge-multiple: true
           path: release-assets
 
+      - name: Download Android release asset
+        uses: actions/download-artifact@v8
+        with:
+          name: fork-android
+          path: release-assets
+
       - name: Verify complete updater release
         shell: bash
         run: |
@@ -288,6 +383,7 @@ jobs:
           test -s release-assets/*.exe.blockmap
           test -s release-assets/latest.yml
           test -s release-assets/latest-linux.yml
+          test -s release-assets/t3code-android-*-production.apk
 
       - name: Publish installers and updater metadata
         env:

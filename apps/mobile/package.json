@@ -22,6 +22,7 @@
     "eas:android:preview": "eas build --profile preview -p android",
     "eas:android:preview:dev": "eas build --profile preview:dev -p android",
     "eas:android:prod": "eas build --profile production -p android",
+    "eas:android:prod:apk": "eas build --profile production:apk -p android",
     "ios": "EXPO_NO_GIT_STATUS=1 expo prebuild --clean --platform ios && expo run:ios",
     "ios:dev": "APP_VARIANT=development EXPO_NO_GIT_STATUS=1 expo prebuild --clean --platform ios && expo run:ios",
     "ios:preview": "APP_VARIANT=preview EXPO_NO_GIT_STATUS=1 expo prebuild --clean --platform ios && expo run:ios",

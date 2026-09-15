@@ -168,6 +168,9 @@ Full glossary with file links: `docs/internals/glossary.md`
 
 ## Recent request log
 
+- 2026-09-15 — Corrected the Android release path after v0.0.48 was mistakenly distributed as
+  an Expo development build; production APK identity and the fork release workflow now use the
+  real T3 Code production variant.
 - 2026-09-14 — Merged the latest upstream mainline and verified fork feature segments into the
   configured default branch `omni/main`, repaired the fork desktop release workflow's Windows WSL
   runtime handoff, and published v0.0.48 with Linux AppImage, Windows NSIS installer, updater
@@ -182,12 +185,3 @@ Full glossary with file links: `docs/internals/glossary.md`
 - 2026-09-14 — Configured a direct Cloudflare Tunnel at `t3.artnas.net` for the live T3 host,
   installed its reconnecting user service, and replaced the hosted-relay plan with this simpler
   path that needs no PlanetScale, Axiom, or Clerk account.
-- 2026-09-14 — Audited and merged the verified A–G and J feature segments into `omni/main`; a
-  post-merge typecheck caught and fixed a fork-handler typing mismatch that focused tests missed.
-- 2026-09-14 — Prepared the remaining plan around the active Android background-connection segment,
-  the already-implemented notification segment, and the final integrated build/review gate.
-- 2026-09-13 — Split the requested master integration into dependency-aware segments for parallel
-  agents, with full source-PR audits and a final integration gate.
-- 2026-09-14 — Implemented Segment I: final-answer relay notifications, bounded Markdown-to-plain-
-  text payloads, Android 16 Live Update chips/settings, and focused server/relay/mobile tests.
-- 2026-09-14 — Updated the Ubuntu desktop AppImage and managed server to the fork's v0.0.48 release, preserved recoverable v0.0.47 backups, and verified the backend is serving after restart.
