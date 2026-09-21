@@ -232,6 +232,11 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # The legacy `tools` package was removed from current Google SDK
+          # repositories; the hosted runner already provides the platform and
+          # build tools used by Expo/Gradle.
+          packages: platform-tools
 
       - name: Install dependencies
         run: vp install --filter=@t3tools/mobile...
