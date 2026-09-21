@@ -44,6 +44,7 @@ interface QuotaBucket {
 }
 
 interface QuotaGroup {
+  readonly name?: string;
   readonly displayName?: string;
   readonly modelId?: string;
   readonly buckets?: ReadonlyArray<QuotaBucket>;
@@ -64,24 +65,36 @@ const decodeAntigravityToken = Schema.decodeUnknownEffect(
 export function directQuotaGroups(value: unknown): AntigravityUsagePayload | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const root = value as Record<string, unknown>;
-  const rawGroups = root.groups ?? root.quotaGroups ?? root.modelGroups;
+  const nestedSummary =
+    typeof root.quotaSummary === "object" && root.quotaSummary !== null
+      ? (root.quotaSummary as Record<string, unknown>)
+      : undefined;
+  const rawGroups =
+    root.groups ??
+    root.quotaGroups ??
+    root.modelGroups ??
+    nestedSummary?.groups ??
+    nestedSummary?.quotaGroups;
   if (!Array.isArray(rawGroups)) return undefined;
-  const groups: AntigravityUsageGroup[] = [];
+  const groups = new Map<"gemini" | "claude-gpt", AntigravityUsageGroup>();
   for (const raw of rawGroups) {
     if (typeof raw !== "object" || raw === null) continue;
     const group = raw as QuotaGroup;
-    const name = (group.displayName ?? group.modelId ?? "").trim();
+    const name = (group.displayName ?? group.name ?? group.modelId ?? "").trim();
     const buckets = group.buckets ?? group.quotaBuckets ?? [];
     if (!name || !Array.isArray(buckets)) continue;
     const isGemini = /gemini|google/iu.test(name);
-    const family = isGemini ? "Gemini" : /claude|gpt/iu.test(name) ? "Claude & GPT" : name;
+    const family = isGemini
+      ? "Gemini"
+      : /claude|gpt/iu.test(name)
+        ? "Claude & GPT"
+        : "Other models";
     const windows = buckets.flatMap((bucket, index): AntigravityUsageWindow[] => {
       if (bucket.disabled) return [];
       const descriptor = `${bucket.window ?? ""} ${bucket.displayName ?? ""}`;
       const duration = windowDurationMins(undefined, descriptor);
       if (!duration) return [];
       const remaining = bucket.remainingFraction ?? bucket.remaining_fraction;
-      if (typeof remaining !== "number" || !Number.isFinite(remaining)) return [];
       const usedPercent = remainingToUsed(remaining);
       if (usedPercent === undefined) return [];
       const reset = parseReset(bucket.resetTime ?? bucket.reset_time);
@@ -97,10 +110,36 @@ export function directQuotaGroups(value: unknown): AntigravityUsagePayload | und
         },
       ];
     });
-    if (windows.length > 0)
-      groups.push({ key: isGemini ? "gemini" : "claude-gpt", displayName: family, windows });
+    if (windows.length > 0) {
+      const key = isGemini ? "gemini" : "claude-gpt";
+      const previous = groups.get(key);
+      groups.set(key, {
+        key,
+        displayName: previous?.displayName ?? family,
+        windows: [...(previous?.windows ?? []), ...windows],
+      });
+    }
   }
-  return groups.length > 0 ? { groups } : undefined;
+  return groups.size > 0 ? { groups: [...groups.values()] } : undefined;
+}
+
+export function projectIdFromLoadCodeAssist(value: unknown): string | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const root = value as Record<string, unknown>;
+  const candidate = root.cloudaicompanionProject ?? root.cloudCodeProject ?? root.project;
+  if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
+  if (typeof candidate === "object" && candidate !== null) {
+    const project = candidate as Record<string, unknown>;
+    for (const key of ["projectId", "project_id", "id", "name"] as const) {
+      const value = project[key];
+      if (typeof value === "string" && value.trim()) return value.trim();
+    }
+  }
+  for (const key of ["projectId", "project_id"] as const) {
+    const value = root[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return undefined;
 }
 
 function creditsToUsage(value: unknown): AntigravityUsagePayload | undefined {
@@ -183,33 +222,11 @@ const directQuotaProbe = Effect.fn("readAntigravityDirectUsage")(function* (inpu
   if (Option.isNone(tokenResponse)) return undefined;
   const accessToken = (tokenResponse.value as { readonly access_token?: unknown }).access_token;
   if (typeof accessToken !== "string" || accessToken.length === 0) return undefined;
-  for (const endpoint of [
-    "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
-    "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
-  ]) {
-    const response = yield* client
-      .execute(
-        HttpClientRequest.post(endpoint).pipe(
-          HttpClientRequest.setHeader("Authorization", `Bearer ${accessToken}`),
-          HttpClientRequest.setHeader("Content-Type", "application/json"),
-          HttpClientRequest.setHeader("User-Agent", "antigravity/1.1.28"),
-          HttpClientRequest.bodyJsonUnsafe({ project: "default-cli-project" }),
-        ),
-      )
-      .pipe(
-        Effect.flatMap(HttpClientResponse.filterStatusOk),
-        Effect.flatMap((result) => result.json),
-        Effect.timeout("5 seconds"),
-        Effect.option,
-      );
-    if (Option.isSome(response)) {
-      const payload = directQuotaGroups(response.value);
-      if (payload) return payload;
-    }
-  }
-  const creditsResponse = yield* client
+  const loadAssistResponse = yield* client
     .execute(
-      HttpClientRequest.post("https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist").pipe(
+      HttpClientRequest.post(
+        "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
+      ).pipe(
         HttpClientRequest.setHeader("Authorization", `Bearer ${accessToken}`),
         HttpClientRequest.setHeader("Content-Type", "application/json"),
         HttpClientRequest.setHeader("User-Agent", "antigravity/1.1.28"),
@@ -224,8 +241,38 @@ const directQuotaProbe = Effect.fn("readAntigravityDirectUsage")(function* (inpu
       Effect.timeout("10 seconds"),
       Effect.option,
     );
-  if (Option.isSome(creditsResponse)) {
-    const payload = creditsToUsage(creditsResponse.value);
+  const project = Option.isSome(loadAssistResponse)
+    ? projectIdFromLoadCodeAssist(loadAssistResponse.value)
+    : undefined;
+
+  const response = yield* client
+    .execute(
+      HttpClientRequest.post(
+        "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
+      ).pipe(
+        HttpClientRequest.setHeader("Authorization", `Bearer ${accessToken}`),
+        HttpClientRequest.setHeader("Content-Type", "application/json"),
+        HttpClientRequest.setHeader("User-Agent", "antigravity/1.1.28"),
+        // The daily service accepts an empty body for accounts without a
+        // provisioned companion project. Never send the made-up CLI project:
+        // it returns a successful but incorrect Gemini quota.
+        HttpClientRequest.bodyJsonUnsafe(project ? { project } : {}),
+      ),
+    )
+    .pipe(
+      Effect.flatMap(HttpClientResponse.filterStatusOk),
+      Effect.flatMap((result) => result.json),
+      Effect.timeout("8 seconds"),
+      Effect.option,
+    );
+  if (Option.isSome(response)) {
+    const payload = directQuotaGroups(response.value);
+    if (payload) return payload;
+  }
+  // Keep the credits response as a compatibility fallback, but use the same
+  // daily host and request identity as the quota service.
+  if (Option.isSome(loadAssistResponse)) {
+    const payload = creditsToUsage(loadAssistResponse.value);
     if (payload) return payload;
   }
   return undefined;
@@ -387,7 +434,7 @@ function parseText(stdout: string): AntigravityUsagePayload | undefined {
   return parsed.length > 0 ? { groups: parsed } : undefined;
 }
 
-/** Parse both current JSON output and the older tabular `agy /usage` output. */
+/** Parse both current JSON output and the older tabular `agy /quota` output. */
 export function parseAntigravityUsage(stdout: string): AntigravityUsagePayload | undefined {
   try {
     const parsed = JSON.parse(stdout) as unknown;
@@ -415,7 +462,7 @@ export const readAntigravityUsage = Effect.fn("readAntigravityUsage")(function* 
   const result = yield* Effect.gen(function* () {
     const resolved = yield* resolveSpawnCommand(
       "agy",
-      ["-p", "/usage", "--output-format", "json"],
+      ["-p", "/quota", "--output-format", "json"],
       {
         env: environment,
         extendEnv: false,

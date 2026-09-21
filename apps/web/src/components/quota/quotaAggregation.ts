@@ -96,14 +96,18 @@ export function antigravityQuotaWindow(
   snapshot: AccountQuotaSnapshot | undefined,
   pool: AntigravityQuotaPool,
   nowMs: number = Date.now(),
+  kind: QuotaWindowKindForDisplay = "long",
 ): QuotaWindow | undefined {
   if (!snapshot || isQuotaSnapshotStale(snapshot, nowMs)) return undefined;
   const group = snapshot.groups.find((candidate) => groupMatchesPool(candidate, pool));
   if (!group) return undefined;
-  const weekly = group.windows.filter(
-    (window) => window.kind === "long" || /week|seven.?day/i.test(window.label ?? ""),
+  const matching = group.windows.filter(
+    (window) =>
+      (kind === "short" &&
+        (window.kind === "short" || /5.?hour|session/i.test(window.label ?? ""))) ||
+      (kind === "long" && (window.kind === "long" || /week|seven.?day/i.test(window.label ?? ""))),
   );
-  return primaryQuotaWindow(weekly);
+  return primaryQuotaWindow(matching);
 }
 
 /**
@@ -115,18 +119,19 @@ export function averageAntigravityQuotaWindow(
   accounts: ReadonlyArray<QuotaAggregationAccount>,
   pool: AntigravityQuotaPool,
   nowMs: number,
+  kind: QuotaWindowKindForDisplay = "long",
 ): QuotaWindow | undefined {
-  const windows = freshAntigravityQuotaWindows(accounts, pool, nowMs);
+  const windows = freshAntigravityQuotaWindows(accounts, pool, nowMs, kind);
   if (windows.length === 0) return undefined;
 
   const resetTimes = new Set(windows.map((window) => window.resetsAt));
   const sharedReset = resetTimes.size === 1 ? windows[0]?.resetsAt : undefined;
 
   return {
-    kind: "long",
-    label: "Weekly limit",
+    kind,
+    label: kind === "short" ? "5-hour limit" : "Weekly limit",
     usedPercent: windows.reduce((sum, window) => sum + window.usedPercent, 0) / windows.length,
-    windowDurationMins: 10_080,
+    windowDurationMins: kind === "short" ? 300 : 10_080,
     ...(sharedReset ? { resetsAt: sharedReset } : {}),
   };
 }
@@ -136,8 +141,9 @@ export function antigravityAggregateResetLabel(
   accounts: ReadonlyArray<QuotaAggregationAccount>,
   pool: AntigravityQuotaPool,
   nowMs: number,
+  kind: QuotaWindowKindForDisplay = "long",
 ): string | undefined {
-  const windows = freshAntigravityQuotaWindows(accounts, pool, nowMs);
+  const windows = freshAntigravityQuotaWindows(accounts, pool, nowMs, kind);
   if (windows.length === 0) return undefined;
   const resetTimes = new Set(windows.map((window) => window.resetsAt ?? "missing"));
   return resetTimes.size > 1 ? "reset varies" : undefined;
@@ -147,11 +153,12 @@ function freshAntigravityQuotaWindows(
   accounts: ReadonlyArray<QuotaAggregationAccount>,
   pool: AntigravityQuotaPool,
   nowMs: number,
+  kind: QuotaWindowKindForDisplay = "long",
 ): ReadonlyArray<QuotaWindow> {
   return accounts.flatMap((account) => {
     const snapshot = account.snapshot;
     if (!snapshot || isQuotaSnapshotStale(snapshot, nowMs)) return [];
-    const window = antigravityQuotaWindow(snapshot, pool, nowMs);
+    const window = antigravityQuotaWindow(snapshot, pool, nowMs, kind);
     return window ? [window] : [];
   });
 }

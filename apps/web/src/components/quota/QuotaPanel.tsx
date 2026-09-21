@@ -11,8 +11,9 @@ import { PROVIDER_ICON_BY_PROVIDER } from "../chat/providerIconUtils";
 import { Gemini, type Icon } from "../Icons";
 import { formatQuotaResetAtGlance, quotaRemainingPercent } from "./quotaFormat";
 import {
-  antigravityResetLabelForKind,
-  averageAntigravityWindowForKind,
+  antigravityAggregateResetLabel,
+  antigravityQuotaWindow,
+  averageAntigravityQuotaWindow,
   groupQuotaPanelAccounts,
   quotaWindowForKind,
 } from "./quotaAggregation";
@@ -226,41 +227,75 @@ const AntigravityAggregateRow = memo(function AntigravityAggregateRow({
   nowMs: number;
   onToggle: () => void;
 }) {
-  const short = averageAntigravityWindowForKind(accounts, "short", nowMs);
-  const weekly = averageAntigravityWindowForKind(accounts, "long", nowMs);
-  const shortResetLabel = antigravityResetLabelForKind(accounts, "short", nowMs);
-  const weeklyResetLabel = antigravityResetLabelForKind(accounts, "long", nowMs);
-  const ProviderIcon = Gemini;
+  const pools = [
+    {
+      key: "gemini" as const,
+      label: "Gemini",
+      color: "#4f8cff",
+      short: averageAntigravityQuotaWindow(accounts, "gemini", nowMs, "short"),
+      weekly: averageAntigravityQuotaWindow(accounts, "gemini", nowMs, "long"),
+      shortResetLabel: antigravityAggregateResetLabel(accounts, "gemini", nowMs, "short"),
+      weeklyResetLabel: antigravityAggregateResetLabel(accounts, "gemini", nowMs, "long"),
+    },
+    {
+      key: "claude-gpt" as const,
+      label: "Other models",
+      color: "#34d399",
+      short: averageAntigravityQuotaWindow(accounts, "claude-gpt", nowMs, "short"),
+      weekly: averageAntigravityQuotaWindow(accounts, "claude-gpt", nowMs, "long"),
+      shortResetLabel: antigravityAggregateResetLabel(accounts, "claude-gpt", nowMs, "short"),
+      weeklyResetLabel: antigravityAggregateResetLabel(accounts, "claude-gpt", nowMs, "long"),
+    },
+  ];
 
   return (
     <button
       aria-expanded={expanded}
       aria-label={`${expanded ? "Hide" : "Show"} individual AGY account limits`}
-      className={`${QUOTA_ROW_GRID} w-full rounded-md px-1.5 py-1.5 text-left hover:bg-sidebar-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring`}
+      className="flex w-full items-start gap-1.5 rounded-md px-1.5 py-1.5 text-left hover:bg-sidebar-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       onClick={onToggle}
       type="button"
     >
-      <span className="flex min-w-0 items-center gap-1.5">
-        <ProviderIcon className="size-3.5 shrink-0" />
-        <span className="min-w-0">
-          <span className="block truncate text-xs leading-tight">AGY</span>
-          <span className="block truncate text-[10px] text-muted-foreground">Combined</span>
-        </span>
+      <span className="flex min-w-0 flex-1 flex-col gap-1">
+        {pools.map((pool, index) => (
+          <span
+            className="grid min-w-0 grid-cols-[minmax(5rem,1.2fr)_minmax(0,1fr)_minmax(0,1fr)] items-center gap-1.5"
+            key={pool.key}
+          >
+            <span className="flex min-w-0 items-center gap-1.5">
+              {index === 0 ? (
+                <Gemini className="size-3.5 shrink-0" />
+              ) : (
+                <span className="size-3.5 shrink-0" />
+              )}
+              <span className="min-w-0">
+                <span className="block truncate text-xs leading-tight">
+                  {index === 0 ? "AGY" : ""}
+                </span>
+                <span className="block truncate text-[10px]" style={{ color: pool.color }}>
+                  {pool.label}
+                </span>
+              </span>
+            </span>
+            <QuotaMetric
+              label="5h"
+              kind="short"
+              accentColor={pool.color}
+              nowMs={nowMs}
+              resetLabel={pool.shortResetLabel}
+              window={pool.short}
+            />
+            <QuotaMetric
+              label="Week"
+              kind="long"
+              accentColor={pool.color}
+              nowMs={nowMs}
+              resetLabel={pool.weeklyResetLabel}
+              window={pool.weekly}
+            />
+          </span>
+        ))}
       </span>
-      <QuotaMetric
-        label="5h"
-        kind="short"
-        nowMs={nowMs}
-        resetLabel={shortResetLabel}
-        window={short}
-      />
-      <QuotaMetric
-        label="Week"
-        kind="long"
-        nowMs={nowMs}
-        resetLabel={weeklyResetLabel}
-        window={weekly}
-      />
       <ChevronDownIcon
         aria-hidden="true"
         className={`size-3 text-muted-foreground transition-transform ${expanded ? "rotate-180" : ""}`}
@@ -281,30 +316,41 @@ const AntigravityAccountRow = memo(function AntigravityAccountRow({
   const snapshot = account.snapshot;
   const stale = snapshot ? isQuotaSnapshotStale(snapshot, nowMs) : false;
   const row = (
-    <div className={`${QUOTA_ROW_GRID} rounded-md px-1.5 py-1.5`}>
-      <span className="min-w-0 pl-5">
-        <span className="block truncate text-[11px] text-muted-foreground">{name}</span>
-        {snapshot?.accountLabel ? (
-          <span className="block truncate text-[9px] leading-tight text-muted-foreground/70">
-            {snapshot.accountLabel}
+    <div className="flex min-w-0 flex-col gap-1 rounded-md px-1.5 py-1.5">
+      {(["gemini", "claude-gpt"] as const).map((pool, index) => (
+        <div
+          className="grid min-w-0 grid-cols-[minmax(5rem,1.2fr)_minmax(0,1fr)_minmax(0,1fr)] items-center gap-1.5"
+          key={pool}
+        >
+          <span className="min-w-0 pl-5">
+            <span className="block truncate text-[11px] text-muted-foreground">
+              {index === 0 ? name : ""}
+            </span>
+            <span
+              className="block truncate text-[9px] leading-tight"
+              style={{ color: pool === "gemini" ? "#4f8cff" : "#34d399" }}
+            >
+              {pool === "gemini" ? "Gemini" : "Other models"}
+            </span>
           </span>
-        ) : null}
-      </span>
-      <QuotaMetric
-        label="5h"
-        kind="short"
-        nowMs={nowMs}
-        stale={stale}
-        window={quotaWindowForKind(snapshot, "short", nowMs)}
-      />
-      <QuotaMetric
-        label="Week"
-        kind="long"
-        nowMs={nowMs}
-        stale={stale}
-        window={quotaWindowForKind(snapshot, "long", nowMs)}
-      />
-      <span aria-hidden="true" />
+          <QuotaMetric
+            label="5h"
+            kind="short"
+            accentColor={pool === "gemini" ? "#4f8cff" : "#34d399"}
+            nowMs={nowMs}
+            stale={stale}
+            window={antigravityQuotaWindow(snapshot, pool, nowMs, "short")}
+          />
+          <QuotaMetric
+            label="Week"
+            kind="long"
+            accentColor={pool === "gemini" ? "#4f8cff" : "#34d399"}
+            nowMs={nowMs}
+            stale={stale}
+            window={antigravityQuotaWindow(snapshot, pool, nowMs, "long")}
+          />
+        </div>
+      ))}
     </div>
   );
 
@@ -348,6 +394,7 @@ function QuotaMetric({
   kind,
   nowMs,
   resetLabel,
+  accentColor,
   stale = false,
   window,
 }: {
@@ -355,6 +402,7 @@ function QuotaMetric({
   kind?: QuotaWindow["kind"];
   nowMs: number;
   resetLabel?: string | undefined;
+  accentColor?: string | undefined;
   stale?: boolean;
   window: QuotaWindow | undefined;
 }) {
@@ -394,7 +442,14 @@ function QuotaMetric({
                       : "bg-foreground/55"
                 }`
           }
-          style={remaining === undefined ? undefined : { width: `${remaining}%` }}
+          style={
+            remaining === undefined
+              ? undefined
+              : {
+                  width: `${remaining}%`,
+                  ...(remaining > 30 && accentColor ? { backgroundColor: accentColor } : {}),
+                }
+          }
         />
       </span>
     </span>

@@ -21,8 +21,8 @@ Codex, Claude, Cursor, Grok, OpenCode, and Antigravity.
   connection hosts replace environment loopback URLs while public, relay, tunnel, and unreachable
   hosts remain unchanged or disabled rather than being guessed reachable.
 - The web and desktop clients show subscription limits in the AGY limits section when Antigravity
-  publishes Gemini and Claude/GPT windows. Gemini windows are shown in blue; Claude/GPT windows
-  are shown in green, including separate five-hour and weekly buckets. Quota refresh is read-only
+  publishes Gemini and other-model windows. Gemini windows are shown in blue; Claude/GPT and other
+  model windows are shown in green, including separate five-hour and weekly buckets. Quota refresh is read-only
   and does not start a coding turn. The sidebar Usage icon previews pooled headroom and reset
   timing on hover or keyboard focus, and opens the Limits view when selected.
 - Codex quota refreshes can run while an instance is idle, so reset times do not wait for the next

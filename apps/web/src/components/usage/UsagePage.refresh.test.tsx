@@ -83,13 +83,15 @@ vi.mock("../settings/providerDriverMeta", () => ({ getDriverOption: () => ({ lab
 import { UsagePage } from "./UsagePage";
 
 let renderer: ReactTestRenderer;
+let environmentNumber = 0;
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-09-11T12:00:00Z"));
+  environmentNumber += 1;
   state.refreshProviders.mockClear();
   state.presentations = new Map([
     [
-      EnvironmentId.make("test"),
+      EnvironmentId.make(`test-${environmentNumber}`),
       {
         entry: { target: { label: "Test" } },
         connection: { phase: "connected" },
@@ -150,7 +152,10 @@ it.each([0, 1])(
         .at(buttonIndex)!
         .props.onClick();
     });
-    expect(state.refreshProviders).toHaveBeenCalledWith({ environmentId: "test", input: {} });
+    expect(state.refreshProviders).toHaveBeenCalledWith({
+      environmentId: `test-${environmentNumber}`,
+      input: {},
+    });
     expect(
       JSON.stringify(renderer.toJSON(), (key, value) => (key === "props" ? undefined : value)),
     ).toContain("in 1h 30m");
@@ -175,5 +180,5 @@ it("uses the current time when returning to limits from tokens", async () => {
   expect(
     JSON.stringify(renderer.toJSON(), (key, value) => (key === "props" ? undefined : value)),
   ).toContain("in 1h 0m");
-  expect(state.refreshProviders).not.toHaveBeenCalled();
+  expect(state.refreshProviders).toHaveBeenCalledTimes(2);
 });

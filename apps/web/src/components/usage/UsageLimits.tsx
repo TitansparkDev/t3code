@@ -49,7 +49,11 @@ const PACE: Record<LimitPace, { readonly label: string; readonly icon: typeof Ga
 export function barColor(driver: ServerProvider["driver"], label?: string): string {
   if (driver === "antigravity") {
     const normalized = label?.toLowerCase() ?? "";
-    return normalized.includes("claude") || normalized.includes("gpt") ? "#34d399" : "#4f8cff";
+    return normalized.includes("claude") ||
+      normalized.includes("gpt") ||
+      normalized.includes("other")
+      ? "#34d399"
+      : "#4f8cff";
   }
   const kind: UsageProviderKind | undefined =
     driver === "codex" ? "codex" : driver === "claudeAgent" ? "claude" : undefined;

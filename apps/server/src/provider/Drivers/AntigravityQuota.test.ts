@@ -1,8 +1,22 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { directQuotaGroups, parseAntigravityUsage } from "./AntigravityQuota.ts";
+import {
+  directQuotaGroups,
+  parseAntigravityUsage,
+  projectIdFromLoadCodeAssist,
+} from "./AntigravityQuota.ts";
 
 describe("parseAntigravityUsage", () => {
+  it("uses the provisioned companion project when Google returns one", () => {
+    expect(
+      projectIdFromLoadCodeAssist({ cloudaicompanionProject: { projectId: "agy-project" } }),
+    ).toBe("agy-project");
+    expect(projectIdFromLoadCodeAssist({ cloudaicompanionProject: "agy-project" })).toBe(
+      "agy-project",
+    );
+    expect(projectIdFromLoadCodeAssist({ project: "" })).toBeUndefined();
+  });
+
   it("maps the direct Google quota summary into separate Gemini and Claude/GPT windows", () => {
     const result = directQuotaGroups({
       groups: [

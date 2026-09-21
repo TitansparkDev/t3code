@@ -196,7 +196,10 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         }).pipe(
           Effect.scoped,
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-          Effect.timeout("5 seconds"),
+          // App-server startup on an idle account can take several seconds;
+          // timing out too aggressively leaves the previous quota on screen
+          // until the user retries manually.
+          Effect.timeout("15 seconds"),
           Effect.orElseSucceed(() => undefined),
         );
 

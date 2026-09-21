@@ -136,6 +136,16 @@ describe("quotaAggregation", () => {
       averageAntigravityWindowForKind([account("one", first), account("two", second)], "long", NOW)
         ?.usedPercent,
     ).toBe(55);
+    expect(antigravityQuotaWindow(first, "gemini", NOW, "short")?.usedPercent).toBe(10);
+    expect(antigravityQuotaWindow(first, "claude-gpt", NOW, "short")?.usedPercent).toBe(100);
+    expect(
+      averageAntigravityQuotaWindow(
+        [account("one", first), account("two", second)],
+        "gemini",
+        NOW,
+        "short",
+      )?.usedPercent,
+    ).toBe(15);
   });
 
   it("collapses the same labeled account across environments", () => {
