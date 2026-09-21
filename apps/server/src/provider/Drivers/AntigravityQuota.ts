@@ -126,7 +126,10 @@ export function directQuotaGroups(value: unknown): AntigravityUsagePayload | und
 export function projectIdFromLoadCodeAssist(value: unknown): string | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const root = value as Record<string, unknown>;
-  const candidate = root.cloudaicompanionProject ?? root.cloudCodeProject ?? root.project;
+  // Only accept Google's explicitly provisioned companion project. Generic
+  // project fields can refer to a different GCP project and produce a
+  // successful but unrelated quota response.
+  const candidate = root.cloudaicompanionProject;
   if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
   if (typeof candidate === "object" && candidate !== null) {
     const project = candidate as Record<string, unknown>;
@@ -134,10 +137,6 @@ export function projectIdFromLoadCodeAssist(value: unknown): string | undefined 
       const value = project[key];
       if (typeof value === "string" && value.trim()) return value.trim();
     }
-  }
-  for (const key of ["projectId", "project_id"] as const) {
-    const value = root[key];
-    if (typeof value === "string" && value.trim()) return value.trim();
   }
   return undefined;
 }

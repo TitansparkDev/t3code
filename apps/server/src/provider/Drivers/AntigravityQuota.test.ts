@@ -15,6 +15,7 @@ describe("parseAntigravityUsage", () => {
       "agy-project",
     );
     expect(projectIdFromLoadCodeAssist({ project: "" })).toBeUndefined();
+    expect(projectIdFromLoadCodeAssist({ project: "unrelated-project" })).toBeUndefined();
   });
 
   it("maps the direct Google quota summary into separate Gemini and Claude/GPT windows", () => {

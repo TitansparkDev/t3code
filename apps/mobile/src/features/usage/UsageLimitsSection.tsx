@@ -329,18 +329,25 @@ export function useRefreshLimits(
     try {
       await Promise.all(
         connected.map(async ([environmentId, presentation]) => {
-          const result = await refreshUsageLimits(
-            environmentId,
-            () => refreshProviders({ environmentId, input: {} }),
-            automatic,
-          );
-          if (result === undefined) return;
-          setFailedEnvironments((previous) => [
-            ...previous.filter((failed) => failed.environmentId !== environmentId),
-            ...(result._tag === "Failure"
-              ? [{ environmentId, label: presentation.entry.target.label }]
-              : []),
-          ]);
+          try {
+            const result = await refreshUsageLimits(
+              environmentId,
+              () => refreshProviders({ environmentId, input: {} }),
+              automatic,
+            );
+            if (result === undefined) return;
+            setFailedEnvironments((previous) => [
+              ...previous.filter((failed) => failed.environmentId !== environmentId),
+              ...(result._tag === "Failure"
+                ? [{ environmentId, label: presentation.entry.target.label }]
+                : []),
+            ]);
+          } catch {
+            setFailedEnvironments((previous) => [
+              ...previous.filter((failed) => failed.environmentId !== environmentId),
+              { environmentId, label: presentation.entry.target.label },
+            ]);
+          }
         }),
       );
     } finally {
