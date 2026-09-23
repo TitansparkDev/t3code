@@ -104,6 +104,10 @@ function isMinorInt(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }
 
+function isUsagePercent(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 100;
+}
+
 function readMoney(
   value: unknown,
 ):
@@ -215,7 +219,13 @@ export function claudeRateLimitEventToUpdate(
   names: ClaudeScopedLimitNames,
 ): ProviderUsageLimitsUpdate | undefined {
   const type: string | undefined = info.rateLimitType;
-  if (!type || typeof info.utilization !== "number") {
+  if (
+    !type ||
+    typeof info.utilization !== "number" ||
+    !Number.isFinite(info.utilization) ||
+    info.utilization < 0 ||
+    info.utilization > 1
+  ) {
     return undefined;
   }
   const usedPercent = info.utilization * 100;
@@ -257,14 +267,14 @@ export function claudeUsageResponseToLimits(input: {
   const windows: ServerProviderUsageWindow[] = [];
   for (const id of Object.keys(WINDOWS)) {
     const window = response.rate_limits[id as "five_hour" | "seven_day"];
-    if (!window || typeof window.utilization !== "number") continue;
+    if (!window || !isUsagePercent(window.utilization)) continue;
     windows.push(makeWindow(id, window.utilization, isoFromString(window.resets_at)));
   }
   // The CLI filters `model_scoped` to the overage-included allowlist, which
   // today holds one model; the first entry is the one the event refers to.
   let overageIncluded: string | undefined;
   for (const entry of readModelScoped(response.rate_limits)) {
-    if (typeof entry.utilization !== "number") continue;
+    if (!isUsagePercent(entry.utilization)) continue;
     windows.push(
       scopedWindow(entry.display_name, entry.utilization, isoFromString(entry.resets_at)),
     );
