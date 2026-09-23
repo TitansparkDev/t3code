@@ -19,6 +19,7 @@ import {
   type UsageLimitSourceSnapshot,
   type UsageLimitSourceSnapshots,
 } from "@t3tools/contracts";
+import type { AccountQuotaSnapshot } from "@t3tools/contracts/quota";
 
 import * as DateTime from "effect/DateTime";
 
@@ -41,6 +42,46 @@ export function providersWithLimits(
       isProviderAvailable(provider) &&
       provider.usageLimits !== undefined,
   );
+}
+
+/**
+ * Project the newer native quota event snapshot into the existing limits
+ * view. The source timestamp is kept as `checkedAt`, so the ordinary account
+ * merge can compare it fairly with provider and hub reads.
+ */
+export function nativeQuotaUsageLimits(snapshot: AccountQuotaSnapshot): ServerProviderUsageLimits {
+  return {
+    checkedAt: snapshot.observedAt,
+    windows: snapshot.groups.flatMap((group) =>
+      group.windows.map((window) => ({
+        id: `${group.key}:${window.kind}:${window.windowDurationMins ?? "unknown"}`,
+        kind: window.kind === "short" ? "session" : window.kind === "long" ? "weekly" : "other",
+        label: window.label ?? group.displayName,
+        usedPercent: window.usedPercent,
+        ...(window.resetsAt ? { resetsAt: window.resetsAt } : {}),
+        ...(window.windowDurationMins !== undefined
+          ? { windowDurationMins: window.windowDurationMins }
+          : {}),
+      })),
+    ),
+  };
+}
+
+/** Use native event data only when it is newer than the provider config read. */
+export function withNativeQuotaSnapshots(
+  providers: readonly ServerProvider[],
+  snapshots: readonly AccountQuotaSnapshot[],
+): readonly ServerProvider[] {
+  const byInstance = new Map(snapshots.map((snapshot) => [snapshot.providerInstanceId, snapshot]));
+  return providers.map((provider) => {
+    const snapshot = byInstance.get(provider.instanceId);
+    if (!snapshot) return provider;
+    const usageLimits = nativeQuotaUsageLimits(snapshot);
+    return provider.usageLimits &&
+      Date.parse(provider.usageLimits.checkedAt) >= Date.parse(usageLimits.checkedAt)
+      ? provider
+      : { ...provider, usageLimits };
+  });
 }
 
 export interface LimitsGroup {

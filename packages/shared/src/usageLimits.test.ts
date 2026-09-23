@@ -21,8 +21,11 @@ import {
   limitsNotice,
   paceOf,
   providersWithLimits,
+  nativeQuotaUsageLimits,
+  withNativeQuotaSnapshots,
   remainingPercent,
 } from "./usageLimits.ts";
+import type { AccountQuotaSnapshot } from "@t3tools/contracts/quota";
 
 const now = Date.parse("2026-09-03T12:00:00.000Z");
 
@@ -92,6 +95,66 @@ describe("limitsNotice", () => {
         unavailable: { reason: "probeFailed", message: "Codex timed out." },
       }),
     ).toBe("Codex timed out.");
+  });
+});
+
+describe("native quota snapshot projection", () => {
+  it("keeps provider groups separate and only overlays a newer native event snapshot", () => {
+    const native: AccountQuotaSnapshot = {
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      source: "provider-event",
+      observedAt: "2026-09-03T11:30:00.000Z",
+      groups: [
+        {
+          key: "gemini",
+          displayName: "Gemini Models",
+          windows: [
+            {
+              kind: "short",
+              usedPercent: 35,
+              resetsAt: "2026-09-03T14:00:00.000Z",
+              windowDurationMins: 300,
+            },
+          ],
+        },
+        {
+          key: "claude-gpt",
+          displayName: "Claude & GPT models",
+          windows: [{ kind: "long", label: "Weekly", usedPercent: 70 }],
+        },
+      ],
+    };
+    const projected = nativeQuotaUsageLimits(native);
+    expect(projected).toEqual({
+      checkedAt: native.observedAt,
+      windows: [
+        {
+          id: "gemini:short:300",
+          kind: "session",
+          label: "Gemini Models",
+          usedPercent: 35,
+          resetsAt: "2026-09-03T14:00:00.000Z",
+          windowDurationMins: 300,
+        },
+        {
+          id: "claude-gpt:long:unknown",
+          kind: "weekly",
+          label: "Weekly",
+          usedPercent: 70,
+        },
+      ],
+    });
+
+    const configured = provider({
+      usageLimits: { checkedAt: "2026-09-03T11:00:00.000Z", windows: [window] },
+    });
+    expect(withNativeQuotaSnapshots([configured], [native])[0]?.usageLimits).toEqual(projected);
+    expect(
+      withNativeQuotaSnapshots(
+        [provider({ usageLimits: { checkedAt: "2026-09-03T11:45:00.000Z", windows: [window] } })],
+        [native],
+      )[0]?.usageLimits?.windows,
+    ).toEqual([window]);
   });
 });
 
