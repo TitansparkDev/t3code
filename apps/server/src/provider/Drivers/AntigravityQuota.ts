@@ -38,6 +38,11 @@ interface QuotaBucket {
   readonly window?: string;
   readonly remainingFraction?: number;
   readonly remaining_fraction?: number;
+  readonly remainingPercent?: number;
+  readonly remaining_percent?: number;
+  readonly usedPercent?: number;
+  readonly used_percent?: number;
+  readonly utilization?: number;
   readonly resetTime?: string;
   readonly reset_time?: string;
   readonly disabled?: boolean;
@@ -89,20 +94,17 @@ export function directQuotaGroups(value: unknown): AntigravityUsagePayload | und
       : /claude|gpt/iu.test(name)
         ? "Claude & GPT"
         : "Other models";
-    const windows = buckets.flatMap((bucket, index): AntigravityUsageWindow[] => {
+    const windows = buckets.flatMap((bucket): AntigravityUsageWindow[] => {
       if (bucket.disabled) return [];
       const descriptor = `${bucket.window ?? ""} ${bucket.displayName ?? ""}`;
       const duration = windowDurationMins(undefined, descriptor);
       if (!duration) return [];
-      const remaining = bucket.remainingFraction ?? bucket.remaining_fraction;
-      const usedPercent = remainingToUsed(remaining);
+      const usedPercent = bucketUsagePercent(bucket);
       if (usedPercent === undefined) return [];
       const reset = parseReset(bucket.resetTime ?? bucket.reset_time);
       return [
         {
-          id:
-            bucket.bucketId ??
-            `${isGemini ? "gemini" : "claude-gpt"}_${duration >= MONTH_MINS ? "monthly" : duration >= WEEK_MINS ? "weekly" : "5h"}_${index}`,
+          id: bucket.bucketId ?? `${isGemini ? "gemini" : "claude-gpt"}-${duration}`,
           label: duration >= MONTH_MINS ? "Monthly" : duration >= WEEK_MINS ? "Weekly" : "5-hour",
           usedPercent,
           windowDurationMins: duration,
@@ -113,10 +115,18 @@ export function directQuotaGroups(value: unknown): AntigravityUsagePayload | und
     if (windows.length > 0) {
       const key = isGemini ? "gemini" : "claude-gpt";
       const previous = groups.get(key);
+      const mergedWindows = [...(previous?.windows ?? []), ...windows];
+      const uniqueWindows = new Map<number, AntigravityUsageWindow>();
+      for (const window of mergedWindows) {
+        const existing = uniqueWindows.get(window.windowDurationMins);
+        if (!existing || window.usedPercent > existing.usedPercent) {
+          uniqueWindows.set(window.windowDurationMins, window);
+        }
+      }
       groups.set(key, {
         key,
         displayName: previous?.displayName ?? family,
-        windows: [...(previous?.windows ?? []), ...windows],
+        windows: [...uniqueWindows.values()],
       });
     }
   }
@@ -139,39 +149,6 @@ export function projectIdFromLoadCodeAssist(value: unknown): string | undefined 
     }
   }
   return undefined;
-}
-
-function creditsToUsage(value: unknown): AntigravityUsagePayload | undefined {
-  if (typeof value !== "object" || value === null) return undefined;
-  const state = (value as { readonly quotaManagerState?: unknown }).quotaManagerState;
-  if (typeof state !== "object" || state === null) return undefined;
-  const credits = state as Record<string, unknown>;
-  const windows: AntigravityUsageWindow[] = [];
-  for (const [id, totalKey, availableKey, label] of [
-    ["prompt_credits", "monthlyPromptCredits", "availablePromptCredits", "Prompt credits"],
-    ["flow_credits", "monthlyFlowCredits", "availableFlowCredits", "Flow credits"],
-  ] as const) {
-    const total = credits[totalKey];
-    const available = credits[availableKey];
-    if (
-      typeof total !== "number" ||
-      !Number.isFinite(total) ||
-      total <= 0 ||
-      typeof available !== "number" ||
-      !Number.isFinite(available)
-    ) {
-      continue;
-    }
-    windows.push({
-      id,
-      label,
-      usedPercent: remainingToUsed(available / total) ?? 0,
-      windowDurationMins: 43_200,
-    });
-  }
-  return windows.length > 0
-    ? { groups: [{ key: "gemini", displayName: "Gemini", windows }] }
-    : undefined;
 }
 
 function safeGoogleTokenUri(value: unknown): value is string {
@@ -268,12 +245,6 @@ const directQuotaProbe = Effect.fn("readAntigravityDirectUsage")(function* (inpu
     const payload = directQuotaGroups(response.value);
     if (payload) return payload;
   }
-  // Keep the credits response as a compatibility fallback, but use the same
-  // daily host and request identity as the quota service.
-  if (Option.isSome(loadAssistResponse)) {
-    const payload = creditsToUsage(loadAssistResponse.value);
-    if (payload) return payload;
-  }
   return undefined;
 });
 
@@ -307,8 +278,8 @@ export function antigravityUsageToProviderLimits(
       .flatMap((group) =>
         group.windows
           .toSorted((left, right) => left.windowDurationMins - right.windowDurationMins)
-          .map((window, index) => ({
-            id: window.id ?? `${group.key}-${window.windowDurationMins}-${index}`,
+          .map((window) => ({
+            id: window.id ?? `${group.key}-${window.windowDurationMins}`,
             kind:
               window.windowDurationMins >= MONTH_MINS
                 ? "monthly"
@@ -334,11 +305,40 @@ function windowDurationMins(value: unknown, fallback?: string): number | undefin
   return undefined;
 }
 
-function remainingToUsed(value: unknown): number | undefined {
-  const numeric = typeof value === "number" ? value : Number.parseFloat(String(value));
-  if (!Number.isFinite(numeric)) return undefined;
-  const remainingPercent = numeric <= 1 ? numeric * 100 : numeric;
-  return Math.min(100, Math.max(0, 100 - remainingPercent));
+function percentage(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 100
+    ? value
+    : undefined;
+}
+
+function remainingFractionToUsed(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1
+    ? 100 - value * 100
+    : undefined;
+}
+
+function bucketUsagePercent(bucket: QuotaBucket): number | undefined {
+  if (bucket.remainingFraction !== undefined) {
+    return remainingFractionToUsed(bucket.remainingFraction);
+  }
+  if (bucket.remaining_fraction !== undefined) {
+    return remainingFractionToUsed(bucket.remaining_fraction);
+  }
+  if (bucket.remainingPercent !== undefined) {
+    const remaining = percentage(bucket.remainingPercent);
+    return remaining === undefined ? undefined : 100 - remaining;
+  }
+  if (bucket.remaining_percent !== undefined) {
+    const remaining = percentage(bucket.remaining_percent);
+    return remaining === undefined ? undefined : 100 - remaining;
+  }
+  return percentage(bucket.usedPercent ?? bucket.used_percent ?? bucket.utilization);
+}
+
+function legacyTextPercent(value: unknown): number | undefined {
+  if (typeof value !== "string" || !/^\d+(?:\.\d+)?%$/u.test(value.trim())) return undefined;
+  const remaining = percentage(Number.parseFloat(value));
+  return remaining === undefined ? undefined : 100 - remaining;
 }
 
 function parseReset(value: unknown): string | undefined {
@@ -380,9 +380,7 @@ function parseJsonGroups(value: unknown): AntigravityUsagePayload | undefined {
       if (bucket.disabled === true) continue;
       const label = typeof bucket.name === "string" ? bucket.name.trim() : "";
       const duration = windowDurationMins(bucket.window, label);
-      const usedPercent = remainingToUsed(
-        bucket.remaining_fraction ?? bucket.remainingFraction ?? bucket.remaining_percent,
-      );
+      const usedPercent = bucketUsagePercent(bucket);
       if (!label || duration === undefined || usedPercent === undefined) continue;
       const reset = parseReset(bucket.reset_time ?? bucket.resetTime ?? bucket.resetsAt);
       windows.push({
@@ -410,7 +408,7 @@ function parseText(stdout: string): AntigravityUsagePayload | undefined {
     if (!fields || fields.length < 3) continue;
     const displayName = fields[0];
     const label = fields[1];
-    const usedPercent = remainingToUsed(fields[2]);
+    const usedPercent = legacyTextPercent(fields[2]);
     const duration = windowDurationMins(undefined, label);
     if (!displayName || !label || usedPercent === undefined || duration === undefined) continue;
     const key = groupKey(displayName);

@@ -82,6 +82,66 @@ describe("parseAntigravityUsage", () => {
     });
   });
 
+  it("keeps duplicate pool windows unique and gives them order-independent IDs", () => {
+    const parse = (buckets: ReadonlyArray<Record<string, unknown>>) =>
+      directQuotaGroups({
+        groups: buckets.map((bucket) => ({ displayName: "Gemini models", buckets: [bucket] })),
+      });
+    const first = parse([
+      { window: "weekly", remainingFraction: 0.8 },
+      { window: "weekly", remainingFraction: 0.6 },
+    ]);
+    const reordered = parse([
+      { window: "weekly", remainingFraction: 0.6 },
+      { window: "weekly", remainingFraction: 0.8 },
+    ]);
+
+    expect(first?.groups[0]?.windows).toEqual([
+      {
+        id: "gemini-10080",
+        label: "Weekly",
+        usedPercent: 40,
+        windowDurationMins: 10_080,
+      },
+    ]);
+    expect(reordered?.groups[0]?.windows).toEqual(first?.groups[0]?.windows);
+  });
+
+  it("rejects ambiguous strings and out-of-range percentages without parsing credits as quota", () => {
+    const result = directQuotaGroups({
+      quotaManagerState: {
+        monthlyPromptCredits: 100,
+        availablePromptCredits: 25,
+      },
+      groups: [
+        {
+          displayName: "Gemini models",
+          buckets: [
+            { window: "weekly", remainingFraction: 1.2 },
+            { window: "5h", remainingFraction: "0.5" },
+            { window: "weekly", remainingPercent: 101 },
+            { window: "weekly", usedPercent: "30" },
+            { window: "weekly", usedPercent: 35 },
+          ],
+        },
+      ],
+    });
+
+    expect(result?.groups[0]?.windows).toEqual([
+      {
+        id: "gemini-10080",
+        label: "Weekly",
+        usedPercent: 35,
+        windowDurationMins: 10_080,
+      },
+    ]);
+    expect(
+      directQuotaGroups({
+        quotaManagerState: { monthlyPromptCredits: 100, availablePromptCredits: 25 },
+      }),
+    ).toBeUndefined();
+  });
+
   it("reads the structured usage response and keeps the two quota groups", () => {
     const result = parseAntigravityUsage(
       JSON.stringify({
