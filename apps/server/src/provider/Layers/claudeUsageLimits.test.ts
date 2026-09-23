@@ -103,7 +103,7 @@ describe("claudeUsageResponseToLimits", () => {
           rate_limits_available: true,
           rate_limits: {
             five_hour: { utilization: null, resets_at: null },
-            seven_day: { utilization: 250, resets_at: null },
+            seven_day: { utilization: 75, resets_at: null },
           },
         },
       }).limits.windows,
@@ -112,10 +112,28 @@ describe("claudeUsageResponseToLimits", () => {
         id: "seven_day",
         kind: "weekly",
         label: "Weekly",
-        usedPercent: 100,
+        usedPercent: 75,
         windowDurationMins: 10080,
       },
     ]);
+  });
+
+  it("skips provider percentages outside the documented 0–100 range", () => {
+    expect(
+      claudeUsageResponseToLimits({
+        checkedAt,
+        response: {
+          rate_limits_available: true,
+          rate_limits: {
+            five_hour: { utilization: Number.NaN, resets_at: null },
+            seven_day: { utilization: 250, resets_at: null },
+            ...({
+              model_scoped: [{ display_name: "Fable", utilization: -1, resets_at: null }],
+            } as object),
+          },
+        },
+      }).limits.windows,
+    ).toEqual([]);
   });
 
   it("maps an Enterprise spending budget when rolling windows are null", () => {
@@ -233,5 +251,16 @@ describe("claudeRateLimitEventToUpdate", () => {
     expect(
       claudeRateLimitEventToUpdate({ status: "rejected", rateLimitType: "five_hour" }, noNames),
     ).toBeUndefined();
+  });
+
+  it("ignores event fractions outside the documented 0–1 range", () => {
+    for (const utilization of [Number.NaN, -0.01, 1.01]) {
+      expect(
+        claudeRateLimitEventToUpdate(
+          { status: "allowed", rateLimitType: "five_hour", utilization },
+          noNames,
+        ),
+      ).toBeUndefined();
+    }
   });
 });
