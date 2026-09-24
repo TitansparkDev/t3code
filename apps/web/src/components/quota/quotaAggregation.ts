@@ -88,7 +88,7 @@ export function antigravityResetLabelForKind(
 
 function groupMatchesPool(group: QuotaGroup, pool: AntigravityQuotaPool): boolean {
   const identity = `${group.key} ${group.displayName}`.toLowerCase();
-  return pool === "gemini" ? /gemini|google/.test(identity) : /claude|gpt|other/.test(identity);
+  return pool === "gemini" ? /gemini|google/.test(identity) : /claude|gpt/.test(identity);
 }
 
 /** Find one Antigravity pool's weekly window. */

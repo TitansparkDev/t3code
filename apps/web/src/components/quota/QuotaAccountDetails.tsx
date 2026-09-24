@@ -71,7 +71,11 @@ export const QuotaAccountDetails = memo(function QuotaAccountDetails({
           ? "Reported by the provider"
           : snapshot.source === "state-file"
             ? "Recovered from provider state"
-            : "Detected from a limit signal"}
+            : snapshot.source === "antigravity-quota-summary"
+              ? "Structured quota summary"
+              : snapshot.source === "antigravity-model-fallback"
+                ? "Estimated from per-model limits"
+                : "Detected from a limit signal"}
         {snapshot.planType ? ` · ${snapshot.planType}` : ""}
       </div>
     </div>

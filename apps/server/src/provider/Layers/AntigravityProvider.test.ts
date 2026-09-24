@@ -24,6 +24,7 @@ import {
   buildAntigravityModelsFromSession,
   makeAntigravityProvider,
 } from "./AntigravityProvider.ts";
+import { BUNDLED_MODEL_MANIFEST, classifyModels } from "../ModelManifest.ts";
 
 const decodeSettings = Schema.decodeSync(AntigravitySettings);
 const instanceId = ProviderInstanceId.make("antigravity-test");
@@ -207,6 +208,75 @@ describe("Antigravity model catalog", () => {
     expect(models.find((model) => model.isDefault)?.slug).toBe("gemini-pro-agent");
     expect(models.find((model) => model.aliases?.includes(ANTIGRAVITY_DEFAULT_MODEL))?.slug).toBe(
       "gemini-pro-agent",
+    );
+  });
+
+  it("preserves Claude and GPT-OSS models and filters internal models", () => {
+    const mixedOptions = [
+      ...modelOptions,
+      { value: "claude-sonnet-4-6", name: "Claude Sonnet 4.6 (Thinking)" },
+      { value: "claude-opus-4-6-thinking", name: "Claude Opus 4.6 (Thinking)" },
+      { value: "gpt-oss-120b-medium", name: "GPT-OSS 120B (Medium)" },
+      { value: "claude-opus-4-5-thinking", name: "Claude Opus 4.5 (Thinking)" },
+      { value: "internal-model-1", name: "Internal Model" },
+      { value: "debug_internal", name: "Debug Internal" },
+    ];
+    const models = buildAntigravityModelsFromSession({
+      configOptions: [{ ...modelConfig, options: mixedOptions }],
+    });
+    expect(models.map((m) => m.slug)).toEqual([
+      ...modelOptions.map((o) => o.value),
+      "claude-sonnet-4-6",
+      "claude-opus-4-6-thinking",
+      "gpt-oss-120b-medium",
+      "claude-opus-4-5-thinking",
+    ]);
+    expect(models.find((m) => m.slug === "claude-sonnet-4-6")?.name).toBe(
+      "Claude Sonnet 4.6 (Thinking)",
+    );
+    expect(models.find((m) => m.slug === "claude-opus-4-6-thinking")?.name).toBe(
+      "Claude Opus 4.6 (Thinking)",
+    );
+    expect(models.find((m) => m.slug === "gpt-oss-120b-medium")?.name).toBe(
+      "GPT-OSS 120B (Medium)",
+    );
+    expect(models.some((m) => m.slug.includes("internal"))).toBe(false);
+  });
+
+  it("classifies Claude and GPT models according to the manifest", () => {
+    const mixedOptions = [
+      { value: "gemini-3.8-flash-high", name: "Gemini 3.8 Flash (High)" },
+      { value: "claude-sonnet-4-6", name: "Claude Sonnet 4.6 (Thinking)" },
+      { value: "claude-opus-4-6-thinking", name: "Claude Opus 4.6 (Thinking)" },
+      { value: "gpt-oss-120b-medium", name: "GPT-OSS 120B (Medium)" },
+      { value: "claude-opus-4-5-thinking", name: "Claude Opus 4.5 (Thinking)" },
+      { value: "unnamed-model", name: "" },
+    ];
+    const models = buildAntigravityModelsFromSession({
+      configOptions: [{ ...modelConfig, options: mixedOptions }],
+    });
+    const classified = classifyModels(models, BUNDLED_MODEL_MANIFEST, driver);
+    const bySlug = new Map(classified.map((m) => [m.slug, m]));
+    expect(bySlug.get("claude-sonnet-4-6")?.isLegacy).toBeFalsy();
+    expect(bySlug.get("claude-opus-4-6-thinking")?.isLegacy).toBeFalsy();
+    expect(bySlug.get("gpt-oss-120b-medium")?.isLegacy).toBeFalsy();
+    expect(bySlug.get("claude-opus-4-5-thinking")?.isLegacy).toBe(true);
+  });
+
+  it("applies manifest fallback name when provider does not specify display name", () => {
+    const rawOptions = [
+      { value: "claude-sonnet-4-6", name: "" },
+      { value: "gpt-oss-120b-medium", name: "gpt-oss-120b-medium" },
+    ];
+    const models = buildAntigravityModelsFromSession({
+      configOptions: [{ ...modelConfig, options: rawOptions }],
+    });
+    const classified = classifyModels(models, BUNDLED_MODEL_MANIFEST, driver);
+    expect(classified.find((m) => m.slug === "claude-sonnet-4-6")?.name).toBe(
+      "Claude Sonnet 4.6 (Thinking)",
+    );
+    expect(classified.find((m) => m.slug === "gpt-oss-120b-medium")?.name).toBe(
+      "GPT-OSS 120B (Medium)",
     );
   });
 });

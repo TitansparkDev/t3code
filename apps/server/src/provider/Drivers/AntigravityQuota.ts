@@ -29,6 +29,7 @@ export interface AntigravityUsageGroup {
 
 export interface AntigravityUsagePayload {
   readonly groups: ReadonlyArray<AntigravityUsageGroup>;
+  readonly source?: "antigravity-quota-summary" | "antigravity-model-fallback";
 }
 
 interface QuotaBucket {
@@ -74,6 +75,12 @@ export function directQuotaGroups(value: unknown): AntigravityUsagePayload | und
     typeof root.quotaSummary === "object" && root.quotaSummary !== null
       ? (root.quotaSummary as Record<string, unknown>)
       : undefined;
+  const isModelFallback =
+    !root.groups &&
+    !root.quotaGroups &&
+    !nestedSummary?.groups &&
+    !nestedSummary?.quotaGroups &&
+    Boolean(root.modelGroups);
   const rawGroups =
     root.groups ??
     root.quotaGroups ??
@@ -89,11 +96,9 @@ export function directQuotaGroups(value: unknown): AntigravityUsagePayload | und
     const buckets = group.buckets ?? group.quotaBuckets ?? [];
     if (!name || !Array.isArray(buckets)) continue;
     const isGemini = /gemini|google/iu.test(name);
-    const family = isGemini
-      ? "Gemini"
-      : /claude|gpt/iu.test(name)
-        ? "Claude & GPT"
-        : "Other models";
+    const isClaudeGpt = /claude|gpt|oss/iu.test(name);
+    if (!isGemini && !isClaudeGpt) continue;
+    const family = isGemini ? "Gemini" : "Claude & GPT";
     const windows = buckets.flatMap((bucket): AntigravityUsageWindow[] => {
       if (bucket.disabled) return [];
       const descriptor = `${bucket.window ?? ""} ${bucket.displayName ?? ""}`;
@@ -119,7 +124,11 @@ export function directQuotaGroups(value: unknown): AntigravityUsagePayload | und
       const uniqueWindows = new Map<number, AntigravityUsageWindow>();
       for (const window of mergedWindows) {
         const existing = uniqueWindows.get(window.windowDurationMins);
-        if (!existing || window.usedPercent > existing.usedPercent) {
+        if (
+          !existing ||
+          window.usedPercent > existing.usedPercent ||
+          (window.usedPercent === existing.usedPercent && !existing.resetsAt && window.resetsAt)
+        ) {
           uniqueWindows.set(window.windowDurationMins, window);
         }
       }
@@ -130,7 +139,12 @@ export function directQuotaGroups(value: unknown): AntigravityUsagePayload | und
       });
     }
   }
-  return groups.size > 0 ? { groups: [...groups.values()] } : undefined;
+  return groups.size > 0
+    ? {
+        groups: [...groups.values()],
+        ...(isModelFallback ? { source: "antigravity-model-fallback" as const } : {}),
+      }
+    : undefined;
 }
 
 export function projectIdFromLoadCodeAssist(value: unknown): string | undefined {
@@ -313,7 +327,7 @@ function percentage(value: unknown): number | undefined {
 
 function remainingFractionToUsed(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1
-    ? 100 - value * 100
+    ? Math.round((100 - value * 100) * 100) / 100
     : undefined;
 }
 

@@ -239,7 +239,7 @@ const AntigravityAggregateRow = memo(function AntigravityAggregateRow({
     },
     {
       key: "claude-gpt" as const,
-      label: "Other models",
+      label: "Claude & GPT",
       color: "#34d399",
       short: averageAntigravityQuotaWindow(accounts, "claude-gpt", nowMs, "short"),
       weekly: averageAntigravityQuotaWindow(accounts, "claude-gpt", nowMs, "long"),
@@ -330,7 +330,7 @@ const AntigravityAccountRow = memo(function AntigravityAccountRow({
               className="block truncate text-[9px] leading-tight"
               style={{ color: pool === "gemini" ? "#4f8cff" : "#34d399" }}
             >
-              {pool === "gemini" ? "Gemini" : "Other models"}
+              {pool === "gemini" ? "Gemini" : "Claude & GPT"}
             </span>
           </span>
           <QuotaMetric

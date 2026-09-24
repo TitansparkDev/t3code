@@ -63,16 +63,16 @@ export function buildAntigravityModelsFromSession(
         : [];
   const seen = new Set<string>();
   return entries.flatMap((entry): ServerProviderModel[] => {
-    if (!entry.value.trim() || seen.has(entry.value)) return [];
-    seen.add(entry.value);
+    const slug = entry.value.trim();
+    if (!slug || seen.has(slug)) return [];
+    if (/^internal-|_internal$|^internal$/i.test(slug)) return [];
+    seen.add(slug);
     return [
       {
-        slug: entry.value,
-        name: entry.name.trim() ? entry.name : entry.value,
+        slug,
+        name: entry.name.trim() ? entry.name.trim() : slug,
         isCustom: false,
-        ...(entry.value === currentValue
-          ? { isDefault: true, aliases: [ANTIGRAVITY_DEFAULT_MODEL] }
-          : {}),
+        ...(slug === currentValue ? { isDefault: true, aliases: [ANTIGRAVITY_DEFAULT_MODEL] } : {}),
         capabilities: EMPTY_MODEL_CAPABILITIES,
       },
     ];

@@ -50,6 +50,10 @@ export const QuotaSource = Schema.Literals([
   "state-file",
   /** Inferred from a limit-reached signal. Directional only. */
   "limit-signal",
+  /** Structured quota summary from Antigravity direct probe or bridge. */
+  "antigravity-quota-summary",
+  /** Conservative per-model fallback when pooled data is unavailable. */
+  "antigravity-model-fallback",
 ]);
 export type QuotaSource = typeof QuotaSource.Type;
 

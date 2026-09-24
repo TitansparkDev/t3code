@@ -1262,7 +1262,11 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
           providerInstanceId: options.instanceId,
           createdAt: stamped.createdAt,
           threadId: ThreadId.make(`quota-refresh-${options.instanceId}`),
-          payload: { limits: antigravityUsageToProviderLimits(usage), rateLimits: usage },
+          payload: {
+            limits: antigravityUsageToProviderLimits(usage),
+            rateLimits: usage,
+            ...(usage.source ? { source: usage.source } : {}),
+          },
           providerRefs: {},
         } satisfies ProviderRuntimeEvent;
       })
