@@ -97,6 +97,7 @@ export function directQuotaGroups(value: unknown): AntigravityUsagePayload | und
     if (!name || !Array.isArray(buckets)) continue;
     const isGemini = /gemini|google/iu.test(name);
     const isClaudeGpt = /claude|gpt|oss/iu.test(name);
+    if (isModelFallback && !isGemini && !isClaudeGpt) continue;
     const family = isGemini ? "Gemini" : isClaudeGpt ? "Claude & GPT" : name;
     const key = isGemini
       ? "gemini"

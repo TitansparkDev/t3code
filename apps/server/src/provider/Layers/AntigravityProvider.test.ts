@@ -294,23 +294,13 @@ describe("Antigravity model catalog", () => {
   it("preserves Claude and GPT-OSS models and filters internal models", () => {
     const mixedOptions = [
       ...modelOptions,
-      { value: "claude-sonnet-4-6", name: "Claude Sonnet 4.6 (Thinking)" },
-      { value: "claude-opus-4-6-thinking", name: "Claude Opus 4.6 (Thinking)" },
-      { value: "gpt-oss-120b-medium", name: "GPT-OSS 120B (Medium)" },
-      { value: "claude-opus-4-5-thinking", name: "Claude Opus 4.5 (Thinking)" },
       { value: "internal-model-1", name: "Internal Model" },
       { value: "debug_internal", name: "Debug Internal" },
     ];
     const models = buildAntigravityModelsFromSession({
       configOptions: [{ ...modelConfig, options: mixedOptions }],
     });
-    expect(models.map((m) => m.slug)).toEqual([
-      ...modelOptions.map((o) => o.value),
-      "claude-sonnet-4-6",
-      "claude-opus-4-6-thinking",
-      "gpt-oss-120b-medium",
-      "claude-opus-4-5-thinking",
-    ]);
+    expect(models.map((m) => m.slug)).toEqual(visibleModelOptions.map((o) => o.value));
     expect(models.find((m) => m.slug === "claude-sonnet-4-6")?.name).toBe(
       "Claude Sonnet 4.6 (Thinking)",
     );
