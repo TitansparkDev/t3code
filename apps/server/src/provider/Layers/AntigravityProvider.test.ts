@@ -57,11 +57,6 @@ const modelOptions = [
   { value: "gemini-3.6-flash-low", name: "Gemini 3.6 Flash (Low)" },
   { value: "gemini-pro-agent", name: "Gemini 3.1 Pro (High)" },
   { value: "gemini-3.1-pro-low", name: "Gemini 3.1 Pro (Low)" },
-  { value: "claude-sonnet-4-6", name: "Claude Sonnet 4.6 (Thinking)" },
-  { value: "claude-opus-4-6-thinking", name: "Claude Opus 4.6 (Thinking)" },
-  { value: "gpt-oss-120b-medium", name: "GPT-OSS 120B (Medium)" },
-  { value: "claude-opus-4-5-thinking", name: "Claude Opus 4.5 (Thinking)" },
-  { value: "internal-experimental-model", name: "Internal Experimental Model" },
 ];
 
 const visibleModelOptions = modelOptions.filter((option) => !option.value.startsWith("internal-"));
