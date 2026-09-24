@@ -2,6 +2,8 @@ import {
   ANTIGRAVITY_DEFAULT_MODEL,
   ProviderDriverKind,
   type AntigravitySettings,
+  type ProviderOptionChoice,
+  type ProviderOptionDescriptor,
   type ProviderSetupError,
   type ServerProvider,
   type ServerProviderModel,
@@ -20,6 +22,8 @@ import type * as EffectAcpErrors from "effect-acp/errors";
 import type * as EffectAcpSchema from "effect-acp/schema";
 
 import type { AcpSessionRuntimeStartResult } from "../acp/AcpSessionRuntime.ts";
+import { isInternalAntigravityModel } from "../acp/AntigravityAcpSupport.ts";
+import { BUNDLED_MODEL_MANIFEST } from "../ModelManifest.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
 import {
   makeManualOnlyProviderMaintenanceCapabilities,
@@ -43,7 +47,83 @@ type SessionSetupResult = Pick<
   "configOptions" | "models"
 >;
 
+function resolveModelDisplayName(value: string, name?: string): string {
+  const trimmedName = name?.trim();
+  const trimmedValue = value.trim();
+  if (trimmedName && trimmedName !== trimmedValue) {
+    return trimmedName;
+  }
+  const manifest = BUNDLED_MODEL_MANIFEST.providers?.["antigravity"]?.models;
+  const match = manifest?.find((model) => model.slug === trimmedValue);
+  if (match?.name) {
+    return match.name;
+  }
+  return trimmedName || trimmedValue;
+}
+
 /** Keep the native model IDs, including model-specific thinking levels. */
+function extractAntigravityOptionDescriptors(
+  configOptions?: ReadonlyArray<EffectAcpSchema.SessionConfigOption> | null,
+): ReadonlyArray<ProviderOptionDescriptor> {
+  if (!configOptions) return [];
+  const descriptors: ProviderOptionDescriptor[] = [];
+  for (const option of configOptions) {
+    if (
+      option.id === "model" ||
+      option.category === "model" ||
+      option.id === "mode" ||
+      option.category === "mode"
+    ) {
+      continue;
+    }
+    const isThinkingOrEffort =
+      option.category === "thought_level" ||
+      option.id === "thought_level" ||
+      option.id === "thinking" ||
+      option.id === "reasoning" ||
+      option.id === "effort";
+    if (isThinkingOrEffort) {
+      if (option.type === "select") {
+        const selectOptions: ProviderOptionChoice[] = option.options.flatMap((entry) => {
+          if ("value" in entry) {
+            return [
+              {
+                id: entry.value,
+                label: entry.name?.trim() ? entry.name.trim() : entry.value,
+                ...(entry.value === option.currentValue ? { isDefault: true } : {}),
+              },
+            ];
+          }
+          return entry.options.map((sub) => ({
+            id: sub.value,
+            label: sub.name?.trim() ? sub.name.trim() : sub.value,
+            ...(sub.value === option.currentValue ? { isDefault: true } : {}),
+          }));
+        });
+        if (selectOptions.length > 0) {
+          descriptors.push({
+            id: option.id,
+            label: option.name?.trim() ? option.name.trim() : "Reasoning Effort",
+            type: "select",
+            options: selectOptions,
+            ...(option.currentValue ? { currentValue: option.currentValue } : {}),
+          });
+        }
+      } else if (option.type === "boolean") {
+        descriptors.push({
+          id: option.id,
+          label: option.name?.trim() ? option.name.trim() : "Thinking",
+          type: "boolean",
+          ...(typeof option.currentValue === "boolean"
+            ? { currentValue: option.currentValue }
+            : {}),
+        });
+      }
+    }
+  }
+  return descriptors;
+}
+
 export function buildAntigravityModelsFromSession(
   setup: SessionSetupResult,
 ): ReadonlyArray<ServerProviderModel> {
@@ -61,19 +141,28 @@ export function buildAntigravityModelsFromSession(
             name: model.name,
           })) ?? [])
         : [];
+  const descriptors = extractAntigravityOptionDescriptors(setup.configOptions);
+  const capabilities =
+    descriptors.length > 0
+      ? createModelCapabilities({ optionDescriptors: descriptors })
+      : EMPTY_MODEL_CAPABILITIES;
   const seen = new Set<string>();
   return entries.flatMap((entry): ServerProviderModel[] => {
     if (!entry.value.trim() || seen.has(entry.value)) return [];
+    if (isInternalAntigravityModel(entry.value, entry.name)) return [];
+    if ((entry as { disabled?: boolean }).disabled === true) return [];
+    if ((entry as { unsupported?: boolean }).unsupported === true) return [];
     seen.add(entry.value);
+    const resolvedName = resolveModelDisplayName(entry.value, entry.name);
     return [
       {
         slug: entry.value,
-        name: entry.name.trim() ? entry.name : entry.value,
+        name: resolvedName,
         isCustom: false,
         ...(entry.value === currentValue
           ? { isDefault: true, aliases: [ANTIGRAVITY_DEFAULT_MODEL] }
           : {}),
-        capabilities: EMPTY_MODEL_CAPABILITIES,
+        capabilities,
       },
     ];
   });

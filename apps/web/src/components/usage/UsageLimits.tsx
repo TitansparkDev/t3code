@@ -16,12 +16,14 @@ import {
   type LimitPace,
   paceOf,
   remainingPercent,
+  withNativeQuotaSnapshots,
 } from "@t3tools/shared/usageLimits";
 import { GaugeIcon, TrendingDownIcon, TrendingUpIcon } from "lucide-react";
-import { Fragment, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 
 import { usePrimarySettings } from "../../hooks/useSettings";
 import { environmentPresentations } from "../../state/presentation";
+import { useQuota } from "../../state/quota";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { formatUpcomingTimestamp } from "../../timestampFormat";
@@ -49,11 +51,7 @@ const PACE: Record<LimitPace, { readonly label: string; readonly icon: typeof Ga
 export function barColor(driver: ServerProvider["driver"], label?: string): string {
   if (driver === "antigravity") {
     const normalized = label?.toLowerCase() ?? "";
-    return normalized.includes("claude") ||
-      normalized.includes("gpt") ||
-      normalized.includes("other")
-      ? "#34d399"
-      : "#4f8cff";
+    return normalized.includes("claude") || normalized.includes("gpt") ? "#34d399" : "#4f8cff";
   }
   const kind: UsageProviderKind | undefined =
     driver === "codex" ? "codex" : driver === "claudeAgent" ? "claude" : undefined;
@@ -362,9 +360,29 @@ export function UsageLimitsSection({
   readonly now: number;
 }) {
   const presentations = useAtomValue(environmentPresentations.presentationsAtom);
-  const selected =
-    selectedEnvironmentIds === null
-      ? presentations
-      : new Map([...presentations].filter(([id]) => selectedEnvironmentIds.has(id)));
+  const quota = useQuota();
+  const selected = useMemo(() => {
+    const raw =
+      selectedEnvironmentIds === null
+        ? presentations
+        : new Map([...presentations].filter(([id]) => selectedEnvironmentIds.has(id)));
+    const result = new Map(raw);
+    for (const [envId, presentation] of result) {
+      const envSnapshots = quota.snapshots
+        .filter((s) => s.environmentId === envId)
+        .map((s) => s.snapshot);
+      if (envSnapshots.length > 0 && presentation.serverConfig?.providers) {
+        result.set(envId, {
+          ...presentation,
+          serverConfig: {
+            ...presentation.serverConfig,
+            providers: withNativeQuotaSnapshots(presentation.serverConfig.providers, envSnapshots),
+          },
+        });
+      }
+    }
+    return result;
+  }, [presentations, selectedEnvironmentIds, quota.snapshots]);
+
   return <UsageLimitsPooled presentations={selected} now={now} />;
 }

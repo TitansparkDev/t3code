@@ -28,8 +28,9 @@ export function quotaWindowForKind(
   snapshot: AccountQuotaSnapshot | undefined,
   kind: QuotaWindowKindForDisplay,
   nowMs: number = Date.now(),
+  includeStale = false,
 ): QuotaWindow | undefined {
-  if (!snapshot || isQuotaSnapshotStale(snapshot, nowMs)) return undefined;
+  if (!snapshot || (!includeStale && isQuotaSnapshotStale(snapshot, nowMs))) return undefined;
   const windows = snapshot.groups.flatMap((group) => group.windows);
   const matching = windows.filter((window) => window.kind === kind);
   if (matching.length > 0) return primaryQuotaWindow(matching);
@@ -88,7 +89,13 @@ export function antigravityResetLabelForKind(
 
 function groupMatchesPool(group: QuotaGroup, pool: AntigravityQuotaPool): boolean {
   const identity = `${group.key} ${group.displayName}`.toLowerCase();
-  return pool === "gemini" ? /gemini|google/.test(identity) : /claude|gpt|other/.test(identity);
+  return pool === "gemini" ? /gemini|google/.test(identity) : /claude|gpt/.test(identity);
+}
+
+export function antigravityGroupPoolKey(group: QuotaGroup): AntigravityQuotaPool | undefined {
+  if (groupMatchesPool(group, "gemini")) return "gemini";
+  if (groupMatchesPool(group, "claude-gpt")) return "claude-gpt";
+  return undefined;
 }
 
 /** Find one Antigravity pool's weekly window. */
@@ -97,8 +104,9 @@ export function antigravityQuotaWindow(
   pool: AntigravityQuotaPool,
   nowMs: number = Date.now(),
   kind: QuotaWindowKindForDisplay = "long",
+  includeStale = false,
 ): QuotaWindow | undefined {
-  if (!snapshot || isQuotaSnapshotStale(snapshot, nowMs)) return undefined;
+  if (!snapshot || (!includeStale && isQuotaSnapshotStale(snapshot, nowMs))) return undefined;
   const group = snapshot.groups.find((candidate) => groupMatchesPool(candidate, pool));
   if (!group) return undefined;
   const matching = group.windows.filter(
@@ -155,10 +163,17 @@ function freshAntigravityQuotaWindows(
   nowMs: number,
   kind: QuotaWindowKindForDisplay = "long",
 ): ReadonlyArray<QuotaWindow> {
-  return accounts.flatMap((account) => {
+  const fresh = accounts.flatMap((account) => {
     const snapshot = account.snapshot;
     if (!snapshot || isQuotaSnapshotStale(snapshot, nowMs)) return [];
     const window = antigravityQuotaWindow(snapshot, pool, nowMs, kind);
+    return window ? [window] : [];
+  });
+  if (fresh.length > 0) return fresh;
+  return accounts.flatMap((account) => {
+    const snapshot = account.snapshot;
+    if (!snapshot) return [];
+    const window = antigravityQuotaWindow(snapshot, pool, nowMs, kind, true);
     return window ? [window] : [];
   });
 }

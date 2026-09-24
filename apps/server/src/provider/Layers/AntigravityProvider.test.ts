@@ -56,7 +56,14 @@ const modelOptions = [
   { value: "gemini-3.6-flash-low", name: "Gemini 3.6 Flash (Low)" },
   { value: "gemini-pro-agent", name: "Gemini 3.1 Pro (High)" },
   { value: "gemini-3.1-pro-low", name: "Gemini 3.1 Pro (Low)" },
+  { value: "claude-sonnet-4-6", name: "Claude Sonnet 4.6 (Thinking)" },
+  { value: "claude-opus-4-6-thinking", name: "Claude Opus 4.6 (Thinking)" },
+  { value: "gpt-oss-120b-medium", name: "GPT-OSS 120B (Medium)" },
+  { value: "claude-opus-4-5-thinking", name: "Claude Opus 4.5 (Thinking)" },
+  { value: "internal-experimental-model", name: "Internal Experimental Model" },
 ];
+
+const visibleModelOptions = modelOptions.filter((option) => !option.value.startsWith("internal-"));
 
 const modelConfig = {
   id: "model",
@@ -159,7 +166,7 @@ describe("Antigravity model catalog", () => {
   it("keeps the captured personal catalog's IDs, labels, order, and selected default", () => {
     const models = buildAntigravityModelsFromSession(sessionSetupResult);
     expect(models.map((model) => [model.slug, model.name])).toEqual(
-      modelOptions.map((option) => [option.value, option.name]),
+      visibleModelOptions.map((option) => [option.value, option.name]),
     );
     expect(models.filter((model) => model.isDefault).map((model) => model.slug)).toEqual([
       "gemini-3.7-flash-high",
@@ -171,6 +178,79 @@ describe("Antigravity model catalog", () => {
     ).toEqual(["gemini-3.7-flash-high"]);
     expect(models.every((model) => model.capabilities?.optionDescriptors?.length === 0)).toBe(true);
     expect(models.every((model) => !model.isCustom)).toBe(true);
+  });
+
+  it("filters internal and disabled models and resolves manifest names when labels are missing", () => {
+    const models = buildAntigravityModelsFromSession({
+      configOptions: [
+        {
+          id: "model",
+          name: "Model",
+          type: "select",
+          currentValue: "gemini-3.8-flash-high",
+          options: [
+            { value: "claude-sonnet-4-6", name: "" },
+            { value: "claude-opus-4-6-thinking", name: "claude-opus-4-6-thinking" },
+            { value: "gpt-oss-120b-medium", name: "" },
+            { value: "claude-opus-4-5-thinking", name: "Claude Opus 4.5 (Thinking)" },
+            { value: "internal-telemetry", name: "Telemetry" },
+            { value: "internal-routing-agent", name: "Internal Routing Agent" },
+            { value: "gemini-3.8-flash-high", name: "gemini-3.8-flash-high" },
+            { value: "deprecated-model", name: "Deprecated", disabled: true } as any,
+          ],
+        },
+      ],
+    });
+
+    expect(models.map((m) => [m.slug, m.name])).toEqual([
+      ["claude-sonnet-4-6", "Claude Sonnet 4.6 (Thinking)"],
+      ["claude-opus-4-6-thinking", "Claude Opus 4.6 (Thinking)"],
+      ["gpt-oss-120b-medium", "GPT-OSS 120B (Medium)"],
+      ["claude-opus-4-5-thinking", "Claude Opus 4.5 (Thinking)"],
+      ["gemini-3.8-flash-high", "Gemini 3.8 Flash (High)"],
+    ]);
+  });
+
+  it("extracts native thinking/effort config options into model capabilities", () => {
+    const models = buildAntigravityModelsFromSession({
+      configOptions: [
+        {
+          id: "model",
+          name: "Model",
+          type: "select",
+          currentValue: "claude-sonnet-4-6",
+          options: [{ value: "claude-sonnet-4-6", name: "Claude Sonnet 4.6 (Thinking)" }],
+        },
+        {
+          id: "thought_level",
+          name: "Thought Level",
+          category: "thought_level",
+          type: "select",
+          currentValue: "high",
+          options: [
+            { value: "low", name: "Low" },
+            { value: "medium", name: "Medium" },
+            { value: "high", name: "High" },
+          ],
+        },
+      ],
+    });
+
+    expect(models).toHaveLength(1);
+    const model = models[0]!;
+    expect(model.capabilities?.optionDescriptors).toEqual([
+      {
+        id: "thought_level",
+        label: "Thought Level",
+        type: "select",
+        currentValue: "high",
+        options: [
+          { id: "low", label: "Low" },
+          { id: "medium", label: "Medium" },
+          { id: "high", label: "High", isDefault: true },
+        ],
+      },
+    ]);
   });
 
   it("uses legacy session models only when model config is absent", () => {
@@ -344,7 +424,7 @@ it.layer(testLayer)("Antigravity provider snapshots", (it) => {
         yield* harness.provider.onSessionStarted(started);
         yield* harness.provider.onAvailableCommands(commands);
         const snapshot = yield* harness.provider.snapshot.getSnapshot;
-        expect(snapshot.models).toHaveLength(11);
+        expect(snapshot.models).toHaveLength(visibleModelOptions.length);
         expect(snapshot.slashCommands).toEqual(commands);
         expect(snapshot.workspaceSnapshots).toEqual([]);
       }),
@@ -547,7 +627,7 @@ it.layer(testLayer)("Antigravity provider snapshots", (it) => {
             status: "error",
             auth: { status: "authenticated" },
           });
-          expect(snapshot.models).toHaveLength(installed ? 11 : 0);
+          expect(snapshot.models).toHaveLength(installed ? visibleModelOptions.length : 0);
           expect(snapshot.slashCommands).toHaveLength(installed ? 2 : 0);
           expect(snapshot.workspaceSnapshots).toHaveLength(installed ? 1 : 0);
           expect(snapshot.supportsTextGeneration).toBe(installed);

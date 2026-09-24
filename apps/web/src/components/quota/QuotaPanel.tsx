@@ -192,14 +192,14 @@ const StandardQuotaRow = memo(function StandardQuotaRow({
         kind="short"
         nowMs={nowMs}
         stale={stale}
-        window={quotaWindowForKind(snapshot, "short", nowMs)}
+        window={quotaWindowForKind(snapshot, "short", nowMs, true)}
       />
       <QuotaMetric
         label="Week"
         kind="long"
         nowMs={nowMs}
         stale={stale}
-        window={quotaWindowForKind(snapshot, "long", nowMs)}
+        window={quotaWindowForKind(snapshot, "long", nowMs, true)}
       />
       <span aria-hidden="true" />
     </div>
@@ -230,7 +230,7 @@ const AntigravityAggregateRow = memo(function AntigravityAggregateRow({
   const pools = [
     {
       key: "gemini" as const,
-      label: "Gemini",
+      label: "Gemini Models",
       color: "#4f8cff",
       short: averageAntigravityQuotaWindow(accounts, "gemini", nowMs, "short"),
       weekly: averageAntigravityQuotaWindow(accounts, "gemini", nowMs, "long"),
@@ -239,7 +239,7 @@ const AntigravityAggregateRow = memo(function AntigravityAggregateRow({
     },
     {
       key: "claude-gpt" as const,
-      label: "Other models",
+      label: "Claude & GPT models",
       color: "#34d399",
       short: averageAntigravityQuotaWindow(accounts, "claude-gpt", nowMs, "short"),
       weekly: averageAntigravityQuotaWindow(accounts, "claude-gpt", nowMs, "long"),
@@ -330,7 +330,7 @@ const AntigravityAccountRow = memo(function AntigravityAccountRow({
               className="block truncate text-[9px] leading-tight"
               style={{ color: pool === "gemini" ? "#4f8cff" : "#34d399" }}
             >
-              {pool === "gemini" ? "Gemini" : "Other models"}
+              {pool === "gemini" ? "Gemini Models" : "Claude & GPT models"}
             </span>
           </span>
           <QuotaMetric
@@ -339,7 +339,7 @@ const AntigravityAccountRow = memo(function AntigravityAccountRow({
             accentColor={pool === "gemini" ? "#4f8cff" : "#34d399"}
             nowMs={nowMs}
             stale={stale}
-            window={antigravityQuotaWindow(snapshot, pool, nowMs, "short")}
+            window={antigravityQuotaWindow(snapshot, pool, nowMs, "short", true)}
           />
           <QuotaMetric
             label="Week"
@@ -347,7 +347,7 @@ const AntigravityAccountRow = memo(function AntigravityAccountRow({
             accentColor={pool === "gemini" ? "#4f8cff" : "#34d399"}
             nowMs={nowMs}
             stale={stale}
-            window={antigravityQuotaWindow(snapshot, pool, nowMs, "long")}
+            window={antigravityQuotaWindow(snapshot, pool, nowMs, "long", true)}
           />
         </div>
       ))}
@@ -406,22 +406,27 @@ function QuotaMetric({
   stale?: boolean;
   window: QuotaWindow | undefined;
 }) {
-  const remaining = !stale && window ? quotaRemainingPercent(window.usedPercent) : undefined;
-  const reset =
-    !stale && window
-      ? (resetLabel ??
-        formatQuotaResetAtGlance(
-          window.resetsAt,
-          nowMs,
-          window.kind === "unknown" ? (kind ?? window.kind) : window.kind,
-        ))
-      : undefined;
+  const remaining = window ? quotaRemainingPercent(window.usedPercent) : undefined;
+  const reset = window
+    ? (resetLabel ??
+      formatQuotaResetAtGlance(
+        window.resetsAt,
+        nowMs,
+        window.kind === "unknown" ? (kind ?? window.kind) : window.kind,
+      ))
+    : undefined;
   return (
     <span className="min-w-0 space-y-0.5">
       <span className="flex items-center justify-between gap-1 text-[10px] leading-none text-muted-foreground">
         <span className="truncate">{label}</span>
-        <span className="text-[11px] font-semibold tabular-nums text-foreground/80">
-          {stale ? "stale" : remaining === undefined ? "—" : `${remaining}%`}
+        <span
+          className={`text-[11px] font-semibold tabular-nums ${stale ? "text-amber-500" : "text-foreground/80"}`}
+        >
+          {remaining === undefined
+            ? stale
+              ? "stale"
+              : "—"
+            : `${remaining}%${stale ? " (stale)" : ""}`}
         </span>
       </span>
       {reset ? (
@@ -435,11 +440,15 @@ function QuotaMetric({
             remaining === undefined
               ? "block h-full w-0 rounded-full"
               : `block h-full rounded-full ${
-                  remaining <= 10
-                    ? "bg-destructive"
-                    : remaining <= 30
-                      ? "bg-warning"
-                      : "bg-foreground/55"
+                  stale
+                    ? "bg-amber-500/60"
+                    : remaining <= 10
+                      ? "bg-destructive"
+                      : remaining <= 30
+                        ? "bg-amber-500"
+                        : accentColor
+                          ? ""
+                          : "bg-primary"
                 }`
           }
           style={
@@ -447,7 +456,9 @@ function QuotaMetric({
               ? undefined
               : {
                   width: `${remaining}%`,
-                  ...(remaining > 30 && accentColor ? { backgroundColor: accentColor } : {}),
+                  ...(remaining > 30 && accentColor && !stale
+                    ? { backgroundColor: accentColor }
+                    : {}),
                 }
           }
         />

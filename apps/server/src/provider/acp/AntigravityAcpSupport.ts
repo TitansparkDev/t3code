@@ -105,12 +105,23 @@ export function antigravityPermissionMode(runtimeMode: RuntimeMode): string {
   }
 }
 
+export function isInternalAntigravityModel(value: string, name?: string): boolean {
+  const slug = value.trim().toLowerCase();
+  const displayName = name?.trim().toLowerCase() ?? "";
+  if (!slug) return true;
+  if (/^internal[-_:]|[-_:]internal(?:[-_:]|$)|^internal$/i.test(slug)) return true;
+  if (/^experimental[-_:]internal/i.test(slug)) return true;
+  if (/\[internal\]|\(internal\)/i.test(displayName)) return true;
+  return false;
+}
+
 export function antigravityModelOptions(
   configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption>,
 ) {
   const model = configOptions.find((option) => option.id === "model");
   if (model?.type !== "select") return [];
-  return model.options.flatMap((entry) => ("value" in entry ? [entry] : entry.options));
+  const entries = model.options.flatMap((entry) => ("value" in entry ? [entry] : entry.options));
+  return entries.filter((entry) => !isInternalAntigravityModel(entry.value, entry.name));
 }
 
 /**
@@ -139,8 +150,14 @@ export const applyAntigravityAcpModelSelection = Effect.fn("applyAntigravityAcpM
     readonly runtime: Pick<
       AcpSessionRuntime.AcpSessionRuntime["Service"],
       "getConfigOptions" | "setModel"
-    >;
+    > & {
+      readonly setConfigOption?: (
+        configId: string,
+        value: string | boolean,
+      ) => Effect.Effect<unknown, EffectAcpErrors.AcpError>;
+    };
     readonly model: string | null | undefined;
+    readonly options?: Readonly<Record<string, string | boolean>> | undefined;
     /** Model to select for the provider default alias. See `resolveAntigravityModel`. */
     readonly defaultModel?: string | undefined;
     readonly mapError: (cause: EffectAcpErrors.AcpError) => E;
@@ -157,19 +174,45 @@ export const applyAntigravityAcpModelSelection = Effect.fn("applyAntigravityAcpM
     // default when that differs from the agent's current model, and otherwise
     // leaves the agent's choice alone.
     const explicit = Boolean(input.model) && input.model !== ANTIGRAVITY_DEFAULT_MODEL;
-    if (resolved === undefined || (!explicit && resolved === current)) return current;
-    const options = antigravityModelOptions(configOptions);
-    if (!options.some((option) => option.value === resolved)) {
-      return yield* Effect.fail(
-        input.mapError(
-          EffectAcpErrors.AcpRequestError.invalidParams(
-            `Antigravity model '${resolved}' is unavailable for this Google account. Select an available model.`,
+    if (resolved !== undefined && (explicit || resolved !== current)) {
+      const options = antigravityModelOptions(configOptions);
+      if (!options.some((option) => option.value === resolved)) {
+        return yield* Effect.fail(
+          input.mapError(
+            EffectAcpErrors.AcpRequestError.invalidParams(
+              `Antigravity model '${resolved}' is unavailable for this Google account. Select an available model.`,
+            ),
           ),
-        ),
-      );
+        );
+      }
+      yield* input.runtime.setModel(resolved).pipe(Effect.mapError(input.mapError));
     }
-    yield* input.runtime.setModel(resolved).pipe(Effect.mapError(input.mapError));
-    return resolved;
+
+    if (input.options && input.runtime.setConfigOption) {
+      for (const [key, val] of Object.entries(input.options)) {
+        const optionConfig = configOptions.find(
+          (opt) =>
+            opt.id === key ||
+            opt.category === key ||
+            ((key === "effort" ||
+              key === "thought_level" ||
+              key === "reasoning" ||
+              key === "thinking") &&
+              (opt.id === "thought_level" ||
+                opt.category === "thought_level" ||
+                opt.id === "thinking" ||
+                opt.id === "reasoning" ||
+                opt.id === "effort")),
+        );
+        if (optionConfig) {
+          yield* input.runtime
+            .setConfigOption(optionConfig.id, val)
+            .pipe(Effect.mapError(input.mapError));
+        }
+      }
+    }
+
+    return resolved ?? current;
   },
 );
 
