@@ -259,7 +259,7 @@ describe("applyAntigravityAcpModelSelection", () => {
     ["claude-sonnet-4-6", "Claude Sonnet 4.6 (Thinking)"],
     ["claude-opus-4-6-thinking", "Claude Opus 4.6 (Thinking)"],
     ["gpt-oss-120b-medium", "GPT-OSS 120B (Medium)"],
-  ])("accepts and selects live non-Gemini model ID %s", ([modelId, modelName]) =>
+  ] as const)("accepts and selects live non-Gemini model ID %s", ([modelId, modelName]) =>
     Effect.gen(function* () {
       const { runtime, selections } = makeModelRuntime([
         {
