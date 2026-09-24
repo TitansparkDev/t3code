@@ -65,9 +65,10 @@ export function useQuota(): QuotaView {
   const environments = useAtomValue(quotaAtom);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
+  const list: readonly EnvironmentQuotaStatus[] = Array.isArray(environments) ? environments : [];
   const snapshots = useMemo(
     () =>
-      environments.flatMap((environment) =>
+      list.flatMap((environment) =>
         (environment.summary?.snapshots ?? []).map((snapshot) => ({
           environmentId: environment.environmentId,
           snapshot,
@@ -78,7 +79,7 @@ export function useQuota(): QuotaView {
 
   const byEnvironment = useMemo(() => {
     const result = new Map<EnvironmentId, ReadonlyMap<ProviderInstanceId, AccountQuotaSnapshot>>();
-    for (const environment of environments) {
+    for (const environment of list) {
       result.set(
         environment.environmentId,
         new Map(
@@ -92,10 +93,10 @@ export function useQuota(): QuotaView {
   }, [environments]);
 
   const refresh = useCallback(() => {
-    if (isRefreshing || environments.length === 0) return;
+    if (isRefreshing || list.length === 0) return;
 
     setIsRefreshing(true);
-    const refreshes = environments.map((environment) => {
+    const refreshes = list.map((environment) => {
       const target = { environmentId: environment.environmentId, input: {} };
       return runAtomCommand(appAtomRegistry, serverEnvironment.refreshProviders, target, {
         label: "refresh account limits",
@@ -109,8 +110,8 @@ export function useQuota(): QuotaView {
     void Promise.allSettled(refreshes).then(() => setIsRefreshing(false));
   }, [environments, isRefreshing]);
 
-  const answered = environments.filter((environment) => environment.summary !== null).length;
-  const stillReporting = environments.filter(
+  const answered = list.filter((environment) => environment.summary !== null).length;
+  const stillReporting = list.filter(
     (environment) => environment.summary === null && environment.isPending,
   ).length;
 

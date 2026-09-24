@@ -37,13 +37,22 @@ function makeModelRuntime(
   failure?: EffectAcpErrors.AcpError,
 ) {
   const selections: string[] = [];
+  const configuredOptions: Record<string, string | boolean> = {};
   const setModel = Effect.fn("AntigravityAcpSupportTest.setModel")(function* (model: string) {
     if (failure) return yield* failure;
     selections.push(model);
   });
+  const setConfigOption = Effect.fn("AntigravityAcpSupportTest.setConfigOption")(function* (
+    configId: string,
+    value: string | boolean,
+  ) {
+    if (failure) return yield* failure;
+    configuredOptions[configId] = value;
+  });
   return {
-    runtime: { getConfigOptions: Effect.succeed(configOptions), setModel },
+    runtime: { getConfigOptions: Effect.succeed(configOptions), setModel, setConfigOption },
     selections,
+    configuredOptions,
   };
 }
 
@@ -115,6 +124,81 @@ describe("applyAntigravityAcpModelSelection", () => {
       });
       expect(fallback).toBe("gemini-default");
       expect(otherSelections).toEqual([]);
+    }),
+  );
+
+  it.effect("applies thinking/effort options via setConfigOption", () =>
+    Effect.gen(function* () {
+      const { runtime, configuredOptions } = makeModelRuntime([
+        modelConfig,
+        {
+          id: "thought_level",
+          name: "Thought Level",
+          type: "select",
+          currentValue: "medium",
+          options: [
+            { value: "low", name: "Low" },
+            { value: "medium", name: "Medium" },
+            { value: "high", name: "High" },
+          ],
+        },
+      ]);
+      yield* applyAntigravityAcpModelSelection({
+        runtime,
+        model: "gemini-default",
+        options: { effort: "high" },
+        mapError: (cause) => cause,
+      });
+
+      expect(configuredOptions).toEqual({ thought_level: "high" });
+    }),
+  );
+
+  it.effect.each([
+    "claude-sonnet-4-6",
+    "claude-opus-4-6-thinking",
+    "gpt-oss-120b-medium",
+    "claude-opus-4-5-thinking",
+  ])("selects user-facing multi-model ID %s with exact provider ID", (targetModel) =>
+    Effect.gen(function* () {
+      const configWithOptions: EffectAcpSchema.SessionConfigOption = {
+        ...modelConfig,
+        options: [...modelConfig.options, { value: targetModel, name: targetModel }],
+      };
+      const { runtime, selections } = makeModelRuntime([configWithOptions]);
+      const model = yield* applyAntigravityAcpModelSelection({
+        runtime,
+        model: targetModel,
+        mapError: (cause) => cause,
+      });
+
+      expect(model).toBe(targetModel);
+      expect(selections).toEqual([targetModel]);
+    }),
+  );
+
+  it.effect("rejects explicitly internal models even if returned in configOptions", () =>
+    Effect.gen(function* () {
+      const configWithInternal: EffectAcpSchema.SessionConfigOption = {
+        ...modelConfig,
+        options: [
+          ...modelConfig.options,
+          { value: "internal-debug-model", name: "Internal Debug Model" },
+        ],
+      };
+      const { runtime, selections } = makeModelRuntime([configWithInternal]);
+      const error = yield* applyAntigravityAcpModelSelection({
+        runtime,
+        model: "internal-debug-model",
+        mapError: (cause) => cause,
+      }).pipe(Effect.flip);
+
+      expect(error).toMatchObject({
+        _tag: "AcpRequestError",
+        code: -32602,
+        errorMessage: expect.stringContaining("'internal-debug-model' is unavailable"),
+      });
+      expect(selections).toEqual([]);
     }),
   );
 

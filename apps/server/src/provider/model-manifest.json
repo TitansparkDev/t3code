@@ -700,7 +700,47 @@
         },
         {
           "slug": "claude-sonnet-4-5",
-          "name": "Claude Sonnet 4.5 (Thinking)",
+          "name": "Claude Sonnet 4.5",
+          "status": "legacy"
+        },
+        {
+          "slug": "gemini-3.7-flash-high",
+          "name": "Gemini 3.7 Flash (High)",
+          "status": "legacy"
+        },
+        {
+          "slug": "gemini-3.7-flash-medium",
+          "name": "Gemini 3.7 Flash (Medium)",
+          "status": "legacy"
+        },
+        {
+          "slug": "gemini-3.7-flash-low",
+          "name": "Gemini 3.7 Flash (Low)",
+          "status": "legacy"
+        },
+        {
+          "slug": "gemini-3.6-flash-high",
+          "name": "Gemini 3.6 Flash (High)",
+          "status": "legacy"
+        },
+        {
+          "slug": "gemini-3.6-flash-medium",
+          "name": "Gemini 3.6 Flash (Medium)",
+          "status": "legacy"
+        },
+        {
+          "slug": "gemini-3.6-flash-low",
+          "name": "Gemini 3.6 Flash (Low)",
+          "status": "legacy"
+        },
+        {
+          "slug": "gemini-pro-agent",
+          "name": "Gemini 3.1 Pro (High)",
+          "status": "legacy"
+        },
+        {
+          "slug": "gemini-3.1-pro-low",
+          "name": "Gemini 3.1 Pro (Low)",
           "status": "legacy"
         }
       ]

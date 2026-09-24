@@ -142,6 +142,37 @@ describe("parseAntigravityUsage", () => {
     ).toBeUndefined();
   });
 
+  it("keeps unfamiliar quota groups distinct instead of collapsing them into claude-gpt", () => {
+    const result = directQuotaGroups({
+      groups: [
+        {
+          displayName: "Custom Experimental Models",
+          buckets: [
+            {
+              window: "5h",
+              remainingFraction: 0.5,
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(result?.groups).toEqual([
+      {
+        key: "custom-experimental-models",
+        displayName: "Custom Experimental Models",
+        windows: [
+          {
+            id: "custom-experimental-models-300",
+            label: "5-hour",
+            usedPercent: 50,
+            windowDurationMins: 300,
+          },
+        ],
+      },
+    ]);
+  });
+
   it("reads the structured usage response and keeps the two quota groups", () => {
     const result = parseAntigravityUsage(
       JSON.stringify({

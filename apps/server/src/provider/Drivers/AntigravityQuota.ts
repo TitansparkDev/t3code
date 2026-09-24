@@ -22,7 +22,7 @@ export interface AntigravityUsageWindow {
 }
 
 export interface AntigravityUsageGroup {
-  readonly key: "gemini" | "claude-gpt";
+  readonly key: string;
   readonly displayName: string;
   readonly windows: ReadonlyArray<AntigravityUsageWindow>;
 }
@@ -88,7 +88,7 @@ export function directQuotaGroups(value: unknown): AntigravityUsagePayload | und
     nestedSummary?.groups ??
     nestedSummary?.quotaGroups;
   if (!Array.isArray(rawGroups)) return undefined;
-  const groups = new Map<"gemini" | "claude-gpt", AntigravityUsageGroup>();
+  const groups = new Map<string, AntigravityUsageGroup>();
   for (const raw of rawGroups) {
     if (typeof raw !== "object" || raw === null) continue;
     const group = raw as QuotaGroup;
@@ -97,8 +97,12 @@ export function directQuotaGroups(value: unknown): AntigravityUsagePayload | und
     if (!name || !Array.isArray(buckets)) continue;
     const isGemini = /gemini|google/iu.test(name);
     const isClaudeGpt = /claude|gpt|oss/iu.test(name);
-    if (!isGemini && !isClaudeGpt) continue;
-    const family = isGemini ? "Gemini" : "Claude & GPT";
+    const family = isGemini ? "Gemini" : isClaudeGpt ? "Claude & GPT" : name;
+    const key = isGemini
+      ? "gemini"
+      : isClaudeGpt
+        ? "claude-gpt"
+        : name.toLowerCase().replace(/[^a-z0-9]+/g, "-");
     const windows = buckets.flatMap((bucket): AntigravityUsageWindow[] => {
       if (bucket.disabled) return [];
       const descriptor = `${bucket.window ?? ""} ${bucket.displayName ?? ""}`;
@@ -109,7 +113,7 @@ export function directQuotaGroups(value: unknown): AntigravityUsagePayload | und
       const reset = parseReset(bucket.resetTime ?? bucket.reset_time);
       return [
         {
-          id: bucket.bucketId ?? `${isGemini ? "gemini" : "claude-gpt"}-${duration}`,
+          id: bucket.bucketId ?? `${key}-${duration}`,
           label: duration >= MONTH_MINS ? "Monthly" : duration >= WEEK_MINS ? "Weekly" : "5-hour",
           usedPercent,
           windowDurationMins: duration,
@@ -118,7 +122,6 @@ export function directQuotaGroups(value: unknown): AntigravityUsagePayload | und
       ];
     });
     if (windows.length > 0) {
-      const key = isGemini ? "gemini" : "claude-gpt";
       const previous = groups.get(key);
       const mergedWindows = [...(previous?.windows ?? []), ...windows];
       const uniqueWindows = new Map<number, AntigravityUsageWindow>();

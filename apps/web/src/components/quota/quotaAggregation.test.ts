@@ -98,6 +98,19 @@ describe("quotaAggregation", () => {
     ).toBe(70);
   });
 
+  it("does not match unknown model groups to claude-gpt", () => {
+    const custom = snapshot("agy-custom", [
+      {
+        key: "custom-models",
+        displayName: "Other models",
+        windows: [{ kind: "long", usedPercent: 55 }],
+      },
+    ]);
+
+    expect(antigravityQuotaWindow(custom, "gemini", NOW)).toBeUndefined();
+    expect(antigravityQuotaWindow(custom, "claude-gpt", NOW)).toBeUndefined();
+  });
+
   it("shows 5-hour and weekly AGY totals using the most constrained pool per account", () => {
     const first = snapshot("agy-one", [
       {
@@ -215,6 +228,31 @@ describe("quotaAggregation", () => {
     });
     expect(accountQuotaRemainingPercent(stale, NOW)).toBeUndefined();
     expect(accountQuotaRemainingPercent(empty, NOW)).toBeUndefined();
+  });
+
+  it("preserves last-known quota numbers when includeStale is true", () => {
+    const stale = snapshot(
+      "agy-stale",
+      [
+        {
+          key: "gemini",
+          displayName: "Gemini Models",
+          windows: [{ kind: "long", usedPercent: 35 }],
+        },
+      ],
+      "2026-08-26T00:00:00.000Z",
+    );
+
+    expect(quotaWindowForKind(stale, "long", NOW)).toBeUndefined();
+    expect(quotaWindowForKind(stale, "long", NOW, true)?.usedPercent).toBe(35);
+
+    expect(antigravityQuotaWindow(stale, "gemini", NOW, "long")).toBeUndefined();
+    expect(antigravityQuotaWindow(stale, "gemini", NOW, "long", true)?.usedPercent).toBe(35);
+
+    // Falls back to stale when no fresh accounts exist so UI does not blank out
+    expect(
+      averageAntigravityQuotaWindow([account("stale", stale)], "gemini", NOW)?.usedPercent,
+    ).toBe(35);
   });
 });
 
