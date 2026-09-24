@@ -4,6 +4,7 @@ import type { ProviderInstanceId } from "@t3tools/contracts";
 
 import {
   isoFromEpochSeconds,
+  isoFromEpochTimestamp,
   mergeQuotaSnapshots,
   normalizeAntigravityRateLimits,
   normalizeClaudeRateLimits,
@@ -31,6 +32,31 @@ describe("isoFromEpochSeconds", () => {
     expect(isoFromEpochSeconds("soon")).toBeUndefined();
     expect(isoFromEpochSeconds(0)).toBeUndefined();
     expect(isoFromEpochSeconds(Number.NaN)).toBeUndefined();
+  });
+});
+
+describe("isoFromEpochTimestamp", () => {
+  it("converts epoch seconds properly", () => {
+    expect(isoFromEpochTimestamp(1_775_000_000)).toBe("2026-03-31T23:33:20.000Z");
+  });
+
+  it("converts epoch milliseconds properly", () => {
+    expect(isoFromEpochTimestamp(1_775_000_000_000)).toBe("2026-03-31T23:33:20.000Z");
+  });
+
+  it("accepts string-encoded epoch timestamps", () => {
+    expect(isoFromEpochTimestamp("1775000000")).toBe("2026-03-31T23:33:20.000Z");
+    expect(isoFromEpochTimestamp("1775000000000")).toBe("2026-03-31T23:33:20.000Z");
+  });
+
+  it("accepts ISO date strings directly", () => {
+    expect(isoFromEpochTimestamp("2026-03-31T23:33:20.000Z")).toBe("2026-03-31T23:33:20.000Z");
+  });
+
+  it("rejects invalid or out of bound values", () => {
+    expect(isoFromEpochTimestamp("invalid")).toBeUndefined();
+    expect(isoFromEpochTimestamp(0)).toBeUndefined();
+    expect(isoFromEpochTimestamp(null)).toBeUndefined();
   });
 });
 
@@ -91,6 +117,47 @@ describe("normalizeCodexRateLimits", () => {
       payload: { rateLimits: { primary: { usedPercent: 10, windowDurationMins: 300 } } },
     });
     expect(snapshot?.groups[0]?.windows[0]?.usedPercent).toBe(10);
+  });
+
+  it("accepts the payload with primary directly on root", () => {
+    const snapshot = normalizeCodexRateLimits({
+      providerInstanceId: instanceId,
+      observedAt,
+      payload: { primary: { usedPercent: 15, windowDurationMins: 300 } },
+    });
+    expect(snapshot?.groups[0]?.windows[0]?.usedPercent).toBe(15);
+  });
+
+  it("parses additionalRateLimits as an array", () => {
+    const snapshot = normalizeCodexRateLimits({
+      providerInstanceId: instanceId,
+      observedAt,
+      payload: codexPayload({
+        primary: { usedPercent: 20, windowDurationMins: 300 },
+        additionalRateLimits: [
+          { usedPercent: 45, windowDurationMins: 10080, resetsAt: 1_775_000_000 },
+        ],
+      }),
+    });
+    expect(snapshot?.groups[0]?.windows).toHaveLength(2);
+    expect(snapshot?.groups[0]?.windows[1]?.kind).toBe("long");
+    expect(snapshot?.groups[0]?.windows[1]?.usedPercent).toBe(45);
+  });
+
+  it("parses additionalRateLimits as a record map", () => {
+    const snapshot = normalizeCodexRateLimits({
+      providerInstanceId: instanceId,
+      observedAt,
+      payload: codexPayload({
+        primary: { usedPercent: 25, windowDurationMins: 300 },
+        additionalRateLimits: {
+          weekly: { usedPercent: 75, windowDurationMins: 10080, resetsAt: 1_775_000_000 },
+        },
+      }),
+    });
+    expect(snapshot?.groups[0]?.windows).toHaveLength(2);
+    expect(snapshot?.groups[0]?.windows[1]?.kind).toBe("long");
+    expect(snapshot?.groups[0]?.windows[1]?.usedPercent).toBe(75);
   });
 
   it("keeps a window that has no reset time instead of inventing one", () => {
@@ -425,5 +492,14 @@ describe("mergeQuotaSnapshots", () => {
   it("replaces wholesale when the instance differs", () => {
     const other = { ...base, providerInstanceId: "codex-2" as ProviderInstanceId };
     expect(mergeQuotaSnapshots(base, other)).toBe(other);
+  });
+
+  it("drops older snapshot when incoming observedAt is older than current", () => {
+    const older = normalizeCodexRateLimits({
+      providerInstanceId: instanceId,
+      observedAt: "2026-08-14T11:00:00.000Z",
+      payload: codexPayload({ primary: { usedPercent: 10, windowDurationMins: 300 } }),
+    })!;
+    expect(mergeQuotaSnapshots(base, older)).toBe(base);
   });
 });

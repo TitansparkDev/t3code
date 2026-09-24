@@ -53,4 +53,37 @@ describe("CodexTranscriptQuota", () => {
       NodeFS.rmSync(sessionsDir, { recursive: true, force: true });
     }
   });
+
+  it("supports explicit codex-transcript source attribution", async () => {
+    const sessionsDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-quota-transcript-"));
+    try {
+      const transcript = NodePath.join(sessionsDir, "session.jsonl");
+      NodeFS.writeFileSync(
+        transcript,
+        JSON.stringify({
+          timestamp: "2026-08-23T10:00:00.000Z",
+          payload: {
+            rate_limits: {
+              limit_id: "codex",
+              plan_type: "team",
+              primary: { used_percent: 50, window_minutes: 300 },
+            },
+          },
+        }),
+      );
+
+      const snapshot = await readLatestCodexTranscriptQuota({
+        sessionsDir,
+        providerInstanceId: ProviderInstanceId.make("codex_team"),
+        nowMs: Date.parse("2026-08-23T10:30:00.000Z"),
+        source: "codex-transcript",
+      });
+
+      expect(snapshot?.source).toBe("codex-transcript");
+      expect(snapshot?.planType).toBe("team");
+      expect(snapshot?.groups[0]?.windows[0]?.usedPercent).toBe(50);
+    } finally {
+      NodeFS.rmSync(sessionsDir, { recursive: true, force: true });
+    }
+  });
 });

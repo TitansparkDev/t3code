@@ -47,6 +47,7 @@ async function readTailSnapshot(
   filePath: string,
   mtimeMs: number,
   providerInstanceId: ProviderInstanceId,
+  source: "state-file" | "codex-transcript" = "state-file",
 ): Promise<TranscriptSnapshot | null> {
   let handle: NodeFSP.FileHandle;
   try {
@@ -86,7 +87,7 @@ async function readTailSnapshot(
         observedAt,
       });
       if (!normalized || normalized.groups.every((group) => group.windows.length === 0)) continue;
-      return { snapshot: { ...normalized, source: "state-file" }, asOfMs };
+      return { snapshot: { ...normalized, source }, asOfMs };
     }
     return null;
   } catch {
@@ -100,6 +101,7 @@ export async function readLatestCodexTranscriptQuota(input: {
   readonly sessionsDir: string;
   readonly providerInstanceId: ProviderInstanceId;
   readonly nowMs: number;
+  readonly source?: "state-file" | "codex-transcript";
 }): Promise<AccountQuotaSnapshot | null> {
   let files;
   try {
@@ -113,7 +115,12 @@ export async function readLatestCodexTranscriptQuota(input: {
   let best: TranscriptSnapshot | null = null;
   for (const file of newestFirst) {
     if (best && file.mtimeMs <= best.asOfMs) break;
-    const found = await readTailSnapshot(file.path, file.mtimeMs, input.providerInstanceId);
+    const found = await readTailSnapshot(
+      file.path,
+      file.mtimeMs,
+      input.providerInstanceId,
+      input.source ?? "state-file",
+    );
     if (found && (!best || found.asOfMs > best.asOfMs)) best = found;
   }
   return best?.snapshot ?? null;
@@ -149,11 +156,11 @@ export const seedCodexQuotaFromTranscripts = Effect.fn("quota.seedCodexFromTrans
     // an account id on the rate-limit line, assigning its latest value to
     // every instance would violate the instance-keyed honesty guarantee.
     if (instanceIds.length !== 1) continue;
-    const providerInstanceId = instanceIds[0];
-    if (!providerInstanceId) continue;
-    const snapshot = yield* Effect.tryPromise(() =>
-      readLatestCodexTranscriptQuota({ sessionsDir, providerInstanceId, nowMs }),
-    ).pipe(Effect.orElseSucceed(() => null));
-    if (snapshot) yield* quota.seedSnapshot(snapshot);
+    const instanceId = instanceIds[0]!;
+    const latest = yield* Effect.promise(() =>
+      readLatestCodexTranscriptQuota({ sessionsDir, providerInstanceId: instanceId, nowMs }),
+    );
+    if (!latest) continue;
+    yield* quota.seedSnapshot(latest);
   }
 });

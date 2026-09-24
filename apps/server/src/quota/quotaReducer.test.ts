@@ -4,6 +4,7 @@ import type { ProviderInstanceId, ProviderRuntimeEvent } from "@t3tools/contract
 
 import {
   applyQuotaEvent,
+  classifyQuotaError,
   earliestReset,
   emptyQuotaState,
   forgetQuota,
@@ -315,5 +316,35 @@ describe("earliestReset", () => {
       },
     })!;
     expect(earliestReset(snapshot)).toBeUndefined();
+  });
+});
+
+describe("classifyQuotaError", () => {
+  it("classifies HTTP status codes", () => {
+    expect(classifyQuotaError({ status: 401 })).toBe("unauthorized");
+    expect(classifyQuotaError({ status: 403 })).toBe("forbidden");
+    expect(classifyQuotaError({ status: 429 })).toBe("rate_limited");
+    expect(classifyQuotaError({ status: 500 })).toBe("unavailable");
+    expect(classifyQuotaError({ status: 503 })).toBe("unavailable");
+  });
+
+  it("classifies Effect error tags", () => {
+    expect(classifyQuotaError({ _tag: "RateLimitExceeded" })).toBe("rate_limited");
+    expect(classifyQuotaError({ _tag: "TimeoutException" })).toBe("timeout");
+    expect(classifyQuotaError({ _tag: "Unauthorized" })).toBe("unauthorized");
+    expect(classifyQuotaError({ _tag: "Forbidden" })).toBe("forbidden");
+  });
+
+  it("classifies error message contents", () => {
+    expect(classifyQuotaError(new Error("Request timed out after 15 seconds"))).toBe("timeout");
+    expect(classifyQuotaError(new Error("fetch failed: ECONNREFUSED 127.0.0.1:45123"))).toBe(
+      "network_error",
+    );
+    expect(classifyQuotaError(new Error("Unexpected token in JSON at position 0"))).toBe(
+      "parse_error",
+    );
+    expect(classifyQuotaError(new Error("Process exited with code 1"))).toBe("process_error");
+    expect(classifyQuotaError(new Error("Too many requests"))).toBe("rate_limited");
+    expect(classifyQuotaError("Unknown error occurred")).toBe("unavailable");
   });
 });

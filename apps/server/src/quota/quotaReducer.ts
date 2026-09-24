@@ -12,6 +12,7 @@ import {
   isQuotaSnapshotStale,
   QUOTA_SNAPSHOT_STALE_AFTER_MS,
   type AccountQuotaSnapshot,
+  type QuotaErrorCode,
 } from "@t3tools/contracts/quota";
 import type {
   ProviderDriverKind,
@@ -73,6 +74,17 @@ export function applyQuotaEvent(state: QuotaState, input: QuotaEventInput): Quot
   const normalize = normalizerFor(input.driverKind);
   if (!normalize) return state;
 
+  const previous = state.get(input.providerInstanceId);
+  if (previous) {
+    const prevTime = Date.parse(previous.observedAt);
+    const nextTime = Date.parse(input.observedAt);
+    if (!Number.isNaN(prevTime) && !Number.isNaN(nextTime) && nextTime < prevTime) {
+      if (input.driverKind !== "codex") {
+        return state;
+      }
+    }
+  }
+
   // Adapters that already emit upstream's normalized shape need no
   // provider-specific parsing; only an older emitter falls through.
   const normalizerInput = {
@@ -93,7 +105,6 @@ export function applyQuotaEvent(state: QuotaState, input: QuotaEventInput): Quot
     return next;
   }
 
-  const previous = state.get(input.providerInstanceId);
   // Codex can publish one rate-limit window at a time, so preserve its
   // documented sparse-update semantics. Claude and Antigravity probes are
   // point-in-time reads: carrying a missing pool/window forward makes stale
@@ -169,4 +180,79 @@ export function earliestReset(snapshot: AccountQuotaSnapshot): number | undefine
     }
   }
   return earliest;
+}
+
+/**
+ * Classify a probe or refresh failure into a non-sensitive QuotaErrorCode.
+ */
+export function classifyQuotaError(error: unknown): QuotaErrorCode {
+  if (error === null || error === undefined) return "unavailable";
+
+  if (typeof error === "object") {
+    const err = error as Record<string, unknown>;
+    const status = err["status"] ?? err["statusCode"] ?? err["httpStatus"] ?? err["code"];
+    if (
+      status === 429 ||
+      status === "429" ||
+      status === "rate_limited" ||
+      err["_tag"] === "RateLimitExceeded"
+    ) {
+      return "rate_limited";
+    }
+    if (
+      status === 401 ||
+      status === "401" ||
+      status === "unauthorized" ||
+      err["_tag"] === "Unauthorized"
+    ) {
+      return "unauthorized";
+    }
+    if (
+      status === 403 ||
+      status === "403" ||
+      status === "forbidden" ||
+      err["_tag"] === "Forbidden"
+    ) {
+      return "forbidden";
+    }
+    if (
+      status === 408 ||
+      status === 504 ||
+      err["_tag"] === "TimeoutException" ||
+      err["name"] === "TimeoutError" ||
+      (typeof err["message"] === "string" && /timed?\s*out/i.test(err["message"]))
+    ) {
+      return "timeout";
+    }
+    if (
+      err["_tag"] === "CodexAppServerSpawnError" ||
+      err["_tag"] === "CodexAppServerProcessExitedError" ||
+      err["_tag"] === "ProcessError"
+    ) {
+      return "process_error";
+    }
+    if (
+      err["name"] === "SyntaxError" ||
+      (typeof err["message"] === "string" && /JSON/i.test(err["message"]))
+    ) {
+      return "parse_error";
+    }
+    if (
+      err["_tag"] === "NetworkError" ||
+      (typeof err["message"] === "string" && /ECONNREFUSED|ENOTFOUND|network/i.test(err["message"]))
+    ) {
+      return "network_error";
+    }
+  }
+
+  const message = String(error);
+  if (/429|rate\s*limit|too\s*many\s*requests/i.test(message)) return "rate_limited";
+  if (/401|unauthorized/i.test(message)) return "unauthorized";
+  if (/403|forbidden/i.test(message)) return "forbidden";
+  if (/timed?\s*out/i.test(message)) return "timeout";
+  if (/JSON|SyntaxError/i.test(message)) return "parse_error";
+  if (/process|spawn|exit/i.test(message)) return "process_error";
+  if (/network|econnrefused|enotfound/i.test(message)) return "network_error";
+
+  return "unavailable";
 }

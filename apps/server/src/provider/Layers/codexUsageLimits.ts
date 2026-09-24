@@ -19,6 +19,8 @@ import type * as CodexErrors from "effect-codex-app-server/errors";
 import { clampPercent, makeUsageLimits } from "../providerUsageLimits.ts";
 
 interface CodexRateLimitWindow {
+  readonly id?: string | null;
+  readonly label?: string | null;
   readonly usedPercent: number;
   readonly resetsAt?: number | null;
   readonly windowDurationMins?: number | null;
@@ -31,6 +33,14 @@ export interface CodexRateLimitSnapshot {
   readonly rateLimitReachedType?: string | null;
   readonly primary?: CodexRateLimitWindow | null;
   readonly secondary?: CodexRateLimitWindow | null;
+  readonly additionalRateLimits?:
+    | ReadonlyArray<CodexRateLimitWindow>
+    | Readonly<Record<string, CodexRateLimitWindow>>
+    | null;
+  readonly additional_rate_limits?:
+    | ReadonlyArray<CodexRateLimitWindow>
+    | Readonly<Record<string, CodexRateLimitWindow>>
+    | null;
 }
 
 /** Structural view of the read response's `rateLimitResetCredits`. */
@@ -48,7 +58,11 @@ const MONTH_MINS = 30 * 24 * 60;
 
 function isoFromEpochSeconds(value: number | null | undefined): string | undefined {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return undefined;
-  const dt = DateTime.make(value * 1000);
+  // If value is >= 1e11, it is unambiguous milliseconds.
+  const ms = value >= 100_000_000_000 ? value : value * 1000;
+  // Sanity check between 2001 and 2100 to reject impossible reset dates.
+  if (ms < 1_000_000_000_000 || ms > 4_102_444_800_000) return undefined;
+  const dt = DateTime.make(ms);
   return Option.isSome(dt) ? DateTime.formatIso(dt.value) : undefined;
 }
 
@@ -94,6 +108,47 @@ function codexRateLimitsToWindows(
       ...(resetsAt ? { resetsAt } : {}),
     });
   }
+
+  const additional = snapshot.additionalRateLimits ?? snapshot.additional_rate_limits;
+  if (Array.isArray(additional)) {
+    for (let index = 0; index < additional.length; index++) {
+      const window = additional[index];
+      if (!window || !Number.isFinite(window.usedPercent)) continue;
+      const windowDurationMins =
+        typeof window.windowDurationMins === "number" ? window.windowDurationMins : undefined;
+      const kind = windowDurationMins ? kindForDuration(windowDurationMins) : "other";
+      const resetsAt = isoFromEpochSeconds(window.resetsAt);
+      const id = window.id ?? `additional-${index + 1}`;
+      const label = window.label ?? `Additional limit ${index + 1}`;
+      windows.push({
+        id,
+        kind,
+        label,
+        usedPercent: clampPercent(window.usedPercent),
+        ...(windowDurationMins ? { windowDurationMins } : {}),
+        ...(resetsAt ? { resetsAt } : {}),
+      });
+    }
+  } else if (additional && typeof additional === "object") {
+    for (const [key, window] of Object.entries(additional)) {
+      if (!window || !Number.isFinite(window.usedPercent)) continue;
+      const windowDurationMins =
+        typeof window.windowDurationMins === "number" ? window.windowDurationMins : undefined;
+      const kind = windowDurationMins ? kindForDuration(windowDurationMins) : "other";
+      const resetsAt = isoFromEpochSeconds(window.resetsAt);
+      const id = `additional-${key}`;
+      const label = window.label ?? key;
+      windows.push({
+        id,
+        kind,
+        label,
+        usedPercent: clampPercent(window.usedPercent),
+        ...(windowDurationMins ? { windowDurationMins } : {}),
+        ...(resetsAt ? { resetsAt } : {}),
+      });
+    }
+  }
+
   return windows;
 }
 
@@ -182,6 +237,12 @@ export function mergeCodexRateLimits(
       : {}),
     ...(update.primary !== undefined ? { primary: update.primary } : {}),
     ...(update.secondary !== undefined ? { secondary: update.secondary } : {}),
+    ...(update.additionalRateLimits !== undefined
+      ? { additionalRateLimits: update.additionalRateLimits }
+      : {}),
+    ...(update.additional_rate_limits !== undefined
+      ? { additional_rate_limits: update.additional_rate_limits }
+      : {}),
   };
 }
 

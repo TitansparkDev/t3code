@@ -22,6 +22,7 @@
  * @module provider/Drivers/CodexDriver
  */
 import { CodexSettings, ProviderDriverKind } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -71,6 +72,9 @@ import {
   materializeCodexShadowHome,
   resolveCodexHomeLayout,
 } from "./CodexHomeLayout.ts";
+import { readLatestCodexTranscriptQuota } from "../../quota/CodexTranscriptQuota.ts";
+import type { CodexRateLimitSnapshot } from "../Layers/codexUsageLimits.ts";
+
 const decodeCodexSettings = Schema.decodeSync(CodexSettings);
 
 const DRIVER_KIND = ProviderDriverKind.make("codex");
@@ -178,30 +182,87 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
       // The background quota loop must be able to refresh an idle Codex
       // instance. Turn telemetry is not a reliable source because a provider
       // can sit unused while its subscription window changes or resets.
-      const refreshQuota = () =>
+      // Source hierarchy:
+      // 1. Live Codex app-server query
+      // 2. Newest local session transcript recovery fallback
+      const refreshQuota = (): Effect.Effect<CodexRateLimitSnapshot | undefined, never> =>
         Effect.gen(function* () {
-          const { client } = yield* withCodexAppServerClient({
-            binaryPath: effectiveConfig.binaryPath,
-            homePath: effectiveConfig.homePath,
-            launchArgs: resolveCodexLaunchArgs(effectiveConfig.launchArgs, processEnv),
-            cwd: process.cwd(),
-            environment: processEnv,
-          });
-          const account = yield* client.request("account/read", {});
-          if (account.requiresOpenaiAuth === false || account.account?.type === "apiKey") {
-            return undefined;
+          const appServerRead = Effect.gen(function* () {
+            const { client } = yield* withCodexAppServerClient({
+              binaryPath: effectiveConfig.binaryPath,
+              homePath: effectiveConfig.homePath,
+              launchArgs: resolveCodexLaunchArgs(effectiveConfig.launchArgs, processEnv),
+              cwd: process.cwd(),
+              environment: processEnv,
+            });
+            const account = yield* client.request("account/read", {});
+            if (account.requiresOpenaiAuth === false || account.account?.type === "apiKey") {
+              return undefined;
+            }
+            const response = yield* client.request("account/rateLimits/read", undefined);
+            return response.rateLimits as CodexRateLimitSnapshot | undefined;
+          }).pipe(
+            Effect.scoped,
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+            Effect.timeout("15 seconds"),
+          );
+
+          const transcriptFallback: Effect.Effect<CodexRateLimitSnapshot | undefined, never> =
+            Effect.gen(function* () {
+              const layout = yield* resolveCodexHomeLayout(effectiveConfig);
+              const sessionsDir = pathService.join(layout.sharedHomePath, "sessions");
+              const now = yield* Clock.currentTimeMillis;
+              const transcriptSnapshot = yield* Effect.promise(() =>
+                readLatestCodexTranscriptQuota({
+                  sessionsDir,
+                  providerInstanceId: instanceId,
+                  nowMs: now,
+                  source: "codex-transcript",
+                }),
+              );
+              if (!transcriptSnapshot) return undefined;
+              const primaryWin = transcriptSnapshot.groups[0]?.windows.find(
+                (w) => w.kind === "short",
+              );
+              const secondaryWin = transcriptSnapshot.groups[0]?.windows.find(
+                (w) => w.kind === "long",
+              );
+              if (!primaryWin && !secondaryWin) return undefined;
+              const result: CodexRateLimitSnapshot = {
+                limitId: "codex",
+                planType: transcriptSnapshot.planType ?? null,
+                primary: primaryWin
+                  ? {
+                      usedPercent: primaryWin.usedPercent,
+                      resetsAt: primaryWin.resetsAt
+                        ? Math.floor(Date.parse(primaryWin.resetsAt) / 1000)
+                        : null,
+                      windowDurationMins: primaryWin.windowDurationMins ?? null,
+                    }
+                  : null,
+                secondary: secondaryWin
+                  ? {
+                      usedPercent: secondaryWin.usedPercent,
+                      resetsAt: secondaryWin.resetsAt
+                        ? Math.floor(Date.parse(secondaryWin.resetsAt) / 1000)
+                        : null,
+                      windowDurationMins: secondaryWin.windowDurationMins ?? null,
+                    }
+                  : null,
+              };
+              return result;
+            }).pipe(
+              Effect.provideService(FileSystem.FileSystem, fileSystem),
+              Effect.provideService(Path.Path, pathService),
+              Effect.orElseSucceed(() => undefined),
+            );
+
+          const limits = yield* appServerRead.pipe(Effect.catch(() => Effect.succeed(undefined)));
+          if (limits !== undefined) {
+            return limits;
           }
-          const response = yield* client.request("account/rateLimits/read", undefined);
-          return response.rateLimits;
-        }).pipe(
-          Effect.scoped,
-          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-          // App-server startup on an idle account can take several seconds;
-          // timing out too aggressively leaves the previous quota on screen
-          // until the user retries manually.
-          Effect.timeout("15 seconds"),
-          Effect.orElseSucceed(() => undefined),
-        );
+          return yield* transcriptFallback;
+        }).pipe(Effect.orElseSucceed(() => undefined));
 
       // `makeCodexAdapter` and `makeCodexTextGeneration` have `never` error
       // channels at construction time — their failure modes are all on the

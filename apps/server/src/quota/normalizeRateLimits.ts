@@ -83,11 +83,39 @@ export function isoFromEpochSeconds(value: unknown): string | undefined {
   return Number.isNaN(date.getTime()) ? undefined : iso;
 }
 
-function isoFromProviderReset(value: unknown): string | undefined {
+/**
+ * Accept Unix seconds and milliseconds only when the magnitude is unambiguous;
+ * reject impossible reset dates.
+ */
+export function isoFromEpochTimestamp(value: unknown): string | undefined {
+  const num = readFiniteNumber(value);
+  if (num !== undefined) {
+    if (num >= MIN_PLAUSIBLE_EPOCH_SECONDS && num <= MAX_PLAUSIBLE_EPOCH_SECONDS) {
+      const date = new Date(num * 1000);
+      return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+    }
+    if (num >= MIN_PLAUSIBLE_EPOCH_SECONDS * 1000 && num <= MAX_PLAUSIBLE_EPOCH_SECONDS * 1000) {
+      const date = new Date(num);
+      return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+    }
+    return undefined;
+  }
   const text = readNonEmptyString(value);
-  if (text === undefined) return isoFromEpochSeconds(value);
+  if (text === undefined) return undefined;
+  if (/^\d+(\.\d+)?$/.test(text)) {
+    return isoFromEpochTimestamp(Number(text));
+  }
   const date = new Date(text);
-  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+  const time = date.getTime();
+  if (Number.isNaN(time)) return undefined;
+  if (time < MIN_PLAUSIBLE_EPOCH_SECONDS * 1000 || time > MAX_PLAUSIBLE_EPOCH_SECONDS * 1000) {
+    return undefined;
+  }
+  return date.toISOString();
+}
+
+function isoFromProviderReset(value: unknown): string | undefined {
+  return isoFromEpochTimestamp(value);
 }
 
 /**
@@ -110,9 +138,10 @@ function normalizeWindow(
   const windowDurationMins =
     readFiniteNumber(value["windowDurationMins"] ?? value["window_minutes"]) ??
     fallbackDurationMins;
-  const rawReset = value["resetsAt"] ?? value["resets_at"];
+  const rawReset =
+    value["resetsAt"] ?? value["resets_at"] ?? value["resetTime"] ?? value["reset_time"];
   const resetsAt = isoFromProviderReset(rawReset);
-  const label = readNonEmptyString(value["label"]) ?? fallbackLabel;
+  const label = readNonEmptyString(value["label"] ?? value["name"]) ?? fallbackLabel;
 
   return {
     kind: quotaWindowKindFromDuration(windowDurationMins),
@@ -248,11 +277,13 @@ export function normalizeCodexRateLimits(input: {
 }): AccountQuotaSnapshot | undefined {
   if (!isRecord(input.payload)) return undefined;
 
-  // The adapter wraps the notification as `{ rateLimits: <notification> }`, and
-  // the notification itself nests a `rateLimits` snapshot. Accept either depth
-  // so a future unwrap upstream does not silently blank the panel.
-  const outer = readRecord(input.payload, "rateLimits") ?? input.payload;
-  const snapshot = readRecord(outer, "rateLimits") ?? outer;
+  // Accept wrapped and unwrapped payloads:
+  const payloadRecord = readRecord(input.payload, "payload") ?? input.payload;
+  const outer =
+    readRecord(payloadRecord, "rateLimits") ??
+    readRecord(payloadRecord, "rate_limits") ??
+    payloadRecord;
+  const snapshot = readRecord(outer, "rateLimits") ?? readRecord(outer, "rate_limits") ?? outer;
 
   const windows: Array<QuotaWindow> = [];
   const primary = normalizeWindow(snapshot["primary"]);
@@ -260,16 +291,41 @@ export function normalizeCodexRateLimits(input: {
   const secondary = normalizeWindow(snapshot["secondary"]);
   if (secondary) windows.push(secondary);
 
+  const additional =
+    snapshot["additional_rate_limits"] ??
+    snapshot["additionalRateLimits"] ??
+    outer["additional_rate_limits"] ??
+    outer["additionalRateLimits"];
+  if (Array.isArray(additional)) {
+    for (let index = 0; index < additional.length; index++) {
+      const item = additional[index];
+      const window = normalizeWindow(item, `Additional limit ${index + 1}`);
+      if (window) windows.push(window);
+    }
+  } else if (isRecord(additional)) {
+    for (const [key, item] of Object.entries(additional)) {
+      const window = normalizeWindow(item, key);
+      if (window) windows.push(window);
+    }
+  }
+
   const limitReached = readNonEmptyString(
-    snapshot["rateLimitReachedType"] ?? snapshot["rate_limit_reached_type"],
+    snapshot["rateLimitReachedType"] ??
+      snapshot["rate_limit_reached_type"] ??
+      outer["rateLimitReachedType"] ??
+      outer["rate_limit_reached_type"],
   );
 
   // Nothing usable in this message. Absent beats an empty-looking row.
   if (windows.length === 0 && !limitReached) return undefined;
 
   const displayName =
-    readNonEmptyString(snapshot["limitName"] ?? snapshot["limit_name"]) ?? "Subscription";
-  const planType = readNonEmptyString(snapshot["planType"] ?? snapshot["plan_type"]);
+    readNonEmptyString(
+      snapshot["limitName"] ?? snapshot["limit_name"] ?? outer["limitName"] ?? outer["limit_name"],
+    ) ?? "Subscription";
+  const planType = readNonEmptyString(
+    snapshot["planType"] ?? snapshot["plan_type"] ?? outer["planType"] ?? outer["plan_type"],
+  );
 
   const group: QuotaGroup = { key: "default", displayName, windows };
 
@@ -531,9 +587,11 @@ export function normalizeAntigravityRateLimits(input: {
  * relying on. Windows are merged by kind, with the newer reading winning; a
  * group present only in the older snapshot is preserved.
  *
- * `limitReached` is the exception — it is *not* carried forward, because a
- * stale "you are rate limited" that outlives the reset is precisely the state
- * that makes an account look permanently broken.
+ * An older probe must never overwrite a newer event or a later successful probe.
+ *
+ * `limitReached` is the exception — it is *not* carried forward from an older snapshot,
+ * because a stale "you are rate limited" that outlives the reset is precisely the
+ * state that makes an account look permanently broken.
  */
 export function mergeQuotaSnapshots(
   previous: AccountQuotaSnapshot | undefined,
@@ -541,6 +599,11 @@ export function mergeQuotaSnapshots(
 ): AccountQuotaSnapshot {
   if (!previous) return next;
   if (previous.providerInstanceId !== next.providerInstanceId) return next;
+
+  const prevTime = Date.parse(previous.observedAt);
+  const nextTime = Date.parse(next.observedAt);
+  const incomingIsOlder = !Number.isNaN(prevTime) && !Number.isNaN(nextTime) && nextTime < prevTime;
+  if (incomingIsOlder) return previous;
 
   const groupsByKey = new Map<string, QuotaGroup>();
   for (const group of previous.groups) groupsByKey.set(group.key, group);
@@ -553,33 +616,57 @@ export function mergeQuotaSnapshots(
     }
 
     const windowsByKind = new Map<string, QuotaWindow>();
-    for (const window of existing.windows) {
-      windowsByKind.set(`${window.kind}:${window.label ?? ""}`, window);
-    }
-    for (const window of incoming.windows) {
-      windowsByKind.set(`${window.kind}:${window.label ?? ""}`, window);
+    if (incomingIsOlder) {
+      for (const window of incoming.windows) {
+        windowsByKind.set(`${window.kind}:${window.label ?? ""}`, window);
+      }
+      for (const window of existing.windows) {
+        windowsByKind.set(`${window.kind}:${window.label ?? ""}`, window);
+      }
+    } else {
+      for (const window of existing.windows) {
+        windowsByKind.set(`${window.kind}:${window.label ?? ""}`, window);
+      }
+      for (const window of incoming.windows) {
+        windowsByKind.set(`${window.kind}:${window.label ?? ""}`, window);
+      }
     }
 
     groupsByKey.set(incoming.key, {
       key: incoming.key,
-      displayName: incoming.displayName,
+      displayName: incomingIsOlder ? existing.displayName : incoming.displayName,
       windows: [...windowsByKind.values()],
     });
   }
 
+  const authoritativeSnapshot = incomingIsOlder ? previous : next;
+  const secondarySnapshot = incomingIsOlder ? next : previous;
+
   return {
     providerInstanceId: next.providerInstanceId,
     groups: [...groupsByKey.values()],
-    source: next.source,
-    observedAt: next.observedAt,
-    ...((next.planType ?? previous.planType)
-      ? { planType: next.planType ?? previous.planType! }
+    source: authoritativeSnapshot.source,
+    observedAt: authoritativeSnapshot.observedAt,
+    ...(authoritativeSnapshot.lastAttemptAt || secondarySnapshot.lastAttemptAt
+      ? { lastAttemptAt: authoritativeSnapshot.lastAttemptAt ?? secondarySnapshot.lastAttemptAt }
       : {}),
-    ...(next.limitReached ? { limitReached: next.limitReached } : {}),
+    ...(authoritativeSnapshot.lastSuccessfulAt || secondarySnapshot.lastSuccessfulAt
+      ? {
+          lastSuccessfulAt:
+            authoritativeSnapshot.lastSuccessfulAt ?? secondarySnapshot.lastSuccessfulAt,
+        }
+      : {}),
+    ...(authoritativeSnapshot.errorCode ? { errorCode: authoritativeSnapshot.errorCode } : {}),
+    ...((authoritativeSnapshot.planType ?? secondarySnapshot.planType)
+      ? { planType: authoritativeSnapshot.planType ?? secondarySnapshot.planType! }
+      : {}),
+    ...(authoritativeSnapshot.limitReached
+      ? { limitReached: authoritativeSnapshot.limitReached }
+      : {}),
     // Account identity is not published on every update; keeping the last known
     // one stops a sparse refresh from ungrouping instances that share it.
-    ...((next.accountLabel ?? previous.accountLabel)
-      ? { accountLabel: next.accountLabel ?? previous.accountLabel! }
+    ...((authoritativeSnapshot.accountLabel ?? secondarySnapshot.accountLabel)
+      ? { accountLabel: authoritativeSnapshot.accountLabel ?? secondarySnapshot.accountLabel! }
       : {}),
   };
 }

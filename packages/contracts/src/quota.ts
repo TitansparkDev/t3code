@@ -54,8 +54,25 @@ export const QuotaSource = Schema.Literals([
   "antigravity-quota-summary",
   /** Conservative per-model fallback when pooled data is unavailable. */
   "antigravity-model-fallback",
+  /** Active status probe from Codex app-server. Authoritative. */
+  "codex-app-server",
+  /** Cold-start quota recovery from Codex session transcripts. Directional. */
+  "codex-transcript",
 ]);
 export type QuotaSource = typeof QuotaSource.Type;
+
+/** Non-sensitive classification of a failed probe or refresh attempt. */
+export const QuotaErrorCode = Schema.Literals([
+  "rate_limited",
+  "unauthorized",
+  "forbidden",
+  "timeout",
+  "unavailable",
+  "network_error",
+  "process_error",
+  "parse_error",
+]);
+export type QuotaErrorCode = typeof QuotaErrorCode.Type;
 
 /** Percent used within a window: 0–100, clamped by the normalizer. */
 export const QuotaUsedPercent = Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 100 }));
@@ -122,6 +139,12 @@ export const AccountQuotaSnapshot = Schema.Struct({
    * and a limit can be reached below 100% on a different axis (credits).
    */
   limitReached: Schema.optional(TrimmedNonEmptyString),
+  /** Last probe or refresh attempt timestamp. */
+  lastAttemptAt: Schema.optional(IsoDateTime),
+  /** Last successful probe or event observation timestamp. */
+  lastSuccessfulAt: Schema.optional(IsoDateTime),
+  /** Non-sensitive error classification if the most recent attempt failed. */
+  errorCode: Schema.optional(TrimmedNonEmptyString),
 });
 export type AccountQuotaSnapshot = typeof AccountQuotaSnapshot.Type;
 
