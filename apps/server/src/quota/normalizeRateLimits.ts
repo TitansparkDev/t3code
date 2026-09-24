@@ -101,7 +101,7 @@ function normalizeWindow(
   fallbackLabel?: string,
   fallbackDurationMins?: number,
 ): QuotaWindow | undefined {
-  if (!isRecord(value)) return undefined;
+  if (!isRecord(value) || value["disabled"] === true) return undefined;
   const usedPercent = readUsedPercent(
     value["usedPercent"] ?? value["used_percent"] ?? value["utilization"],
   );
@@ -150,7 +150,9 @@ function normalizeAntigravityWindow(
     (remainingPercent === undefined
       ? remainingFraction === undefined
         ? undefined
-        : readUsedPercent(100 - Math.min(1, Math.max(0, remainingFraction)) * 100)
+        : readUsedPercent(
+            Math.round((100 - Math.min(1, Math.max(0, remainingFraction)) * 100) * 100) / 100,
+          )
       : readUsedPercent(100 - Math.min(100, Math.max(0, remainingPercent))));
   if (usedPercent === undefined) return undefined;
 
@@ -370,9 +372,23 @@ export function normalizeAntigravityRateLimits(input: {
     readRecord(input.payload, "rate_limits") ??
     input.payload;
   const snapshot = readRecord(outer, "rateLimits") ?? readRecord(outer, "rate_limits") ?? outer;
+  const explicitModelGroups = snapshot["modelGroups"] ?? input.payload["modelGroups"];
+  const isModelFallback =
+    (!snapshot["groups"] &&
+      !snapshot["pools"] &&
+      !snapshot["quotaGroups"] &&
+      !snapshot["quota_groups"] &&
+      Boolean(explicitModelGroups)) ||
+    snapshot["source"] === "antigravity-model-fallback" ||
+    outer["source"] === "antigravity-model-fallback" ||
+    input.payload["source"] === "antigravity-model-fallback";
+
   const groupsValue =
-    snapshot["groups"] ?? snapshot["pools"] ?? snapshot["quotaGroups"] ?? snapshot["quota_groups"];
-  const groups: Array<QuotaGroup> = [];
+    snapshot["groups"] ??
+    snapshot["pools"] ??
+    snapshot["quotaGroups"] ??
+    snapshot["quota_groups"] ??
+    explicitModelGroups;
 
   const candidates: Array<{ readonly key: string; readonly value: unknown }> = Array.isArray(
     groupsValue,
@@ -382,6 +398,8 @@ export function normalizeAntigravityRateLimits(input: {
       ? Object.entries(groupsValue).map(([key, value]) => ({ key, value }))
       : [{ key: "default", value: snapshot }];
 
+  const groupsByKey = new Map<string, { displayName: string; windows: Map<number, QuotaWindow> }>();
+
   for (const candidate of candidates) {
     if (!isRecord(candidate.value)) continue;
     const group =
@@ -389,7 +407,8 @@ export function normalizeAntigravityRateLimits(input: {
       readRecord(candidate.value, "rate_limits") ??
       candidate.value;
     const windows: Array<QuotaWindow> = [];
-    const listedWindows = group["windows"] ?? group["limits"] ?? group["buckets"];
+    const listedWindows =
+      group["windows"] ?? group["limits"] ?? group["buckets"] ?? group["quotaBuckets"];
     if (Array.isArray(listedWindows)) {
       for (const value of listedWindows) {
         const window = normalizeAntigravityWindow(value);
@@ -411,21 +430,59 @@ export function normalizeAntigravityRateLimits(input: {
     }
 
     if (windows.length === 0) continue;
-    const displayName =
+    const rawDisplayName =
       readNonEmptyString(group["displayName"]) ??
       readNonEmptyString(group["name"]) ??
+      readNonEmptyString(group["modelId"]) ??
       readNonEmptyString(group["label"]) ??
       candidate.key;
     const rawKey =
       readNonEmptyString(group["key"]) ?? readNonEmptyString(group["id"]) ?? candidate.key;
-    const identity = `${rawKey} ${displayName}`;
-    const key = /gemini|google/i.test(identity)
-      ? "gemini"
-      : /claude|gpt/i.test(identity)
-        ? "claude-gpt"
-        : rawKey;
-    groups.push({ key, displayName, windows });
+    const identity = `${rawKey} ${rawDisplayName}`;
+    const isGemini = /gemini|google/i.test(identity);
+    const isClaudeGpt = /claude|gpt|oss/i.test(identity);
+
+    if (isModelFallback && !isGemini && !isClaudeGpt) {
+      continue;
+    }
+
+    const key = isGemini ? "gemini" : isClaudeGpt ? "claude-gpt" : rawKey;
+    const defaultDisplayName =
+      key === "gemini"
+        ? "Gemini Models"
+        : key === "claude-gpt"
+          ? "Claude & GPT models"
+          : rawDisplayName;
+    const displayName = isModelFallback ? defaultDisplayName : rawDisplayName;
+
+    const existingGroup = groupsByKey.get(key);
+    const windowMap = existingGroup?.windows ?? new Map<number, QuotaWindow>();
+
+    for (const window of windows) {
+      const duration =
+        window.windowDurationMins ??
+        (window.kind === "short" ? 300 : window.kind === "long" ? 10_080 : 0);
+      const existing = windowMap.get(duration);
+      if (
+        !existing ||
+        window.usedPercent > existing.usedPercent ||
+        (window.usedPercent === existing.usedPercent && !existing.resetsAt && window.resetsAt)
+      ) {
+        windowMap.set(duration, window);
+      }
+    }
+
+    groupsByKey.set(key, {
+      displayName: existingGroup?.displayName ?? displayName,
+      windows: windowMap,
+    });
   }
+
+  const groups: Array<QuotaGroup> = [...groupsByKey.entries()].map(([key, data]) => ({
+    key,
+    displayName: data.displayName,
+    windows: [...data.windows.values()],
+  }));
 
   const limitReached =
     readNonEmptyString(snapshot["limitReached"]) ??
@@ -444,10 +501,21 @@ export function normalizeAntigravityRateLimits(input: {
     readNonEmptyString(snapshot["account"]) ??
     readNonEmptyString(snapshot["email"]);
 
+  const explicitSource =
+    readNonEmptyString(snapshot["source"]) ??
+    readNonEmptyString(outer["source"]) ??
+    readNonEmptyString(input.payload["source"]);
+  const source: QuotaSource =
+    explicitSource === "antigravity-model-fallback" || isModelFallback
+      ? "antigravity-model-fallback"
+      : explicitSource === "antigravity-quota-summary"
+        ? "antigravity-quota-summary"
+        : "provider-event";
+
   return {
     providerInstanceId: input.providerInstanceId,
     groups,
-    source: "provider-event" satisfies QuotaSource,
+    source,
     observedAt: input.observedAt,
     ...(planType ? { planType } : {}),
     ...(limitReached ? { limitReached } : {}),

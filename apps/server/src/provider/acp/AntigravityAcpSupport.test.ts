@@ -170,6 +170,29 @@ describe("applyAntigravityAcpModelSelection", () => {
       expect(error).toEqual({ operation: "select-model", cause: nativeError });
     }),
   );
+
+  it.effect.each([
+    ["claude-sonnet-4-6", "Claude Sonnet 4.6 (Thinking)"],
+    ["claude-opus-4-6-thinking", "Claude Opus 4.6 (Thinking)"],
+    ["gpt-oss-120b-medium", "GPT-OSS 120B (Medium)"],
+  ])("accepts and selects live non-Gemini model ID %s", ([modelId, modelName]) =>
+    Effect.gen(function* () {
+      const { runtime, selections } = makeModelRuntime([
+        {
+          ...modelConfig,
+          options: [...modelConfig.options, { value: modelId, name: modelName }],
+        },
+      ]);
+      const selected = yield* applyAntigravityAcpModelSelection({
+        runtime,
+        model: modelId,
+        mapError: (cause) => cause,
+      });
+
+      expect(selected).toBe(modelId);
+      expect(selections).toEqual([modelId]);
+    }),
+  );
 });
 
 describe("antigravityPermissionMode", () => {

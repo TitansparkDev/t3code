@@ -318,6 +318,66 @@ describe("normalizeAntigravityRateLimits", () => {
       resetsAt: "2026-08-30T04:24:00.000Z",
     });
   });
+
+  it("normalizes per-model fallback buckets by limiting bucket and marks source", () => {
+    const snapshot = normalizeAntigravityRateLimits({
+      providerInstanceId: "antigravity-1" as ProviderInstanceId,
+      observedAt,
+      payload: {
+        modelGroups: [
+          {
+            modelId: "gemini-3.8-flash-high",
+            quotaBuckets: [
+              { window: "5h", remaining_fraction: 0.8, reset_time: "2026-09-10T12:00:00Z" },
+            ],
+          },
+          {
+            modelId: "gemini-3.7-flash-high",
+            quotaBuckets: [
+              { window: "5h", remaining_fraction: 0.55, reset_time: "2026-09-10T10:00:00Z" },
+            ],
+          },
+          {
+            modelId: "claude-sonnet-4-6",
+            quotaBuckets: [
+              { window: "5h", remaining_fraction: 0.7, reset_time: "2026-09-10T11:00:00Z" },
+            ],
+          },
+          {
+            modelId: "gpt-oss-120b-medium",
+            quotaBuckets: [
+              { window: "5h", remaining_fraction: 0.4, reset_time: "2026-09-10T09:00:00Z" },
+            ],
+          },
+          {
+            modelId: "unrecognized-other-model",
+            quotaBuckets: [
+              { window: "5h", remaining_fraction: 0.1, reset_time: "2026-09-10T08:00:00Z" },
+            ],
+          },
+        ],
+      },
+    });
+
+    expect(snapshot?.source).toBe("antigravity-model-fallback");
+    expect(snapshot?.groups.map((g) => g.key)).toEqual(["gemini", "claude-gpt"]);
+
+    const gemini = snapshot?.groups.find((g) => g.key === "gemini");
+    expect(gemini?.displayName).toBe("Gemini Models");
+    expect(gemini?.windows[0]).toMatchObject({
+      kind: "short",
+      usedPercent: 45,
+      resetsAt: "2026-09-10T10:00:00.000Z",
+    });
+
+    const claudeGpt = snapshot?.groups.find((g) => g.key === "claude-gpt");
+    expect(claudeGpt?.displayName).toBe("Claude & GPT models");
+    expect(claudeGpt?.windows[0]).toMatchObject({
+      kind: "short",
+      usedPercent: 60,
+      resetsAt: "2026-09-10T09:00:00.000Z",
+    });
+  });
 });
 
 describe("mergeQuotaSnapshots", () => {

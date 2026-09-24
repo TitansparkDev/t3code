@@ -224,6 +224,65 @@ describe("parseAntigravityUsage", () => {
     });
   });
 
+  it("aggregates per-model fallback buckets by limiting bucket and isolates unknown models", () => {
+    const result = directQuotaGroups({
+      modelGroups: [
+        {
+          modelId: "gemini-3.8-flash-high",
+          quotaBuckets: [
+            { window: "5h", remainingFraction: 0.8, resetTime: "2026-09-10T12:00:00Z" },
+            { window: "weekly", remainingFraction: 0.7, resetTime: "2026-09-15T00:00:00Z" },
+          ],
+        },
+        {
+          modelId: "gemini-3.7-flash-high",
+          quotaBuckets: [
+            // Limiting for 5h (remaining 0.55 -> 45% used)
+            { window: "5h", remainingFraction: 0.55, resetTime: "2026-09-10T10:00:00Z" },
+            { window: "weekly", remainingFraction: 0.85, resetTime: "2026-09-16T00:00:00Z" },
+          ],
+        },
+        {
+          modelId: "claude-sonnet-4-6",
+          quotaBuckets: [
+            { window: "5h", remainingFraction: 0.7, resetTime: "2026-09-10T11:00:00Z" },
+          ],
+        },
+        {
+          modelId: "gpt-oss-120b-medium",
+          quotaBuckets: [
+            // Limiting for Claude & GPT 5h (remaining 0.40 -> 60% used)
+            { window: "5h", remainingFraction: 0.4, resetTime: "2026-09-10T09:00:00Z" },
+          ],
+        },
+        {
+          modelId: "custom-llama-3",
+          quotaBuckets: [
+            { window: "5h", remainingFraction: 0.1, resetTime: "2026-09-10T08:00:00Z" },
+          ],
+        },
+      ],
+    });
+
+    expect(result).toBeDefined();
+    expect(result?.source).toBe("antigravity-model-fallback");
+    expect(result?.groups.map((g) => g.key)).toEqual(["gemini", "claude-gpt"]);
+
+    const gemini = result?.groups.find((g) => g.key === "gemini");
+    const gemini5h = gemini?.windows.find((w) => w.windowDurationMins === 300);
+    expect(gemini5h?.usedPercent).toBe(45);
+    expect(gemini5h?.resetsAt).toBe("2026-09-10T10:00:00Z");
+
+    const geminiWeekly = gemini?.windows.find((w) => w.windowDurationMins === 10_080);
+    expect(geminiWeekly?.usedPercent).toBe(30);
+    expect(geminiWeekly?.resetsAt).toBe("2026-09-15T00:00:00Z");
+
+    const claudeGpt = result?.groups.find((g) => g.key === "claude-gpt");
+    const claudeGpt5h = claudeGpt?.windows.find((w) => w.windowDurationMins === 300);
+    expect(claudeGpt5h?.usedPercent).toBe(60);
+    expect(claudeGpt5h?.resetsAt).toBe("2026-09-10T09:00:00Z");
+  });
+
   it("accepts the older tab-separated output", () => {
     const result = parseAntigravityUsage(
       [

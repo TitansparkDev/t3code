@@ -296,14 +296,20 @@ export function classifyModels(
   manifest: ModelManifestData,
   driverKind: ProviderDriverKind,
 ): ReadonlyArray<ServerProviderModel> {
+  const catalog = manifest.providers?.[driverKind]?.models;
   return models.map((model) => {
     if (model.isCustom) return model;
+    const catalogModel = catalog?.find((m) => m.slug === model.slug);
+    const name =
+      (!model.name || model.name === model.slug) && catalogModel?.name
+        ? catalogModel.name
+        : model.name;
     if (isLegacyModel(manifest, driverKind, model.slug)) {
-      return model.isLegacy ? model : { ...model, isLegacy: true };
+      return { ...model, name, isLegacy: true };
     }
-    if (!model.isLegacy) return model;
+    if (!model.isLegacy && name === model.name) return model;
     const { isLegacy: _isLegacy, ...rest } = model;
-    return rest;
+    return { ...rest, name };
   });
 }
 
