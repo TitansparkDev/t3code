@@ -18742,6 +18742,7 @@ apps/mobile/src/features/usage/UsageRouteScreen.tsx
 apps/mobile/src/features/usage/usageChartData.ts
 apps/mobile/src/features/usage/usageEnvironmentSelection.test.ts
 apps/mobile/src/features/usage/usageEnvironmentSelection.ts
+apps/mobile/src/features/usage/usageLimitsOverlay.test.ts
 apps/mobile/src/features/usage/usageProviders.ts
 apps/mobile/src/features/voice-input/ComposerDictationControl.tsx
 apps/mobile/src/features/voice-input/useVoiceInputController.ts
@@ -18916,6 +18917,7 @@ apps/mobile/src/state/queries.ts
 apps/mobile/src/state/query.ts
 apps/mobile/src/state/queryTargets.ts
 apps/mobile/src/state/question-attachments.ts
+apps/mobile/src/state/quota.ts
 apps/mobile/src/state/recover-failed-thread-draft.ts
 apps/mobile/src/state/relay.ts
 apps/mobile/src/state/remote-environment-projections.test.ts
@@ -21847,6 +21849,7 @@ patches/react-native-nitro-modules@0.35.9.patch
 patches/react-native-reanimated@4.5.1.patch
 patches/react-native-screens@4.26.2.patch
 patches/uniwind@1.11.0.patch
+plan.md
 pnpm-lock.yaml
 pnpm-workspace.yaml
 scripts/apply-web-brand-assets.ts

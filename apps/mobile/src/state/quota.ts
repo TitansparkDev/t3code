@@ -5,6 +5,8 @@
  * identity beside every snapshot instead of flattening `codex` from two
  * machines into one apparently authoritative account.
  *
+ * Mirror of `apps/web/src/state/quota.ts` over mobile's atom wiring.
+ *
  * @module state/quota
  */
 import { useAtomValue } from "@effect/atom-react";
@@ -19,7 +21,7 @@ import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
 import { useCallback, useMemo, useState } from "react";
 
-import { appAtomRegistry } from "../rpc/atomRegistry";
+import { appAtomRegistry } from "./atom-registry";
 import { environmentPresentations } from "./presentation";
 import { serverEnvironment } from "./server";
 
@@ -42,7 +44,7 @@ const quotaAtom = Atom.make((get): readonly EnvironmentQuotaStatus[] => {
     });
   }
   return statuses;
-}).pipe(Atom.withLabel("web-quota"));
+}).pipe(Atom.withLabel("mobile-quota"));
 
 export interface EnvironmentQuotaSnapshot {
   readonly environmentId: EnvironmentId;

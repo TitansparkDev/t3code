@@ -9,11 +9,12 @@ import {
   formatResetsIn,
   formatSpend,
   remainingPercent,
+  withNativeQuotaSnapshots,
   type LimitAccount,
   type LimitPoolWindow,
 } from "@t3tools/shared/usageLimits";
 import { CLAUDE_PEAK_TIME_LABEL, isClaudePeakTime } from "@t3tools/shared/claudePeakTime";
-import { useId, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { Platform, Pressable, ScrollView, View } from "react-native";
 import { Defs, Path, Pattern, Rect, Svg } from "react-native-svg";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -24,6 +25,7 @@ import { AppText as Text } from "../../components/AppText";
 import { ProviderIcon } from "../../components/ProviderIcon";
 import { NativeStackScreenOptions } from "../../native/StackHeader";
 import { environmentPresentations } from "../../state/presentation";
+import { useQuota } from "../../state/quota";
 import { ResetCredits } from "./UsageLimitsSection";
 import { useProviderColors } from "./usageProviders";
 
@@ -223,10 +225,29 @@ export function UsageLimitsSection({
   readonly selectedEnvironmentIds: ReadonlySet<EnvironmentId> | null;
 }) {
   const presentations = useAtomValue(environmentPresentations.presentationsAtom);
-  const selected =
-    selectedEnvironmentIds === null
-      ? presentations
-      : new Map([...presentations].filter(([id]) => selectedEnvironmentIds.has(id)));
+  const quota = useQuota();
+  const selected = useMemo(() => {
+    const raw =
+      selectedEnvironmentIds === null
+        ? presentations
+        : new Map([...presentations].filter(([id]) => selectedEnvironmentIds.has(id)));
+    const result = new Map(raw);
+    for (const [envId, presentation] of result) {
+      const envSnapshots = quota.snapshots
+        .filter((s) => s.environmentId === envId)
+        .map((s) => s.snapshot);
+      if (envSnapshots.length > 0 && presentation.serverConfig?.providers) {
+        result.set(envId, {
+          ...presentation,
+          serverConfig: {
+            ...presentation.serverConfig,
+            providers: withNativeQuotaSnapshots(presentation.serverConfig.providers, envSnapshots),
+          },
+        });
+      }
+    }
+    return result;
+  }, [presentations, selectedEnvironmentIds, quota.snapshots]);
   const pools = collectLimitPools(collectLimitAccounts(selected), now);
   const notices = collectLimitNotices(selected);
   const colors = useProviderColors();
@@ -313,13 +334,32 @@ export function UsageLimitAccountScreen({ route }: AccountScreenProps) {
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
   const presentations = useAtomValue(environmentPresentations.presentationsAtom);
+  const quota = useQuota();
   const { accountKey, windowId, windowKind, environmentIds, now } = route.params;
   const selectedIds =
     environmentIds === null ? null : new Set(environmentIds.map((id) => EnvironmentId.make(id)));
-  const selected =
-    selectedIds === null
-      ? presentations
-      : new Map([...presentations].filter(([id]) => selectedIds.has(id)));
+  const selected = useMemo(() => {
+    const raw =
+      selectedIds === null
+        ? presentations
+        : new Map([...presentations].filter(([id]) => selectedIds.has(id)));
+    const result = new Map(raw);
+    for (const [envId, presentation] of result) {
+      const envSnapshots = quota.snapshots
+        .filter((s) => s.environmentId === envId)
+        .map((s) => s.snapshot);
+      if (envSnapshots.length > 0 && presentation.serverConfig?.providers) {
+        result.set(envId, {
+          ...presentation,
+          serverConfig: {
+            ...presentation.serverConfig,
+            providers: withNativeQuotaSnapshots(presentation.serverConfig.providers, envSnapshots),
+          },
+        });
+      }
+    }
+    return result;
+  }, [presentations, selectedIds, quota.snapshots]);
   const accounts = collectLimitAccounts(selected);
   const account = accounts.find((candidate) => candidate.key === accountKey);
   const pool = collectLimitPools(accounts, now)
