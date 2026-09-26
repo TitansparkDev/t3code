@@ -84,6 +84,8 @@ export const QuotaUsedPercent = Schema.Number.check(Schema.isBetween({ minimum: 
  * common in sparse rolling updates and must not be rendered as "resets now".
  */
 export const QuotaWindow = Schema.Struct({
+  /** Stable semantic identifier for sparse updates and deduplication. */
+  id: Schema.optional(TrimmedNonEmptyString),
   kind: QuotaWindowKind,
   /** Provider's own label where it has one, e.g. "Weekly limit". */
   label: Schema.optional(TrimmedNonEmptyString),
@@ -109,6 +111,13 @@ export const QuotaGroup = Schema.Struct({
   windows: Schema.Array(QuotaWindow),
 });
 export type QuotaGroup = typeof QuotaGroup.Type;
+
+/** Reset credits balance where available (e.g. Codex reset credits). */
+export const QuotaResetCredits = Schema.Struct({
+  availableCount: Schema.Number,
+  nextExpiresAt: Schema.optional(IsoDateTime),
+});
+export type QuotaResetCredits = typeof QuotaResetCredits.Type;
 
 /**
  * Everything known about one provider instance's subscription quota.
@@ -145,6 +154,12 @@ export const AccountQuotaSnapshot = Schema.Struct({
   lastSuccessfulAt: Schema.optional(IsoDateTime),
   /** Non-sensitive error classification if the most recent attempt failed. */
   errorCode: Schema.optional(TrimmedNonEmptyString),
+  /** Reset credits balance where available. */
+  resetCredits: Schema.optional(QuotaResetCredits),
+  /** When a probe or request was throttled, when to retry. */
+  retryAfterMs: Schema.optional(Schema.Number),
+  /** Timestamp until which the provider is throttled or backing off. */
+  retryAt: Schema.optional(IsoDateTime),
 });
 export type AccountQuotaSnapshot = typeof AccountQuotaSnapshot.Type;
 

@@ -94,15 +94,19 @@ export function applyQuotaEvent(state: QuotaState, input: QuotaEventInput): Quot
   };
   const snapshot = normalize(normalizerInput) ?? normalizeUpstreamUsageLimits(normalizerInput);
   if (!snapshot) {
-    // Claude and Antigravity probes are point-in-time reads. If one explicitly
-    // publishes no usable quota, retaining its old snapshot would present stale
-    // numbers as current telemetry. Codex is different: its events are sparse,
-    // so an empty update is not evidence that previously observed windows
-    // disappeared.
-    if (input.driverKind === "codex" || !state.has(input.providerInstanceId)) return state;
-    const next = new Map(state);
-    next.delete(input.providerInstanceId);
-    return next;
+    // If a probe or sparse message failed to yield usable windows,
+    // preserve the existing snapshot rather than clearing it.
+    return state;
+  }
+
+  // If a complete two-pool Antigravity summary already exists,
+  // do not replace it with a partial model-fallback response.
+  if (
+    input.driverKind === "antigravity" &&
+    previous?.source === "antigravity-quota-summary" &&
+    snapshot.source === "antigravity-model-fallback"
+  ) {
+    return state;
   }
 
   // Codex can publish one rate-limit window at a time, so preserve its
@@ -250,9 +254,9 @@ export function classifyQuotaError(error: unknown): QuotaErrorCode {
   if (/401|unauthorized/i.test(message)) return "unauthorized";
   if (/403|forbidden/i.test(message)) return "forbidden";
   if (/timed?\s*out/i.test(message)) return "timeout";
-  if (/JSON|SyntaxError/i.test(message)) return "parse_error";
-  if (/process|spawn|exit/i.test(message)) return "process_error";
-  if (/network|econnrefused|enotfound/i.test(message)) return "network_error";
+  if (/spawn|exit|process/i.test(message)) return "process_error";
+  if (/JSON|syntax/i.test(message)) return "parse_error";
+  if (/network|connect|reset|refused/i.test(message)) return "network_error";
 
   return "unavailable";
 }

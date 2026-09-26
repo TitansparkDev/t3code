@@ -19647,6 +19647,7 @@ apps/server/src/quota/QuotaRefreshLoop.test.ts
 apps/server/src/quota/QuotaRefreshLoop.ts
 apps/server/src/quota/QuotaService.test.ts
 apps/server/src/quota/QuotaService.ts
+apps/server/src/quota/antigravityQuotaParser.ts
 apps/server/src/quota/normalizeRateLimits.test.ts
 apps/server/src/quota/normalizeRateLimits.ts
 apps/server/src/quota/quotaReducer.test.ts
@@ -21577,6 +21578,7 @@ packages/contracts/src/providerSetup.ts
 packages/contracts/src/providerUsageLimits.ts
 packages/contracts/src/pullRequest.test.ts
 packages/contracts/src/pullRequest.ts
+packages/contracts/src/quota.test.ts
 packages/contracts/src/quota.ts
 packages/contracts/src/relay.test.ts
 packages/contracts/src/relay.ts

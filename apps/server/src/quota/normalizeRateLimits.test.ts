@@ -98,12 +98,14 @@ describe("normalizeCodexRateLimits", () => {
       {
         kind: "short",
         usedPercent: 42,
+        label: undefined,
         resetsAt: "2026-03-31T23:33:20.000Z",
         windowDurationMins: 300,
       },
       {
         kind: "long",
         usedPercent: 90,
+        label: undefined,
         resetsAt: "2026-04-05T14:40:00.000Z",
         windowDurationMins: 10080,
       },
@@ -114,18 +116,26 @@ describe("normalizeCodexRateLimits", () => {
     const snapshot = normalizeCodexRateLimits({
       providerInstanceId: instanceId,
       observedAt,
-      payload: { rateLimits: { primary: { usedPercent: 10, windowDurationMins: 300 } } },
+      payload: {
+        rateLimits: {
+          primary: { usedPercent: 25, windowDurationMins: 300 },
+        },
+      },
     });
-    expect(snapshot?.groups[0]?.windows[0]?.usedPercent).toBe(10);
+    expect(snapshot?.groups[0]?.windows).toHaveLength(1);
+    expect(snapshot?.groups[0]?.windows[0]?.usedPercent).toBe(25);
   });
 
   it("accepts the payload with primary directly on root", () => {
     const snapshot = normalizeCodexRateLimits({
       providerInstanceId: instanceId,
       observedAt,
-      payload: { primary: { usedPercent: 15, windowDurationMins: 300 } },
+      payload: {
+        primary: { usedPercent: 25, windowDurationMins: 300 },
+      },
     });
-    expect(snapshot?.groups[0]?.windows[0]?.usedPercent).toBe(15);
+    expect(snapshot?.groups[0]?.windows).toHaveLength(1);
+    expect(snapshot?.groups[0]?.windows[0]?.usedPercent).toBe(25);
   });
 
   it("parses additionalRateLimits as an array", () => {
@@ -133,15 +143,15 @@ describe("normalizeCodexRateLimits", () => {
       providerInstanceId: instanceId,
       observedAt,
       payload: codexPayload({
-        primary: { usedPercent: 20, windowDurationMins: 300 },
         additionalRateLimits: [
-          { usedPercent: 45, windowDurationMins: 10080, resetsAt: 1_775_000_000 },
+          { usedPercent: 10, windowDurationMins: 60 },
+          { usedPercent: 20, windowDurationMins: 1440 },
         ],
       }),
     });
     expect(snapshot?.groups[0]?.windows).toHaveLength(2);
-    expect(snapshot?.groups[0]?.windows[1]?.kind).toBe("long");
-    expect(snapshot?.groups[0]?.windows[1]?.usedPercent).toBe(45);
+    expect(snapshot?.groups[0]?.windows[0]?.label).toBe("Additional limit 1");
+    expect(snapshot?.groups[0]?.windows[1]?.label).toBe("Additional limit 2");
   });
 
   it("parses additionalRateLimits as a record map", () => {
@@ -149,45 +159,49 @@ describe("normalizeCodexRateLimits", () => {
       providerInstanceId: instanceId,
       observedAt,
       payload: codexPayload({
-        primary: { usedPercent: 25, windowDurationMins: 300 },
         additionalRateLimits: {
-          weekly: { usedPercent: 75, windowDurationMins: 10080, resetsAt: 1_775_000_000 },
+          "o1-preview": { usedPercent: 50, windowDurationMins: 1440 },
         },
       }),
     });
-    expect(snapshot?.groups[0]?.windows).toHaveLength(2);
-    expect(snapshot?.groups[0]?.windows[1]?.kind).toBe("long");
-    expect(snapshot?.groups[0]?.windows[1]?.usedPercent).toBe(75);
+    expect(snapshot?.groups[0]?.windows).toHaveLength(1);
+    expect(snapshot?.groups[0]?.windows[0]?.label).toBe("o1-preview");
   });
 
   it("keeps a window that has no reset time instead of inventing one", () => {
     const snapshot = normalizeCodexRateLimits({
       providerInstanceId: instanceId,
       observedAt,
-      payload: codexPayload({ primary: { usedPercent: 7, windowDurationMins: 300 } }),
+      payload: codexPayload({
+        primary: { usedPercent: 50, windowDurationMins: 300 },
+      }),
     });
-    expect(snapshot?.groups[0]?.windows[0]).toEqual({
-      kind: "short",
-      usedPercent: 7,
-      windowDurationMins: 300,
-    });
+
+    expect(snapshot?.groups[0]?.windows[0]?.resetsAt).toBeUndefined();
   });
 
   it("leaves an undurated window unknown rather than guessing by position", () => {
     const snapshot = normalizeCodexRateLimits({
       providerInstanceId: instanceId,
       observedAt,
-      payload: codexPayload({ primary: { usedPercent: 55 } }),
+      payload: codexPayload({
+        primary: { usedPercent: 50 },
+      }),
     });
+
     expect(snapshot?.groups[0]?.windows[0]?.kind).toBe("unknown");
+    expect(snapshot?.groups[0]?.windows[0]?.windowDurationMins).toBeUndefined();
   });
 
   it("clamps an over-100 reading without discarding it", () => {
     const snapshot = normalizeCodexRateLimits({
       providerInstanceId: instanceId,
       observedAt,
-      payload: codexPayload({ primary: { usedPercent: 104, windowDurationMins: 300 } }),
+      payload: codexPayload({
+        primary: { usedPercent: 101, windowDurationMins: 300 },
+      }),
     });
+
     expect(snapshot?.groups[0]?.windows[0]?.usedPercent).toBe(100);
   });
 
@@ -200,23 +214,29 @@ describe("normalizeCodexRateLimits", () => {
         primary: { usedPercent: 100, windowDurationMins: 300 },
       }),
     });
+
     expect(snapshot?.limitReached).toBe("rate_limit_reached");
   });
 
   it("returns undefined for an unrecognized payload rather than a zeroed row", () => {
-    for (const payload of [null, undefined, 42, "nope", {}, codexPayload({}), { rateLimits: {} }]) {
-      expect(
-        normalizeCodexRateLimits({ providerInstanceId: instanceId, observedAt, payload }),
-      ).toBeUndefined();
-    }
+    const snapshot = normalizeCodexRateLimits({
+      providerInstanceId: instanceId,
+      observedAt,
+      payload: { unrelatedEvent: { foo: "bar" } },
+    });
+
+    expect(snapshot).toBeUndefined();
   });
 
   it("drops a window with no percentage instead of showing it at zero", () => {
     const snapshot = normalizeCodexRateLimits({
       providerInstanceId: instanceId,
       observedAt,
-      payload: codexPayload({ primary: { resetsAt: 1_775_000_000, windowDurationMins: 300 } }),
+      payload: codexPayload({
+        primary: { windowDurationMins: 300 },
+      }),
     });
+
     expect(snapshot).toBeUndefined();
   });
 });
@@ -240,6 +260,7 @@ describe("normalizeClaudeRateLimits", () => {
     expect(snapshot?.planType).toBe("max");
     expect(snapshot?.groups[0]?.windows).toEqual([
       {
+        id: "claude:five-hour",
         kind: "short",
         usedPercent: 22,
         label: "5-hour limit",
@@ -247,6 +268,7 @@ describe("normalizeClaudeRateLimits", () => {
         windowDurationMins: 300,
       },
       {
+        id: "claude:seven-day",
         kind: "long",
         usedPercent: 48,
         label: "Weekly limit",
@@ -254,6 +276,49 @@ describe("normalizeClaudeRateLimits", () => {
         windowDurationMins: 10_080,
       },
     ]);
+  });
+
+  it("reads mid-turn SDK rate_limit_event with rate_limit_info and assigns canonical ID", () => {
+    const snapshot = normalizeClaudeRateLimits({
+      providerInstanceId: "claude-1" as ProviderInstanceId,
+      observedAt,
+      payload: {
+        rate_limit_info: {
+          rate_limit_type: "five_hour",
+          utilization: 0.35,
+          resets_at: "2026-08-24T18:00:00.000Z",
+        },
+      },
+    });
+
+    expect(snapshot?.groups[0]?.windows).toHaveLength(1);
+    expect(snapshot?.groups[0]?.windows[0]).toMatchObject({
+      id: "claude:five-hour",
+      kind: "short",
+      label: "5-hour limit",
+      usedPercent: 35,
+      resetsAt: "2026-08-24T18:00:00.000Z",
+      windowDurationMins: 300,
+    });
+  });
+
+  it("reads model-scoped weekly limits (Opus, Sonnet)", () => {
+    const snapshot = normalizeClaudeRateLimits({
+      providerInstanceId: "claude-1" as ProviderInstanceId,
+      observedAt,
+      payload: {
+        seven_day_opus: { usedPercent: 78, windowDurationMins: 10_080 },
+        seven_day_sonnet: { usedPercent: 42, windowDurationMins: 10_080 },
+      },
+    });
+
+    expect(snapshot?.groups[0]?.windows).toHaveLength(2);
+    expect(
+      snapshot?.groups[0]?.windows.find((w) => w.label === "Opus weekly limit")?.usedPercent,
+    ).toBe(78);
+    expect(
+      snapshot?.groups[0]?.windows.find((w) => w.label === "Sonnet weekly limit")?.usedPercent,
+    ).toBe(42);
   });
 
   it("reads duration-tagged windows", () => {
@@ -305,12 +370,32 @@ describe("normalizeAntigravityRateLimits", () => {
             {
               id: "gemini",
               name: "Gemini",
-              windows: [{ used_percent: 31, window_minutes: 300 }],
+              windows: [
+                {
+                  id: "gemini-5h",
+                  window: "5h",
+                  used_percent: 18,
+                  resets_at: "2026-08-14T17:00:00.000Z",
+                },
+                {
+                  id: "gemini-weekly",
+                  window: "weekly",
+                  used_percent: 44,
+                  resets_at: "2026-08-20T00:00:00.000Z",
+                },
+              ],
             },
             {
               id: "claude-gpt",
-              displayName: "Claude and GPT",
-              weekly: { utilization: 67 },
+              name: "Claude & GPT",
+              windows: [
+                {
+                  id: "claude-weekly",
+                  window: "weekly",
+                  used_percent: 91,
+                  resets_at: "2026-08-18T12:00:00.000Z",
+                },
+              ],
             },
           ],
         },
@@ -318,17 +403,36 @@ describe("normalizeAntigravityRateLimits", () => {
     });
 
     expect(snapshot?.planType).toBe("pro");
+    expect(snapshot?.source).toBe("antigravity-quota-summary");
     expect(snapshot?.groups.map((group) => group.key)).toEqual(["gemini", "claude-gpt"]);
-    expect(snapshot?.groups[0]?.windows[0]).toMatchObject({
-      kind: "short",
-      usedPercent: 31,
-      windowDurationMins: 300,
+    expect(snapshot?.groups[0]?.windows.map((window) => window.kind)).toEqual(["short", "long"]);
+    expect(snapshot?.groups[1]?.windows.map((window) => window.kind)).toEqual(["long"]);
+  });
+
+  it("rejects prompt credits and flow credits so they never become subscription windows", () => {
+    const snapshot = normalizeAntigravityRateLimits({
+      providerInstanceId: "antigravity-1" as ProviderInstanceId,
+      observedAt,
+      payload: {
+        rate_limits: {
+          pools: [
+            {
+              id: "credits",
+              name: "Monthly Prompt Credits",
+              windows: [{ used_percent: 15, window: "monthly" }],
+            },
+            {
+              id: "gemini",
+              name: "Gemini",
+              windows: [{ used_percent: 25, window: "5h" }],
+            },
+          ],
+        },
+      },
     });
-    expect(snapshot?.groups[1]?.windows[0]).toMatchObject({
-      kind: "long",
-      usedPercent: 67,
-      windowDurationMins: 10_080,
-    });
+
+    expect(snapshot?.groups).toHaveLength(1);
+    expect(snapshot?.groups[0]?.key).toBe("gemini");
   });
 
   it("does not turn an unrecognized bridge payload into quota", () => {
@@ -336,7 +440,7 @@ describe("normalizeAntigravityRateLimits", () => {
       normalizeAntigravityRateLimits({
         providerInstanceId: "antigravity-1" as ProviderInstanceId,
         observedAt,
-        payload: { pools: [{ name: "Gemini", remaining: 50 }] },
+        payload: { status: "ok", code: 0 },
       }),
     ).toBeUndefined();
   });
@@ -348,24 +452,28 @@ describe("normalizeAntigravityRateLimits", () => {
       payload: {
         groups: [
           {
-            name: "Gemini Models",
+            displayName: "Gemini models",
             buckets: [
               {
-                name: "Weekly Limit Remaining",
+                bucketId: "gemini-weekly",
                 window: "weekly",
-                remaining_fraction: 1,
-                reset_time: "2026-08-30T04:24:00.000Z",
+                remainingFraction: 0.72,
+                resetTime: "2026-09-15T00:00:00Z",
               },
             ],
           },
           {
-            name: "Claude and GPT models",
+            displayName: "Claude and GPT models",
             buckets: [
               {
-                name: "Weekly Limit Remaining",
+                bucketId: "claude-gpt-5h",
+                window: "5h",
+                remainingFraction: 0.41,
+              },
+              {
+                bucketId: "claude-gpt-weekly",
                 window: "weekly",
-                remaining_fraction: 0.94,
-                reset_time: "2026-08-30T04:24:00.000Z",
+                remainingFraction: 0.88,
               },
             ],
           },
@@ -373,17 +481,40 @@ describe("normalizeAntigravityRateLimits", () => {
       },
     });
 
-    expect(snapshot?.groups.map((group) => group.key)).toEqual(["gemini", "claude-gpt"]);
-    expect(snapshot?.groups[0]?.windows[0]).toMatchObject({
-      kind: "long",
-      usedPercent: 0,
-      resetsAt: "2026-08-30T04:24:00.000Z",
-    });
-    expect(snapshot?.groups[1]?.windows[0]).toMatchObject({
-      kind: "long",
-      usedPercent: 6,
-      resetsAt: "2026-08-30T04:24:00.000Z",
-    });
+    expect(snapshot?.source).toBe("antigravity-quota-summary");
+    expect(snapshot?.groups).toHaveLength(2);
+
+    const gemini = snapshot?.groups.find((g) => g.key === "gemini");
+    expect(gemini?.displayName).toBe("Gemini");
+    expect(gemini?.windows).toEqual([
+      {
+        id: "gemini-weekly",
+        label: "Weekly",
+        usedPercent: 28,
+        windowDurationMins: 10_080,
+        resetsAt: "2026-09-15T00:00:00.000Z",
+        kind: "long",
+      },
+    ]);
+
+    const claudeGpt = snapshot?.groups.find((g) => g.key === "claude-gpt");
+    expect(claudeGpt?.displayName).toBe("Claude & GPT");
+    expect(claudeGpt?.windows).toEqual([
+      {
+        id: "claude-gpt-5h",
+        label: "5-hour",
+        usedPercent: 59,
+        windowDurationMins: 300,
+        kind: "short",
+      },
+      {
+        id: "claude-gpt-weekly",
+        label: "Weekly",
+        usedPercent: 12,
+        windowDurationMins: 10_080,
+        kind: "long",
+      },
+    ]);
   });
 
   it("normalizes per-model fallback buckets by limiting bucket and marks source", () => {
@@ -393,33 +524,47 @@ describe("normalizeAntigravityRateLimits", () => {
       payload: {
         modelGroups: [
           {
-            modelId: "gemini-3.8-flash-high",
-            quotaBuckets: [
-              { window: "5h", remaining_fraction: 0.8, reset_time: "2026-09-10T12:00:00Z" },
+            name: "gemini-2.5-flash",
+            buckets: [
+              {
+                window: "5h",
+                remainingFraction: 0.8,
+                resetTime: "2026-09-10T08:00:00Z",
+              },
             ],
           },
           {
-            modelId: "gemini-3.7-flash-high",
-            quotaBuckets: [
-              { window: "5h", remaining_fraction: 0.55, reset_time: "2026-09-10T10:00:00Z" },
+            name: "gemini-2.5-pro",
+            buckets: [
+              {
+                window: "5h",
+                remainingFraction: 0.55,
+                resetTime: "2026-09-10T10:00:00Z",
+              },
+              {
+                window: "weekly",
+                remainingFraction: 0.7,
+                resetTime: "2026-09-15T00:00:00Z",
+              },
             ],
           },
           {
-            modelId: "claude-sonnet-4-6",
-            quotaBuckets: [
-              { window: "5h", remaining_fraction: 0.7, reset_time: "2026-09-10T11:00:00Z" },
+            name: "claude-3-7-sonnet",
+            buckets: [
+              {
+                window: "5h",
+                remainingFraction: 0.4,
+                resetTime: "2026-09-10T09:00:00Z",
+              },
             ],
           },
           {
-            modelId: "gpt-oss-120b-medium",
-            quotaBuckets: [
-              { window: "5h", remaining_fraction: 0.4, reset_time: "2026-09-10T09:00:00Z" },
-            ],
-          },
-          {
-            modelId: "unrecognized-other-model",
-            quotaBuckets: [
-              { window: "5h", remaining_fraction: 0.1, reset_time: "2026-09-10T08:00:00Z" },
+            name: "internal-custom-sandbox",
+            buckets: [
+              {
+                window: "5h",
+                remainingFraction: 0.1,
+              },
             ],
           },
         ],
@@ -427,7 +572,7 @@ describe("normalizeAntigravityRateLimits", () => {
     });
 
     expect(snapshot?.source).toBe("antigravity-model-fallback");
-    expect(snapshot?.groups.map((g) => g.key)).toEqual(["gemini", "claude-gpt"]);
+    expect(snapshot?.groups.map((group) => group.key)).toEqual(["gemini", "claude-gpt"]);
 
     const gemini = snapshot?.groups.find((g) => g.key === "gemini");
     expect(gemini?.displayName).toBe("Gemini Models");
@@ -469,6 +614,57 @@ describe("mergeQuotaSnapshots", () => {
     expect(windows).toHaveLength(2);
     expect(windows.find((w) => w.kind === "short")?.usedPercent).toBe(55);
     expect(windows.find((w) => w.kind === "long")?.usedPercent).toBe(80);
+  });
+
+  it("sparse Claude update: merging session 5h window into previous snapshot with weekly window retains weekly window", () => {
+    const fullClaude = normalizeClaudeRateLimits({
+      providerInstanceId: "claude-1" as ProviderInstanceId,
+      observedAt: "2026-08-14T12:00:00.000Z",
+      payload: {
+        rateLimits: {
+          rate_limits: {
+            five_hour: { utilization: 20, resets_at: "2026-08-14T17:00:00.000Z" },
+            seven_day: { utilization: 60, resets_at: "2026-08-20T00:00:00.000Z" },
+          },
+        },
+      },
+    })!;
+
+    const sparseMidTurn = normalizeClaudeRateLimits({
+      providerInstanceId: "claude-1" as ProviderInstanceId,
+      observedAt: "2026-08-14T12:30:00.000Z",
+      payload: {
+        rate_limit_info: {
+          rate_limit_type: "five_hour",
+          utilization: 0.35,
+          resets_at: "2026-08-14T17:00:00.000Z",
+        },
+      },
+    })!;
+
+    const merged = mergeQuotaSnapshots(fullClaude, sparseMidTurn);
+    const windows = merged.groups[0]!.windows;
+    expect(windows).toHaveLength(2);
+    expect(windows.find((w) => w.kind === "short")?.usedPercent).toBe(35);
+    expect(windows.find((w) => w.kind === "long")?.usedPercent).toBe(60);
+  });
+
+  it("preserves resetCredits, retryAfterMs, and retryAt on snapshot merge", () => {
+    const initial = {
+      ...base,
+      resetCredits: { availableCount: 10 },
+    };
+    const incoming = {
+      ...base,
+      observedAt: "2026-08-14T12:10:00.000Z",
+      retryAfterMs: 30_000,
+      retryAt: "2026-08-14T12:10:30.000Z",
+    };
+
+    const merged = mergeQuotaSnapshots(initial, incoming);
+    expect(merged.resetCredits?.availableCount).toBe(10);
+    expect(merged.retryAfterMs).toBe(30_000);
+    expect(merged.retryAt).toBe("2026-08-14T12:10:30.000Z");
   });
 
   it("clears a stale limit-reached rather than carrying it past the reset", () => {

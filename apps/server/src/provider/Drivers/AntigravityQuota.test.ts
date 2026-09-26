@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   directQuotaGroups,
+  discoverLocalAntigravityEndpoint,
   parseAntigravityUsage,
   projectIdFromLoadCodeAssist,
 } from "./AntigravityQuota.ts";
@@ -323,5 +324,36 @@ describe("parseAntigravityUsage", () => {
     );
 
     expect(result?.groups[0]?.windows.map((window) => window.usedPercent)).toEqual([9, 7]);
+  });
+});
+
+describe("discoverLocalAntigravityEndpoint", () => {
+  it("discovers port and csrf token from environment variables", () => {
+    const endpoint = discoverLocalAntigravityEndpoint({
+      ANTIGRAVITY_PORT: "43123",
+      ANTIGRAVITY_CSRF_TOKEN: "secret-token-123",
+    });
+
+    expect(endpoint).toEqual({
+      port: 43123,
+      csrfToken: "secret-token-123",
+    });
+  });
+
+  it("accepts AGY_PORT and GEMINI_PORT aliases", () => {
+    expect(discoverLocalAntigravityEndpoint({ AGY_PORT: "50000" })).toEqual({
+      port: 50000,
+      csrfToken: undefined,
+    });
+    expect(discoverLocalAntigravityEndpoint({ GEMINI_PORT: "51000" })).toEqual({
+      port: 51000,
+      csrfToken: undefined,
+    });
+  });
+
+  it("ignores invalid port numbers", () => {
+    expect(discoverLocalAntigravityEndpoint({ ANTIGRAVITY_PORT: "0" })).toBeUndefined();
+    expect(discoverLocalAntigravityEndpoint({ ANTIGRAVITY_PORT: "70000" })).toBeUndefined();
+    expect(discoverLocalAntigravityEndpoint({ ANTIGRAVITY_PORT: "not-a-port" })).toBeUndefined();
   });
 });

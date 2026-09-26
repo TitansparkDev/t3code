@@ -1,32 +1,27 @@
-// @effect-diagnostics globalDate:off - pure normalizer; converts provider epochs, reads no clock.
+// @effect-diagnostics globalDate:off - pure normalizers converting wire payloads to ISO strings.
 /**
- * Normalizes each provider's `account.rate-limits.updated` payload into the
- * shared `AccountQuotaSnapshot` shape.
+ * Pure rate-limit normalizers for supported providers.
  *
- * Both the Codex and Claude adapters already emit that runtime event with the
- * provider's raw payload attached (`CodexAdapter.ts`, `ClaudeAdapter.ts`);
- * before this module nothing consumed it. These functions are the whole
- * provider-specific surface — everything downstream reads the normalized shape
- * and does not know which agent produced it.
- *
- * Pure and total by construction: every function takes `unknown` and returns a
- * snapshot or `undefined`. A payload that changed shape yields `undefined`,
- * which the UI renders as "not exposed". It must never yield a plausible-looking
- * number, because a wrong quota figure is worse than an absent one — it gets
- * trusted.
- *
- * Fork-local (OmniCode). See `OMNI.md`.
+ * Each normalizer accepts an unknown payload and returns an
+ * `AccountQuotaSnapshot` or `undefined` if the payload carries no usable
+ * rate-limit data.
  *
  * @module quota/normalizeRateLimits
  */
-import type {
-  AccountQuotaSnapshot,
-  QuotaGroup,
-  QuotaSource,
-  QuotaWindow,
+import {
+  type AccountQuotaSnapshot,
+  type QuotaGroup,
+  type QuotaSource,
+  type QuotaWindow,
+  type QuotaWindowKind,
+  quotaWindowKindFromDuration,
 } from "@t3tools/contracts/quota";
-import { quotaWindowKindFromDuration } from "@t3tools/contracts/quota";
 import type { ProviderInstanceId } from "@t3tools/contracts";
+
+import {
+  antigravityPayloadToSnapshot,
+  parseAntigravityQuotaPayload,
+} from "./antigravityQuotaParser.ts";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -53,11 +48,12 @@ function readNonEmptyString(value: unknown): string | undefined {
 /**
  * Clamp to 0–100. Providers have been observed reporting slightly over 100 on
  * a freshly exhausted window; that is a real "you are out", not a reason to
- * discard the reading.
+ * discard the reading. Out-of-bounds or non-finite values are rejected.
  */
 function readUsedPercent(value: unknown): number | undefined {
   const raw = readFiniteNumber(value);
   if (raw === undefined) return undefined;
+  if (raw < 0 || raw > 105) return undefined;
   return Math.min(100, Math.max(0, raw));
 }
 
@@ -128,6 +124,7 @@ function normalizeWindow(
   value: unknown,
   fallbackLabel?: string,
   fallbackDurationMins?: number,
+  fallbackId?: string,
 ): QuotaWindow | undefined {
   if (!isRecord(value) || value["disabled"] === true) return undefined;
   const usedPercent = readUsedPercent(
@@ -142,6 +139,8 @@ function normalizeWindow(
     value["resetsAt"] ?? value["resets_at"] ?? value["resetTime"] ?? value["reset_time"];
   const resetsAt = isoFromProviderReset(rawReset);
   const label = readNonEmptyString(value["label"] ?? value["name"]) ?? fallbackLabel;
+  const rawId = readNonEmptyString(value["id"] ?? value["bucketId"] ?? value["bucket_id"]);
+  const id = rawId ?? fallbackId;
 
   return {
     kind: quotaWindowKindFromDuration(windowDurationMins),
@@ -149,78 +148,10 @@ function normalizeWindow(
     ...(label ? { label } : {}),
     ...(resetsAt ? { resetsAt } : {}),
     ...(windowDurationMins !== undefined && windowDurationMins > 0 ? { windowDurationMins } : {}),
+    ...(id ? { id } : {}),
   };
 }
 
-/**
- * Antigravity's ACP bridge publishes quota as `remaining_fraction`, while
- * older bridge builds have used explicit remaining-percent fields. Keep that
- * conversion here instead of making every consumer know which side of the
- * percentage the provider reports.
- */
-function normalizeAntigravityWindow(
-  value: unknown,
-  fallbackLabel?: string,
-  fallbackDurationMins?: number,
-): QuotaWindow | undefined {
-  if (!isRecord(value)) return undefined;
-
-  const explicitUsed = readUsedPercent(
-    value["usedPercent"] ?? value["used_percent"] ?? value["utilization"],
-  );
-  const remainingPercent = readFiniteNumber(
-    value["remainingPercent"] ?? value["remaining_percent"],
-  );
-  const remainingFraction = readFiniteNumber(
-    value["remaining_fraction"] ?? value["remainingFraction"],
-  );
-  const usedPercent =
-    explicitUsed ??
-    (remainingPercent === undefined
-      ? remainingFraction === undefined
-        ? undefined
-        : readUsedPercent(
-            Math.round((100 - Math.min(1, Math.max(0, remainingFraction)) * 100) * 100) / 100,
-          )
-      : readUsedPercent(100 - Math.min(100, Math.max(0, remainingPercent))));
-  if (usedPercent === undefined) return undefined;
-
-  const windowHint = readNonEmptyString(value["window"]);
-  const hintedDurationMins = windowHint
-    ? /(?:five.?hour|5.?hour|5h|session)/i.test(windowHint)
-      ? 300
-      : /(?:weekly|week|seven.?day|7d)/i.test(windowHint)
-        ? 10_080
-        : undefined
-    : undefined;
-  const windowDurationMins =
-    readFiniteNumber(value["windowDurationMins"] ?? value["window_minutes"]) ??
-    hintedDurationMins ??
-    fallbackDurationMins;
-  const rawReset =
-    value["resetsAt"] ?? value["resets_at"] ?? value["resetTime"] ?? value["reset_time"];
-  const resetsAt = isoFromProviderReset(rawReset);
-  const rawLabel = readNonEmptyString(value["label"]) ?? readNonEmptyString(value["name"]);
-  const label = (rawLabel ?? fallbackLabel)?.replace(/\s+remaining$/iu, "");
-
-  return {
-    kind: quotaWindowKindFromDuration(windowDurationMins),
-    usedPercent,
-    ...(label ? { label } : {}),
-    ...(resetsAt ? { resetsAt } : {}),
-    ...(windowDurationMins !== undefined && windowDurationMins > 0 ? { windowDurationMins } : {}),
-  };
-}
-
-/**
- * Codex — `account/rateLimits/updated`, schema
- * `V2AccountRateLimitsUpdatedNotification` in `packages/effect-codex-app-server`.
- *
- * The payload is explicitly documented as a **sparse rolling update**: fields
- * absent from one message do not clear a previously observed value. Merging is
- * the caller's job (see `mergeQuotaSnapshots`); this function reports only what
- * this message actually carried.
- */
 /**
  * Upstream normalizes `account.rate-limits.updated` inside each adapter now,
  * so the payload arrives as `{ limits: { windows } }` in the shared
@@ -241,27 +172,41 @@ export function normalizeUpstreamUsageLimits(input: {
   const windows: Array<QuotaWindow> = [];
   for (const entry of rawWindows) {
     if (!isRecord(entry)) continue;
-    const usedPercent = entry["usedPercent"];
-    if (typeof usedPercent !== "number") continue;
+    const usedPercent = readUsedPercent(entry["usedPercent"]);
+    if (usedPercent === undefined) continue;
     const kind = entry["kind"];
     const label = entry["label"];
-    const resetsAt = entry["resetsAt"];
-    const windowDurationMins = entry["windowDurationMins"];
-    // Upstream names windows by period; this panel groups them by how long
-    // they last, so a session window is short and anything weekly or longer
-    // is long.
+    const resetsAt = isoFromProviderReset(entry["resetsAt"]);
+    const windowDurationMins = readFiniteNumber(entry["windowDurationMins"]);
+    const mappedKind: QuotaWindowKind =
+      kind === "session"
+        ? "short"
+        : kind === "weekly" || kind === "monthly"
+          ? "long"
+          : quotaWindowKindFromDuration(windowDurationMins);
+    const windowDuration =
+      windowDurationMins !== undefined && windowDurationMins > 0
+        ? windowDurationMins
+        : mappedKind === "short"
+          ? 300
+          : mappedKind === "long"
+            ? 10_080
+            : undefined;
+
+    const rawId = readNonEmptyString(entry["id"]);
+
     windows.push({
-      kind:
-        kind === "session" ? "short" : kind === "weekly" || kind === "monthly" ? "long" : "unknown",
-      ...(typeof label === "string" && label.trim() ? { label: label.trim() } : {}),
+      kind: mappedKind,
       usedPercent,
-      ...(typeof resetsAt === "string" && resetsAt.trim() ? { resetsAt } : {}),
-      ...(typeof windowDurationMins === "number" && windowDurationMins > 0
-        ? { windowDurationMins }
-        : {}),
-    } satisfies QuotaWindow);
+      ...(label ? { label: String(label) } : {}),
+      ...(resetsAt ? { resetsAt: String(resetsAt) } : {}),
+      ...(windowDuration ? { windowDurationMins: windowDuration } : {}),
+      ...(rawId ? { id: rawId } : {}),
+    });
   }
+
   if (windows.length === 0) return undefined;
+
   return {
     providerInstanceId: input.providerInstanceId,
     groups: [{ key: "default", displayName: "Subscription", windows }],
@@ -342,14 +287,6 @@ export function normalizeCodexRateLimits(input: {
 /**
  * Claude — the Agent SDK's `rate_limit_event` message, forwarded whole by
  * `ClaudeAdapter.ts`.
- *
- * Unlike Codex there is no generated schema for this in the repo, and the SDK's
- * own types have carried wire-only fields before. So this reads defensively
- * across the shapes the SDK has been observed to use rather than pinning one:
- * a nested `rateLimits`/`rate_limits` object, or the windows inline. Anything
- * unrecognized returns `undefined` and the row reads "not exposed" — which is
- * the correct answer until someone confirms the real shape against a live
- * account.
  */
 export function normalizeClaudeRateLimits(input: {
   readonly providerInstanceId: ProviderInstanceId;
@@ -363,24 +300,70 @@ export function normalizeClaudeRateLimits(input: {
 
   const windows: Array<QuotaWindow> = [];
 
+  // Check for direct rate_limit_info from SDK's rate_limit_event
+  const directInfo =
+    readRecord(snapshot, "rate_limit_info") ?? readRecord(snapshot, "rateLimitInfo");
+  if (directInfo) {
+    const type = readNonEmptyString(directInfo["rateLimitType"] ?? directInfo["rate_limit_type"]);
+    const rawUtil = readFiniteNumber(directInfo["utilization"]);
+    if (type && rawUtil !== undefined && rawUtil >= 0 && rawUtil <= 1) {
+      const usedPercent = Math.round(rawUtil * 100 * 100) / 100;
+      const durationMins = type === "five_hour" || type === "primary" ? 300 : 10_080;
+      const canonicalId =
+        type === "five_hour" || type === "primary"
+          ? "claude:five-hour"
+          : type === "seven_day" || type === "secondary" || type === "weekly"
+            ? "claude:seven-day"
+            : `claude:${type.replace(/[^a-z0-9]+/g, "-")}`;
+      const label = type === "five_hour" || type === "primary" ? "5-hour limit" : "Weekly limit";
+      const resetsAt = isoFromProviderReset(directInfo["resetsAt"] ?? directInfo["resets_at"]);
+      windows.push({
+        id: canonicalId,
+        kind: quotaWindowKindFromDuration(durationMins),
+        label,
+        usedPercent,
+        windowDurationMins: durationMins,
+        ...(resetsAt ? { resetsAt } : {}),
+      });
+    }
+  }
+
   // Named windows, when the SDK labels them.
-  for (const [key, label, durationMins] of [
-    ["primary", "Session limit", undefined],
-    ["secondary", "Weekly limit", undefined],
-    ["five_hour", "5-hour limit", 300],
-    ["fiveHour", "5-hour limit", 300],
-    ["weekly", "Weekly limit", 10_080],
-    ["seven_day", "Weekly limit", 10_080],
-    ["sevenDay", "Weekly limit", 10_080],
-    ["seven_day_oauth_apps", "OAuth apps weekly limit", 10_080],
-    ["seven_day_opus", "Opus weekly limit", 10_080],
-    ["seven_day_sonnet", "Sonnet weekly limit", 10_080],
+  for (const [key, label, durationMins, fallbackId] of [
+    ["primary", "Session limit", 300, "claude:five-hour"],
+    ["secondary", "Weekly limit", 10_080, "claude:seven-day"],
+    ["five_hour", "5-hour limit", 300, "claude:five-hour"],
+    ["fiveHour", "5-hour limit", 300, "claude:five-hour"],
+    ["weekly", "Weekly limit", 10_080, "claude:seven-day"],
+    ["seven_day", "Weekly limit", 10_080, "claude:seven-day"],
+    ["sevenDay", "Weekly limit", 10_080, "claude:seven-day"],
+    ["seven_day_oauth_apps", "OAuth apps weekly limit", 10_080, "claude:seven-day-oauth-apps"],
+    ["seven_day_opus", "Opus weekly limit", 10_080, "claude:seven-day-opus"],
+    ["seven_day_sonnet", "Sonnet weekly limit", 10_080, "claude:seven-day-sonnet"],
   ] as const) {
-    const window = normalizeWindow(snapshot[key], label, durationMins);
+    const window = normalizeWindow(snapshot[key], label, durationMins, fallbackId);
     if (window) windows.push(window);
   }
 
-  // Or a plain list of windows.
+  // Model-scoped windows
+  const modelScoped = snapshot["model_scoped"] ?? snapshot["modelScoped"];
+  if (Array.isArray(modelScoped)) {
+    for (const item of modelScoped) {
+      if (!isRecord(item)) continue;
+      const modelSlug = readNonEmptyString(item["model"] ?? item["model_id"] ?? item["modelId"]);
+      const fallbackId = modelSlug
+        ? `claude:seven-day-${modelSlug.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`
+        : undefined;
+      const displayName =
+        readNonEmptyString(item["display_name"] ?? item["displayName"] ?? item["name"]) ??
+        modelSlug;
+      const label = displayName ? `${displayName} weekly limit` : "Model weekly limit";
+      const window = normalizeWindow(item, label, 10_080, fallbackId);
+      if (window) windows.push(window);
+    }
+  }
+
+  // Plain list of windows
   const listed = snapshot["windows"];
   if (Array.isArray(listed)) {
     for (const entry of listed) {
@@ -389,17 +372,34 @@ export function normalizeClaudeRateLimits(input: {
     }
   }
 
+  // Deduplicate windows by id or (duration + label)
+  const uniqueWindows = new Map<string, QuotaWindow>();
+  for (const window of windows) {
+    const key =
+      window.id ?? `${window.kind}:${window.label ?? ""}:${window.windowDurationMins ?? ""}`;
+    const existing = uniqueWindows.get(key);
+    if (
+      !existing ||
+      window.usedPercent > existing.usedPercent ||
+      (!existing.resetsAt && window.resetsAt)
+    ) {
+      uniqueWindows.set(key, window);
+    }
+  }
+  const deduplicatedWindows = [...uniqueWindows.values()];
+
   const limitReached =
     readNonEmptyString(snapshot["rateLimitReachedType"]) ??
-    readNonEmptyString(snapshot["status"]) ??
+    readNonEmptyString(snapshot["status"] === "rejected" ? "rate_limit_reached" : undefined) ??
     (snapshot["limitReached"] === true ? "rate_limit_reached" : undefined);
 
-  if (windows.length === 0 && !limitReached) return undefined;
-  const planType = readNonEmptyString(outer["subscription_type"]);
+  if (deduplicatedWindows.length === 0 && !limitReached) return undefined;
+
+  const planType = readNonEmptyString(outer["subscription_type"] ?? snapshot["subscription_type"]);
 
   return {
     providerInstanceId: input.providerInstanceId,
-    groups: [{ key: "default", displayName: "Subscription", windows }],
+    groups: [{ key: "default", displayName: "Subscription", windows: deduplicatedWindows }],
     source: "provider-event" satisfies QuotaSource,
     observedAt: input.observedAt,
     ...(planType ? { planType } : {}),
@@ -409,12 +409,6 @@ export function normalizeClaudeRateLimits(input: {
 
 /**
  * Antigravity — bridge-provided rate-limit snapshots.
- *
- * Bridges in the wild use both `groups` and `pools`, and name windows either
- * as a list or as keyed objects. Read those equivalent shapes defensively,
- * retaining a pool only when at least one window contains an explicit usage
- * percentage. This keeps an ACP bridge's account metadata from becoming a
- * guessed quota number.
  */
 export function normalizeAntigravityRateLimits(input: {
   readonly providerInstanceId: ProviderInstanceId;
@@ -423,175 +417,74 @@ export function normalizeAntigravityRateLimits(input: {
 }): AccountQuotaSnapshot | undefined {
   if (!isRecord(input.payload)) return undefined;
 
-  const outer =
-    readRecord(input.payload, "rateLimits") ??
-    readRecord(input.payload, "rate_limits") ??
-    input.payload;
-  const snapshot = readRecord(outer, "rateLimits") ?? readRecord(outer, "rate_limits") ?? outer;
-  const explicitModelGroups = snapshot["modelGroups"] ?? input.payload["modelGroups"];
-  const isModelFallback =
-    (!snapshot["groups"] &&
-      !snapshot["pools"] &&
-      !snapshot["quotaGroups"] &&
-      !snapshot["quota_groups"] &&
-      Boolean(explicitModelGroups)) ||
-    snapshot["source"] === "antigravity-model-fallback" ||
-    outer["source"] === "antigravity-model-fallback" ||
-    input.payload["source"] === "antigravity-model-fallback";
+  const parsed = parseAntigravityQuotaPayload(input.payload);
+  if (!parsed) return undefined;
 
-  const groupsValue =
-    snapshot["groups"] ??
-    snapshot["pools"] ??
-    snapshot["quotaGroups"] ??
-    snapshot["quota_groups"] ??
-    explicitModelGroups;
-
-  const candidates: Array<{ readonly key: string; readonly value: unknown }> = Array.isArray(
-    groupsValue,
-  )
-    ? groupsValue.map((value, index) => ({ key: `pool-${index + 1}`, value }))
-    : isRecord(groupsValue)
-      ? Object.entries(groupsValue).map(([key, value]) => ({ key, value }))
-      : [{ key: "default", value: snapshot }];
-
-  const groupsByKey = new Map<string, { displayName: string; windows: Map<number, QuotaWindow> }>();
-
-  for (const candidate of candidates) {
-    if (!isRecord(candidate.value)) continue;
-    const group =
-      readRecord(candidate.value, "rateLimits") ??
-      readRecord(candidate.value, "rate_limits") ??
-      candidate.value;
-    const windows: Array<QuotaWindow> = [];
-    const listedWindows =
-      group["windows"] ?? group["limits"] ?? group["buckets"] ?? group["quotaBuckets"];
-    if (Array.isArray(listedWindows)) {
-      for (const value of listedWindows) {
-        const window = normalizeAntigravityWindow(value);
-        if (window) windows.push(window);
-      }
-    } else {
-      for (const [key, value] of Object.entries(group)) {
-        if (["key", "id", "name", "label", "displayName", "description"].includes(key)) {
-          continue;
-        }
-        const fallbackDurationMins = /(?:five.?hour|5.?hour|primary|short)/i.test(key)
-          ? 300
-          : /(?:weekly|seven.?day|secondary|long)/i.test(key)
-            ? 10_080
-            : undefined;
-        const window = normalizeAntigravityWindow(value, key, fallbackDurationMins);
-        if (window) windows.push(window);
-      }
-    }
-
-    if (windows.length === 0) continue;
-    const rawDisplayName =
-      readNonEmptyString(group["displayName"]) ??
-      readNonEmptyString(group["name"]) ??
-      readNonEmptyString(group["modelId"]) ??
-      readNonEmptyString(group["label"]) ??
-      candidate.key;
-    const rawKey =
-      readNonEmptyString(group["key"]) ?? readNonEmptyString(group["id"]) ?? candidate.key;
-    const identity = `${rawKey} ${rawDisplayName}`;
-    const isGemini = /gemini|google/i.test(identity);
-    const isClaudeGpt = /claude|gpt|oss/i.test(identity);
-
-    if (isModelFallback && !isGemini && !isClaudeGpt) {
-      continue;
-    }
-
-    const key = isGemini ? "gemini" : isClaudeGpt ? "claude-gpt" : rawKey;
-    const defaultDisplayName =
-      key === "gemini"
-        ? "Gemini Models"
-        : key === "claude-gpt"
-          ? "Claude & GPT models"
-          : rawDisplayName;
-    const displayName = isModelFallback ? defaultDisplayName : rawDisplayName;
-
-    const existingGroup = groupsByKey.get(key);
-    const windowMap = existingGroup?.windows ?? new Map<number, QuotaWindow>();
-
-    for (const window of windows) {
-      const duration =
-        window.windowDurationMins ??
-        (window.kind === "short" ? 300 : window.kind === "long" ? 10_080 : 0);
-      const existing = windowMap.get(duration);
-      if (
-        !existing ||
-        window.usedPercent > existing.usedPercent ||
-        (window.usedPercent === existing.usedPercent && !existing.resetsAt && window.resetsAt)
-      ) {
-        windowMap.set(duration, window);
-      }
-    }
-
-    groupsByKey.set(key, {
-      displayName: existingGroup?.displayName ?? displayName,
-      windows: windowMap,
-    });
-  }
-
-  const groups: Array<QuotaGroup> = [...groupsByKey.entries()].map(([key, data]) => ({
-    key,
-    displayName: data.displayName,
-    windows: [...data.windows.values()],
-  }));
-
-  const limitReached =
-    readNonEmptyString(snapshot["limitReached"]) ??
-    readNonEmptyString(snapshot["rateLimitReachedType"]) ??
-    (snapshot["limitReached"] === true ? "rate_limit_reached" : undefined);
-  if (groups.length === 0 && !limitReached) return undefined;
-
-  const planType =
-    readNonEmptyString(snapshot["planType"]) ??
-    readNonEmptyString(snapshot["plan_type"]) ??
-    readNonEmptyString(snapshot["subscriptionType"]) ??
-    readNonEmptyString(snapshot["subscription_type"]);
-  const accountLabel =
-    readNonEmptyString(input.payload["accountLabel"]) ??
-    readNonEmptyString(snapshot["accountLabel"]) ??
-    readNonEmptyString(snapshot["account"]) ??
-    readNonEmptyString(snapshot["email"]);
-
-  const explicitSource =
-    readNonEmptyString(snapshot["source"]) ??
-    readNonEmptyString(outer["source"]) ??
-    readNonEmptyString(input.payload["source"]);
-  const source: QuotaSource =
-    explicitSource === "antigravity-model-fallback" || isModelFallback
-      ? "antigravity-model-fallback"
-      : explicitSource === "antigravity-quota-summary"
-        ? "antigravity-quota-summary"
-        : "provider-event";
-
-  return {
+  return antigravityPayloadToSnapshot(parsed, {
     providerInstanceId: input.providerInstanceId,
-    groups,
-    source,
     observedAt: input.observedAt,
-    ...(planType ? { planType } : {}),
-    ...(limitReached ? { limitReached } : {}),
-    ...(accountLabel ? { accountLabel } : {}),
-  };
+  });
+}
+
+function canonicalPeriodFromId(id: string): string {
+  const trimmed = id.trim().toLowerCase().replace(/_/g, "-");
+  if (
+    trimmed === "five-hour" ||
+    trimmed === "primary" ||
+    trimmed === "session" ||
+    trimmed === "5h" ||
+    trimmed === "5-hour"
+  ) {
+    return "five-hour";
+  }
+  if (
+    trimmed === "seven-day" ||
+    trimmed === "secondary" ||
+    trimmed === "weekly" ||
+    trimmed === "7d" ||
+    trimmed === "7-day"
+  ) {
+    return "seven-day";
+  }
+  if (trimmed === "monthly" || trimmed === "month" || trimmed === "30d") {
+    return "monthly";
+  }
+  return trimmed;
+}
+
+/**
+ * Derives a stable semantic key for window deduplication and sparse merging.
+ */
+export function deriveQuotaWindowKey(window: QuotaWindow, groupKey: string): string {
+  const pool = groupKey.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+  if (window.id) {
+    const canonical = canonicalPeriodFromId(window.id);
+    if (canonical.includes(":")) return canonical;
+    return `${pool}:${canonical}`;
+  }
+  const dur = window.windowDurationMins;
+  const period =
+    dur && dur <= 300
+      ? "five-hour"
+      : dur && dur <= 10_080
+        ? "seven-day"
+        : dur && dur <= 43_200
+          ? "monthly"
+          : window.kind === "short"
+            ? "five-hour"
+            : window.kind === "long"
+              ? "seven-day"
+              : (window.label?.toLowerCase().replace(/[^a-z0-9]+/g, "-") ?? "unknown");
+  return `${pool}:${period}`;
 }
 
 /**
  * Merge a newer sparse update onto the last known snapshot.
  *
- * Required because Codex documents its updates as sparse: a rolling message
- * carrying only `primary` must not erase the `secondary` window a person is
- * relying on. Windows are merged by kind, with the newer reading winning; a
- * group present only in the older snapshot is preserved.
+ * Windows are merged by stable id or semantic pool/window key, with the newer reading winning.
+ * Groups and windows present only in the older snapshot are preserved.
  *
- * An older probe must never overwrite a newer event or a later successful probe.
- *
- * `limitReached` is the exception — it is *not* carried forward from an older snapshot,
- * because a stale "you are rate limited" that outlives the reset is precisely the
- * state that makes an account look permanently broken.
+ * `limitReached` is not carried forward from an older snapshot.
  */
 export function mergeQuotaSnapshots(
   previous: AccountQuotaSnapshot | undefined,
@@ -615,58 +508,60 @@ export function mergeQuotaSnapshots(
       continue;
     }
 
-    const windowsByKind = new Map<string, QuotaWindow>();
+    const windowsByKey = new Map<string, QuotaWindow>();
+
     if (incomingIsOlder) {
       for (const window of incoming.windows) {
-        windowsByKind.set(`${window.kind}:${window.label ?? ""}`, window);
+        windowsByKey.set(deriveQuotaWindowKey(window, incoming.key), window);
       }
       for (const window of existing.windows) {
-        windowsByKind.set(`${window.kind}:${window.label ?? ""}`, window);
+        windowsByKey.set(deriveQuotaWindowKey(window, incoming.key), window);
       }
     } else {
       for (const window of existing.windows) {
-        windowsByKind.set(`${window.kind}:${window.label ?? ""}`, window);
+        windowsByKey.set(deriveQuotaWindowKey(window, incoming.key), window);
       }
       for (const window of incoming.windows) {
-        windowsByKind.set(`${window.kind}:${window.label ?? ""}`, window);
+        windowsByKey.set(deriveQuotaWindowKey(window, incoming.key), window);
       }
     }
 
     groupsByKey.set(incoming.key, {
       key: incoming.key,
-      displayName: incomingIsOlder ? existing.displayName : incoming.displayName,
-      windows: [...windowsByKind.values()],
+      displayName: incoming.displayName || existing.displayName,
+      windows: [...windowsByKey.values()],
     });
   }
 
-  const authoritativeSnapshot = incomingIsOlder ? previous : next;
-  const secondarySnapshot = incomingIsOlder ? next : previous;
+  const lastAttemptAt =
+    next.lastAttemptAt ??
+    previous.lastAttemptAt ??
+    (incomingIsOlder ? previous.observedAt : next.observedAt);
+  const lastSuccessfulAt =
+    next.lastSuccessfulAt ?? (next.groups.length > 0 ? next.observedAt : previous.lastSuccessfulAt);
 
   return {
     providerInstanceId: next.providerInstanceId,
     groups: [...groupsByKey.values()],
-    source: authoritativeSnapshot.source,
-    observedAt: authoritativeSnapshot.observedAt,
-    ...(authoritativeSnapshot.lastAttemptAt || secondarySnapshot.lastAttemptAt
-      ? { lastAttemptAt: authoritativeSnapshot.lastAttemptAt ?? secondarySnapshot.lastAttemptAt }
+    source: incomingIsOlder ? previous.source : next.source,
+    observedAt: incomingIsOlder ? previous.observedAt : next.observedAt,
+    ...(next.planType || previous.planType
+      ? { planType: (incomingIsOlder ? previous.planType : next.planType) ?? previous.planType }
       : {}),
-    ...(authoritativeSnapshot.lastSuccessfulAt || secondarySnapshot.lastSuccessfulAt
+    ...(next.accountLabel || previous.accountLabel
       ? {
-          lastSuccessfulAt:
-            authoritativeSnapshot.lastSuccessfulAt ?? secondarySnapshot.lastSuccessfulAt,
+          accountLabel:
+            (incomingIsOlder ? previous.accountLabel : next.accountLabel) ?? previous.accountLabel,
         }
       : {}),
-    ...(authoritativeSnapshot.errorCode ? { errorCode: authoritativeSnapshot.errorCode } : {}),
-    ...((authoritativeSnapshot.planType ?? secondarySnapshot.planType)
-      ? { planType: authoritativeSnapshot.planType ?? secondarySnapshot.planType! }
-      : {}),
-    ...(authoritativeSnapshot.limitReached
-      ? { limitReached: authoritativeSnapshot.limitReached }
-      : {}),
-    // Account identity is not published on every update; keeping the last known
-    // one stops a sparse refresh from ungrouping instances that share it.
-    ...((authoritativeSnapshot.accountLabel ?? secondarySnapshot.accountLabel)
-      ? { accountLabel: authoritativeSnapshot.accountLabel ?? secondarySnapshot.accountLabel! }
+    ...(next.limitReached ? { limitReached: next.limitReached } : {}),
+    ...(lastAttemptAt ? { lastAttemptAt } : {}),
+    ...(lastSuccessfulAt ? { lastSuccessfulAt } : {}),
+    ...(next.errorCode ? { errorCode: next.errorCode } : {}),
+    ...(next.retryAfterMs !== undefined ? { retryAfterMs: next.retryAfterMs } : {}),
+    ...(next.retryAt ? { retryAt: next.retryAt } : {}),
+    ...((next.resetCredits ?? previous.resetCredits)
+      ? { resetCredits: next.resetCredits ?? previous.resetCredits }
       : {}),
   };
 }

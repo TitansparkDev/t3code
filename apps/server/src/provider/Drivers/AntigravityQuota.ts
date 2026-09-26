@@ -9,53 +9,18 @@ import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstab
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 
 import { spawnAndCollect } from "../providerSnapshot.ts";
+import {
+  antigravityPayloadToUsageLimits,
+  classifyAntigravityIdentity,
+  parseAntigravityQuotaPayload,
+  parseResetTimestamp,
+  parseWindowDurationMins,
+  type AntigravityUsageGroup,
+  type AntigravityUsagePayload,
+  type AntigravityUsageWindow,
+} from "../../quota/antigravityQuotaParser.ts";
 
-const WEEK_MINS = 7 * 24 * 60;
-const MONTH_MINS = 30 * 24 * 60;
-
-export interface AntigravityUsageWindow {
-  readonly id?: string;
-  readonly label: string;
-  readonly usedPercent: number;
-  readonly windowDurationMins: number;
-  readonly resetsAt?: string;
-}
-
-export interface AntigravityUsageGroup {
-  readonly key: string;
-  readonly displayName: string;
-  readonly windows: ReadonlyArray<AntigravityUsageWindow>;
-}
-
-export interface AntigravityUsagePayload {
-  readonly groups: ReadonlyArray<AntigravityUsageGroup>;
-  readonly source?: "antigravity-quota-summary" | "antigravity-model-fallback";
-}
-
-interface QuotaBucket {
-  readonly bucketId?: string;
-  readonly modelId?: string;
-  readonly displayName?: string;
-  readonly window?: string;
-  readonly remainingFraction?: number;
-  readonly remaining_fraction?: number;
-  readonly remainingPercent?: number;
-  readonly remaining_percent?: number;
-  readonly usedPercent?: number;
-  readonly used_percent?: number;
-  readonly utilization?: number;
-  readonly resetTime?: string;
-  readonly reset_time?: string;
-  readonly disabled?: boolean;
-}
-
-interface QuotaGroup {
-  readonly name?: string;
-  readonly displayName?: string;
-  readonly modelId?: string;
-  readonly buckets?: ReadonlyArray<QuotaBucket>;
-  readonly quotaBuckets?: ReadonlyArray<QuotaBucket>;
-}
+export type { AntigravityUsageGroup, AntigravityUsagePayload, AntigravityUsageWindow };
 
 const AntigravityTokenFile = Schema.Struct({
   client_id: Schema.String,
@@ -69,86 +34,7 @@ const decodeAntigravityToken = Schema.decodeUnknownEffect(
 );
 
 export function directQuotaGroups(value: unknown): AntigravityUsagePayload | undefined {
-  if (typeof value !== "object" || value === null) return undefined;
-  const root = value as Record<string, unknown>;
-  const nestedSummary =
-    typeof root.quotaSummary === "object" && root.quotaSummary !== null
-      ? (root.quotaSummary as Record<string, unknown>)
-      : undefined;
-  const isModelFallback =
-    !root.groups &&
-    !root.quotaGroups &&
-    !nestedSummary?.groups &&
-    !nestedSummary?.quotaGroups &&
-    Boolean(root.modelGroups);
-  const rawGroups =
-    root.groups ??
-    root.quotaGroups ??
-    root.modelGroups ??
-    nestedSummary?.groups ??
-    nestedSummary?.quotaGroups;
-  if (!Array.isArray(rawGroups)) return undefined;
-  const groups = new Map<string, AntigravityUsageGroup>();
-  for (const raw of rawGroups) {
-    if (typeof raw !== "object" || raw === null) continue;
-    const group = raw as QuotaGroup;
-    const name = (group.displayName ?? group.name ?? group.modelId ?? "").trim();
-    const buckets = group.buckets ?? group.quotaBuckets ?? [];
-    if (!name || !Array.isArray(buckets)) continue;
-    const isGemini = /gemini|google/iu.test(name);
-    const isClaudeGpt = /claude|gpt|oss/iu.test(name);
-    if (isModelFallback && !isGemini && !isClaudeGpt) continue;
-    const family = isGemini ? "Gemini" : isClaudeGpt ? "Claude & GPT" : name;
-    const key = isGemini
-      ? "gemini"
-      : isClaudeGpt
-        ? "claude-gpt"
-        : name.toLowerCase().replace(/[^a-z0-9]+/g, "-");
-    const windows = buckets.flatMap((bucket): AntigravityUsageWindow[] => {
-      if (bucket.disabled) return [];
-      const descriptor = `${bucket.window ?? ""} ${bucket.displayName ?? ""}`;
-      const duration = windowDurationMins(undefined, descriptor);
-      if (!duration) return [];
-      const usedPercent = bucketUsagePercent(bucket);
-      if (usedPercent === undefined) return [];
-      const reset = parseReset(bucket.resetTime ?? bucket.reset_time);
-      return [
-        {
-          id: bucket.bucketId ?? `${key}-${duration}`,
-          label: duration >= MONTH_MINS ? "Monthly" : duration >= WEEK_MINS ? "Weekly" : "5-hour",
-          usedPercent,
-          windowDurationMins: duration,
-          ...(reset ? { resetsAt: reset } : {}),
-        },
-      ];
-    });
-    if (windows.length > 0) {
-      const previous = groups.get(key);
-      const mergedWindows = [...(previous?.windows ?? []), ...windows];
-      const uniqueWindows = new Map<number, AntigravityUsageWindow>();
-      for (const window of mergedWindows) {
-        const existing = uniqueWindows.get(window.windowDurationMins);
-        if (
-          !existing ||
-          window.usedPercent > existing.usedPercent ||
-          (window.usedPercent === existing.usedPercent && !existing.resetsAt && window.resetsAt)
-        ) {
-          uniqueWindows.set(window.windowDurationMins, window);
-        }
-      }
-      groups.set(key, {
-        key,
-        displayName: previous?.displayName ?? family,
-        windows: [...uniqueWindows.values()],
-      });
-    }
-  }
-  return groups.size > 0
-    ? {
-        groups: [...groups.values()],
-        ...(isModelFallback ? { source: "antigravity-model-fallback" as const } : {}),
-      }
-    : undefined;
+  return parseAntigravityQuotaPayload(value, { generateWindowIds: true });
 }
 
 export function projectIdFromLoadCodeAssist(value: unknown): string | undefined {
@@ -183,6 +69,99 @@ function safeGoogleTokenUri(value: unknown): value is string {
     return false;
   }
 }
+
+/**
+ * Discovers local Antigravity desktop or language-server endpoint.
+ * Only probes loopback (127.0.0.1) and same-user processes.
+ */
+export function discoverLocalAntigravityEndpoint(
+  environment: NodeJS.ProcessEnv,
+): { readonly port: number; readonly csrfToken?: string } | undefined {
+  const envPort = environment.ANTIGRAVITY_PORT ?? environment.AGY_PORT ?? environment.GEMINI_PORT;
+  if (envPort) {
+    const port = parseInt(envPort, 10);
+    if (port >= 1 && port <= 65535) {
+      const csrfToken = environment.ANTIGRAVITY_CSRF_TOKEN ?? environment.AGY_CSRF_TOKEN;
+      return { port, csrfToken };
+    }
+  }
+
+  if (process.platform === "linux") {
+    try {
+      const fs = require("node:fs");
+      const entries: string[] = fs.readdirSync("/proc");
+      const currentUid = typeof process.getuid === "function" ? process.getuid() : undefined;
+      for (const entry of entries) {
+        if (!/^\d+$/.test(entry)) continue;
+        try {
+          if (currentUid !== undefined) {
+            const stat = fs.statSync(`/proc/${entry}`);
+            if (stat.uid !== currentUid) continue;
+          }
+          const cmdline = fs.readFileSync(`/proc/${entry}/cmdline`, "utf-8").replace(/\0/g, " ");
+          if (!/antigravity|language_server|agy_acp/i.test(cmdline)) continue;
+          const portMatch = /--port(?:=|\s+)(\d+)/.exec(cmdline);
+          if (!portMatch || !portMatch[1]) continue;
+          const port = parseInt(portMatch[1], 10);
+          if (port < 1 || port > 65535) continue;
+          const csrfMatch = /--(?:csrf_token|csrf-token|csrf)(?:=|\s+)([^\s]+)/.exec(cmdline);
+          const csrfToken = csrfMatch?.[1];
+          return { port, csrfToken };
+        } catch {
+          // Skip unreadable process entries
+        }
+      }
+    } catch {
+      // Ignore procfs read errors
+    }
+  }
+
+  return undefined;
+}
+
+/**
+ * Probe local running Antigravity endpoint.
+ * Connects exclusively to 127.0.0.1. Never sends CSRF token to a remote host.
+ */
+export const probeLocalAntigravityUsage = Effect.fn("probeLocalAntigravityUsage")(
+  function* (input: { readonly port: number; readonly csrfToken?: string }) {
+    const client = yield* HttpClient.HttpClient;
+    const endpoints = [
+      "/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary",
+      "/exa.language_server_pb.LanguageServerService/GetUserStatus",
+      "/exa.language_server_pb.LanguageServerService/GetCommandModelConfigs",
+    ];
+
+    for (const endpoint of endpoints) {
+      const url = `http://127.0.0.1:${input.port}${endpoint}`;
+      let req = HttpClientRequest.post(url).pipe(
+        HttpClientRequest.setHeader("Content-Type", "application/json"),
+        HttpClientRequest.bodyJsonUnsafe({}),
+      );
+      if (input.csrfToken) {
+        req = req.pipe(
+          HttpClientRequest.setHeader("X-Csrf-Token", input.csrfToken),
+          HttpClientRequest.setHeader("x-code-assist-csrf-token", input.csrfToken),
+        );
+      }
+
+      const response = yield* client.execute(req).pipe(
+        Effect.flatMap(HttpClientResponse.filterStatusOk),
+        Effect.flatMap((res) => res.json),
+        Effect.timeout("3 seconds"),
+        Effect.option,
+      );
+
+      if (Option.isSome(response)) {
+        const payload = parseAntigravityQuotaPayload(response.value);
+        if (payload && payload.groups.length > 0) {
+          return payload;
+        }
+      }
+    }
+    return undefined;
+  },
+);
 
 const directQuotaProbe = Effect.fn("readAntigravityDirectUsage")(function* (input: {
   readonly profileDirectory: string;
@@ -260,22 +239,39 @@ const directQuotaProbe = Effect.fn("readAntigravityDirectUsage")(function* (inpu
       Effect.option,
     );
   if (Option.isSome(response)) {
-    const payload = directQuotaGroups(response.value);
-    if (payload) return payload;
+    const payload = parseAntigravityQuotaPayload(response.value);
+    if (payload && payload.groups.length > 0) return payload;
   }
   return undefined;
 });
 
-/** Direct Google quota probe with the installed CLI as a compatibility fallback. */
+/** Direct Google quota probe with local endpoint and CLI compatibility fallbacks. */
 export const readAntigravityUsageLimits = Effect.fn("readAntigravityUsageLimits")(
   function* (input: {
     readonly environment: NodeJS.ProcessEnv;
     readonly profileDirectory: string;
     readonly fallbackToCli?: boolean;
+    readonly disableLocalDiscovery?: boolean;
   }) {
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const httpClient = yield* HttpClient.HttpClient;
+
+    // 1. Try local loopback endpoint probe if discovered
+    if (!input.disableLocalDiscovery) {
+      const localEndpoint = discoverLocalAntigravityEndpoint(input.environment);
+      if (localEndpoint) {
+        const localUsage = yield* probeLocalAntigravityUsage(localEndpoint).pipe(
+          Effect.provideService(HttpClient.HttpClient, httpClient),
+          Effect.option,
+        );
+        if (Option.isSome(localUsage) && localUsage.value) {
+          return localUsage.value;
+        }
+      }
+    }
+
+    // 2. Try remote Google OAuth probe
     const direct = yield* directQuotaProbe(input).pipe(
       Effect.provideService(FileSystem.FileSystem, fileSystem),
       Effect.provideService(Path.Path, path),
@@ -283,6 +279,8 @@ export const readAntigravityUsageLimits = Effect.fn("readAntigravityUsageLimits"
       Effect.option,
     );
     if (Option.isSome(direct) && direct.value) return direct.value;
+
+    // 3. Fall back to CLI
     return input.fallbackToCli === false ? undefined : yield* readAntigravityUsage(input);
   },
 );
@@ -290,159 +288,53 @@ export const readAntigravityUsageLimits = Effect.fn("readAntigravityUsageLimits"
 export function antigravityUsageToProviderLimits(
   usage: AntigravityUsagePayload,
 ): ProviderUsageLimitsUpdate {
-  return {
-    windows: usage.groups
-      .toSorted((left, right) => Number(right.key === "gemini") - Number(left.key === "gemini"))
-      .flatMap((group) =>
-        group.windows
-          .toSorted((left, right) => left.windowDurationMins - right.windowDurationMins)
-          .map((window) => ({
-            id: window.id ?? `${group.key}-${window.windowDurationMins}`,
-            kind:
-              window.windowDurationMins >= MONTH_MINS
-                ? "monthly"
-                : window.windowDurationMins >= WEEK_MINS
-                  ? "weekly"
-                  : "session",
-            label: `${group.displayName} ${window.label}`,
-            usedPercent: window.usedPercent,
-            ...(window.resetsAt ? { resetsAt: window.resetsAt } : {}),
-            windowDurationMins: window.windowDurationMins,
-          })),
-      ),
-  };
-}
-
-function windowDurationMins(value: unknown, fallback?: string): number | undefined {
-  if (typeof value === "number" && Number.isFinite(value) && value > 0) return value;
-  const text = typeof value === "string" ? value : fallback;
-  if (!text) return undefined;
-  if (/(?:five.?hour|5.?hour|5h|session)/iu.test(text)) return 300;
-  if (/(?:monthly|month|30d)/iu.test(text)) return MONTH_MINS;
-  if (/(?:weekly|week|seven.?day|7d)/iu.test(text)) return WEEK_MINS;
-  return undefined;
-}
-
-function percentage(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 100
-    ? value
-    : undefined;
-}
-
-function remainingFractionToUsed(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1
-    ? Math.round((100 - value * 100) * 100) / 100
-    : undefined;
-}
-
-function bucketUsagePercent(bucket: QuotaBucket): number | undefined {
-  if (bucket.remainingFraction !== undefined) {
-    return remainingFractionToUsed(bucket.remainingFraction);
-  }
-  if (bucket.remaining_fraction !== undefined) {
-    return remainingFractionToUsed(bucket.remaining_fraction);
-  }
-  if (bucket.remainingPercent !== undefined) {
-    const remaining = percentage(bucket.remainingPercent);
-    return remaining === undefined ? undefined : 100 - remaining;
-  }
-  if (bucket.remaining_percent !== undefined) {
-    const remaining = percentage(bucket.remaining_percent);
-    return remaining === undefined ? undefined : 100 - remaining;
-  }
-  return percentage(bucket.usedPercent ?? bucket.used_percent ?? bucket.utilization);
-}
-
-function legacyTextPercent(value: unknown): number | undefined {
-  if (typeof value !== "string" || !/^\d+(?:\.\d+)?%$/u.test(value.trim())) return undefined;
-  const remaining = percentage(Number.parseFloat(value));
-  return remaining === undefined ? undefined : 100 - remaining;
-}
-
-function parseReset(value: unknown): string | undefined {
-  if (typeof value !== "string" || value.trim().length === 0) return undefined;
-  return Number.isNaN(Date.parse(value)) ? undefined : value.trim();
-}
-
-function groupKey(displayName: string): "gemini" | "claude-gpt" {
-  return /gemini|google/iu.test(displayName) ? "gemini" : "claude-gpt";
-}
-
-function parseJsonGroups(value: unknown): AntigravityUsagePayload | undefined {
-  if (typeof value !== "object" || value === null) return undefined;
-  const record = value as Record<string, unknown>;
-  const command = record.command;
-  const commandData =
-    typeof command === "object" && command !== null
-      ? (command as Record<string, unknown>).data
-      : undefined;
-  const data =
-    typeof commandData === "object" && commandData !== null
-      ? (commandData as Record<string, unknown>)
-      : record;
-  const rawGroups = data.groups;
-  if (!Array.isArray(rawGroups)) return undefined;
-
-  const groups: AntigravityUsageGroup[] = [];
-  for (const rawGroup of rawGroups) {
-    if (typeof rawGroup !== "object" || rawGroup === null) continue;
-    const group = rawGroup as Record<string, unknown>;
-    const displayName = typeof group.name === "string" ? group.name.trim() : "";
-    if (!displayName) continue;
-    const rawBuckets = group.buckets;
-    if (!Array.isArray(rawBuckets)) continue;
-    const windows: AntigravityUsageWindow[] = [];
-    for (const rawBucket of rawBuckets) {
-      if (typeof rawBucket !== "object" || rawBucket === null) continue;
-      const bucket = rawBucket as Record<string, unknown>;
-      if (bucket.disabled === true) continue;
-      const label = typeof bucket.name === "string" ? bucket.name.trim() : "";
-      const duration = windowDurationMins(bucket.window, label);
-      const usedPercent = bucketUsagePercent(bucket);
-      if (!label || duration === undefined || usedPercent === undefined) continue;
-      const reset = parseReset(bucket.reset_time ?? bucket.resetTime ?? bucket.resetsAt);
-      windows.push({
-        label: label.replace(/\s+remaining$/iu, ""),
-        usedPercent,
-        windowDurationMins: duration,
-        ...(reset ? { resetsAt: reset } : {}),
-      });
-    }
-    if (windows.length > 0) {
-      groups.push({ key: groupKey(displayName), displayName, windows });
-    }
-  }
-  return groups.length > 0 ? { groups } : undefined;
+  return antigravityPayloadToUsageLimits(usage);
 }
 
 function parseText(stdout: string): AntigravityUsagePayload | undefined {
-  const groups = new Map<"gemini" | "claude-gpt", AntigravityUsageGroup>();
+  const groups = new Map<string, AntigravityUsageGroup>();
   for (const rawLine of stdout.split(/\r?\n/u)) {
     const line = rawLine.trim();
-    if (!line) continue;
+    if (!line || line.startsWith("─") || line.startsWith("#")) continue;
     const fields = line.includes("\t")
       ? line.split(/\t+/u).map((field) => field.trim())
-      : /^(.+?)\s{2,}(.+?)\s+(\d+(?:\.\d+)?)%\s*(.*)$/u.exec(line)?.slice(1);
+      : line.includes("│")
+        ? line.split(/│+/u).map((field) => field.trim())
+        : /^(.+?)\s{2,}(.+?)\s+(\d+(?:\.\d+)?)%\s*(.*)$/u.exec(line)?.slice(1);
     if (!fields || fields.length < 3) continue;
     const displayName = fields[0];
     const label = fields[1];
-    const usedPercent = legacyTextPercent(fields[2]);
-    const duration = windowDurationMins(undefined, label);
-    if (!displayName || !label || usedPercent === undefined || duration === undefined) continue;
-    const key = groupKey(displayName);
-    const existing = groups.get(key) ?? { key, displayName, windows: [] };
-    const reset = parseReset(fields[3]);
+    const rawRemaining = fields[2];
+    if (!displayName || !label || !rawRemaining) continue;
+    const remainingMatch = /(\d+(?:\.\d+)?)%/u.exec(rawRemaining);
+    if (!remainingMatch || !remainingMatch[1]) continue;
+    const remainingNum = Number.parseFloat(remainingMatch[1]);
+    if (!Number.isFinite(remainingNum) || remainingNum < 0 || remainingNum > 100) continue;
+    const usedPercent = Math.round((100 - remainingNum) * 100) / 100;
+    const duration = parseWindowDurationMins(undefined, label);
+    if (!displayName || !label || duration === undefined) continue;
+    const identity = classifyAntigravityIdentity(displayName, displayName);
+    const key =
+      identity.poolKey === "gemini"
+        ? "gemini"
+        : identity.poolKey === "claude-gpt"
+          ? "claude-gpt"
+          : displayName.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+    const existing = groups.get(key) ?? {
+      key,
+      displayName: identity.defaultDisplayName,
+      windows: [],
+    };
+    const reset = parseResetTimestamp(fields[3]);
+    const window: AntigravityUsageWindow = {
+      label: label.replace(/\s+remaining$/iu, ""),
+      usedPercent,
+      windowDurationMins: duration,
+      ...(reset ? { resetsAt: reset } : {}),
+    };
     groups.set(key, {
       ...existing,
-      windows: [
-        ...existing.windows,
-        {
-          label: label.replace(/\s+remaining$/iu, ""),
-          usedPercent,
-          windowDurationMins: duration,
-          ...(reset ? { resetsAt: reset } : {}),
-        },
-      ],
+      windows: [...existing.windows, window],
     });
   }
   const parsed = [...groups.values()];
@@ -453,7 +345,7 @@ function parseText(stdout: string): AntigravityUsagePayload | undefined {
 export function parseAntigravityUsage(stdout: string): AntigravityUsagePayload | undefined {
   try {
     const parsed = JSON.parse(stdout) as unknown;
-    const jsonGroups = parseJsonGroups(parsed);
+    const jsonGroups = parseAntigravityQuotaPayload(parsed, { generateWindowIds: false });
     if (jsonGroups) return jsonGroups;
     if (typeof parsed === "object" && parsed !== null) {
       const response = (parsed as Record<string, unknown>).response;
