@@ -530,8 +530,8 @@ export function antigravityPayloadToSnapshot(
     windows: group.windows.map((w): QuotaWindow => {
       let resetsAt: string | undefined;
       if (w.resetsAt) {
-        const parsed = Date.parse(w.resetsAt);
-        resetsAt = Number.isNaN(parsed) ? w.resetsAt : new Date(parsed).toISOString();
+        const parsed = DateTime.make(w.resetsAt);
+        resetsAt = Option.isSome(parsed) ? DateTime.formatIso(parsed.value) : w.resetsAt;
       }
       return {
         ...(w.id ? { id: w.id } : {}),

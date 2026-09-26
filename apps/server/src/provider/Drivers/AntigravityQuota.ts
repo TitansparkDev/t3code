@@ -82,7 +82,7 @@ export function discoverLocalAntigravityEndpoint(
     const port = parseInt(envPort, 10);
     if (port >= 1 && port <= 65535) {
       const csrfToken = environment.ANTIGRAVITY_CSRF_TOKEN ?? environment.AGY_CSRF_TOKEN;
-      return { port, csrfToken };
+      return { port, ...(csrfToken ? { csrfToken } : {}) };
     }
   }
 
@@ -106,7 +106,7 @@ export function discoverLocalAntigravityEndpoint(
           if (port < 1 || port > 65535) continue;
           const csrfMatch = /--(?:csrf_token|csrf-token|csrf)(?:=|\s+)([^\s]+)/.exec(cmdline);
           const csrfToken = csrfMatch?.[1];
-          return { port, csrfToken };
+          return { port, ...(csrfToken ? { csrfToken } : {}) };
         } catch {
           // Skip unreadable process entries
         }
