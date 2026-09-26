@@ -5,6 +5,8 @@ import {
   collectLimitAccounts,
   collectLimitNotices,
   collectLimitPools,
+  cursorUsageWindowDetails,
+  displayLimitWindows,
   formatDuration,
   formatResetsIn,
   formatSpend,
@@ -14,16 +16,15 @@ import {
   type LimitPoolWindow,
 } from "@t3tools/shared/usageLimits";
 import { CLAUDE_PEAK_TIME_LABEL, isClaudePeakTime } from "@t3tools/shared/claudePeakTime";
-import { useId, useMemo, useState } from "react";
+import { Fragment, type ReactNode, useId, useMemo, useState } from "react";
 import { Platform, Pressable, ScrollView, View } from "react-native";
 import { Defs, Path, Pattern, Rect, Svg } from "react-native-svg";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { AndroidScreenHeader } from "../../components/AndroidScreenHeader";
 import { SymbolView } from "../../components/AppSymbol";
 import { AppText as Text } from "../../components/AppText";
 import { ProviderIcon } from "../../components/ProviderIcon";
-import { NativeStackScreenOptions } from "../../native/StackHeader";
+import { SettingsScreen } from "../settings/components/SettingsScreen";
 import { environmentPresentations } from "../../state/presentation";
 import { useQuota } from "../../state/quota";
 import { ResetCredits } from "./UsageLimitsSection";
@@ -91,11 +92,15 @@ function PoolWindowCard({
   color,
   now,
   environmentIds,
+  label,
+  description,
 }: {
   readonly pool: LimitPoolWindow;
   readonly color: string;
   readonly now: number;
   readonly environmentIds: readonly string[] | null;
+  readonly label?: string;
+  readonly description?: string;
 }) {
   const navigation = useNavigation();
   const nextRefill = pool.resets.find((reset) => reset.restoresPercent > 0);
@@ -117,7 +122,7 @@ function PoolWindowCard({
     <View className="gap-3 rounded-[24px] border-continuous bg-card p-4">
       <View className="flex-row items-start justify-between gap-3">
         <View className="gap-1">
-          <Text className="text-sm font-t3-medium text-foreground">{pool.label}</Text>
+          <Text className="text-sm font-t3-medium text-foreground">{label ?? pool.label}</Text>
           <View className="flex-row items-baseline gap-1.5">
             <Text className="text-3xl font-t3-bold tabular-nums text-foreground">
               {pool.remainingPercent}%
@@ -129,6 +134,7 @@ function PoolWindowCard({
           <Text className="text-xs text-foreground-tertiary">{PACE_LABEL[pool.pace]}</Text>
         ) : null}
       </View>
+      {description ? <Text className="text-xs text-foreground-muted">{description}</Text> : null}
       {nextRefill ? (
         <Text className="text-xs tabular-nums text-foreground-muted">
           ↻ +{nextRefill.restoresPercent}%{" "}
@@ -219,10 +225,12 @@ export function UsageLimitsSection({
   now,
   failedLabels,
   selectedEnvironmentIds,
+  cursorPrompt,
 }: {
   readonly now: number;
   readonly failedLabels: readonly string[];
   readonly selectedEnvironmentIds: ReadonlySet<EnvironmentId> | null;
+  readonly cursorPrompt?: ReactNode;
 }) {
   const presentations = useAtomValue(environmentPresentations.presentationsAtom);
   const quota = useQuota();
@@ -251,46 +259,62 @@ export function UsageLimitsSection({
   const pools = collectLimitPools(collectLimitAccounts(selected), now);
   const notices = collectLimitNotices(selected);
   const colors = useProviderColors();
+  const cursorPromptAt =
+    Math.max(
+      pools.findIndex((pool) => pool.driver === "codex"),
+      pools.findIndex((pool) => pool.driver === "claudeAgent"),
+    ) + 1;
   return (
     <View className="gap-6">
-      {pools.length === 0 && notices.length === 0 && failedLabels.length === 0 ? (
+      {pools.length === 0 && notices.length === 0 && failedLabels.length === 0 && !cursorPrompt ? (
         <Text className="py-12 text-center text-base text-foreground-muted">
           {selected.size === 0
             ? "Select an environment to see limits."
             : "No provider on the selected environments reports subscription limits."}
         </Text>
       ) : null}
-      {pools.map((pool) => {
+      {pools.map((pool, index) => {
         const claudePeak = pool.driver === "claudeAgent" && isClaudePeakTime(now);
+        const windows = displayLimitWindows(pool);
         return (
-          <View key={pool.driver} className="gap-3">
-            <View className="flex-row items-center gap-2 px-1">
-              <ProviderIcon provider={pool.driver} size={18} />
-              <Text className="text-base font-t3-medium text-foreground">
-                {DRIVER_LABEL[pool.driver] ?? pool.driver}
-              </Text>
-              {pool.driver === "claudeAgent" ? (
-                <Text
-                  accessibilityLabel={claudePeak ? CLAUDE_PEAK_TIME_LABEL : "Claude regular time"}
-                >
-                  {claudePeak ? "🔥" : "🟢"}
+          <Fragment key={pool.driver}>
+            {index === cursorPromptAt ? cursorPrompt : null}
+            <View className="gap-3">
+              <View className="flex-row items-center gap-2 px-1">
+                <ProviderIcon provider={pool.driver} size={18} />
+                <Text className="text-base font-t3-medium text-foreground">
+                  {DRIVER_LABEL[pool.driver] ?? pool.driver}
                 </Text>
-              ) : null}
+                {pool.driver === "claudeAgent" ? (
+                  <Text
+                    accessibilityLabel={claudePeak ? CLAUDE_PEAK_TIME_LABEL : "Claude regular time"}
+                  >
+                    {claudePeak ? "🔥" : "🟢"}
+                  </Text>
+                ) : null}
+              </View>
+              {windows.map((window) => {
+                const details =
+                  pool.driver === "cursor" ? cursorUsageWindowDetails(window.id) : undefined;
+                return (
+                  <PoolWindowCard
+                    key={`${window.kind}:${window.id}`}
+                    pool={window}
+                    color={providerBarColor(pool.driver, window.label, colors)}
+                    now={now}
+                    environmentIds={
+                      selectedEnvironmentIds === null ? null : [...selectedEnvironmentIds]
+                    }
+                    label={details?.label}
+                    description={details?.description}
+                  />
+                );
+              })}
             </View>
-            {pool.windows.map((window) => (
-              <PoolWindowCard
-                key={`${window.kind}:${window.id}`}
-                pool={window}
-                color={providerBarColor(pool.driver, window.label, colors)}
-                now={now}
-                environmentIds={
-                  selectedEnvironmentIds === null ? null : [...selectedEnvironmentIds]
-                }
-              />
-            ))}
-          </View>
+          </Fragment>
         );
       })}
+      {cursorPromptAt === pools.length ? cursorPrompt : null}
       {notices.length > 0 || failedLabels.length > 0 ? (
         <View
           accessible
@@ -331,7 +355,6 @@ type AccountScreenProps = StaticScreenProps<{
 
 /** Resolve the account again so live quota and credit updates reach the open detail screen. */
 export function UsageLimitAccountScreen({ route }: AccountScreenProps) {
-  const navigation = useNavigation();
   const insets = useSafeAreaInsets();
   const presentations = useAtomValue(environmentPresentations.presentationsAtom);
   const quota = useQuota();
@@ -369,13 +392,7 @@ export function UsageLimitAccountScreen({ route }: AccountScreenProps) {
   const reset = pool?.resets.find((candidate) => candidate.member.account.key === accountKey);
   const [revealed, setRevealed] = useState(false);
   return (
-    <View collapsable={false} className="flex-1 bg-sheet">
-      {Platform.OS === "android" ? (
-        <>
-          <NativeStackScreenOptions options={{ headerShown: false }} />
-          <AndroidScreenHeader title="Account" onBack={() => navigation.goBack()} />
-        </>
-      ) : null}
+    <SettingsScreen title="Account">
       <ScrollView
         contentInsetAdjustmentBehavior="automatic"
         contentContainerClassName="gap-5 p-5"
@@ -461,6 +478,6 @@ export function UsageLimitAccountScreen({ route }: AccountScreenProps) {
           </>
         )}
       </ScrollView>
-    </View>
+    </SettingsScreen>
   );
 }

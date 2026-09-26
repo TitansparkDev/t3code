@@ -9,7 +9,7 @@ import * as HttpClient from "effect/unstable/http/HttpClient";
 import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
 import { ApnsEnvironment as ApnsEnvironmentSchema, type ApnsCredentials } from "../Config.ts";
 import type { ApnsLiveActivityAlert, ApnsNotificationPayload } from "./apnsDeliveryJobs.ts";
-import { ApnsJwtEncodingError, ApnsJwtSigningError } from "./apnsJwt.ts";
+import type { ApnsJwtEncodingError, ApnsJwtSigningError } from "./apnsJwt.ts";
 import * as ApnsProviderTokens from "./ApnsProviderTokens.ts";
 import { fitNotificationText, jsonByteLength } from "./notificationText.ts";
 
@@ -72,12 +72,7 @@ export class ApnsHttpRequestError extends Schema.TaggedError<ApnsHttpRequestErro
   }
 }
 
-export const ApnsError = Schema.Union([
-  ApnsJwtEncodingError,
-  ApnsJwtSigningError,
-  ApnsHttpRequestError,
-]);
-export type ApnsError = typeof ApnsError.Type;
+export type ApnsError = ApnsJwtEncodingError | ApnsJwtSigningError | ApnsHttpRequestError;
 
 const decodeApnsErrorResponseJson = Schema.decodeUnknownOption(
   Schema.fromJsonString(

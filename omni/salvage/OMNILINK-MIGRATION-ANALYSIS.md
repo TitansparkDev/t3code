@@ -18,11 +18,11 @@ view is rendered by parsing each CLI's own transcript files on disk, and "Do not
 
 T3 Code does exactly the thing OmniLink forbids:
 
-| Provider | T3 Code transport |
-|---|---|
-| Claude | `@anthropic-ai/claude-agent-sdk` (`apps/server/src/provider/Layers/ClaudeAdapter.ts`) |
-| Codex | app-server JSON-RPC (`packages/effect-codex-app-server`) |
-| Cursor / Grok / OpenCode | ACP (`packages/effect-acp`) |
+| Provider                 | T3 Code transport                                                                     |
+| ------------------------ | ------------------------------------------------------------------------------------- |
+| Claude                   | `@anthropic-ai/claude-agent-sdk` (`apps/server/src/provider/Layers/ClaudeAdapter.ts`) |
+| Codex                    | app-server JSON-RPC (`packages/effect-codex-app-server`)                              |
+| Cursor / Grok / OpenCode | ACP (`packages/effect-acp`)                                                           |
 
 There is no TUI to attach to, no transcript to parse, and no PTY in the agent path. PTYs exist
 in t3code only for **user** terminals (`apps/server/src/terminal/`, node-pty and bun-pty
@@ -35,7 +35,7 @@ transcript parsing: ordered, durable, complete, and immune to format drift.
 **Consequence:** the largest single body of work in OmniLink — three transcript parsers, the
 schema-less protobuf wire reader, the agy SQLite/WAL watcher, PTY command injection with
 delayed-Enter, the PTY approval auto-answer — has no home in a fork. That is most of the 28k
-lines. What survives is the *research*, not the code.
+lines. What survives is the _research_, not the code.
 
 One nuance worth knowing: transcript parsing survives upstream in exactly one place —
 `apps/server/src/usage/usageTranscriptReader.ts` reads Codex and Claude session history for
@@ -63,8 +63,8 @@ your `PLAN.md`, already shipped upstream:
   your §5.7 flagged as an unproven spike (`PLAN.md` "Run the Codex shadow-home spike" — still
   unchecked). It ships, it's documented in `docs/user/providers-codex.md`, and compatible
   accounts can continue an existing thread.
-- **Per-turn checkpoints as hidden git refs, with revert** — and t3code reverts *the provider
-  conversation too*, not just the working tree. Your §9.4 undo, done, plus more.
+- **Per-turn checkpoints as hidden git refs, with revert** — and t3code reverts _the provider
+  conversation too_, not just the working tree. Your §9.4 undo, done, plus more.
 - **Diff panel, file tree + preview, browser preview with favicons, terminal panel with
   tabs/splits** — your entire §8.14 inspector.
 - **Worktrees**, branch toolbar, worktree cleanup, per-project scripts and icons.
@@ -95,7 +95,7 @@ to even install dependencies.
 Ordered by value per unit of effort. Each is additive: new files, minimal edits to upstream
 files, low merge cost.
 
-### 2.1 Subscription quota panel — 5-hour and weekly windows *(best value on the list)*
+### 2.1 Subscription quota panel — 5-hour and weekly windows _(best value on the list)_
 
 Your §8.6 quota panel with per-account rows, used %, reset countdowns, source labelling and
 an honest "not exposed" state does not exist upstream. T3 Code's Usage page is something
@@ -136,7 +136,7 @@ Read Decision 6 before building it, though. The reasoning that motivated it has 
 ### 2.4 Antigravity (`agy`) as a provider driver
 
 Your only truly unique provider. T3 Code has no `agy` driver; "Antigravity" appears upstream
-only as an *editor* you can open a project in (`apps/web/src/components/chat/OpenInPicker.tsx`).
+only as an _editor_ you can open a project in (`apps/web/src/components/chat/OpenInPicker.tsx`).
 There is a `gemini` driver kind stubbed in `AddProviderInstanceDialog.tsx:87` alongside
 `githubCopilot`, `acpRegistry` and `piAgent`, all rendered disabled — planned, not built.
 
@@ -190,7 +190,7 @@ T3 Code supports Windows properly — winget distribution, NSIS builds, `win32` 
 `bootstrap.ts`, `processRunner.ts`, `terminal/Manager.ts`, `ClaudeExecutable.ts` — but the
 docs and daily development are Mac-first (`brew install` everywhere).
 
-Your discovery contract is better than what's upstream in one specific way: it *proves* a
+Your discovery contract is better than what's upstream in one specific way: it _proves_ a
 candidate binary by running `--version`, continues past ACL-blocked candidates so a standalone
 CLI on `PATH` can beat a blocked packaged-app resource, honours `PATHEXT`, and puts the
 verified candidate first on the spawned process's `PATH` (§2.2). That's a small, genuinely
@@ -231,7 +231,7 @@ run `claude` by hand in one. It just isn't the thread's session, and nothing syn
 
 Your three parsers, the protobuf wire reader, the agy SQLite + `-wal` watcher, the unknown-
 block labelling, `Provider.parseTranscriptFile` — none of it has a consumer. The event log
-replaces it and is better. Keep the *findings* (§13.1 formats, the Codex `turn_context`
+replaces it and is better. Keep the _findings_ (§13.1 formats, the Codex `turn_context`
 discovery, the AGENTS.md-injected-as-user-turn bug); discard the code.
 
 ### 3.3 "Build fresh, do not fork" and "no headless mode"
@@ -245,17 +245,17 @@ retired.
 You can hide these behind settings. Deleting them means editing dozens of upstream files that
 upstream keeps changing — a permanent merge tax:
 
-| Your exclusion | What upstream ships |
-|---|---|
-| No full Git/PR client | GitHub, GitLab, Bitbucket, Azure DevOps: PR create, review panels, clone, publish, branch checkout |
-| No multi-machine fleet, no cloud | SSH-launched remote environments, multi-environment lists, T3 Connect tunnel, Clerk accounts, `infra/relay` |
-| No native mobile app | `apps/mobile`, a full Expo app — and roughly half of recent upstream commits are `fix(mobile)` |
+| Your exclusion                         | What upstream ships                                                                                                                 |
+| -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| No full Git/PR client                  | GitHub, GitLab, Bitbucket, Azure DevOps: PR create, review panels, clone, publish, branch checkout                                  |
+| No multi-machine fleet, no cloud       | SSH-launched remote environments, multi-environment lists, T3 Connect tunnel, Clerk accounts, `infra/relay`                         |
+| No native mobile app                   | `apps/mobile`, a full Expo app — and roughly half of recent upstream commits are `fix(mobile)`                                      |
 | No AI reviewer / no injected behaviour | "Auto" mode delegates Codex's routine approvals to an **AI reviewer** (`docs/user/permission-modes.md`); titles are model-generated |
 
 ### 3.5 Effect, event sourcing and Atom are the spine
 
 `SPEC.md` §4.3 says plainly: "Do not adopt T3Code's full Effect/event-sourced architecture
-merely to obtain these guarantees." Forking *is* adopting it — Effect/Schema contracts,
+merely to obtain these guarantees." Forking _is_ adopting it — Effect/Schema contracts,
 `Effect.Atom` client state, an event-sourced engine, and a vendored beta `effect-smol` you
 are told to read before writing server code. There is no partial adoption.
 
@@ -306,7 +306,7 @@ on, especially for dev mode/maintainer-only features."
 
 ## 4. LIST THREE — What you have to decide
 
-### Decision 1 — Headless, or the TUI? *(everything depends on this)*
+### Decision 1 — Headless, or the TUI? _(everything depends on this)_
 
 If the real interactive TUI is non-negotiable, stop here; there is no fork, and OmniLink stays
 a solo build with eleven open P0/P1 audit items.
@@ -345,7 +345,7 @@ If it lands upstream you stop maintaining it forever.
 
 ### Decision 5 — Phone: their app, or your PWA?
 
-Their iOS/Android apps are free from the stores, genuinely good, and talk to *your* fork's
+Their iOS/Android apps are free from the stores, genuinely good, and talk to _your_ fork's
 server — but version skew between your fork and their released app is a real risk, and push
 runs through their relay. The PWA is more work, but no store, no Expo, no Apple account, no
 relay.
@@ -435,7 +435,7 @@ root and workspace build scripts, `.github/workflows/`, `infra/`, and `apps/mobi
 you have decided to own a mobile build.
 
 **Keep an `OMNI.md`** at the repo root listing every upstream file you have modified and why.
-That file *is* your merge checklist — before each sync, it tells you exactly where to look.
+That file _is_ your merge checklist — before each sync, it tells you exactly where to look.
 
 **Upstream what you can.** Every patch they accept is one you stop carrying. The Windows
 binary-probing discipline (2.9) and the rate-limit projection (2.1) are the two most likely

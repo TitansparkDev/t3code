@@ -64,6 +64,12 @@ export interface ProjectionFullThreadDiffContext {
   readonly toCheckpointRef: CheckpointRef | null;
 }
 
+/** The thread fields pull request sync reads, for a thread with at least one link. */
+export type ProjectionThreadPullRequests = Pick<
+  OrchestrationThreadShell,
+  "id" | "projectId" | "settledOverride" | "settledAt" | "pullRequests"
+>;
+
 export interface ProjectionThreadDetailQuery {
   /**
    * Limit activities before SQLite returns and decodes their payloads.
@@ -87,6 +93,15 @@ export interface ProjectionSnapshotQueryShape {
     readonly threadId: ThreadId;
     readonly requestId: ApprovalRequestId;
   }) => Effect.Effect<Option.Option<OrchestrationThreadActivity>, ProjectionRepositoryError>;
+
+  /**
+   * Read every activity of one kind across active (not deleted, not archived)
+   * threads, without hydrating the threads. Used at startup to find state a
+   * crashed process left behind.
+   */
+  readonly listActivitiesByKind: (
+    kind: string,
+  ) => Effect.Effect<ReadonlyArray<OrchestrationThreadActivity>, ProjectionRepositoryError>;
 
   /**
    * Read the lightweight command snapshot used to bootstrap the in-memory
@@ -124,6 +139,29 @@ export interface ProjectionSnapshotQueryShape {
    */
   readonly getArchivedShellSnapshot: () => Effect.Effect<
     OrchestrationShellSnapshot,
+    ProjectionRepositoryError
+  >;
+
+  /**
+   * Read active (not deleted, not archived) threads that have at least one pull
+   * request link, in shell snapshot order. Skips repository identity, so no
+   * legacy `linkedPullRequest` is derived.
+   */
+  readonly listThreadsWithPullRequests: () => Effect.Effect<
+    ReadonlyArray<ProjectionThreadPullRequests>,
+    ProjectionRepositoryError
+  >;
+
+  /** Durable worktree ownership retained after thread deletion, including across restarts. */
+  readonly getDeletedWorktreeThreads: () => Effect.Effect<
+    ReadonlyArray<{
+      readonly id: ThreadId;
+      readonly projectId: ProjectId;
+      readonly branch: string;
+      readonly worktreePath: string;
+      readonly workspaceRoot: string;
+      readonly deletedAt: string;
+    }>,
     ProjectionRepositoryError
   >;
 
@@ -221,7 +259,7 @@ export interface ProjectionSnapshotQueryShape {
     Option.Option<
       Pick<
         OrchestrationThreadShell,
-        "id" | "projectId" | "title" | "session" | "usageLimitResume"
+        "id" | "projectId" | "title" | "titleState" | "session" | "usageLimitResume"
       >
     >,
     ProjectionRepositoryError

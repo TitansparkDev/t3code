@@ -46,6 +46,7 @@ const thread = {
   activities: [],
   checkpoints: [],
   session: null,
+  pullRequests: [],
 };
 
 describe("handoff", () => {

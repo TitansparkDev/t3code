@@ -67,11 +67,13 @@ export class DesktopBackendConfiguration extends Context.Service<
 interface BackendObservabilitySettings {
   readonly otlpTracesUrl: Option.Option<string>;
   readonly otlpMetricsUrl: Option.Option<string>;
+  readonly otlpLogsUrl: Option.Option<string>;
 }
 
 const emptyBackendObservabilitySettings: BackendObservabilitySettings = {
   otlpTracesUrl: Option.none(),
   otlpMetricsUrl: Option.none(),
+  otlpLogsUrl: Option.none(),
 };
 
 const DESKTOP_BACKEND_ENV_NAMES = [
@@ -87,11 +89,36 @@ const DESKTOP_BACKEND_ENV_NAMES = [
   "T3CODE_TAILSCALE_SERVE_PORT",
 ] as const;
 
-// Sensitive env vars that the WSL backend needs but Windows process.env won't
-// forward across the wsl.exe boundary without WSLENV. The dev-server URL is
-// handled separately via a `--dev-url` CLI flag because WSLENV translation of
-// URL-shaped values (colons / slashes) is unreliable.
-const WSL_FORWARDED_ENV_NAMES = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY"] as const;
+// Env vars that the WSL backend needs but Windows process.env won't forward
+// across the wsl.exe boundary without WSLENV. The dev-server URL travels as
+// the `--dev-url` CLI flag instead.
+const WSL_FORWARDED_ENV_NAMES = [
+  "OPENAI_API_KEY",
+  "ANTHROPIC_API_KEY",
+  // Otherwise the WSL server keeps exporting to endpoints from the bootstrap.
+  "T3CODE_OTEL_SDK_DISABLED",
+  "OTEL_SDK_DISABLED",
+  "T3CODE_OTLP_HEADERS",
+  "T3CODE_OTLP_PROTOCOL",
+  // Forwarded without a WSLENV flag, so the values arrive untranslated. The
+  // server prefers an OTEL endpoint over the bootstrap envelope, so the T3 URLs
+  // travel as variables to keep winning inside the distro as they do on Windows.
+  "T3CODE_OTLP_TRACES_URL",
+  "T3CODE_OTLP_METRICS_URL",
+  "T3CODE_OTLP_LOGS_URL",
+  "OTEL_EXPORTER_OTLP_ENDPOINT",
+  "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+  "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+  "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
+  "OTEL_EXPORTER_OTLP_HEADERS",
+  "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+  "OTEL_EXPORTER_OTLP_METRICS_HEADERS",
+  "OTEL_EXPORTER_OTLP_LOGS_HEADERS",
+  "OTEL_EXPORTER_OTLP_PROTOCOL",
+  "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
+  "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL",
+  "OTEL_EXPORTER_OTLP_LOGS_PROTOCOL",
+] as const;
 
 const WSL_SERVER_SYSTEM_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
@@ -189,11 +216,11 @@ const readPersistedBackendObservabilitySettings = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const raw = yield* fileSystem.readFileString(environment.serverSettingsPath).pipe(
-    Effect.map(Option.some),
+    Effect.asSome,
     Effect.catchTags({
       PlatformError: (cause) =>
         cause.reason._tag === "NotFound"
-          ? Effect.succeed(Option.none())
+          ? Effect.succeedNone
           : logBackendObservabilitySettingsReadFailure(environment.serverSettingsPath, cause).pipe(
               Effect.as(Option.none()),
             ),
@@ -207,7 +234,23 @@ const readPersistedBackendObservabilitySettings = Effect.gen(function* () {
   return {
     otlpTracesUrl: Option.fromNullishOr(parsed.otlpTracesUrl),
     otlpMetricsUrl: Option.fromNullishOr(parsed.otlpMetricsUrl),
+    otlpLogsUrl: Option.fromNullishOr(parsed.otlpLogsUrl),
   };
+});
+
+// The bootstrap carries the OTLP endpoints to every backend, including a WSL
+// child that lacks the variables. The T3 URLs also travel as variables in
+// WSL_FORWARDED_ENV_NAMES so they outrank a forwarded OTEL endpoint. Env beats
+// the persisted settings file, matching the precedence resolveServerConfig and
+// DesktopObservability apply.
+const readBackendObservabilitySettings = Effect.gen(function* () {
+  const environment = yield* DesktopEnvironment.DesktopEnvironment;
+  const persisted = yield* readPersistedBackendObservabilitySettings;
+  return {
+    otlpTracesUrl: Option.orElse(environment.otlpTracesUrl, () => persisted.otlpTracesUrl),
+    otlpMetricsUrl: Option.orElse(environment.otlpMetricsUrl, () => persisted.otlpMetricsUrl),
+    otlpLogsUrl: Option.orElse(environment.otlpLogsUrl, () => persisted.otlpLogsUrl),
+  } satisfies BackendObservabilitySettings;
 });
 
 interface SharedBootstrapInput {
@@ -384,8 +427,8 @@ const runWslPreflight = Effect.fn("desktop.backendConfiguration.wslPreflight")(f
   if (input.runtimeArchive !== null) {
     const runtime = yield* wslEnv.prepareRuntime(runningDistro, input.runtimeArchive);
     if (runtime.ok) {
-      // The staged runtime is self-contained, so the only question is whether
-      // it runs here; there is no Node to find or node-pty to load.
+      // The staged runtime supplies its own Node and node-pty. Provider PATH
+      // discovery must not require either dependency for runtime readiness.
       const stagedProbe = yield* wslEnv.probeRuntime(runningDistro, runtime.linuxAppRoot);
       if (stagedProbe.ok) {
         yield* wslServerTree.cleanupLegacy;
@@ -483,6 +526,10 @@ const buildObservabilityFragment = (observabilitySettings: BackendObservabilityS
     onNone: () => ({}),
     onSome: (otlpMetricsUrl) => ({ otlpMetricsUrl }),
   }),
+  ...Option.match(observabilitySettings.otlpLogsUrl, {
+    onNone: () => ({}),
+    onSome: (otlpLogsUrl) => ({ otlpLogsUrl }),
+  }),
 });
 
 const resolvePrimaryStartConfig = Effect.fn("desktop.backendConfiguration.resolvePrimary")(
@@ -519,7 +566,16 @@ const resolvePrimaryStartConfig = Effect.fn("desktop.backendConfiguration.resolv
 
     return {
       executablePath: process.execPath,
-      args: [environment.backendEntryPath, "--bootstrap-fd", "3"],
+      // Packaged builds only, so a dev instance never shares the cache with the
+      // prod app it is often run from. `--require` rather than NODE_COMPILE_CACHE,
+      // so the setting does not leak into the provider and terminal processes
+      // the backend starts.
+      args: [
+        ...(environment.isPackaged ? ["--require", environment.compileCachePath] : []),
+        environment.backendEntryPath,
+        "--bootstrap-fd",
+        "3",
+      ],
       entryPath: environment.backendEntryPath,
       cwd: environment.backendCwd,
       env: {
@@ -702,10 +758,8 @@ const resolveWslStartConfig = Effect.fn("desktop.backendConfiguration.resolveWsl
   };
 
   // Forward the dev-server URL as an explicit CLI flag so the WSL backend's
-  // config resolution lands in dev/ instead of userdata/. Inheriting through
-  // WSLENV is unreliable in practice (URL-shaped values with colons /
-  // slashes get translated unpredictably depending on flags), and the
-  // packaged build leaves devServerUrl as None anyway.
+  // config resolution lands in dev/ instead of userdata/. The packaged build
+  // leaves devServerUrl as None.
   const devUrlArgs = Option.match(environment.devServerUrl, {
     onNone: () => [] as ReadonlyArray<string>,
     onSome: (url) => ["--dev-url", url.href],
@@ -799,7 +853,7 @@ export const make = Effect.gen(function* () {
   // restart cycle without having to bounce the desktop process.
   const sharedInputs = Effect.gen(function* () {
     const bootstrapToken = yield* getOrCreateBootstrapToken;
-    const observabilitySettings = yield* readPersistedBackendObservabilitySettings.pipe(
+    const observabilitySettings = yield* readBackendObservabilitySettings.pipe(
       Effect.provideService(FileSystem.FileSystem, fileSystem),
       Effect.provideService(DesktopEnvironment.DesktopEnvironment, environment),
     );

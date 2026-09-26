@@ -122,8 +122,8 @@ export class DesktopWslEnvironment extends Context.Service<
     // Marks a staged runtime as unusable so the next launch reinstalls it.
     readonly invalidateRuntime: (distro: string | null, runtimeId: string) => Effect.Effect<void>;
     // Proves a staged self-contained runtime can run (`<root>/t3 --version`)
-    // and captures the user's login-shell PATH for the launch. Needs no Node
-    // in the distro; the mounted server tree still goes through ensureNodePty.
+    // and resolves the user's PATH, including version-managed Node for provider
+    // CLIs. Node is optional; the mounted tree still requires ensureNodePty.
     readonly probeRuntime: (
       distro: string | null,
       linuxAppRoot: string,
@@ -545,13 +545,12 @@ require("node-pty");
 NODE`;
 
 // Readiness proof for a staged self-contained runtime: the executable runs and
-// reports its version, and the login shell's PATH is captured for the launch.
-// This runs under plain `sh` (no Node resolver preamble, since the runtime
-// needs no Node), so the login shell is entered explicitly for the PATH
-// capture; a distro without bash falls back to the PATH sh was started with.
-const RUNTIME_PROBE_SCRIPT = (linuxAppRoot: string) =>
+// reports its version. Provider CLIs may still need version-managed Node, so
+// resolve it before capturing PATH without requiring it for runtime readiness.
+// A distro without bash falls back to the PATH sh was started with.
+export const buildWslRuntimeProbeScript = (linuxAppRoot: string) =>
   [
-    `bash -lc ${shellQuote(RESOLVED_PATH_LINE)} 2>/dev/null || ${RESOLVED_PATH_LINE}`,
+    `bash -lc ${shellQuote(`${buildWslNodeEnvPreamble()}${RESOLVED_PATH_LINE}`)} 2>/dev/null || ${RESOLVED_PATH_LINE}`,
     `${shellQuote(`${linuxAppRoot}/t3`)} --version >/dev/null 2>&1`,
   ].join("\n");
 
@@ -676,9 +675,14 @@ const probeWslRuntimeImpl = (
   linuxAppRoot: string,
 ): Effect.Effect<ProbeWslRuntimeResult, never, ChildProcessSpawner.ChildProcessSpawner> =>
   Effect.gen(function* () {
-    const probe = yield* runWslShell(distro, RUNTIME_PROBE_SCRIPT(linuxAppRoot), PROBE_TIMEOUT, {
-      resolveNode: false,
-    });
+    const probe = yield* runWslShell(
+      distro,
+      buildWslRuntimeProbeScript(linuxAppRoot),
+      PROBE_TIMEOUT,
+      {
+        resolveNode: false,
+      },
+    );
     const transportFailureReason = formatWslShellTransportFailureReason(
       probe.transportFailure,
       "the staged runtime",
@@ -1036,11 +1040,7 @@ const preWarmImpl = (
       const handle = yield* spawner.spawn(command);
       yield* handle.exitCode;
     }),
-  ).pipe(
-    Effect.timeoutOption(PRE_WARM_TIMEOUT),
-    Effect.asVoid,
-    Effect.catch(() => Effect.void),
-  );
+  ).pipe(Effect.timeoutOption(PRE_WARM_TIMEOUT), Effect.ignore);
 
 const windowsToWslPathImpl = (
   distro: string | null,
@@ -1268,15 +1268,14 @@ export const layer = Layer.effect(
     // distro. Negative results aren't cached so a transient wsl.exe failure
     // doesn't permanently disable tilde expansion.
     const userHomeCache = new Map<string, string>();
-    const getUserHome = (distro: string | null) =>
-      Effect.gen(function* () {
-        const key = distro ?? "__default__";
-        const cached = userHomeCache.get(key);
-        if (cached !== undefined) return Option.some(cached);
-        const resolved = yield* provideSpawner(getUserHomeImpl(distro));
-        if (Option.isSome(resolved)) userHomeCache.set(key, resolved.value);
-        return resolved;
-      }).pipe(Effect.withSpan("desktop.wsl.getUserHome"));
+    const getUserHome = Effect.fn("desktop.wsl.getUserHome")(function* (distro: string | null) {
+      const key = distro ?? "__default__";
+      const cached = userHomeCache.get(key);
+      if (cached !== undefined) return Option.some(cached);
+      const resolved = yield* provideSpawner(getUserHomeImpl(distro));
+      if (Option.isSome(resolved)) userHomeCache.set(key, resolved.value);
+      return resolved;
+    });
 
     const getDistroIp = (distro: string | null) =>
       provideSpawner(getDistroIpImpl(distro)).pipe(Effect.withSpan("desktop.wsl.getDistroIp"));

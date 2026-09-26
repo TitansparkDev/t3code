@@ -155,35 +155,35 @@ the correct one.
       `apps/web/src/components/quota/`.
 
       **Rows come from configured provider instances only** — decided. Add a third Codex
-          account and a row appears; remove one and it goes. Display name and accent colour come
-          from the instance config (OmniLink `SPEC.md` §7.5). Nothing is hard-coded, so
-          "Codex 1, Codex 2, Claude 1, Claude 2" is what *your* setup renders, not what the code
-          says.
+                  account and a row appears; remove one and it goes. Display name and accent colour come
+                  from the instance config (OmniLink `SPEC.md` §7.5). Nothing is hard-coded, so
+                  "Codex 1, Codex 2, Claude 1, Claude 2" is what *your* setup renders, not what the code
+                  says.
 
-          **The agy row is a single combined row.** Its compact identity is `AGY` / `Combined`,
-          with the same fixed 5-hour and weekly columns as Codex and Claude. Clicking expands it to
-          one row per configured AGY instance, including the account email that instance actually
-          reported. Each duration uses the most constrained provider pool within an instance before
-          averaging fresh instances, so an exhausted Claude/GPT pool cannot be hidden by Gemini.
+                  **The agy row is a single combined row.** Its compact identity is `AGY` / `Combined`,
+                  with the same fixed 5-hour and weekly columns as Codex and Claude. Clicking expands it to
+                  one row per configured AGY instance, including the account email that instance actually
+                  reported. Each duration uses the most constrained provider pool within an instance before
+                  averaging fresh instances, so an exhausted Claude/GPT pool cannot be hidden by Gemini.
 
-          **Honesty rules, non-negotiable.** A group whose data can't be read shows an explicit
-          "not exposed" state. A snapshot past `QUOTA_SNAPSHOT_STALE_AFTER_MS` renders as stale
-          with its age, never as a current figure. Never a guessed or extrapolated number.
+                  **Honesty rules, non-negotiable.** A group whose data can't be read shows an explicit
+                  "not exposed" state. A snapshot past `QUOTA_SNAPSHOT_STALE_AFTER_MS` renders as stale
+                  with its age, never as a current figure. Never a guessed or extrapolated number.
 
-          Reset countdowns on hover; click a row to refresh. Respect `AGENTS.md`: no
-          continuously repainting animation — countdowns tick on a coarse interval, and the
-          collapsed state must not re-render on unrelated sidebar traffic.
+                  Reset countdowns on hover; click a row to refresh. Respect `AGENTS.md`: no
+                  continuously repainting animation — countdowns tick on a coarse interval, and the
+                  collapsed state must not re-render on unrelated sidebar traffic.
 
-          - [x] Mount once in `SidebarChromeFooter`, covering both sidebar shells.
-          - [x] Render enabled configured instances with their display names, provider icons,
-            accent colours, environment identity, multiple quota groups and reset detail.
-          - [x] Render explicit no-data, not-exposed and stale states; update countdowns once per
-            minute and publish no quota update for unrelated provider traffic.
-          - [x] Combine Antigravity accounts into the decided average headline with per-account
-            expansion. The layout remains one full-width row at wide and narrow sidebar sizes;
-            stale and absent accounts do not become zeroes.
-          - [ ] _Visual/live gate:_ inspect both sidebar shells with real Codex and Claude data,
-            including narrow width, stale data, multiple environments and keyboard focus.
+                  - [x] Mount once in `SidebarChromeFooter`, covering both sidebar shells.
+                  - [x] Render enabled configured instances with their display names, provider icons,
+                    accent colours, environment identity, multiple quota groups and reset detail.
+                  - [x] Render explicit no-data, not-exposed and stale states; update countdowns once per
+                    minute and publish no quota update for unrelated provider traffic.
+                  - [x] Combine Antigravity accounts into the decided average headline with per-account
+                    expansion. The layout remains one full-width row at wide and narrow sidebar sizes;
+                    stale and absent accounts do not become zeroes.
+                  - [ ] _Visual/live gate:_ inspect both sidebar shells with real Codex and Claude data,
+                    including narrow width, stale data, multiple environments and keyboard focus.
 
 - [ ] **B5 — Hover detail in the provider/account selector.** Implementation landed on
       2026-08-23; the visual/live gate remains.
@@ -191,21 +191,21 @@ the correct one.
       weekly usage. Cover both entry points, per `AGENTS.md`'s hit-every-surface rule:
 
       - the composer picker — `apps/web/src/components/chat/ModelListRow.tsx` is the row;
-            `ModelPickerContent.tsx` and `ProviderModelPicker.tsx` are its hosts
-          - Settings → Providers — `apps/web/src/components/settings/ProviderInstanceCard.tsx`
+                    `ModelPickerContent.tsx` and `ProviderModelPicker.tsx` are its hosts
+                  - Settings → Providers — `apps/web/src/components/settings/ProviderInstanceCard.tsx`
 
-          Reuse whatever B2 renders for a single account rather than writing second copy. The
-          upstream branch's `limitsFormat.ts` is worth reading for the wording it settled on
-          after two follow-up commits ("unambiguous limits copy", "reset text no longer wraps").
-          `QuotaAccountDetails` is now reused by both surfaces; the composer passes its active
-          environment through the picker so identical instance ids on two machines never
-          cross streams, while Settings uses its selected environment directly.
+                  Reuse whatever B2 renders for a single account rather than writing second copy. The
+                  upstream branch's `limitsFormat.ts` is worth reading for the wording it settled on
+                  after two follow-up commits ("unambiguous limits copy", "reset text no longer wraps").
+                  `QuotaAccountDetails` is now reused by both surfaces; the composer passes its active
+                  environment through the picker so identical instance ids on two machines never
+                  cross streams, while Settings uses its selected environment directly.
 
-          - [x] Composer model rows expose the selected account's live detail on its provider
-            label without adding a subscription per virtualized row.
-          - [x] Settings → Providers account headings expose the same detail component.
-          - [ ] _Visual/live gate:_ verify hover placement, keyboard access, narrow picker
-            layout, disabled model rows and real short/long windows on both surfaces.
+                  - [x] Composer model rows expose the selected account's live detail on its provider
+                    label without adding a subscription per virtualized row.
+                  - [x] Settings → Providers account headings expose the same detail component.
+                  - [ ] _Visual/live gate:_ verify hover placement, keyboard access, narrow picker
+                    layout, disabled model rows and real short/long windows on both surfaces.
 
 - [ ] **B6 — Claude's streamed event only names the binding window.** New, and a real
       correctness gap.
@@ -261,83 +261,83 @@ the correct one.
       coverage/implementation only for a behavior that still fails.
 
       Original symptom: this was a real observed failure, not a timer-display bug. A turn can finish, and its final assistant summary (and
-          sometimes its final tool rows) can already be visible, while T3 Code keeps the thread in
-          `working` for hours. The same stale tool calls remain on screen, the Working timer keeps
-          increasing, and the red Stop button can do nothing. The reliable workaround observed on the
-          Windows fork is to send another message, creating a fresh turn, then Stop that new turn; only
-          then does the thread settle and the already-finished summary remain visible.
+                  sometimes its final tool rows) can already be visible, while T3 Code keeps the thread in
+                  `working` for hours. The same stale tool calls remain on screen, the Working timer keeps
+                  increasing, and the red Stop button can do nothing. The reliable workaround observed on the
+                  Windows fork is to send another message, creating a fresh turn, then Stop that new turn; only
+                  then does the thread settle and the already-finished summary remain visible.
 
-          **Investigation finding:** transcript completion and lifecycle completion are separate event
-          paths. `ChatView`/`derivePhase` treats the projected session/thread `running` state as
-          authoritative for the Working UI. `ProviderService.sendTurn` persists `running` plus an
-          `activeTurnId`, and normal completion depends on a later terminal runtime event being mapped
-          and ingested to clear it. The red button calls turn interrupt only; `ProviderService.interruptTurn`
-          does not reconcile the persisted/projected state afterward. Therefore, if the provider has
-          actually become idle but the terminal lifecycle event was lost, rejected or never mapped,
-          interrupt can legitimately have nothing left to interrupt and the stale `running` projection
-          survives forever. Codex has an additional sharp edge: terminal `turn/completed` mapping can
-          currently return no canonical event when the native payload fails schema decoding, and its
-          child-thread notification routing is complex enough that this exact class of root completion
-          loss has happened before (there is already a guard against registering `/root` as its own
-          child). Claude likewise relies on its result/stream terminal path rather than interrupt itself
-          making the session ready. Fix the invariant across providers, not just one symptom.
+                  **Investigation finding:** transcript completion and lifecycle completion are separate event
+                  paths. `ChatView`/`derivePhase` treats the projected session/thread `running` state as
+                  authoritative for the Working UI. `ProviderService.sendTurn` persists `running` plus an
+                  `activeTurnId`, and normal completion depends on a later terminal runtime event being mapped
+                  and ingested to clear it. The red button calls turn interrupt only; `ProviderService.interruptTurn`
+                  does not reconcile the persisted/projected state afterward. Therefore, if the provider has
+                  actually become idle but the terminal lifecycle event was lost, rejected or never mapped,
+                  interrupt can legitimately have nothing left to interrupt and the stale `running` projection
+                  survives forever. Codex has an additional sharp edge: terminal `turn/completed` mapping can
+                  currently return no canonical event when the native payload fails schema decoding, and its
+                  child-thread notification routing is complex enough that this exact class of root completion
+                  loss has happened before (there is already a guard against registering `/root` as its own
+                  child). Claude likewise relies on its result/stream terminal path rather than interrupt itself
+                  making the session ready. Fix the invariant across providers, not just one symptom.
 
-          Implementation order:
-          1. **Lock the bug down with regression tests first.** Cover “final assistant item visible but
-             lifecycle projection still running”, “provider is already idle when Stop is pressed”, and
-             “a normal active turn is interrupted”. Put common lifecycle tests in
-             `ProviderRuntimeIngestion.test.ts` / `ProviderCommandReactor.test.ts`; add provider-focused
-             cases in Codex and Claude adapter/runtime tests. Include a Codex multi-agent fixture where
-             root and child notifications are interleaved so a child can never consume the root
-             `turn/completed` event.
-          2. **Make Stop reconcile, not merely request an interrupt.** After the provider interrupt
-             path returns, obtain provider-authoritative session state. If the provider confirms there
-             is no active turn (ready/idle/error/closed), repair the canonical session projection and
-             persisted binding by clearing `activeTurnId` and applying the matching terminal/ready
-             state. If work is genuinely still active, keep it Working. Do not treat an orchestration
-             turn id as a provider-native turn id.
-          3. **Harden terminal-event ingestion.** A native terminal event must never disappear silently.
-             Codex terminal decode/routing failures need a logged/observable fallback that triggers
-             reconciliation instead of returning `[]` and leaving `running` behind. Treat an
-             authoritative root-thread idle/ready signal as another reconciliation opportunity, while
-             keeping child-thread idle signals isolated from the parent. Apply the same invariant at
-             provider stream exit/error boundaries.
-          4. **Repair stale persisted state on reconnect/reload.** When a live provider session says it
-             is ready/idle but the saved binding says running, reconcile to the provider rather than
-             resurrecting an hours-old Working state. Preserve queued/follow-up semantics: never clear
-             `running` if another provider turn is actually active or queued to become active.
-          5. **Make the Stop UX reflect backend truth.** While an interrupt/reconciliation request is
-             in flight, show a bounded “Stopping…” state and prevent duplicate clicks. When the backend
-             reports already-idle/reconciled, immediately restore the Send control and stop the timer.
-             Do not optimistically mark a genuinely active agent finished just to make the UI look
-             responsive.
-          6. **Add diagnostics for the invariant.** Log/measure repairs such as “projection running,
-             provider idle”, dropped/undecodable terminal events, and interrupts that found no active
-             provider turn. That makes any remaining provider-specific recurrence diagnosable from one
-             event trail instead of another multi-hour visual hang.
+                  Implementation order:
+                  1. **Lock the bug down with regression tests first.** Cover “final assistant item visible but
+                     lifecycle projection still running”, “provider is already idle when Stop is pressed”, and
+                     “a normal active turn is interrupted”. Put common lifecycle tests in
+                     `ProviderRuntimeIngestion.test.ts` / `ProviderCommandReactor.test.ts`; add provider-focused
+                     cases in Codex and Claude adapter/runtime tests. Include a Codex multi-agent fixture where
+                     root and child notifications are interleaved so a child can never consume the root
+                     `turn/completed` event.
+                  2. **Make Stop reconcile, not merely request an interrupt.** After the provider interrupt
+                     path returns, obtain provider-authoritative session state. If the provider confirms there
+                     is no active turn (ready/idle/error/closed), repair the canonical session projection and
+                     persisted binding by clearing `activeTurnId` and applying the matching terminal/ready
+                     state. If work is genuinely still active, keep it Working. Do not treat an orchestration
+                     turn id as a provider-native turn id.
+                  3. **Harden terminal-event ingestion.** A native terminal event must never disappear silently.
+                     Codex terminal decode/routing failures need a logged/observable fallback that triggers
+                     reconciliation instead of returning `[]` and leaving `running` behind. Treat an
+                     authoritative root-thread idle/ready signal as another reconciliation opportunity, while
+                     keeping child-thread idle signals isolated from the parent. Apply the same invariant at
+                     provider stream exit/error boundaries.
+                  4. **Repair stale persisted state on reconnect/reload.** When a live provider session says it
+                     is ready/idle but the saved binding says running, reconcile to the provider rather than
+                     resurrecting an hours-old Working state. Preserve queued/follow-up semantics: never clear
+                     `running` if another provider turn is actually active or queued to become active.
+                  5. **Make the Stop UX reflect backend truth.** While an interrupt/reconciliation request is
+                     in flight, show a bounded “Stopping…” state and prevent duplicate clicks. When the backend
+                     reports already-idle/reconciled, immediately restore the Send control and stop the timer.
+                     Do not optimistically mark a genuinely active agent finished just to make the UI look
+                     responsive.
+                  6. **Add diagnostics for the invariant.** Log/measure repairs such as “projection running,
+                     provider idle”, dropped/undecodable terminal events, and interrupts that found no active
+                     provider turn. That makes any remaining provider-specific recurrence diagnosable from one
+                     event trail instead of another multi-hour visual hang.
 
-          **Do not solve this with an elapsed-time cutoff.** Legitimate agents may run for hours. State
-          must end because a provider-terminal/idle condition is confirmed, never because the Working
-          timer crossed an arbitrary duration.
+                  **Do not solve this with an elapsed-time cutoff.** Legitimate agents may run for hours. State
+                  must end because a provider-terminal/idle condition is confirmed, never because the Working
+                  timer crossed an arbitrary duration.
 
-          **Progress (2026-08-28):** the Stop path now reads the routed provider session after a
-          successful interrupt, persists the observed ready/stopped/error state, and emits a canonical
-          `session.state.changed` reconciliation event. The active composer keeps a
-          thread-and-turn-scoped “Stopping generation” state until that lifecycle projection settles,
-          prevents duplicate requests, and does not leak the disabled control across thread switches.
-          Codex terminal decode failures now emit an observable warning plus a terminal lifecycle
-          fallback; a failed Codex event consumer emits an error-state repair; startup compares live
-          provider session state with persisted projections and repairs idle/error/closed mismatches
-          without copying provider-native turn ids into orchestration state. Stale lifecycle events are
-          logged with their active/pending turn context. Focused adapter, startup, ingestion, reactor,
-          and web regression tests pass. The authenticated Codex/Claude live gate remains.
+                  **Progress (2026-08-28):** the Stop path now reads the routed provider session after a
+                  successful interrupt, persists the observed ready/stopped/error state, and emits a canonical
+                  `session.state.changed` reconciliation event. The active composer keeps a
+                  thread-and-turn-scoped “Stopping generation” state until that lifecycle projection settles,
+                  prevents duplicate requests, and does not leak the disabled control across thread switches.
+                  Codex terminal decode failures now emit an observable warning plus a terminal lifecycle
+                  fallback; a failed Codex event consumer emits an error-state repair; startup compares live
+                  provider session state with persisted projections and repairs idle/error/closed mismatches
+                  without copying provider-native turn ids into orchestration state. Stale lifecycle events are
+                  logged with their active/pending turn context. Focused adapter, startup, ingestion, reactor,
+                  and web regression tests pass. The authenticated Codex/Claude live gate remains.
 
-          _Gate: after every normal Codex and Claude completion the final summary remains visible,
-          Working ends promptly, the timer stops, stale live tool rows are terminal, and Send returns;
-          Stop terminates a genuinely active turn; Stop also clears a stale-running projection when the
-          provider is already idle; no second user message is required; reload/reconnect cannot revive
-          a completed turn as Working; long-running legitimate turns remain Working; queued follow-ups
-          and Codex multi-agent child turns cannot incorrectly settle the parent._
+                  _Gate: after every normal Codex and Claude completion the final summary remains visible,
+                  Working ends promptly, the timer stops, stale live tool rows are terminal, and Send returns;
+                  Stop terminates a genuinely active turn; Stop also clears a stale-running projection when the
+                  provider is already idle; no second user message is required; reload/reconnect cannot revive
+                  a completed turn as Working; long-running legitimate turns remain Working; queued follow-ups
+                  and Codex multi-agent child turns cannot incorrectly settle the parent._
 
 - [ ] **C2 — The unrecoverable chat. Reproduce it before fixing it.** Expanded — this is the
       bug you actually hit, and it is currently the fork's most user-visible defect.
@@ -373,10 +373,10 @@ the correct one.
       for the Claude half.
 
       **2026-08-28 follow-up:** explicit limit detection and recovery copy now live in
-          `packages/shared`, so server classification, web banners, and the mobile in-thread notice
-          cannot drift. Mobile no longer requires navigating to the thread list to discover the
-          recoverable state. The code-level recovery path is complete; authenticated live reproduction
-          and visual checks remain the only C2 gates.
+                  `packages/shared`, so server classification, web banners, and the mobile in-thread notice
+                  cannot drift. Mobile no longer requires navigating to the thread list to discover the
+                  recoverable state. The code-level recovery path is complete; authenticated live reproduction
+                  and visual checks remain the only C2 gates.
 
 - [x] **C3 — Slash-command catalogue, fully featured.** Upstream carries
       `ServerProviderSlashCommand { name, description?, input? }`

@@ -1,4 +1,5 @@
 import {
+  DESKTOP_UPDATE_RESTART_MARKER_FILE,
   DesktopUpdateChannelSchema,
   type DesktopRuntimeInfo,
   type DesktopUpdateActionResult,
@@ -262,6 +263,7 @@ function getAutoUpdateDisabledReason(args: {
   isPackaged: boolean;
   platform: NodeJS.Platform;
   appImage?: string | undefined;
+  isDebPackage: boolean;
   disabledByEnv: boolean;
   hasUpdateFeedConfig: boolean;
 }): string | null {
@@ -274,8 +276,8 @@ function getAutoUpdateDisabledReason(args: {
   if (args.disabledByEnv) {
     return "Automatic updates are disabled by the T3CODE_DISABLE_AUTO_UPDATE setting.";
   }
-  if (args.platform === "linux" && !args.appImage) {
-    return "Automatic updates on Linux require running the AppImage build.";
+  if (args.platform === "linux" && !args.appImage && !args.isDebPackage) {
+    return "Automatic updates on Linux require the AppImage or the .deb package.";
   }
   return null;
 }
@@ -346,6 +348,18 @@ export const make = Effect.gen(function* () {
     ),
   );
 
+  // The .deb carries electron-builder's resources/package-type marker.
+  // electron-updater reads the same file and installs updates with dpkg.
+  const isDebPackage =
+    environment.platform === "linux" && environment.isPackaged
+      ? yield* fileSystem
+          .readFileString(environment.path.join(environment.resourcesPath, "package-type"))
+          .pipe(
+            Effect.map((packageType) => packageType.trim() === "deb"),
+            Effect.orElseSucceed(() => false),
+          )
+      : false;
+
   const hasUpdateFeedConfig = Ref.get(appUpdateYmlConfigRef).pipe(
     Effect.map((appUpdateYmlConfig) => Option.isSome(appUpdateYmlConfig) || config.mockUpdates),
   );
@@ -358,6 +372,7 @@ export const make = Effect.gen(function* () {
         isPackaged: environment.isPackaged,
         platform: environment.platform,
         appImage: Option.getOrUndefined(config.appImagePath),
+        isDebPackage,
         disabledByEnv: config.disableAutoUpdate,
         hasUpdateFeedConfig: hasFeedConfig,
       }),
@@ -524,8 +539,35 @@ export const make = Effect.gen(function* () {
     );
   }).pipe(Effect.withSpan("desktop.updates.downloadAvailableUpdate"));
 
+  // Tells the primary backend that the coming stop is an update restart, so it
+  // keeps its managed tunnel for the backend the updated app starts. Best
+  // effort: without the marker the backend only re-provisions its tunnel.
+  const updateRestartMarkerDir = environment.path.join(environment.baseDir, "runtime");
+  const updateRestartMarkerPath = environment.path.join(
+    updateRestartMarkerDir,
+    DESKTOP_UPDATE_RESTART_MARKER_FILE,
+  );
+  const writeUpdateRestartMarker = fileSystem
+    .makeDirectory(updateRestartMarkerDir, { recursive: true })
+    .pipe(
+      Effect.andThen(fileSystem.writeFileString(updateRestartMarkerPath, "")),
+      Effect.catch((error) =>
+        logUpdaterWarning("Could not write the update restart marker.", { errorTag: error._tag }),
+      ),
+    );
+
+  // A failed or interrupted install brings no updated backend, so a later
+  // quit must release the tunnel.
+  const removeUpdateRestartMarker = fileSystem
+    .remove(updateRestartMarkerPath, { force: true })
+    .pipe(Effect.ignore);
+
   const resetInstallAction = Effect.all(
-    [finishUpdateAction("install"), Ref.set(desktopState.quitting, false)],
+    [
+      finishUpdateAction("install"),
+      Ref.set(desktopState.quitting, false),
+      removeUpdateRestartMarker,
+    ],
     { discard: true },
   );
 
@@ -540,6 +582,7 @@ export const make = Effect.gen(function* () {
     if (!ownsRecovery) return;
 
     yield* Ref.set(desktopState.quitting, false);
+    yield* removeUpdateRestartMarker;
     yield* Effect.gen(function* () {
       const instances = yield* pool.list;
       const restartExit = yield* Effect.forEach(instances, (instance) => instance.start, {
@@ -619,6 +662,7 @@ export const make = Effect.gen(function* () {
         yield* Ref.set(desktopState.quitting, true);
 
         return yield* Effect.gen(function* () {
+          yield* writeUpdateRestartMarker;
           // Stop every backend in the pool, not just the primary. With
           // parallel WSL + Windows backends, leaving the WSL instance up
           // means quitAndInstall's app.quit() exits before the pool's
@@ -671,24 +715,26 @@ export const make = Effect.gen(function* () {
       }),
     ).pipe(Effect.withSpan("desktop.updates.installDownloadedUpdate"));
 
-  const installWithExpectedVersion = (expectedVersion?: string, unattended = false) =>
-    Effect.gen(function* () {
-      if (yield* Ref.get(desktopState.quitting)) {
-        return {
-          accepted: false,
-          completed: false,
-          failed: false,
-          state: yield* Ref.get(updateStateRef),
-        };
-      }
-      const result = yield* installDownloadedUpdate(expectedVersion, unattended);
+  const installWithExpectedVersion = Effect.fn("desktop.updates.install")(function* (
+    expectedVersion?: string,
+    unattended = false,
+  ) {
+    if (yield* Ref.get(desktopState.quitting)) {
       return {
-        accepted: result.accepted,
-        completed: result.completed,
-        failed: result.failed,
+        accepted: false,
+        completed: false,
+        failed: false,
         state: yield* Ref.get(updateStateRef),
       };
-    }).pipe(Effect.withSpan("desktop.updates.install"));
+    }
+    const result = yield* installDownloadedUpdate(expectedVersion, unattended);
+    return {
+      accepted: result.accepted,
+      completed: result.completed,
+      failed: result.failed,
+      state: yield* Ref.get(updateStateRef),
+    };
+  });
 
   const runScheduledUpdate = Effect.scoped(
     Effect.gen(function* () {
@@ -803,6 +849,7 @@ export const make = Effect.gen(function* () {
           const { releaseNotes, omittedReleaseCount } = normalizeDesktopUpdateReleaseNotes(
             info.releaseNotes,
             info.version,
+            state.channel,
           );
           yield* setState(
             reduceDesktopUpdateStateOnUpdateAvailable(

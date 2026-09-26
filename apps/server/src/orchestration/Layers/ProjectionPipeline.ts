@@ -635,6 +635,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             pinnedAt: null,
             pinOrderKey: null,
             activeOrderKey: null,
+            autoSettleDisabledAt: null,
             titleRegenerationRequestId: null,
             titleRegenerationStartedAt: null,
             latestUserMessageAt: null,
@@ -827,6 +828,21 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           return;
         }
 
+        case "thread.auto-settle-set": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            autoSettleDisabledAt: event.payload.autoSettleDisabledAt,
+            updatedAt: event.payload.updatedAt,
+          });
+          return;
+        }
+
         case "thread.pin-reordered": {
           const existingRow = yield* projectionThreadRepository.getById({
             threadId: event.payload.threadId,
@@ -854,6 +870,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...(event.payload.title !== undefined ? { title: event.payload.title } : {}),
             ...(event.payload.activeOrderKey !== undefined
               ? { activeOrderKey: event.payload.activeOrderKey }
+              : {}),
+            ...(event.payload.titleState !== undefined
+              ? { titleState: event.payload.titleState }
               : {}),
             ...(event.payload.titleRegeneration !== undefined
               ? {
@@ -1720,6 +1739,18 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             threadId: event.payload.threadId,
             turnId: event.payload.turnId,
           });
+          // Do not let a placeholder (status "missing") overwrite a checkpoint
+          // that has already been captured with a real git ref. In-memory
+          // projectEvent already refuses this. SQL did not, so thread detail
+          // and diffs could show missing after a ready capture.
+          if (
+            Option.isSome(existingTurn) &&
+            existingTurn.value.checkpointStatus !== null &&
+            existingTurn.value.checkpointStatus !== "missing" &&
+            event.payload.status === "missing"
+          ) {
+            return;
+          }
           const nextState = event.payload.status === "error" ? "error" : "completed";
           yield* projectionTurnRepository.clearCheckpointTurnConflict({
             threadId: event.payload.threadId,

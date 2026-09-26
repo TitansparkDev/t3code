@@ -314,13 +314,11 @@ export function useRefreshLimits(
   });
   const [now, setNow] = useState(() => Date.now());
   const [refreshing, setRefreshing] = useState(false);
+  const refreshingRef = useRef(false);
   const [failedEnvironments, setFailedEnvironments] = useState<
     readonly { environmentId: EnvironmentId; label: string }[]
   >([]);
-  const refreshingRef = useRef(false);
-  // Always toggles `refreshing`, even with nothing to probe: Android's
-  // RefreshControl keeps its spinner up until it sees true then false.
-  const refresh = async (automatic = false) => {
+  const refresh = async (automatic = false, afterPending = false) => {
     const connected = [...presentations].filter(
       ([environmentId, presentation]) =>
         presentation.connection.phase === "connected" &&
@@ -334,6 +332,7 @@ export function useRefreshLimits(
               environmentId,
               () => refreshProviders({ environmentId, input: {} }),
               automatic,
+              afterPending,
             );
             if (result === undefined) return;
             setFailedEnvironments((previous) => [
@@ -354,6 +353,8 @@ export function useRefreshLimits(
       setNow(Date.now());
     }
   };
+  // Always toggles `refreshing`, even with nothing to probe: Android's
+  // RefreshControl keeps its spinner up until it sees true then false.
   const refreshManually = async () => {
     if (refreshingRef.current) return;
     refreshingRef.current = true;
@@ -384,5 +385,18 @@ export function useRefreshLimits(
         selectedEnvironmentIds === null || selectedEnvironmentIds.has(environmentId),
     )
     .map(({ label }) => label);
-  return { now, refreshing, failedLabels, refresh: refreshManually };
+  return {
+    now,
+    refreshing,
+    failedLabels,
+    refresh: refreshManually,
+    refreshAfterEnable: () => refresh(false, true),
+  };
+  return {
+    now,
+    refreshing,
+    failedLabels,
+    refresh: refreshManually,
+    refreshAfterEnable: () => refresh(false, true),
+  };
 }

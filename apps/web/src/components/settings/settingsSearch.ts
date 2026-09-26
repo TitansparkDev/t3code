@@ -1,7 +1,10 @@
 import { isElectron } from "~/env";
 import { isMacPlatform, isWindowsPlatform, normalizeSearchText } from "~/lib/utils";
+import { STATIC_KEYBINDING_COMMANDS, type KeybindingCommand } from "@t3tools/contracts";
 import type { EnvironmentId } from "@t3tools/contracts";
 import type { EnvironmentConnectionPhase } from "@t3tools/client-runtime/connection";
+import { DEFAULT_KEYBINDINGS } from "@t3tools/shared/keybindings";
+import { commandLabel } from "./KeybindingsSettings.logic";
 import {
   validateSettingsScopeSearch,
   type ResolvedSettingsScope,
@@ -18,6 +21,7 @@ export type SettingsPath =
   | "/settings/integrations"
   | "/settings/scheduled-tasks"
   | "/settings/source-control"
+  | "/settings/storage"
   | "/settings/connections"
   | "/settings/archived";
 
@@ -52,9 +56,15 @@ export interface SettingsSearchItem {
   readonly cloudOnly?: boolean;
   readonly environmentOnly?: boolean;
   readonly providerSettingsOnly?: boolean;
+  readonly macProviderSettingsOnly?: boolean;
   readonly localBackendManagementOnly?: boolean;
   readonly localEnvironmentOnly?: boolean;
   readonly wslAvailableOnly?: boolean;
+  /**
+   * Sorts after every other match. Keybinding commands mirror rows on other
+   * surfaces, so "model" must still lead with Default model, not Model Picker.
+   */
+  readonly secondary?: boolean;
   readonly requiresThreadAutoSettlement?: boolean;
 }
 
@@ -63,6 +73,7 @@ export interface SettingsSearchAvailability {
   readonly hasCloudPublicConfig: boolean;
   readonly hasEnvironment: boolean;
   readonly hasProviderSettingsEnvironment: boolean;
+  readonly hasMacProviderSettingsEnvironment: boolean;
   readonly canManageLocalBackend: boolean;
   readonly isWslSettingsRowVisible: boolean;
   readonly hasThreadAutoSettlement: boolean;
@@ -82,9 +93,37 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/integrations": "Integrations",
   "/settings/scheduled-tasks": "Scheduled Tasks",
   "/settings/source-control": "Source Control",
+  "/settings/storage": "Storage",
   "/settings/connections": "Connections",
   "/settings/archived": "Archive",
 };
+
+/** Anchor id of the first row bound to `command` on the Keybindings page. */
+export function keybindingSearchAnchorId<Command extends KeybindingCommand>(command: Command) {
+  return `keybinding-${command}` as const;
+}
+
+/**
+ * One result per built-in command, alphabetical by label. The anchor is
+ * the command's first row; default keys are searchable so "mod+b" lands on
+ * Sidebar: Toggle. A command with no default binding may have no row, so it
+ * points at the section instead.
+ */
+const KEYBINDING_SEARCH_ITEMS = STATIC_KEYBINDING_COMMANDS.toSorted((left, right) =>
+  commandLabel(left).localeCompare(commandLabel(right)),
+).map((command) => {
+  const defaultKeys = DEFAULT_KEYBINDINGS.filter((binding) => binding.command === command).map(
+    (binding) => binding.key,
+  );
+  return {
+    id: keybindingSearchAnchorId(command),
+    title: commandLabel(command),
+    to: "/settings/keybindings" as const,
+    searchTerms: [command, ...defaultKeys],
+    secondary: true,
+    ...(defaultKeys.length === 0 ? { targetId: "keybindings" } : {}),
+  };
+});
 
 /**
  * Searchable settings and stable destinations, in result order. Rows with a
@@ -92,6 +131,22 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
  * that may not be mounted point at their nearest stable section instead.
  */
 export const SETTINGS_SEARCH_ITEMS = [
+  {
+    id: "storage-worktrees",
+    title: "Worktree cleanup",
+    to: "/settings/storage",
+    scope: "project-defaults",
+    searchTerms: [
+      "disk storage delete deleted archived threads old inactive merged unchanged worktrees retention days project inherit off custom",
+    ],
+  },
+  {
+    id: "storage-artifacts",
+    title: "Artifacts and logs",
+    to: "/settings/storage",
+    scope: "environment-defaults",
+    searchTerms: ["disk storage browser screenshots captures rotated logs cleanup retention"],
+  },
   {
     id: "project-defaults",
     title: "Project defaults and overrides",
@@ -157,6 +212,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: "Diff colors",
     to: "/settings/appearance",
     searchTerms: ["red green blue orange additions deletions changes counts palette colorblind"],
+  },
+  {
+    id: "chat-width",
+    title: "Chat width",
+    to: "/settings/appearance",
+    searchTerms: ["wide full width column layout messages composer monitor"],
   },
   {
     id: "panel-animations",
@@ -295,10 +356,28 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["command menu dollar $ slash /"],
   },
   {
+    id: "composer-rich-text",
+    title: "Rich text composer",
+    to: "/settings/general",
+    searchTerms: ["composer rich text tiptap bold italic markdown styled wysiwyg"],
+  },
+  {
     id: "composer-collapse",
     title: "Collapse composer on scroll",
     to: "/settings/general",
     searchTerms: ["composer rest resting scroll wheel conversation timeline shrink minimize"],
+  },
+  {
+    id: "send-shortcut",
+    title: "Send shortcut",
+    to: "/settings/general",
+    searchTerms: ["enter return command ctrl multiline prompt new line composer"],
+  },
+  {
+    id: "follow-up-behavior",
+    title: "Follow-up behavior",
+    to: "/settings/general",
+    searchTerms: ["queue steer running turn send default behavior composer"],
   },
   {
     id: "provider-update-checks",
@@ -331,6 +410,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/general",
     scope: "project-defaults",
     searchTerms: ["default workspace mode draft local worktree"],
+  },
+  {
+    id: "worktree-submodules",
+    title: "Submodules",
+    to: "/settings/general",
+    scope: "project-defaults",
+    searchTerms: ["git submodule init recursive top-level none worktree t3.json"],
   },
   {
     id: "start-from-origin",
@@ -413,6 +499,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/keybindings",
     searchTerms: ["keyboard shortcuts hotkeys commands bindings json"],
   },
+  ...KEYBINDING_SEARCH_ITEMS,
   {
     id: "snap-shot-enabled",
     title: "SnapShots",
@@ -468,6 +555,14 @@ export const SETTINGS_SEARCH_ITEMS = [
       "usage sources CLIProxyAPI CLI proxy hub quota subscription limits management key add remove",
     ],
     providerSettingsOnly: true,
+  },
+  {
+    id: "cursor-keychain-usage",
+    title: "Cursor account usage",
+    to: "/settings/providers",
+    searchTerms: ["cursor macOS keychain usage tokens cost limits permission"],
+    providerSettingsOnly: true,
+    macProviderSettingsOnly: true,
   },
   {
     id: "provider-health-check-interval",
@@ -544,6 +639,18 @@ export const SETTINGS_SEARCH_ITEMS = [
     id: "browser-recording-frame-rate",
     title: "Browser recording frame rate",
     to: "/settings/integrations",
+  },
+  {
+    id: "browser-recording-key-presses",
+    title: "Show key presses in recordings",
+    to: "/settings/integrations",
+    searchTerms: ["browser preview keyboard shortcuts keystrokes overlay capture"],
+  },
+  {
+    id: "browser-recording-mouse-presses",
+    title: "Show mouse presses in recordings",
+    to: "/settings/integrations",
+    searchTerms: ["browser preview clicks buttons drag overlay capture"],
   },
   {
     id: "browser-link-target",
@@ -738,6 +845,7 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/integrations": null,
   "/settings/scheduled-tasks": null,
   "/settings/source-control": "environment-defaults",
+  "/settings/storage": "project-defaults",
   "/settings/connections": "connections",
   "/settings/archived": "project-defaults",
 };
@@ -854,6 +962,7 @@ export function filterAvailableSettingsSearchItems(
       (!item.cloudOnly || availability.hasCloudPublicConfig) &&
       (!item.environmentOnly || availability.hasEnvironment) &&
       (!item.providerSettingsOnly || availability.hasProviderSettingsEnvironment) &&
+      (!item.macProviderSettingsOnly || availability.hasMacProviderSettingsEnvironment) &&
       (!item.localBackendManagementOnly || availability.canManageLocalBackend) &&
       (!item.localEnvironmentOnly || !availability.localEnvironmentDisabled) &&
       (!item.wslAvailableOnly || availability.isWslSettingsRowVisible) &&
@@ -899,6 +1008,11 @@ export function searchSettings(
                   : 0;
       return [{ item, index, rank }];
     })
-    .toSorted((left, right) => right.rank - left.rank || left.index - right.index)
+    .toSorted(
+      (left, right) =>
+        Number(left.item.secondary ?? false) - Number(right.item.secondary ?? false) ||
+        right.rank - left.rank ||
+        left.index - right.index,
+    )
     .map(({ item }) => item);
 }

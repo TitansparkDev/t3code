@@ -30,9 +30,12 @@ const makeProjectionSnapshotQueryLayer = (project: OrchestrationProject) =>
   Layer.succeed(ProjectionSnapshotQuery.ProjectionSnapshotQuery, {
     getThreadCompletionResponse: () => Effect.die("unused"),
     getUserInputActivity: () => Effect.die("unused"),
+    listActivitiesByKind: () => Effect.die("unused"),
     getCommandReadModel: () => Effect.die("unused"),
     getSnapshot: () => Effect.die("unused"),
     getShellSnapshot: () => Effect.die("unused"),
+    getDeletedWorktreeThreads: () => Effect.die("unused"),
+    listThreadsWithPullRequests: () => Effect.die("unused"),
     getArchivedShellSnapshot: () => Effect.die("unused"),
     getSnapshotSequence: () => Effect.succeed({ snapshotSequence: 1 }),
     getCounts: () => Effect.die("unused"),
@@ -57,7 +60,7 @@ const makeProjectionSnapshotQueryLayer = (project: OrchestrationProject) =>
   });
 
 type TerminalOverrides = Pick<TerminalManager.TerminalManager["Service"], "open" | "write"> &
-  Partial<Pick<TerminalManager.TerminalManager["Service"], "subscribe">>;
+  Partial<Pick<TerminalManager.TerminalManager["Service"], "subscribe" | "closeIdle">>;
 
 const makeTerminalManagerLayer = (overrides: TerminalOverrides) =>
   Layer.succeed(TerminalManager.TerminalManager, {
@@ -66,6 +69,7 @@ const makeTerminalManagerLayer = (overrides: TerminalOverrides) =>
     clear: () => Effect.void,
     restart: () => Effect.die(new Error("unused")),
     close: () => Effect.void,
+    closeIdle: () => Effect.void,
     subscribe: () => Effect.succeed(() => undefined),
     subscribeMetadata: () => Effect.succeed(() => undefined),
     ...overrides,
@@ -113,7 +117,12 @@ describe("ProjectSetupScriptRunner", () => {
         terminalId: "setup-default-setup",
         cwd: "/repo/worktrees/a",
         worktreePath: "/repo/worktrees/a",
-        env: { T3CODE_PROJECT_ROOT: "/repo/project", T3CODE_WORKTREE_PATH: "/repo/worktrees/a" },
+        env: {
+          T3CODE_PROJECT_ROOT: "/repo/project",
+          T3CODE_WORKTREE_PATH: "/repo/worktrees/a",
+          NO_COLOR: "1",
+          FORCE_COLOR: "0",
+        },
       });
       expect(write).toHaveBeenCalledWith({
         threadId: "thread-1",
@@ -204,6 +213,7 @@ describe("ProjectSetupScriptRunner", () => {
           scriptCommand: "bun install",
           terminalId: "setup-setup",
           cwd: "/repo/worktrees/a",
+          async: true,
         });
         expect(open).toHaveBeenCalledWith({
           threadId: "thread-1",
@@ -211,6 +221,8 @@ describe("ProjectSetupScriptRunner", () => {
           cwd: "/repo/worktrees/a",
           worktreePath: "/repo/worktrees/a",
           env: {
+            NO_COLOR: "1",
+            FORCE_COLOR: "0",
             T3CODE_PROJECT_ROOT: "/repo/project",
             T3CODE_WORKTREE_PATH: "/repo/worktrees/a",
           },
@@ -253,6 +265,7 @@ describe("ProjectSetupScriptRunner", () => {
           listener = null;
         });
       });
+      const closeIdle = vi.fn(() => Effect.void);
       const project = makeProject([
         {
           id: "setup",
@@ -299,7 +312,9 @@ describe("ProjectSetupScriptRunner", () => {
         // control sequences are stripped, and the echoed wrapper is hidden.
         yield* emit(`( bun install\r\n> ); printf '\\n${sentinel}%s\\n' "$?"\r\n`);
         yield* emit("\u001b[32mResolving");
-        yield* emit(" deps\u001b[0m\r\nDone in 2s\r\n");
+        yield* emit(" deps\u001b[0m\r\n");
+        // Progress redraws separated by bare carriage returns are their own lines.
+        yield* emit("Progress: 1/3\rProgress: 2/3\rProgress: 3/3\r\nDone in 2s\r\n");
         // A spoofed sentinel from the script itself must not settle completion.
         yield* emit("__T3_SETUP_DONE__:0\r\n");
         yield* emit(`__T3_SETUP_DONE___${"0".repeat(32)}:0\r\n`);
@@ -309,19 +324,90 @@ describe("ProjectSetupScriptRunner", () => {
         expect(completion.exitCode).toBe(3);
         expect(seen).toEqual([
           "Resolving deps",
+          "Progress: 1/3",
+          "Progress: 2/3",
+          "Progress: 3/3",
           "Done in 2s",
           "__T3_SETUP_DONE__:0",
           `__T3_SETUP_DONE___${"0".repeat(32)}:0`,
         ]);
         // The subscription is torn down once the sentinel arrives.
         expect(listener).toBeNull();
+        // A failed run keeps its shell open for a look.
+        expect(closeIdle).not.toHaveBeenCalled();
       }).pipe(
-        Effect.provide(testLayer(project, { open, write, subscribe })),
+        Effect.provide(testLayer(project, { open, write, subscribe, closeIdle })),
         Effect.provideService(HostProcessPlatform, "linux"),
         Effect.provideService(HostProcessEnvironment, { SHELL: "/bin/zsh" }),
       );
     },
   );
+
+  it.effect("closes the idle setup shell after a clean exit", () => {
+    const open = vi.fn(() =>
+      Effect.succeed({
+        threadId: "thread-1",
+        terminalId: "setup-setup",
+        cwd: "/repo/worktrees/a",
+        worktreePath: "/repo/worktrees/a",
+        status: "running" as const,
+        pid: 123,
+        history: "",
+        exitCode: null,
+        exitSignal: null,
+        label: "setup-setup",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+    let written = "";
+    const write = vi.fn((input: { data: string }) =>
+      Effect.sync(() => void (written = input.data)),
+    );
+    let listener: ((event: TerminalEvent) => Effect.Effect<void>) | null = null;
+    const subscribe = vi.fn((next: (event: TerminalEvent) => Effect.Effect<void>) => {
+      listener = next;
+      return Effect.succeed(() => {
+        listener = null;
+      });
+    });
+    const closeIdle = vi.fn(() => Effect.void);
+    const project = makeProject([
+      {
+        id: "setup",
+        name: "Setup",
+        command: "bun install",
+        icon: "configure",
+        runOnWorktreeCreate: true,
+      },
+    ]);
+
+    return Effect.gen(function* () {
+      const runner = yield* ProjectSetupScriptRunner.ProjectSetupScriptRunner;
+      const result = yield* runner.runForThread({
+        threadId: "thread-1",
+        projectCwd: "/repo/project",
+        worktreePath: "/repo/worktrees/a",
+        observeCompletion: {},
+      });
+      if (result.status !== "started" || !result.completion) {
+        return yield* Effect.die("expected an observed setup run");
+      }
+      const sentinel = /__T3_SETUP_DONE___[0-9a-f]{32}:/.exec(written)?.[0];
+      yield* listener!({
+        threadId: "thread-1",
+        terminalId: "setup-setup",
+        type: "output",
+        data: `${sentinel}0\r\n`,
+      });
+
+      expect((yield* result.completion).exitCode).toBe(0);
+      expect(closeIdle).toHaveBeenCalledWith({ threadId: "thread-1", terminalId: "setup-setup" });
+    }).pipe(
+      Effect.provide(testLayer(project, { open, write, subscribe, closeIdle })),
+      Effect.provideService(HostProcessPlatform, "linux"),
+      Effect.provideService(HostProcessEnvironment, { SHELL: "/bin/zsh" }),
+    );
+  });
 
   it.effect("unsubscribes from terminal output when the command cannot be written", () => {
     const open = vi.fn(() =>

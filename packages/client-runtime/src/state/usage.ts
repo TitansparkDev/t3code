@@ -1,4 +1,9 @@
-import type { EnvironmentId, UsageSummaryInput } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  ServerProvider,
+  UsageSummary,
+  UsageSummaryInput,
+} from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import type { AtomRegistry } from "effect/unstable/reactivity";
 
@@ -9,21 +14,38 @@ import type { createServerEnvironmentAtoms } from "./server.ts";
 
 const isEnvironmentRpcUnavailable = Schema.is(EnvironmentRpcUnavailableError);
 
+/** Offer the Cursor Keychain prompt only where a working Cursor provider could use it. */
+export function needsCursorKeychainAccess(
+  summary: UsageSummary | null,
+  providers: readonly ServerProvider[] | null,
+): boolean {
+  return (
+    summary?.sources.some((source) => source.action === "enableCursorKeychain") === true &&
+    providers?.some((provider) => provider.driver === "cursor" && provider.status === "ready") ===
+      true
+  );
+}
+
 const limitsRefreshAfter = new Map<EnvironmentId, number>();
 const limitsRefreshes = new Map<EnvironmentId, Promise<unknown>>();
 
-/**
- * Refresh one environment's subscription limits without duplicate probes.
- * Automatic checks use a short cooldown; explicit refreshes always wait for
- * the current probe and then run their own check when it has completed.
- */
 export async function refreshUsageLimits<A>(
   environmentId: EnvironmentId,
   refresh: () => Promise<A>,
   automatic = false,
+  afterPending = false,
 ): Promise<A | undefined> {
   const pending = limitsRefreshes.get(environmentId);
   if (pending !== undefined) {
+    if (afterPending) {
+      try {
+        await pending;
+      } catch {
+        // The new check still needs to run if the earlier one failed.
+      }
+      return refreshUsageLimits(environmentId, refresh, false, true);
+    }
+    // Manual refresh waits for the current check; automatic refresh does not repeat it.
     return automatic ? undefined : ((await pending) as A);
   }
   const refreshAfter = limitsRefreshAfter.get(environmentId) ?? 0;

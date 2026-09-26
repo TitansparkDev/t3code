@@ -11,7 +11,7 @@ import { useWorkspaceState } from "../../state/workspace";
 import { useSavedRemoteConnections } from "../../state/use-remote-environment-registry";
 import { useAdaptiveWorkspaceLayout } from "../layout/AdaptiveWorkspaceLayout";
 import { WorkspaceEmptyDetail } from "../layout/WorkspaceEmptyDetail";
-import { WorkspaceSidebarToolbar } from "../layout/workspace-sidebar-toolbar";
+import { AndroidScreenHeader } from "../../components/AndroidScreenHeader";
 import { checkForAppUpdateOnLaunch, startAppUpdateForegroundRecheck } from "../updates/app-updates";
 import { AndroidHomeFabLayout } from "./AndroidHomeFab";
 import { HomeScreen } from "./HomeScreen";
@@ -27,7 +27,7 @@ import { getConnectionAwareBrandHeaderOptions } from "./WorkspaceConnectionTitle
 
 export function HomeRouteScreen() {
   const { width: windowWidth } = useWindowDimensions();
-  const { layout, panes, togglePrimarySidebar } = useAdaptiveWorkspaceLayout();
+  const { layout, panes } = useAdaptiveWorkspaceLayout();
   const projects = useProjects();
   const threads = useThreadShells();
   const { environments: workspaceEnvironments, state: catalogState } = useWorkspaceState();
@@ -49,7 +49,9 @@ export function HomeRouteScreen() {
     unsnoozeThread,
     pinThread,
     unpinThread,
+    setThreadAutoSettle,
     moveThread,
+    renameThread,
     regenerateThreadTitle,
     unsettleThread,
     forkThread,
@@ -76,12 +78,8 @@ export function HomeRouteScreen() {
     () => new Set(environments.map((environment) => environment.environmentId)),
     [environments],
   );
-  const {
-    options: listOptions,
-    setSelectedEnvironmentId,
-    setProjectSortOrder,
-    setThreadSortOrder,
-  } = useHomeListOptions(availableEnvironmentIds);
+  const { options: listOptions, setSelectedEnvironmentId } =
+    useHomeListOptions(availableEnvironmentIds);
   const selectedEnvironmentId = listOptions.selectedEnvironmentId;
   const [selectedProjectKey, setSelectedProjectKey] = useState<string | null>(null);
   const projectFilterOptions = useMemo(
@@ -117,22 +115,31 @@ export function HomeRouteScreen() {
               : { title: "", headerTitle: "", unstable_headerLeftItems: () => [] }
           }
         />
-        <WorkspaceSidebarToolbar
-          afterSidebarButton={
+        {Platform.OS === "ios" ? (
+          <NativeHeaderToolbar placement="left">
             <NativeHeaderToolbar.Button
               accessibilityLabel="New task"
               icon="square.and.pencil"
               onPress={() => navigation.navigate("NewTaskSheet", { screen: "NewTask" })}
             />
-          }
-        />
+          </NativeHeaderToolbar>
+        ) : null}
+        {Platform.OS === "android" ? <AndroidScreenHeader title="Threads" /> : null}
         <WorkspaceEmptyDetail
-          onShowSidebar={
-            Platform.OS === "android" && !panes.primarySidebarVisible
-              ? togglePrimarySidebar
+          onAddConnection={
+            Platform.OS === "android" && !catalogState.hasConnections
+              ? () =>
+                  navigation.navigate("SettingsSheet", {
+                    screen: "SettingsContent",
+                    params: { screen: "SettingsEnvironmentNew" },
+                  })
               : undefined
           }
-          onStartNewTask={() => navigation.navigate("NewTaskSheet", { screen: "NewTask" })}
+          onStartNewTask={
+            Platform.OS === "android" && panes.primarySidebarVisible
+              ? undefined
+              : () => navigation.navigate("NewTaskSheet", { screen: "NewTask" })
+          }
         />
       </>
     );
@@ -166,8 +173,6 @@ export function HomeRouteScreen() {
           searchQuery={searchQuery}
           selectedEnvironmentId={selectedEnvironmentId}
           selectedProjectKey={selectedProjectKey}
-          projectSortOrder={listOptions.projectSortOrder}
-          threadSortOrder={listOptions.threadSortOrder}
           onEnvironmentChange={setSelectedEnvironmentId}
           onProjectChange={setSelectedProjectKey}
           onOpenEnvironments={() =>
@@ -182,10 +187,8 @@ export function HomeRouteScreen() {
               params: { screen: "Settings" },
             })
           }
-          onProjectSortOrderChange={setProjectSortOrder}
           onSearchQueryChange={setSearchQuery}
           onStartNewTask={() => navigation.navigate("NewTaskSheet", { screen: "NewTask" })}
-          onThreadSortOrderChange={setThreadSortOrder}
         />
 
         <HomeScreen
@@ -205,7 +208,9 @@ export function HomeRouteScreen() {
           onUnsettleThread={unsettleThread}
           onPinThread={pinThread}
           onUnpinThread={unpinThread}
+          onSetThreadAutoSettle={setThreadAutoSettle}
           onMoveThread={moveThread}
+          onRenameThread={renameThread}
           onRegenerateThreadTitle={regenerateThreadTitle}
           onForkThread={forkThread}
           onEnvironmentChange={setSelectedEnvironmentId}
@@ -216,7 +221,6 @@ export function HomeRouteScreen() {
               params: { screen: "Settings" },
             })
           }
-          onProjectSortOrderChange={setProjectSortOrder}
           onSearchQueryChange={setSearchQuery}
           onSelectThread={handleSelectThread}
           onSelectPendingTask={openPendingTask}
@@ -243,7 +247,6 @@ export function HomeRouteScreen() {
             });
           }}
           onStartNewTask={() => navigation.navigate("NewTaskSheet", { screen: "NewTask" })}
-          onThreadSortOrderChange={setThreadSortOrder}
           pendingTasks={pendingTasks}
           projectGroupingMode={listOptions.projectGroupingMode}
           projects={projects}
@@ -253,7 +256,6 @@ export function HomeRouteScreen() {
           selectedEnvironmentId={selectedEnvironmentId}
           selectedProjectKey={selectedProjectKey}
           threads={threads}
-          threadSortOrder={listOptions.threadSortOrder}
         />
       </>
     </AndroidHomeFabLayout>

@@ -49,6 +49,8 @@ function formatMessageRole(role: OrchestrationThread["messages"][number]["role"]
       return "Assistant";
     case "system":
       return "System";
+    default:
+      return String(role);
   }
 }
 

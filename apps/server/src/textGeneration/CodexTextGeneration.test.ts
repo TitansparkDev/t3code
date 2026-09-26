@@ -266,7 +266,7 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
           body: "",
         }),
         launchArgs: "--enable settings-feature",
-        environment: { T3CODE_CODEX_LAUNCH_ARGS: " --strict-config --listen off " },
+        environment: { ...process.env, T3CODE_CODEX_LAUNCH_ARGS: " --strict-config --listen off " },
         requireArg: "--strict-config",
         forbidArg: "settings-feature",
       },
@@ -392,7 +392,25 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
             modelSelection: DEFAULT_TEST_MODEL_SELECTION,
           });
 
-          expect(generated.title).toBe("Investigate websocket reconnect regressions aft...");
+          expect(generated.title).toBe(
+            "Investigate websocket reconnect regressions after worktree restore",
+          );
+        }),
+    ),
+  );
+
+  it.effect("returns the refinement signal for an unresolved subject", () =>
+    withFakeCodexEnv(
+      { output: JSON.stringify({ title: "Investigate issue", needsRefinement: true }) },
+      (textGeneration) =>
+        Effect.gen(function* () {
+          expect(
+            yield* textGeneration.generateThreadTitle({
+              cwd: process.cwd(),
+              message: "Fix this",
+              modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+            }),
+          ).toEqual({ title: "Investigate issue", needsRefinement: true });
         }),
     ),
   );
@@ -538,7 +556,7 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
                   }),
                 ),
               ),
-              Effect.ensuring(fs.remove(imagePath).pipe(Effect.catch(() => Effect.void))),
+              Effect.ensuring(fs.remove(imagePath).pipe(Effect.ignore)),
             );
 
           expect(generated.branch).toBe("fix/ui-regression");
@@ -561,7 +579,7 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
           const { attachmentsDir } = yield* ServerConfig.ServerConfig;
           const missingAttachmentId = "thread-missing-attachment";
           const missingPath = path.join(attachmentsDir, `${missingAttachmentId}.png`);
-          yield* fs.remove(missingPath).pipe(Effect.catch(() => Effect.void));
+          yield* fs.remove(missingPath).pipe(Effect.ignore);
 
           const result = yield* textGeneration
             .generateBranchName({

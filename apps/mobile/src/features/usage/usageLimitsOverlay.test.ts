@@ -48,6 +48,7 @@ describe("mobile usage limits live quota overlay", () => {
   it("overlays live native quota snapshots onto mobile provider presentation", () => {
     const provider = makeAntigravityProvider();
     const liveSnapshot: AccountQuotaSnapshot = {
+      source: "antigravity-quota-summary",
       providerInstanceId: agyInstanceId,
       observedAt: "2026-09-21T12:00:00Z",
       groups: [
@@ -95,7 +96,7 @@ describe("mobile usage limits live quota overlay", () => {
     };
 
     const updatedProviders = withNativeQuotaSnapshots([provider], [liveSnapshot]);
-    expect(updatedProviders[0].usageLimits?.checkedAt).toBe("2026-09-21T12:00:00Z");
+    expect(updatedProviders[0]!.usageLimits?.checkedAt).toBe("2026-09-21T12:00:00Z");
 
     const presentationMap = new Map([
       [
@@ -111,26 +112,26 @@ describe("mobile usage limits live quota overlay", () => {
 
     const accounts = collectLimitAccounts(presentationMap);
     expect(accounts).toHaveLength(1);
-    expect(accounts[0].driver).toBe("antigravity");
+    expect(accounts[0]!.driver).toBe("antigravity");
 
     const now = Date.parse("2026-09-21T13:00:00Z");
     const pools = collectLimitPools(accounts, now);
     expect(pools).toHaveLength(1);
-    expect(pools[0].driver).toBe("antigravity");
+    expect(pools[0]!.driver).toBe("antigravity");
 
     // Both Gemini and Claude-GPT windows are represented
-    const labels = pools[0].windows.map((w) => w.label);
+    const labels = pools[0]!.windows.map((w) => w.label);
     expect(labels).toContain("Gemini Models");
     expect(labels).toContain("Claude & GPT models");
 
-    const geminiShort = pools[0].windows.find(
+    const geminiShort = pools[0]!.windows.find(
       (w) => w.label === "Gemini Models" && w.kind === "session",
     );
     expect(geminiShort).toBeDefined();
     expect(geminiShort?.usedPercent).toBe(25);
     expect(geminiShort?.remainingPercent).toBe(75);
 
-    const claudeShort = pools[0].windows.find(
+    const claudeShort = pools[0]!.windows.find(
       (w) => w.label === "Claude & GPT models" && w.kind === "session",
     );
     expect(claudeShort).toBeDefined();
@@ -154,6 +155,7 @@ describe("mobile usage limits live quota overlay", () => {
     });
 
     const olderSnapshot: AccountQuotaSnapshot = {
+      source: "antigravity-quota-summary",
       providerInstanceId: agyInstanceId,
       observedAt: "2026-09-21T00:00:00Z",
       groups: [
@@ -166,7 +168,7 @@ describe("mobile usage limits live quota overlay", () => {
     };
 
     const updated = withNativeQuotaSnapshots([provider], [olderSnapshot]);
-    expect(updated[0].usageLimits?.checkedAt).toBe("2026-09-25T00:00:00Z");
-    expect(updated[0].usageLimits?.windows[0].usedPercent).toBe(80);
+    expect(updated[0]!.usageLimits?.checkedAt).toBe("2026-09-25T00:00:00Z");
+    expect(updated[0]!.usageLimits?.windows[0]?.usedPercent).toBe(80);
   });
 });
