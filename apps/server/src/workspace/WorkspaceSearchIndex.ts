@@ -31,8 +31,17 @@ import { isWorkspaceImagePreviewPath } from "@t3tools/shared/filePreview";
 // library. A static `import` of an external package is a hard error inside a
 // Node single-executable (only built-ins resolve there), so load it through
 // `require`, which reads from the real filesystem in every runtime.
-const requireForFff = NodeModule.createRequire(import.meta.url);
-const { FileFinder } = requireForFff("@ff-labs/fff-node") as typeof import("@ff-labs/fff-node");
+// Lazy-load FileFinder so eagerly evaluated commands like --version do not
+// attempt to load platform native binaries during bundle self-checks.
+let cachedFileFinder: typeof FileFinderType | undefined;
+function getFileFinder(): typeof FileFinderType {
+  if (cachedFileFinder === undefined) {
+    const requireForFff = NodeModule.createRequire(import.meta.url);
+    cachedFileFinder = (requireForFff("@ff-labs/fff-node") as typeof import("@ff-labs/fff-node"))
+      .FileFinder;
+  }
+  return cachedFileFinder;
+}
 
 const WORKSPACE_INDEX_MAX_ENTRIES = 25_000;
 const WORKSPACE_INDEX_PAGE_SIZE = WORKSPACE_INDEX_MAX_ENTRIES + 2;
@@ -306,7 +315,7 @@ const createFinder = Effect.fn("WorkspaceSearchIndex.createFinder")(function* (
 ) {
   const result = yield* Effect.try({
     try: () =>
-      FileFinder.create({
+      getFileFinder().create({
         basePath: cwd,
         disableMmapCache: true,
         // Content indexing costs scan CPU and memory, so only the on-demand
