@@ -1,6 +1,7 @@
 import {
   AntigravitySettings,
   ClaudeSettings,
+  ClineSettings,
   CodexSettings,
   CursorSettings,
   GrokSettings,
@@ -11,6 +12,7 @@ import type * as Schema from "effect/Schema";
 import {
   AntigravityIcon,
   ClaudeAI,
+  ClineIcon,
   CursorIcon,
   GrokIcon,
   type Icon,
@@ -41,6 +43,8 @@ export interface ProviderClientDefinition {
    * built-in default or custom — advertises the same marker.
    */
   readonly badgeLabel?: string;
+  /** Whether the driver can route its process protocol through a cloud sandbox. */
+  readonly supportsCloudExecution?: boolean;
 }
 
 const PROVIDER_CLIENT_DEFINITIONS: readonly ProviderClientDefinition[] = [
@@ -62,6 +66,14 @@ const PROVIDER_CLIENT_DEFINITIONS: readonly ProviderClientDefinition[] = [
     icon: CursorIcon,
     badgeLabel: "Early Access",
     settingsSchema: CursorSettings,
+  },
+  {
+    value: ProviderDriverKind.make("cline"),
+    label: "Cline",
+    icon: ClineIcon,
+    badgeLabel: "Early Access",
+    settingsSchema: ClineSettings,
+    supportsCloudExecution: false,
   },
   {
     value: ProviderDriverKind.make("grok"),

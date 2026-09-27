@@ -95,7 +95,15 @@ export interface AcpSessionRuntimeOptions {
     readonly name: string;
     readonly version: string;
   };
-  readonly authMethodId: string;
+  /**
+   * ACP `authenticate` method id, sent during startup when present.
+   *
+   * Omit it for agents that restore their own credentials during session
+   * setup: `authenticate` is an active operation that may launch an
+   * interactive OAuth flow — on a server that means a browser opening on a
+   * machine the user is not sitting at, and a request that never returns.
+   */
+  readonly authMethodId?: string;
   readonly mcpServers?: ReadonlyArray<EffectAcpSchema.McpServer>;
   /** Extra workspace roots the agent may read and write besides `cwd`. */
   readonly additionalDirectories?: ReadonlyArray<string>;
@@ -249,6 +257,15 @@ export class AcpSessionRuntime extends Context.Service<
      * @see https://agentclientprotocol.com/protocol/schema#session/cancel
      */
     readonly cancel: Effect.Effect<void, EffectAcpErrors.AcpError>;
+    /**
+     * Kills the child process without waiting for it to answer.
+     *
+     * Closing the runtime scope is the normal teardown, but an agent that never
+     * answers `initialize` keeps its JSON-RPC request open, so scope close waits
+     * on a peer that will never speak again. A caller that gives startup a
+     * deadline needs to terminate the exact child it owns instead.
+     */
+    readonly terminate: (forceKillAfter: Duration.Input) => Effect.Effect<void>;
     /**
      * Selects the active mode through the negotiated `mode` configuration option.
      * This is a no-op when the requested mode is already active.
@@ -743,15 +760,19 @@ export const make = (
     const startOnce = Effect.gen(function* () {
       const initializeResult = yield* sendInitialize;
 
-      const authenticatePayload = {
-        methodId: options.authMethodId,
-      } satisfies EffectAcpSchema.AuthenticateRequest;
+      // Agents that advertise an auth method but restore their own credentials
+      // leave `authMethodId` unset, so startup never triggers their login flow.
+      if (options.authMethodId !== undefined) {
+        const authenticatePayload = {
+          methodId: options.authMethodId,
+        } satisfies EffectAcpSchema.AuthenticateRequest;
 
-      yield* runLoggedRequest(
-        "authenticate",
-        authenticatePayload,
-        acp.agent.authenticate(authenticatePayload),
-      );
+        yield* runLoggedRequest(
+          "authenticate",
+          authenticatePayload,
+          acp.agent.authenticate(authenticatePayload),
+        );
+      }
 
       let sessionId: string;
       let sessionSetupResult:
@@ -958,6 +979,9 @@ export const make = (
       yield* Effect.raceFirst(Deferred.await(acknowledge), Deferred.await(runtimeClosed));
     });
 
+    const terminate = (forceKillAfter: Duration.Input) =>
+      child.kill({ forceKillAfter }).pipe(Effect.ignore, Effect.asVoid);
+
     const retireRuntime = Effect.fn("AcpSessionRuntime.retireRuntime")(function* (
       error: EffectAcpErrors.AcpError,
     ) {
@@ -1091,6 +1115,7 @@ export const make = (
         options.cancelBehavior === "wait-for-prompt"
           ? promptDispatchSemaphore.withPermit(cancel)
           : cancel,
+      terminate,
       setMode: (modeId) =>
         Ref.get(modeStateRef).pipe(
           Effect.flatMap((modeState) => {

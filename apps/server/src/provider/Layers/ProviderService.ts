@@ -966,8 +966,24 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     } satisfies Record<string, string>;
   });
 
-  const prepareMcpSession = (threadId: ThreadId, providerInstanceId: ProviderInstanceId) =>
+  const prepareMcpSession = (
+    threadId: ThreadId,
+    providerInstanceId: ProviderInstanceId,
+    adapter: ProviderAdapterShape<unknown>,
+  ) =>
     Effect.gen(function* () {
+      // An agent that ignores the session's `mcpServers` would leave the
+      // credential unused, so don't mint one for it.
+      //
+      // The credential a previous MCP-consuming provider issued for this thread
+      // still has to go: `issueActiveMcpCredential` revokes the old one as a
+      // side effect of minting a new one, so returning early would leave that
+      // credential registered and refreshed by the per-turn `touch` for a
+      // session that can never use it.
+      if (adapter.capabilities.consumesMcpServers === false) {
+        yield* clearMcpSession(threadId);
+        return undefined;
+      }
       const capabilities = yield* agentAccessCapabilities(threadId);
       const credential = yield* issueMcpCredential({ threadId, providerInstanceId, capabilities });
       if (credential) {
@@ -1369,7 +1385,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       const persistedCwd = readPersistedCwd(input.binding.runtimePayload);
       const persistedModelSelection = readPersistedModelSelection(input.binding.runtimePayload);
 
-      yield* prepareMcpSession(input.binding.threadId, bindingInstanceId);
+      yield* prepareMcpSession(input.binding.threadId, bindingInstanceId, adapter);
       const resumed = yield* adapter
         .startSession({
           threadId: input.binding.threadId,
@@ -1600,7 +1616,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         }
         const adapter = yield* registry.getByInstance(resolvedInstanceId);
         yield* clearTurnAnalyticsSession(resolvedInstanceId, threadId);
-        yield* prepareMcpSession(threadId, resolvedInstanceId);
+        yield* prepareMcpSession(threadId, resolvedInstanceId, adapter);
         const session = yield* adapter
           .startSession({
             ...input,

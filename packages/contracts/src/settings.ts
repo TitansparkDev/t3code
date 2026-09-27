@@ -691,6 +691,43 @@ export const ClaudeSettings = makeProviderSettingsSchema(
 );
 export type ClaudeSettings = typeof ClaudeSettings.Type;
 
+export const ClineSettings = makeProviderSettingsSchema(
+  {
+    // Off by default (like Grok and OpenCode): spawning a Cline ACP process on
+    // every install is a real cost. Users opt in from Settings.
+    enabled: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(false)),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+    binaryPath: makeBinaryPathSetting("cline").pipe(
+      Schema.annotateKey({
+        title: "Binary path",
+        description: "Path to the Cline CLI binary.",
+        providerSettingsForm: { placeholder: "cline", clearWhenEmpty: "omit" },
+      }),
+    ),
+    dataDir: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Cline data directory",
+        description:
+          "Optional Cline data directory. Leave empty to use the CLI's default profile from the instance environment.",
+        providerSettingsForm: { placeholder: "Automatic", clearWhenEmpty: "persist" },
+      }),
+    ),
+    // Present only so the shared settings machinery type-checks. Cline's model
+    // catalog is advertised by the ACP session and cannot be hand-authored.
+    customModels: Schema.Array(CustomModelSetting).pipe(
+      Schema.withDecodingDefault(Effect.succeed([])),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+  },
+  {
+    order: ["binaryPath", "dataDir"],
+  },
+);
+export type ClineSettings = typeof ClineSettings.Type;
+
 export const CursorSettings = makeProviderSettingsSchema(
   {
     // Off by default like Grok and OpenCode. Users opt in from Settings.
@@ -1263,6 +1300,7 @@ export const ServerSettings = Schema.Struct({
   providers: Schema.Struct({
     codex: CodexSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
     claudeAgent: ClaudeSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+    cline: ClineSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
     cursor: CursorSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
     grok: GrokSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
     opencode: OpenCodeSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
@@ -1413,6 +1451,13 @@ const ClaudeSettingsPatch = Schema.Struct({
   ),
 });
 
+const ClineSettingsPatch = Schema.Struct({
+  enabled: Schema.optionalKey(Schema.Boolean),
+  binaryPath: Schema.optionalKey(TrimmedString),
+  dataDir: Schema.optionalKey(TrimmedString),
+  customModels: Schema.optionalKey(Schema.Array(CustomModelSetting)),
+});
+
 const CursorSettingsPatch = Schema.Struct({
   enabled: Schema.optionalKey(Schema.Boolean),
   binaryPath: Schema.optionalKey(TrimmedString),
@@ -1542,6 +1587,7 @@ export const ServerSettingsPatch = Schema.Struct({
     Schema.Struct({
       codex: Schema.optionalKey(CodexSettingsPatch),
       claudeAgent: Schema.optionalKey(ClaudeSettingsPatch),
+      cline: Schema.optionalKey(ClineSettingsPatch),
       cursor: Schema.optionalKey(CursorSettingsPatch),
       grok: Schema.optionalKey(GrokSettingsPatch),
       opencode: Schema.optionalKey(OpenCodeSettingsPatch),

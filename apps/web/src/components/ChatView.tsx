@@ -1,5 +1,10 @@
 import { useLoadBalancedEnvironment } from "../hooks/useLoadBalancedEnvironment";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
+import {
+  getUnsupportedProviderInputBannerCopy,
+  getUnsupportedProviderInputReason,
+  getUnsupportedProviderModeReason,
+} from "@t3tools/shared/providerCapabilities";
 import type { UsageLimitSourceSnapshots } from "@t3tools/contracts";
 import {
   collectProviderUsageLimits,
@@ -252,6 +257,7 @@ import {
   GitBranchIcon,
   Minimize2Icon,
   PaperclipIcon,
+  ShieldAlertIcon,
   WifiOffIcon,
 } from "lucide-react";
 import { cn, randomHex, randomUUID } from "~/lib/utils";
@@ -3038,6 +3044,17 @@ export default function ChatView(props: ChatViewProps) {
     provider: activeProviderStatus,
     interactionMode:
       composerInteractionMode ?? activeThread?.interactionMode ?? DEFAULT_INTERACTION_MODE,
+  });
+  // A thread can carry an access mode the newly selected provider cannot
+  // enforce. Surface it before the user tries to send, not as a failed turn.
+  //
+  // Read from the resolved mode rather than the requested one: resolution has
+  // already fallen back to a mode the provider allows, so the raw value would
+  // raise a Plan warning the composer has no control left to clear.
+  const unsupportedProviderCapability = getUnsupportedProviderModeReason({
+    provider: activeProviderStatus,
+    runtimeMode,
+    interactionMode,
   });
   const conversationProviderStatus =
     providerStatuses.find(
@@ -6707,6 +6724,17 @@ export default function ChatView(props: ChatViewProps) {
     [feedbackSubmissions, routeThreadKey],
   );
   const composerBannerItems = useMemo<ComposerBannerStackItem[]>(() => {
+    const providerCapabilityItems: ComposerBannerStackItem[] = unsupportedProviderCapability
+      ? [
+          {
+            id: "provider-capability",
+            variant: "warning",
+            icon: <ShieldAlertIcon className="size-4" aria-hidden="true" />,
+            title: "Provider mode unavailable",
+            description: unsupportedProviderCapability,
+          },
+        ]
+      : [];
     const backgroundLivenessItems =
       backgroundLivenessBannerItem === null ? [] : [backgroundLivenessBannerItem];
     const resumeCompactionItems =
@@ -6721,6 +6749,7 @@ export default function ChatView(props: ChatViewProps) {
         ...feedbackBannerItems,
         ...usageLimitsItems,
         ...projectCloneItems,
+        ...providerCapabilityItems,
         ...systemComposerBannerItems,
         ...backgroundLivenessItems,
         ...resumeCompactionItems,
@@ -6732,6 +6761,7 @@ export default function ChatView(props: ChatViewProps) {
       ...feedbackBannerItems,
       ...usageLimitsItems,
       ...projectCloneItems,
+      ...providerCapabilityItems,
       ...systemComposerBannerItems,
       ...backgroundLivenessItems,
       ...resumeCompactionItems,
@@ -6788,6 +6818,7 @@ export default function ChatView(props: ChatViewProps) {
     resumeCompactionBannerItem,
     showBranchMismatchBanner,
     systemComposerBannerItems,
+    unsupportedProviderCapability,
     usageLimitsBanner,
     wokeThreadBannerItem,
   ]);
@@ -7603,6 +7634,36 @@ export default function ChatView(props: ChatViewProps) {
     const sendCtx = composerRef.current?.getSendContext();
     if (!sendCtx?.providerAvailable) {
       notifyDirectAnnotationAttached();
+      return;
+    }
+    // An agent that cannot enforce the selected access mode, or that drops
+    // non-text prompt content, must say so before the turn is created — not
+    // after the adapter rejects it. The composer already blocks Send; this
+    // covers annotations, which add an image without passing through the
+    // composer's attachment picker.
+    //
+    // Gated on the same attachments the send below will use. A queued message
+    // carries its own, so reading the live composer would clear a draft image
+    // that the queued turn still ships.
+    const gatedAttachments = queuedMessage ?? sendCtx;
+    const unsupportedProviderInput = getUnsupportedProviderInputReason({
+      provider: activeProviderStatus,
+      runtimeMode,
+      interactionMode: sendCtx.interactionMode,
+      attachmentCount:
+        gatedAttachments.images.length +
+        gatedAttachments.files.length +
+        (directAnnotation?.image ? 1 : 0),
+      fileCount: gatedAttachments.files.length,
+    });
+    if (unsupportedProviderInput) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "warning",
+          title: getUnsupportedProviderInputBannerCopy(unsupportedProviderInput).title,
+          description: unsupportedProviderInput.reason,
+        }),
+      );
       return;
     }
     const multipleModelSelections = queuedMessage ? null : sendCtx.multipleModelSelections;

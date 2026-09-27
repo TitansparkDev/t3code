@@ -52,6 +52,13 @@ export interface ProviderAdapterCapabilities {
   readonly promptlessTurnContinuation?: boolean;
   /** False when native conversation history cannot be rewound. */
   readonly supportsConversationRollback?: boolean;
+  /**
+   * Whether the agent actually loads the MCP servers T3 offers in ACP session
+   * setup. Absent means yes. Some agents accept the field, persist it, and then
+   * never start those servers — declaring false stops T3 from minting a
+   * credential a session would leave unused.
+   */
+  readonly consumesMcpServers?: boolean;
 }
 
 export interface ProviderThreadTurnSnapshot {

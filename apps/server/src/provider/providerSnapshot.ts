@@ -1,6 +1,7 @@
 import type {
   CustomModelSetting,
   ProviderDriverKind,
+  RuntimeMode,
   ModelCapabilities,
   ServerProvider,
   ServerProviderAuth,
@@ -64,9 +65,13 @@ export interface ServerProviderPresentation {
   readonly displayName: string;
   readonly badgeLabel?: string;
   readonly showInteractionModeToggle?: boolean;
+  readonly supportedRuntimeModes?: ReadonlyArray<RuntimeMode>;
+  readonly supportsImageAttachments?: boolean;
+  readonly supportsFileAttachments?: boolean;
   readonly reportsContextWindow?: boolean;
   readonly requiresNewThreadForModelChange?: boolean;
   readonly supportsConversationRollback?: boolean;
+  readonly supportsTextGeneration?: boolean;
 }
 
 export type ServerProviderDraft = Omit<ServerProvider, "instanceId" | "driver">;
@@ -233,6 +238,18 @@ export function buildServerProvider(input: {
     ...(input.presentation.badgeLabel ? { badgeLabel: input.presentation.badgeLabel } : {}),
     ...(typeof input.presentation.showInteractionModeToggle === "boolean"
       ? { showInteractionModeToggle: input.presentation.showInteractionModeToggle }
+      : {}),
+    ...(input.presentation.supportedRuntimeModes
+      ? { supportedRuntimeModes: [...input.presentation.supportedRuntimeModes] }
+      : {}),
+    ...(typeof input.presentation.supportsImageAttachments === "boolean"
+      ? { supportsImageAttachments: input.presentation.supportsImageAttachments }
+      : {}),
+    ...(typeof input.presentation.supportsFileAttachments === "boolean"
+      ? { supportsFileAttachments: input.presentation.supportsFileAttachments }
+      : {}),
+    ...(typeof input.presentation.supportsTextGeneration === "boolean"
+      ? { supportsTextGeneration: input.presentation.supportsTextGeneration }
       : {}),
     ...(typeof input.presentation.reportsContextWindow === "boolean"
       ? { reportsContextWindow: input.presentation.reportsContextWindow }

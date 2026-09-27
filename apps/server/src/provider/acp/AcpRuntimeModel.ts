@@ -5,7 +5,7 @@ import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import type * as EffectAcpSchema from "effect-acp/schema";
 import { deriveToolActivityPresentation } from "@t3tools/shared/toolActivity";
-import type { ToolLifecycleItemType } from "@t3tools/contracts";
+import type { ProviderOptionDescriptor, ToolLifecycleItemType } from "@t3tools/contracts";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -884,4 +884,54 @@ export function parseSessionUpdateEvent(params: EffectAcpSchema.SessionNotificat
   }
 
   return { ...(modeId !== undefined ? { modeId } : {}), events };
+}
+
+export function buildAcpModelOptionDescriptors(
+  configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption> | null | undefined,
+): ReadonlyArray<ProviderOptionDescriptor> {
+  if (!configOptions) return [];
+
+  return configOptions.flatMap((configOption): ReadonlyArray<ProviderOptionDescriptor> => {
+    const id = configOption.id.trim();
+    const label = configOption.name.trim();
+    if (!id || !label || configOption.category === "model" || configOption.category === "mode") {
+      return [];
+    }
+
+    if (configOption.type === "boolean") {
+      return [
+        {
+          id,
+          label,
+          type: "boolean",
+          currentValue: configOption.currentValue,
+        } satisfies ProviderOptionDescriptor,
+      ];
+    }
+
+    const options = configOption.options
+      .flatMap((entry) =>
+        "value" in entry
+          ? [{ id: entry.value.trim(), label: entry.name.trim() }]
+          : entry.options.map((option) => ({ id: option.value.trim(), label: option.name.trim() })),
+      )
+      .filter((option) => option.id.length > 0 && option.label.length > 0);
+    if (options.length === 0) return [];
+
+    const currentValue = configOption.currentValue?.trim();
+    return [
+      {
+        id,
+        label,
+        type: "select",
+        options: options.map((option) => ({
+          ...option,
+          ...(option.id === currentValue ? { isDefault: true } : {}),
+        })),
+        ...(currentValue && options.some((option) => option.id === currentValue)
+          ? { currentValue }
+          : {}),
+      } satisfies ProviderOptionDescriptor,
+    ];
+  });
 }

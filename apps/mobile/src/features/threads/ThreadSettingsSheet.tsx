@@ -51,6 +51,8 @@ import { MaterialIconButton } from "../../components/MaterialIconButton";
 import { ProviderIcon } from "../../components/ProviderIcon";
 import { ThemedSwitch } from "../../components/ThemedSwitch";
 import { cn } from "../../lib/cn";
+import { getProviderSupportedRuntimeModes } from "@t3tools/shared/providerCapabilities";
+
 import type { ModelOption, ProviderGroup } from "../../lib/modelOptions";
 import { applyProviderOptionSelection } from "../../lib/providerOptions";
 import { resolveProviderOptionDescriptors } from "../../lib/providerOptions";
@@ -243,6 +245,11 @@ type ThreadSettingsSessionProps = {
   readonly onUpdateOptionSelections: (selections: ReadonlyArray<ProviderOptionSelection>) => void;
   readonly runtimeMode: RuntimeMode;
   readonly onUpdateRuntimeMode: (mode: RuntimeMode) => void;
+  /**
+   * Access modes the selected provider can actually enforce. Absent means all of
+   * them, which stays true for providers that have not declared a narrower set.
+   */
+  readonly supportedRuntimeModes?: ReadonlyArray<RuntimeMode>;
 };
 
 export type ExistingThreadSettingsRouteSession = ThreadSettingsSessionProps & {
@@ -295,6 +302,7 @@ type ThreadSettingsSessionValue = {
   readonly toggleFavorite: (option: ModelOption) => void;
   readonly runtimeMode: RuntimeMode;
   readonly onUpdateRuntimeMode: (mode: RuntimeMode) => void;
+  readonly supportedRuntimeModes: ReadonlyArray<RuntimeMode>;
   readonly displayedDescriptors: ReadonlyArray<ProviderOptionDescriptor>;
   readonly providerExpansionOverrides: ReadonlySet<string>;
   readonly hasLegacyModels: boolean;
@@ -451,6 +459,9 @@ function ThreadSettingsSessionProvider(
       providerGroups: props.providerGroups,
       runtimeMode: props.runtimeMode,
       onUpdateRuntimeMode: props.onUpdateRuntimeMode,
+      supportedRuntimeModes: getProviderSupportedRuntimeModes({
+        supportedRuntimeModes: props.supportedRuntimeModes,
+      }),
       displayedDescriptors,
       favoriteKeys,
       favoritesLoaded,
@@ -488,6 +499,7 @@ function ThreadSettingsSessionProvider(
       providerFilter,
       props.onUpdateRuntimeMode,
       props.providerGroups,
+      props.supportedRuntimeModes,
       props.runtimeMode,
       searchQuery,
       showLegacyToggle,
@@ -943,7 +955,9 @@ function ThreadSettingsChoiceContent(props: {
   const submenuContent =
     props.submenu.kind === "runtime"
       ? {
-          rows: RUNTIME_MODE_CHOICES.map((choice) => ({
+          rows: RUNTIME_MODE_CHOICES.filter((choice) =>
+            session.supportedRuntimeModes.includes(choice.mode),
+          ).map((choice) => ({
             id: choice.mode,
             label: choice.label,
             description: choice.description,
@@ -1377,6 +1391,9 @@ export function NewTaskThreadSettingsRouteScreen() {
       optionDescriptors={optionDescriptors}
       onUpdateOptionSelections={flow.setSelectedModelOptions}
       runtimeMode={flow.runtimeMode}
+      // Passed like the thread sheet does, so a new thread cannot be started in
+      // an access mode the provider it was just switched to cannot enforce.
+      supportedRuntimeModes={getProviderSupportedRuntimeModes(flow.selectedProviderStatus)}
       onUpdateRuntimeMode={flow.setRuntimeMode}
     >
       <ThreadSettingsPickerNavigator onClose={() => navigation.goBack()} />

@@ -65,6 +65,10 @@ import { ProviderIcon } from "../../components/ProviderIcon";
 import { SymbolView } from "../../components/AppSymbol";
 import { AppText as Text } from "../../components/AppText";
 import { hasProviderUsageLimits, isUsageLimitsCommand } from "@t3tools/shared/usageLimits";
+import {
+  providerSupportsFileAttachments,
+  providerSupportsImageAttachments,
+} from "@t3tools/shared/providerCapabilities";
 import { COMPOSER_LAYOUT_TRANSITION, ComposerSurface } from "./ThreadComposer";
 import { ComposerCommandPopover } from "./ComposerCommandPopover";
 import { useComposerCommandMenu } from "./use-composer-command-menu";
@@ -1680,9 +1684,12 @@ export function NewTaskDraftScreen(props: {
                 <>
                   <ComposerAttachmentButton
                     disabled={isComposerInteractionLocked}
-                    supportsFiles={Boolean(
-                      selectedEnvironmentServerConfig?.environment.capabilities.fileAttachments,
-                    )}
+                    supportsFiles={
+                      Boolean(
+                        selectedEnvironmentServerConfig?.environment.capabilities.fileAttachments,
+                      ) && providerSupportsFileAttachments(flow.selectedProviderStatus)
+                    }
+                    supportsImages={providerSupportsImageAttachments(flow.selectedProviderStatus)}
                     onPickMedia={handlePickMedia}
                     onPickFiles={handlePickFiles}
                   />

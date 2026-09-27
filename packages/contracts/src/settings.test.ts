@@ -770,6 +770,30 @@ describe("provider enabled defaults", () => {
     expect(decoded.providers.cursor.enabled).toBe(false);
     expect(decoded.providers.grok.enabled).toBe(false);
     expect(decoded.providers.opencode.enabled).toBe(false);
+    // Cline spawns a real CLI on every check, so it stays opt-in like Grok.
+    expect(decoded.providers.cline.enabled).toBe(false);
+  });
+
+  it("round-trips Cline instance settings, including a custom binary and data directory", () => {
+    const cline = ProviderDriverKind.make("cline");
+    const clineWork = ProviderInstanceId.make("cline_work");
+    const decoded = decodeServerSettings({
+      providerInstances: {
+        [clineWork]: {
+          driver: cline,
+          enabled: true,
+          config: { binaryPath: "/opt/bin/cline", dataDir: "/srv/cline-two" },
+        },
+      },
+    });
+
+    expect(resolveProviderInstanceEnabled(decoded.providerInstances[clineWork]!)).toBe(true);
+    const instanceConfig = decoded.providerInstances[clineWork]!.config as {
+      binaryPath: string;
+      dataDir: string;
+    };
+    expect(instanceConfig.binaryPath).toBe("/opt/bin/cline");
+    expect(instanceConfig.dataDir).toBe("/srv/cline-two");
   });
 
   it("keeps Cursor enabled when an existing user explicitly opted in", () => {

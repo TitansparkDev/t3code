@@ -117,6 +117,7 @@ computer.
 | Claude      | Install [Claude Code](https://claude.com/product/claude-code), then run `claude auth login`. |
 | Cursor      | Install [Cursor CLI](https://cursor.com/cli), then run `agent login`.                        |
 | Grok Build  | Install [Grok Build CLI](https://x.ai/cli), then run `grok login`.                           |
+| Cline       | Install [Cline CLI](https://cline.bot) with `npm install -g cline`, then run `cline auth`.   |
 | OpenCode    | Install [OpenCode](https://opencode.ai), then run `opencode auth login`.                     |
 | Antigravity | Install and sign in with Google from T3 Code's provider settings.                            |
 
@@ -124,6 +125,28 @@ Provider CLIs must be on the server's `PATH`. If T3 Code cannot find one, set it
 **Binary path** in provider settings, especially when using a version manager.
 Cursor's executable is `cursor-agent`, although its login command is
 `agent login`. Antigravity can use its managed runtime without a `PATH` entry.
+
+Cline runs through the Cline CLI's own sign-in, so run `cline auth` on the
+environment's machine. T3 Code does not sign in for you: the CLI's protocol
+starts a browser login, which would open on the server rather than next to you.
+If T3 Code reports that Cline is not signed in, run `cline auth` there and then
+refresh the provider card. Add a **Cline data directory** only when a second
+Cline instance needs its own profile.
+
+Cline's protocol supports fewer settings than the CLI, and T3 Code only offers
+what it can honor:
+
+- **Supervised** and **Full access** work. The two middle access modes are not
+  available, because Cline has a single approve-everything switch rather than a
+  per-tool policy.
+- **Plan** mode is not available on a Cline thread. Cline fixes its tool set on
+  the first message, so switching later would still allow file edits.
+- Images cannot be attached. Cline accepts them in the protocol and then drops
+  them before sending.
+- MCP servers and system instructions come from your Cline configuration, not
+  from T3 Code.
+- Thread titles, branch names, commit messages and pull request descriptions
+  use another provider.
 
 T3 Code warns when a provider version has known compatibility problems with your
 release. Check **Settings → Providers** on that environment for the recommended

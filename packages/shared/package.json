@@ -39,6 +39,10 @@
       "types": "./src/advertisedEndpoint.ts",
       "import": "./src/advertisedEndpoint.ts"
     },
+    "./providerCapabilities": {
+      "types": "./src/providerCapabilities.ts",
+      "import": "./src/providerCapabilities.ts"
+    },
     "./agentAwareness": {
       "types": "./src/agentAwareness.ts",
       "import": "./src/agentAwareness.ts"

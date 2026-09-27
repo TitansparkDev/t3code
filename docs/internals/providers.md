@@ -487,6 +487,56 @@ Ownership is cached per instance and re-read immediately before an update runs. 
 changed since the advisory, and reports success only when the refreshed provider is still installed
 with a readable, current version.
 
+## Cline speaks ACP, and its ACP build is narrower than the CLI
+
+[Cline](https://cline.bot) is integrated over `cline --acp` — newline-delimited JSON-RPC 2.0 on
+stdio. Three properties of that build shape the whole integration, and each is a place a future
+maintainer will otherwise get wrong:
+
+**Authentication is never requested.** Cline's ACP `authenticate` starts a device-code OAuth
+flow: it writes a URL to stderr, tries to open a browser, and then blocks until someone finishes
+it. On a T3 server that browser opens on a machine the user is not sitting at, and the request
+never returns. The runtime therefore leaves `authMethodId` unset for Cline and reads
+authentication out of the session-setup answer instead.
+
+Do not assume the guard is always a well-formed response, even though that is the verified shape.
+Against Cline 3.0.65 an unauthenticated CLI answers `session/new` with
+`-32000 {"message":"Authentication required: Call authenticate before starting a session"}`, and
+that is the path the live probe exercises. A build that gives up earlier yields no request error at
+all: it can print the guard to stderr and exit, which surfaces as an `AcpProcessExitedError`, or
+fail so early that only a thrown defect carries text. The classifier reads all three, and is
+deliberately narrow about each: `-32000` is a generic ACP code, so the method and the message wording
+must both line up, and anything that reads like a startup failure (`spawn`, `ENOENT`, `not found`)
+stays a broken install even when it mentions the API key.
+See [Cline ACP support](../../apps/server/src/provider/acp/ClineAcpSupport.ts).
+
+**The model option cannot be found by category.** Cline advertises its provider picker with
+`category: "model"` and lists it _before_ the model picker, so the shared "first model-category
+option" lookup resolves to `provider` and `session/set_config_option` would change the account
+instead of the model. Cline resolves its own option id. The same call rejects a selection outside
+the advertised catalog, because `session/set_model` accepts any string on this build.
+
+**Tool approval has exactly one knob.** Cline exposes a single `auto_approve` boolean: no per-tool
+policies, nothing between "ask about everything" and "approve everything". T3 therefore accepts only
+`Supervised` and `Full access`, and implements the difference in its own permission handler rather
+than by writing that boolean: Supervised asks the user through the normal approval event, and Full
+access answers each request with Cline's own accept option. Cline does not remember a previous
+"allow always", so Full access re-approves every request instead of pretending the CLI learned the
+answer. The two in-between T3 modes are declared unsupported on the snapshot rather than silently
+widened. See [Cline provider](../../apps/server/src/provider/Layers/ClineProvider.ts).
+
+Three more limits are declared the same way instead of being discovered at send time. Cline
+advertises `promptCapabilities.image: true` and then discards every non-text block before
+dispatch, so the snapshot reports no image support and the adapter refuses attachments. It binds
+its mode on the _first_ prompt, so a mid-thread switch to Plan would still allow file edits;
+Plan is therefore unsupported and the interaction-mode toggle is hidden. And it hard-disables
+reasoning, so no thinking level is offered.
+
+Cline stores the ACP `mcpServers` field and never loads those servers, so the adapter declares
+`consumesMcpServers: false` and the server does not mint an MCP credential for the session.
+Configure MCP on the Cline side instead. Background text generation is withheld the same way:
+titles, branch names and commit messages go to another provider.
+
 ## Protocol traps
 
 Codex async questions arrive as notifications and are answered with a new user message. There is

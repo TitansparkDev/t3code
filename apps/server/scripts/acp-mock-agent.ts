@@ -15,6 +15,17 @@ import type * as AcpSchema from "effect-acp/schema";
 const requestLogPath = process.env.T3_ACP_REQUEST_LOG_PATH;
 const exitLogPath = process.env.T3_ACP_EXIT_LOG_PATH;
 const antigravityProfile = process.env.T3_ACP_ANTIGRAVITY === "1";
+// Mirrors the real `cline --acp` build: an OAuth-only agent that returns its
+// model catalog from session setup, guards session setup behind credentials,
+// tags its provider picker with `category: "model"`, and only ever consumes
+// text content blocks.
+const clineProfile = process.env.T3_ACP_CLINE === "1";
+const requireAuthentication = process.env.T3_ACP_REQUIRE_AUTHENTICATION === "1";
+const ignoreSigterm = process.env.T3_ACP_IGNORE_SIGTERM === "1";
+const hangInitializeForever = process.env.T3_ACP_HANG_INITIALIZE_FOREVER === "1";
+const hangCreateSessionForever = process.env.T3_ACP_HANG_CREATE_SESSION_FOREVER === "1";
+const hangSetConfigOption = process.env.T3_ACP_HANG_SET_CONFIG_OPTION === "1";
+const emptyModelCatalog = process.env.T3_ACP_EMPTY_MODEL_CATALOG === "1";
 const emitToolCalls = process.env.T3_ACP_EMIT_TOOL_CALLS === "1";
 const emitInterleavedAssistantToolCalls =
   process.env.T3_ACP_EMIT_INTERLEAVED_ASSISTANT_TOOL_CALLS === "1";
@@ -60,9 +71,13 @@ const initialGrokReasoningEffort =
   process.env.T3_ACP_INITIAL_GROK_REASONING_EFFORT?.trim() || undefined;
 const promptDelayMs = Number(process.env.T3_ACP_PROMPT_DELAY_MS ?? "0");
 const permissionOptionIds = {
-  allowOnce: process.env.T3_ACP_ALLOW_ONCE_OPTION_ID ?? "allow-once",
-  allowAlways: process.env.T3_ACP_ALLOW_ALWAYS_OPTION_ID ?? "allow-always",
-  rejectOnce: process.env.T3_ACP_REJECT_ONCE_OPTION_ID ?? "reject-once",
+  // The real Cline agent uses snake_case option ids.
+  allowOnce:
+    process.env.T3_ACP_ALLOW_ONCE_OPTION_ID ?? (clineProfile ? "allow_once" : "allow-once"),
+  allowAlways:
+    process.env.T3_ACP_ALLOW_ALWAYS_OPTION_ID ?? (clineProfile ? "allow_always" : "allow-always"),
+  rejectOnce:
+    process.env.T3_ACP_REJECT_ONCE_OPTION_ID ?? (clineProfile ? "reject_once" : "reject-once"),
 };
 const omitAllowAlways = process.env.T3_ACP_OMIT_ALLOW_ALWAYS === "1";
 const permissionRequestCount = Math.max(
@@ -70,9 +85,19 @@ const permissionRequestCount = Math.max(
   Number(process.env.T3_ACP_PERMISSION_REQUEST_COUNT ?? "1") || 1,
 );
 const sessionId = "mock-session-1";
+const clineAuthMethods = [
+  { id: "cline", name: "Sign in with Cline" },
+  { id: "cline-pass", name: "Sign in with ClinePass" },
+  { id: "openai-codex", name: "Sign in with ChatGPT Subscription" },
+];
+let authenticated = !requireAuthentication;
 
-let currentModeId = antigravityProfile ? "default" : "ask";
-let currentModelId = antigravityProfile ? "gemini-test-low" : "default";
+let currentModeId = antigravityProfile ? "default" : clineProfile ? "act" : "ask";
+let currentModelId = antigravityProfile
+  ? "gemini-test-low"
+  : clineProfile
+    ? "anthropic/claude-sonnet-5"
+    : "default";
 let parameterizedModelPicker = false;
 let currentReasoning = "medium";
 let currentContext = "272k";
@@ -99,13 +124,21 @@ function logExit(reason: string): void {
   NodeFS.appendFileSync(exitLogPath, `${reason}\n`, "utf8");
 }
 
+// Recorded so a test can prove the process is really gone. A SIGKILL cannot be
+// logged from inside the process, so the exit log alone cannot distinguish
+// "escalated" from "still running".
+logExit(`pid:${process.pid}`);
+
 function writeJsonRpcNotification(method: string, params: unknown): void {
   process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", method, params })}\n`);
 }
 
 process.once("SIGTERM", () => {
   logExit("SIGTERM");
-  process.exit(0);
+  // Lets a test prove T3 escalates past TERM instead of waiting forever.
+  if (!ignoreSigterm) {
+    process.exit(0);
+  }
 });
 
 process.once("SIGINT", () => {
@@ -118,6 +151,9 @@ process.once("exit", (code) => {
 });
 
 function configOptions(): ReadonlyArray<AcpSchema.SessionConfigOption> {
+  if (clineProfile) {
+    return clineConfigOptions();
+  }
   if (antigravityProfile) {
     return [
       {
@@ -327,6 +363,9 @@ const availableModes: ReadonlyArray<AcpSchema.SessionMode> = antigravityProfile
     ];
 
 function modeState(): AcpSchema.SessionModeState {
+  if (clineProfile) {
+    return clineModeState();
+  }
   return {
     currentModeId,
     availableModes,
@@ -353,7 +392,87 @@ const grokAcpModels: ReadonlyArray<AcpSchema.ModelInfo> = [
   { modelId: "grok-mock-alt", name: "Grok Mock Alt" },
 ];
 
+const clineAcpModels: ReadonlyArray<AcpSchema.ModelInfo> = [
+  { modelId: "anthropic/claude-sonnet-5", name: "Claude Sonnet 5" },
+  { modelId: "qwen/qwen3.8-max-prime", name: "Qwen 3.8 Max Prime" },
+  { modelId: "aion-labs/aion-3.5", name: "Aion 3.5" },
+];
+
+function clineModeState(): AcpSchema.SessionModeState {
+  return {
+    currentModeId: "act",
+    availableModes: [
+      {
+        id: "plan",
+        name: "Plan",
+        description: "Explore the codebase and plan changes without modifying files",
+      },
+      { id: "act", name: "Act", description: "Make changes to the codebase" },
+    ],
+  };
+}
+
+function clineModelState(): AcpSchema.SessionModelState {
+  return {
+    currentModelId,
+    availableModels: emptyModelCatalog ? [] : clineAcpModels,
+  };
+}
+
+function clineConfigOptions(): ReadonlyArray<AcpSchema.SessionConfigOption> {
+  return [
+    // The real agent lists the provider picker first and also tags it
+    // `category: "model"`, so a client that resolves the model config option by
+    // category alone would change accounts instead of models.
+    {
+      id: "provider",
+      name: "Provider",
+      description: "The authentication provider to use",
+      category: "model",
+      type: "select",
+      currentValue: "cline",
+      options: [
+        { value: "cline", name: "Cline Usage-Billing" },
+        { value: "cline-pass", name: "ClinePass" },
+        { value: "openai-codex", name: "OpenAI ChatGPT Subscription" },
+      ],
+    },
+    {
+      id: "model",
+      name: "Model",
+      category: "model",
+      type: "select",
+      currentValue: currentModelId,
+      options: clineAcpModels
+        .filter(() => !emptyModelCatalog)
+        .map((model) => ({ value: model.modelId, name: model.name })),
+    },
+    {
+      id: "mode",
+      name: "Session Mode",
+      description: "Controls whether the agent can modify files",
+      category: "mode",
+      type: "select",
+      currentValue: "act",
+      options: [
+        { value: "plan", name: "Plan" },
+        { value: "act", name: "Act" },
+      ],
+    },
+    {
+      id: "auto_approve",
+      name: "Auto-approve tools",
+      description: "Automatically approve all tool calls without asking for permission",
+      type: "boolean",
+      currentValue: false,
+    },
+  ];
+}
+
 function modelState(): AcpSchema.SessionModelState {
+  if (clineProfile) {
+    return clineModelState();
+  }
   if (antigravityProfile) {
     return { currentModelId, availableModels: antigravityModels };
   }
@@ -371,6 +490,22 @@ const program = Effect.gen(function* () {
   const resumeRelease = yield* Deferred.make<void>();
   const nativeCancelRequested = yield* Deferred.make<void>();
   const nativeCancelRelease = yield* Deferred.make<void>();
+  /**
+   * Cline's real session-setup guard. The message wording is what T3's auth
+   * classifier keys on, and `-32000` is the code it arrives as.
+   */
+  const requireSessionAuthentication = (method: string) =>
+    authenticated || !requireAuthentication
+      ? Effect.void
+      : Effect.fail(
+          AcpError.AcpRequestError.fromProtocolError(
+            {
+              code: -32000,
+              message: "Authentication required: Call authenticate before starting a session",
+            } as never,
+            { method },
+          ),
+        );
   const publishAntigravityCommands = (targetSessionId: string) =>
     agent.client.sessionUpdate({
       sessionId: targetSessionId,
@@ -393,8 +528,29 @@ const program = Effect.gen(function* () {
             }),
         );
       }
+      if (hangInitializeForever) {
+        return yield* Effect.never;
+      }
       parameterizedModelPicker =
         request.clientCapabilities?._meta?.parameterizedModelPicker === true;
+      if (clineProfile) {
+        return {
+          protocolVersion: 1,
+          agentInfo: { name: "cline", version: "3.0.65" },
+          // The real agent advertises image prompts and then drops every
+          // non-text block, so the client's snapshot rewrite is what keeps T3's
+          // advertised capabilities truthful.
+          agentCapabilities: {
+            loadSession: true,
+            promptCapabilities: { image: true, audio: false, embeddedContext: false },
+          },
+          authMethods: [
+            { id: "cline", name: "Sign in with Cline" },
+            { id: "cline-pass", name: "Sign in with ClinePass" },
+            { id: "openai-codex", name: "Sign in with ChatGPT Subscription" },
+          ],
+        };
+      }
       if (antigravityProfile) {
         return {
           protocolVersion: 1,
@@ -420,16 +576,29 @@ const program = Effect.gen(function* () {
 
   // Mirrors the real agent: the API key method reads GEMINI_API_KEY from the
   // process environment and rejects when it is missing.
+  // The real Cline agent starts a device-code OAuth flow here, prints the URL
+  // to stderr and blocks. The mock only models the already-authenticated case so
+  // a test can prove T3 never reaches for it.
   yield* agent.handleAuthenticate((request) =>
-    !antigravityProfile || request.methodId === "oauth-personal"
-      ? Effect.succeed({})
-      : request.methodId === "gemini-api-key" && process.env.GEMINI_API_KEY
+    clineProfile
+      ? Effect.gen(function* () {
+          if (!clineAuthMethods.some((method) => method.id === request.methodId)) {
+            return yield* AcpError.AcpRequestError.invalidParams(
+              `Unsupported auth method: ${request.methodId}`,
+            );
+          }
+          authenticated = true;
+          return {};
+        })
+      : !antigravityProfile || request.methodId === "oauth-personal"
         ? Effect.succeed({})
-        : Effect.fail(
-            AcpError.AcpRequestError.invalidParams(
-              `Mock Antigravity rejected auth method ${request.methodId}.`,
+        : request.methodId === "gemini-api-key" && process.env.GEMINI_API_KEY
+          ? Effect.succeed({})
+          : Effect.fail(
+              AcpError.AcpRequestError.invalidParams(
+                `Mock Antigravity rejected auth method ${request.methodId}.`,
+              ),
             ),
-          ),
   );
   if (antigravityProfile) {
     yield* agent.handleLogout(() => Effect.succeed({}));
@@ -437,6 +606,10 @@ const program = Effect.gen(function* () {
 
   yield* agent.handleCreateSession(() =>
     Effect.gen(function* () {
+      if (hangCreateSessionForever) {
+        return yield* Effect.never;
+      }
+      yield* requireSessionAuthentication("session/new");
       if (antigravityProfile) {
         yield* publishAntigravityCommands(sessionId);
       }
@@ -501,6 +674,7 @@ const program = Effect.gen(function* () {
       if (failLoadSession) {
         return yield* AcpError.AcpRequestError.internalError("Mock load session failure");
       }
+      yield* requireSessionAuthentication("session/load");
       if (hangLoadSessionAfterReplay || delayLoadSessionAfterReplay) {
         emitLoadReplayNotifications(requestedSessionId);
         yield* agent.client.sessionUpdate({
@@ -557,6 +731,11 @@ const program = Effect.gen(function* () {
         return yield* Effect.sync(() => {
           process.exit(7);
         });
+      }
+      if (hangSetConfigOption) {
+        // Stalls the pre-prompt window, so a Stop lands while sendTurn is still
+        // configuring the session rather than once the prompt is in flight.
+        return yield* Effect.never;
       }
       if (failSetConfigOption) {
         return yield* AcpError.AcpRequestError.invalidParams(

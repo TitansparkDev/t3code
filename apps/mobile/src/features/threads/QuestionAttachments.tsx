@@ -7,6 +7,10 @@ import {
   type ApprovalRequestId,
   type UserInputQuestion,
 } from "@t3tools/contracts";
+import {
+  providerSupportsFileAttachments,
+  providerSupportsImageAttachments,
+} from "@t3tools/shared/providerCapabilities";
 import { useAtomValue } from "@effect/atom-react";
 import { Alert, View } from "react-native";
 import { useEffect, useRef, useState } from "react";
@@ -116,6 +120,14 @@ export function QuestionAttachments(props: {
   const { environmentId, id: threadId } = selectedThread;
   const capabilities = configs.get(environmentId)?.environment.capabilities;
   const canAttach = capabilities?.questionAttachments === true;
+  // A question reply still goes to the selected provider, so its attachment
+  // limits apply here too.
+  const questionProviderStatus =
+    configs
+      .get(environmentId)
+      ?.providers.find(
+        (candidate) => candidate.instanceId === selectedThread.modelSelection.instanceId,
+      ) ?? null;
   const key = questionAttachmentDraftKey(
     environmentId,
     threadId,
@@ -161,7 +173,11 @@ export function QuestionAttachments(props: {
       {canAttach ? (
         <ComposerAttachmentButton
           disabled={props.disabled}
-          supportsFiles={Boolean(capabilities?.fileAttachments)}
+          supportsFiles={
+            Boolean(capabilities?.fileAttachments) &&
+            providerSupportsFileAttachments(questionProviderStatus)
+          }
+          supportsImages={providerSupportsImageAttachments(questionProviderStatus)}
           onPickMedia={() => pick("media")}
           onPickFiles={() => pick("files")}
         />

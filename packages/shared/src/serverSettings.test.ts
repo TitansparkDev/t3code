@@ -1,8 +1,10 @@
+import * as Schema from "effect/Schema";
 import {
   DEFAULT_SERVER_SETTINGS,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  ServerSettings,
   UsageLimitSourceId,
   type ServerProvider,
 } from "@t3tools/contracts";
@@ -758,5 +760,34 @@ describe("serverSettings helpers", () => {
     });
 
     expect(resolved.pauseWhenOnBattery).toBe(false);
+  });
+});
+
+describe("Cline provider settings", () => {
+  it("applies a Cline patch without disturbing the other providers", () => {
+    const current = applyServerSettingsPatch(Schema.decodeSync(ServerSettings)({}), {
+      providers: { cline: { enabled: true } },
+    });
+    const patched = applyServerSettingsPatch(current, {
+      providers: { cline: { binaryPath: "/usr/local/bin/cline", dataDir: "/srv/cline-two" } },
+    });
+
+    expect(patched.providers.cline.enabled).toBe(true);
+    expect(patched.providers.cline.binaryPath).toBe("/usr/local/bin/cline");
+    expect(patched.providers.cline.dataDir).toBe("/srv/cline-two");
+    // Everything the patch did not mention keeps its value.
+    expect(patched.providers.codex.enabled).toBe(true);
+    expect(patched.providers.grok.enabled).toBe(false);
+  });
+
+  it("resolves an empty custom binary path to the CLI on PATH", () => {
+    // The settings form omits the key when the user clears it, and a blank
+    // value still has to decode to the PATH-resolved default rather than an
+    // empty command the spawn would fail on.
+    const blank = Schema.decodeSync(ServerSettings)({
+      providers: { cline: { binaryPath: "   " } },
+    });
+    expect(blank.providers.cline.binaryPath).toBe("cline");
+    expect(Schema.decodeSync(ServerSettings)({}).providers.cline.binaryPath).toBe("cline");
   });
 });

@@ -559,6 +559,65 @@ describe("AcpSessionRuntime", () => {
     );
   });
 
+  it.effect("skips authenticate when the runtime declares no auth method", () => {
+    // An agent that restores its own credentials must not be asked to
+    // authenticate: `authenticate` is an active operation that can open a
+    // browser on the server host and never return.
+    const requestEvents: Array<AcpSessionRuntime.AcpSessionRequestLogEvent> = [];
+    return Effect.gen(function* () {
+      const runtime = yield* AcpSessionRuntime.AcpSessionRuntime;
+      yield* runtime.start();
+      expect(requestEvents.some((event) => event.method === "authenticate")).toBe(false);
+      expect(requestEvents.some((event) => event.method === "session/new")).toBe(true);
+    }).pipe(
+      Effect.provide(
+        AcpSessionRuntime.layer({
+          spawn: { command: mockAgentCommand, args: mockAgentArgs },
+          cwd: process.cwd(),
+          clientInfo: { name: "t3-test", version: "0.0.0" },
+          requestLogger: (event) =>
+            Effect.sync(() => {
+              requestEvents.push(event);
+            }),
+        }),
+      ),
+      Effect.scoped,
+      Effect.provide(NodeServices.layer),
+    );
+  });
+
+  it.effect("terminates a child that never answers initialize", () => {
+    // Scope close waits on a peer that will never speak again, so a caller with
+    // a startup deadline has to be able to kill the exact child it owns.
+    const exitLogPath = NodePath.join(
+      NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "acp-terminate-")),
+      "exit.log",
+    );
+    return Effect.gen(function* () {
+      const runtime = yield* AcpSessionRuntime.AcpSessionRuntime;
+      const start = yield* runtime.start().pipe(Effect.forkDetach);
+      yield* Effect.sleep("200 millis");
+      yield* runtime.terminate("1 second");
+      expect(yield* Fiber.await(start).pipe(Effect.timeoutOption("5 seconds"))).not.toBeUndefined();
+    }).pipe(
+      Effect.provide(
+        AcpSessionRuntime.layer({
+          spawn: {
+            command: mockAgentCommand,
+            args: [mockAgentPath],
+            env: { T3_ACP_HANG_INITIALIZE_FOREVER: "1", T3_ACP_EXIT_LOG_PATH: exitLogPath },
+          },
+          cwd: process.cwd(),
+          clientInfo: { name: "t3-test", version: "0.0.0" },
+          authMethodId: "test",
+        }),
+      ),
+      Effect.scoped,
+      Effect.provide(NodeServices.layer),
+      TestClock.withLive,
+    );
+  });
+
   it.effect("starts a session, prompts, and emits normalized events against the mock agent", () =>
     Effect.gen(function* () {
       const runtime = yield* AcpSessionRuntime.AcpSessionRuntime;

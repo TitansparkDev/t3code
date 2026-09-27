@@ -603,10 +603,30 @@ it.layer(NodeServices.layer)("server settings", (it) => {
 
       const settings = yield* serverSettings.getSettings;
 
+      assert.isFalse(settings.providers.cline.enabled);
       assert.isFalse(settings.providers.grok.enabled);
       assert.isTrue(settings.providers.opencode.enabled);
       assert.isFalse(settings.providers.cursor.enabled);
       assert.equal(settings.providers.opencode.serverUrl, "http://127.0.0.1:4096");
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
+  it.effect("enables previously used Cline from sparse settings files", () =>
+    Effect.gen(function* () {
+      const serverConfig = yield* ServerConfig.ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
+      yield* fileSystem.writeFileString(
+        serverConfig.settingsPath,
+        '{"providers":{"cline":{"binaryPath":"/opt/bin/cline"}}}',
+      );
+      yield* recordProviderUsage("cline");
+
+      const settings = yield* serverSettings.getSettings;
+
+      assert.isTrue(settings.providers.cline.enabled);
+      assert.isFalse(settings.providers.grok.enabled);
+      assert.equal(settings.providers.cline.binaryPath, "/opt/bin/cline");
     }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
 
@@ -650,6 +670,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
 
       const settings = yield* serverSettings.getSettings;
 
+      assert.isFalse(settings.providers.cline.enabled);
       assert.isFalse(settings.providers.grok.enabled);
       assert.isFalse(settings.providers.opencode.enabled);
       assert.isFalse(settings.providers.cursor.enabled);
@@ -1038,6 +1059,11 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         providers: {
           codex: {
             binaryPath: "/opt/homebrew/bin/codex",
+          },
+          cline: {
+            // Opt-in like cursor, freebuff, grok and opencode, so an explicit
+            // opt-out has to survive the round trip to disk.
+            enabled: false,
           },
           cursor: {
             enabled: false,

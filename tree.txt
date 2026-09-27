@@ -19943,6 +19943,7 @@ apps/mobile/src/lib/attachmentUpload.test.ts
 apps/mobile/src/lib/attachmentUpload.ts
 apps/mobile/src/lib/authClientMetadata.ts
 apps/mobile/src/lib/base64.ts
+apps/mobile/src/lib/clineProviderCapabilities.test.ts
 apps/mobile/src/lib/cn.ts
 apps/mobile/src/lib/commandMetadata.ts
 apps/mobile/src/lib/composer-image-schema.ts
@@ -20667,6 +20668,8 @@ apps/server/src/provider/Drivers/ClaudeSkillDispatch.test.ts
 apps/server/src/provider/Drivers/ClaudeSkillDispatch.ts
 apps/server/src/provider/Drivers/ClaudeSkills.test.ts
 apps/server/src/provider/Drivers/ClaudeSkills.ts
+apps/server/src/provider/Drivers/ClineDriver.test.ts
+apps/server/src/provider/Drivers/ClineDriver.ts
 apps/server/src/provider/Drivers/CodexDriver.test.ts
 apps/server/src/provider/Drivers/CodexDriver.ts
 apps/server/src/provider/Drivers/CodexHomeLayout.test.ts
@@ -20690,6 +20693,10 @@ apps/server/src/provider/Layers/ClaudeAdapter.ts
 apps/server/src/provider/Layers/ClaudeCapabilitiesProbe.test.ts
 apps/server/src/provider/Layers/ClaudeProvider.ts
 apps/server/src/provider/Layers/ClaudeSlashCommands.test.ts
+apps/server/src/provider/Layers/ClineAdapter.test.ts
+apps/server/src/provider/Layers/ClineAdapter.ts
+apps/server/src/provider/Layers/ClineProvider.test.ts
+apps/server/src/provider/Layers/ClineProvider.ts
 apps/server/src/provider/Layers/CodexAdapter.test.ts
 apps/server/src/provider/Layers/CodexAdapter.ts
 apps/server/src/provider/Layers/CodexCollabRuntime.integration.test.ts
@@ -20756,6 +20763,7 @@ apps/server/src/provider/ProviderInstanceEnvironment.ts
 apps/server/src/provider/RuntimeInstructions.test.ts
 apps/server/src/provider/RuntimeInstructions.ts
 apps/server/src/provider/Services/ClaudeAdapter.ts
+apps/server/src/provider/Services/ClineAdapter.ts
 apps/server/src/provider/Services/CodexAdapter.ts
 apps/server/src/provider/Services/CursorAdapter.ts
 apps/server/src/provider/Services/GrokAdapter.ts
@@ -20787,6 +20795,9 @@ apps/server/src/provider/acp/AntigravityAcpSupport.ts
 apps/server/src/provider/acp/AntigravityProtocol.test.ts
 apps/server/src/provider/acp/AntigravityProtocol.ts
 apps/server/src/provider/acp/AntigravitySessionFiles.ts
+apps/server/src/provider/acp/ClineAcpCliProbe.test.ts
+apps/server/src/provider/acp/ClineAcpSupport.test.ts
+apps/server/src/provider/acp/ClineAcpSupport.ts
 apps/server/src/provider/acp/CursorAcpCliProbe.test.ts
 apps/server/src/provider/acp/CursorAcpExtension.test.ts
 apps/server/src/provider/acp/CursorAcpExtension.ts
@@ -21024,6 +21035,7 @@ apps/server/src/textGeneration/ThreadTitleContext.test.ts
 apps/server/src/textGeneration/ThreadTitleContext.ts
 apps/server/src/textGeneration/ThreadTitleLinks.test.ts
 apps/server/src/textGeneration/ThreadTitleLinks.ts
+apps/server/src/textGeneration/unsupportedTextGeneration.ts
 apps/server/src/threadFork.test.ts
 apps/server/src/threadFork.ts
 apps/server/src/usage/UsageLimitSources.ts
@@ -21156,6 +21168,7 @@ apps/web/src/browserHistoryStore.ts
 apps/web/src/bundledDev.test.ts
 apps/web/src/clientPersistenceStorage.test.ts
 apps/web/src/clientPersistenceStorage.ts
+apps/web/src/clineModelPicker.test.ts
 apps/web/src/cloud/connectCliAuth.test.ts
 apps/web/src/cloud/connectCliAuth.ts
 apps/web/src/cloud/connectOnboarding.ts
@@ -21809,6 +21822,7 @@ apps/web/src/components/settings/ThemeWireframe.tsx
 apps/web/src/components/settings/UsageProviderSettings.tsx
 apps/web/src/components/settings/browserImportWizard.logic.test.ts
 apps/web/src/components/settings/browserImportWizard.logic.ts
+apps/web/src/components/settings/clineProviderRegistration.test.tsx
 apps/web/src/components/settings/colorPickers.test.tsx
 apps/web/src/components/settings/customModelEditor.logic.test.ts
 apps/web/src/components/settings/customModelEditor.logic.ts
@@ -23163,6 +23177,8 @@ packages/shared/src/projectFavicon.ts
 packages/shared/src/projectScripts.ts
 packages/shared/src/projectSettings.test.ts
 packages/shared/src/projectSettings.ts
+packages/shared/src/providerCapabilities.test.ts
+packages/shared/src/providerCapabilities.ts
 packages/shared/src/providerRateLimit.test.ts
 packages/shared/src/providerRateLimit.ts
 packages/shared/src/qrCode.ts
