@@ -21571,6 +21571,7 @@ apps/web/src/components/media/MediaVideoPlayer.tsx
 apps/web/src/components/media/OpenMediaLink.tsx
 apps/web/src/components/media/mediaContent.ts
 apps/web/src/components/onboarding/FirstRunGate.tsx
+apps/web/src/components/onboarding/WelcomeWizard.test.tsx
 apps/web/src/components/onboarding/WelcomeWizard.tsx
 apps/web/src/components/permissions/PermissionChecklist.tsx
 apps/web/src/components/permissions/usePermissionStatus.test.ts
@@ -22567,7 +22568,6 @@ infra/relay/src/auth/RelayTokens.ts
 infra/relay/src/clientConfig.test.ts
 infra/relay/src/clientConfig.ts
 infra/relay/src/db.ts
-infra/relay/src/dbConfig.test.ts
 infra/relay/src/dbConfig.ts
 infra/relay/src/deploymentConfig.test.ts
 infra/relay/src/deploymentConfig.ts

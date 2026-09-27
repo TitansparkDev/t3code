@@ -171,6 +171,9 @@ Full glossary with file links: `docs/internals/glossary.md`
 
 ## Recent request log
 
+- 2026-09-27 — Fixed the v0.0.51 upgrade crash for 0.0.48 fork databases: renumbered migration
+  055 now skips existing usage-limit columns and 056 adds the skipped `title_state_json`; verified
+  against a copy of the live database and released as v0.0.52.
 - 2026-09-15 — Corrected the Android release path after v0.0.48 was mistakenly distributed as
   an Expo development build; production APK identity and the fork release workflow now use the
   real T3 Code production variant.
