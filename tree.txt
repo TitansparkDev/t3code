@@ -19527,6 +19527,7 @@ apps/mobile/src/features/cloud/publicConfig.test.ts
 apps/mobile/src/features/cloud/publicConfig.ts
 apps/mobile/src/features/connection/CloudEnvironmentRows.tsx
 apps/mobile/src/features/connection/ConnectionEnvironmentRow.tsx
+apps/mobile/src/features/connection/ConnectionFormField.test.tsx
 apps/mobile/src/features/connection/ConnectionFormField.tsx
 apps/mobile/src/features/connection/ConnectionSheetButton.tsx
 apps/mobile/src/features/connection/ConnectionStatusDot.tsx
@@ -21044,6 +21045,7 @@ apps/server/src/usage/UsageService.ts
 apps/server/src/usage/antigravityUsageReader.ts
 apps/server/src/usage/cliproxyApi.test.ts
 apps/server/src/usage/cliproxyApi.ts
+apps/server/src/usage/cursorUsageReader.test.ts
 apps/server/src/usage/cursorUsageReader.ts
 apps/server/src/usage/opencodeUsageReader.ts
 apps/server/src/usage/usageAggregation.test.ts
@@ -21245,6 +21247,8 @@ apps/web/src/components/ProviderUpdateLaunchNotification.tsx
 apps/web/src/components/ProviderUpdatePrimaryNotification.tsx
 apps/web/src/components/PullRequestContextDetails.tsx
 apps/web/src/components/PullRequestThreadDialog.tsx
+apps/web/src/components/QueuedMessageSender.test.tsx
+apps/web/src/components/QueuedMessageSender.tsx
 apps/web/src/components/QuitHoldOverlay.tsx
 apps/web/src/components/RenderErrorBoundary.tsx
 apps/web/src/components/RightPanelSheet.tsx
@@ -21411,6 +21415,7 @@ apps/web/src/components/chat/providerIconUtils.ts
 apps/web/src/components/chat/restingComposerControlsMeasurement.test.ts
 apps/web/src/components/chat/restingComposerControlsMeasurement.ts
 apps/web/src/components/chat/runtimeModeConfig.ts
+apps/web/src/components/chat/sendQueuedMessage.ts
 apps/web/src/components/chat/timelineMinimapItems.test.ts
 apps/web/src/components/chat/timelineMinimapItems.ts
 apps/web/src/components/chat/timelineScrollAnchoring.test.tsx
@@ -21936,6 +21941,7 @@ apps/web/src/components/usage/UsageLimits.tsx
 apps/web/src/components/usage/UsageLimitsPooled.tsx
 apps/web/src/components/usage/UsageLimitsTooltip.tsx
 apps/web/src/components/usage/UsagePage.refresh.test.tsx
+apps/web/src/components/usage/UsagePage.test.tsx
 apps/web/src/components/usage/UsagePage.tsx
 apps/web/src/components/usage/UsagePriceOverrides.tsx
 apps/web/src/components/usage/UsageProviderChart.test.ts
@@ -21951,6 +21957,8 @@ apps/web/src/components/usage/usagePriceTable.ts
 apps/web/src/components/usage/usagePriceTargets.test.ts
 apps/web/src/components/usage/usagePriceTargets.ts
 apps/web/src/components/usage/usageProviders.ts
+apps/web/src/components/usage/usageShortcuts.test.ts
+apps/web/src/components/usage/usageShortcuts.ts
 apps/web/src/composer-editor-mentions.test.ts
 apps/web/src/composer-editor-mentions.ts
 apps/web/src/composer-list-continuation.test.ts
@@ -22032,6 +22040,7 @@ apps/web/src/hooks/useLoadBalancedEnvironment.ts
 apps/web/src/hooks/useLocalStorage.test.ts
 apps/web/src/hooks/useLocalStorage.ts
 apps/web/src/hooks/useMediaQuery.ts
+apps/web/src/hooks/useNavigateBack.ts
 apps/web/src/hooks/useNowMinute.ts
 apps/web/src/hooks/useOpenPanelPullRequestUrl.ts
 apps/web/src/hooks/usePullRequestLinking.ts
@@ -22802,6 +22811,7 @@ packages/client-runtime/src/pendingRequests.test.ts
 packages/client-runtime/src/pendingRequests.ts
 packages/client-runtime/src/platform/capabilities.ts
 packages/client-runtime/src/platform/index.ts
+packages/client-runtime/src/platform/persistence.test.ts
 packages/client-runtime/src/platform/persistence.ts
 packages/client-runtime/src/platform/source.ts
 packages/client-runtime/src/platform/storageDocument.test.ts
@@ -23275,6 +23285,7 @@ patches/expo-sharing@57.0.17.patch
 patches/expo-widgets@57.0.15.patch
 patches/react-native-gesture-handler@2.32.0.patch
 patches/react-native-keyboard-controller@1.21.13.patch
+patches/react-native-nitro-markdown@0.5.8.patch
 patches/react-native-nitro-modules@0.35.9.patch
 patches/react-native-reanimated@4.5.5.patch
 patches/react-native-screens@4.26.2.patch
