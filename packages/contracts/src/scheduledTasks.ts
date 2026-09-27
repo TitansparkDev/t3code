@@ -90,6 +90,8 @@ export const ScheduledTaskRunTargetStatus = Schema.Literals([
 ]);
 export type ScheduledTaskRunTargetStatus = typeof ScheduledTaskRunTargetStatus.Type;
 
+export const ScheduledTaskWindowStatus = Schema.Literals(["opened", "active", "unverified"]);
+
 /** The provider's five-hour window as observed when a run finished. */
 export const ScheduledTaskRunQuota = Schema.Struct({
   usedPercent: QuotaUsedPercent,
@@ -109,6 +111,7 @@ export const ScheduledTaskRunTarget = Schema.Struct({
   completedAt: Schema.optional(IsoDateTime),
   durationMs: Schema.optional(Schema.Number.check(Schema.isGreaterThanOrEqualTo(0))),
   quota5h: Schema.optional(ScheduledTaskRunQuota),
+  windowStatus: Schema.optional(ScheduledTaskWindowStatus),
   detail: Schema.optional(TrimmedNonEmptyString),
 });
 export type ScheduledTaskRunTarget = typeof ScheduledTaskRunTarget.Type;

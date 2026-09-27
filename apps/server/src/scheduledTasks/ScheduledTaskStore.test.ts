@@ -58,6 +58,7 @@ it.layer(NodeServices.layer)("ScheduledTaskStore", (it) => {
         threadId: "thread-scheduled-1",
         status: "completed",
         durationMs: 12_345,
+        windowStatus: "opened",
       });
       yield* store.updateRun(task!.id, run!.id, {
         status: "completed",
@@ -83,6 +84,7 @@ it.layer(NodeServices.layer)("ScheduledTaskStore", (it) => {
       expect(reloaded[0]?.id).toBe(task!.id);
       expect(reloaded[0]?.schedule.timeOfDay).toBe("06:30");
       expect(reloaded[0]?.lastRun?.outcome).toBe("started");
+      expect(reloaded[0]?.runHistory?.[0]?.targets[0]?.windowStatus).toBe("opened");
     }).pipe(Effect.provide(storeLayer())),
   );
 });

@@ -226,14 +226,14 @@ function EnvironmentScheduledTasks({
                 <p className="truncate text-sm">
                   {task.name}
                   {task.enabled ? null : (
-                    <span className="ml-2 text-[11px] text-muted-foreground">(disabled)</span>
+                    <span className="ml-2 text-2xs text-muted-foreground">(disabled)</span>
                   )}
                 </p>
                 <p className="truncate text-xs text-muted-foreground">
                   {describeSchedule(task)} · {task.targets.length} account
                   {task.targets.length === 1 ? "" : "s"}
                 </p>
-                <p className="truncate text-[11px] text-muted-foreground/80">
+                <p className="truncate text-2xs text-muted-foreground/80">
                   Next {new Date(nextScheduledRunAt(task.schedule, Date.now())).toLocaleString()}
                 </p>
               </div>
@@ -294,7 +294,7 @@ function EnvironmentScheduledTasks({
       </ul>
 
       {draft ? (
-        <div className="space-y-3 rounded-md border border-border/60 bg-sidebar-accent/20 p-3">
+        <div className="space-y-3 rounded-md border border-border/60 bg-muted/20 p-3">
           <label className="block space-y-1">
             <span className="text-xs text-muted-foreground">Name</span>
             <Input
@@ -423,17 +423,17 @@ function TaskRunHistory({
 
   if (runs.length === 0) {
     return (
-      <div className="rounded-md bg-sidebar-accent/30 px-2.5 py-2 text-[11px] text-muted-foreground">
+      <div className="rounded-md bg-muted/30 px-2.5 py-2 text-2xs text-muted-foreground">
         No runs yet. When this task runs, each provider chat and its measured usage will stay here.
       </div>
     );
   }
 
   return (
-    <div className="rounded-md bg-sidebar-accent/30 p-2.5">
+    <div className="rounded-md bg-muted/30 p-2.5">
       <div className="mb-1.5 flex items-center justify-between gap-2">
         <p className="text-xs font-medium">Run history</p>
-        <span className="text-[11px] text-muted-foreground">{runs.length} saved</span>
+        <span className="text-2xs text-muted-foreground">{runs.length} saved</span>
       </div>
       <ul className="space-y-1">
         {runs.map((run) => (
@@ -450,15 +450,13 @@ function TaskRunHistory({
                 </span>
               </summary>
               <div className="space-y-2 border-t border-border/40 px-2 py-2">
-                {run.detail ? (
-                  <p className="text-[11px] text-muted-foreground">{run.detail}</p>
-                ) : null}
+                {run.detail ? <p className="text-2xs text-muted-foreground">{run.detail}</p> : null}
                 <ul className="space-y-1.5">
                   {run.targets.map((target) => {
                     const name = providerNames.get(target.instanceId) ?? String(target.instanceId);
                     return (
                       <li
-                        className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px]"
+                        className="flex flex-wrap items-center gap-x-2 gap-y-1 text-2xs"
                         key={`${run.id}-${target.instanceId}`}
                       >
                         <span className="font-medium">{name}</span>
@@ -471,14 +469,23 @@ function TaskRunHistory({
                             agent time {formatRunDuration(target.durationMs)}
                           </span>
                         ) : null}
-                        {target.quota5h ? (
+                        {target.status === "completed" &&
+                        target.quota5h &&
+                        target.windowStatus &&
+                        target.windowStatus !== "unverified" ? (
                           <span className="text-muted-foreground">
-                            5h after: {Math.round(target.quota5h.usedPercent)}% used ·{" "}
+                            {target.windowStatus === "opened"
+                              ? "5h window opened"
+                              : "5h window active"}
+                            : {Math.round(target.quota5h.usedPercent)}% used ·{" "}
                             {Math.round(target.quota5h.remainingPercent)}% left
                           </span>
-                        ) : (
-                          <span className="text-muted-foreground">5h usage unavailable</span>
-                        )}
+                        ) : target.status === "completed" ? (
+                          <span className="text-muted-foreground">5h window unverified</span>
+                        ) : null}
+                        {target.detail ? (
+                          <span className="text-muted-foreground">{target.detail}</span>
+                        ) : null}
                         {target.threadId ? (
                           <Button
                             render={
@@ -616,7 +623,7 @@ function ProviderOptionsPicker({
   if (descriptors.length === 0) return null;
 
   return (
-    <div className="ml-6 flex flex-wrap items-center gap-2 text-[11px]">
+    <div className="ml-6 flex flex-wrap items-center gap-2 text-2xs">
       {descriptors.map((descriptor) => {
         if (descriptor.type !== "select") return null;
         const currentValue = getProviderOptionCurrentValue(descriptor);

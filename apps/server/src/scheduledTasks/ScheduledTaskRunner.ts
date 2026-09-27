@@ -18,6 +18,7 @@
  */
 import { CommandId, MessageId, ThreadId, type ProviderInstanceId } from "@t3tools/contracts";
 import type { OrchestrationThread, OrchestrationThreadActivity } from "@t3tools/contracts";
+import type { AccountQuotaSnapshot } from "@t3tools/contracts/quota";
 import {
   isScheduledTaskDue,
   type ScheduledTask,
@@ -39,6 +40,7 @@ import { OrchestrationEngineService } from "../orchestration/Services/Orchestrat
 import type { OrchestrationEngineShape } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { QuotaService } from "../quota/QuotaService.ts";
+import { ProviderService } from "../provider/Services/ProviderService.ts";
 import { ScheduledTaskStore } from "./ScheduledTaskStore.ts";
 
 /**
@@ -54,6 +56,40 @@ interface PendingScheduledTarget {
   readonly runId: string;
   readonly targetIndex: number;
   readonly instanceId: ProviderInstanceId;
+  readonly model: string;
+  readonly previousResetAt?: string;
+}
+
+/** Only a provider observation made after the turn can confirm its window. */
+export function scheduledTargetQuota(
+  snapshot: AccountQuotaSnapshot | undefined,
+  driverKind: string | undefined,
+  model: string,
+  observedAfter?: string,
+) {
+  if (!snapshot || (observedAfter && Date.parse(snapshot.observedAt) < Date.parse(observedAfter))) {
+    return undefined;
+  }
+  const pool =
+    driverKind === "antigravity"
+      ? /gemini/i.test(model)
+        ? "gemini"
+        : /claude|gpt/i.test(model)
+          ? "claude-gpt"
+          : undefined
+      : "default";
+  if (!pool) return undefined;
+  const group = snapshot.groups.find((candidate) => candidate.key === pool);
+  const window = group?.windows.find((candidate) => candidate.kind === "short");
+  if (!window?.resetsAt || Date.parse(window.resetsAt) <= Date.parse(snapshot.observedAt)) {
+    return undefined;
+  }
+  return {
+    usedPercent: window.usedPercent,
+    remainingPercent: Math.max(0, 100 - window.usedPercent),
+    resetsAt: window.resetsAt,
+    observedAt: snapshot.observedAt,
+  };
 }
 
 function isTerminalTargetStatus(status: ScheduledTaskRunTarget["status"]): boolean {
@@ -160,11 +196,26 @@ export const make = Effect.gen(function* () {
   const store = yield* ScheduledTaskStore;
   const projection = yield* Effect.serviceOption(ProjectionSnapshotQuery);
   const quota = yield* Effect.serviceOption(QuotaService);
+  const provider = yield* Effect.serviceOption(ProviderService);
 
   /** Threads started by a run, waiting for their turn to go quiet. */
   const pendingSettles = new Map<ThreadId, PendingScheduledTarget>();
   /** Prevents a manual click and a scheduler tick from starting duplicates. */
   const activeRuns = new Set<ScheduledTaskId>();
+
+  const readQuota = (instanceId: ProviderInstanceId, model: string, observedAfter?: string) =>
+    Option.isSome(quota) && Option.isSome(provider)
+      ? Effect.gen(function* () {
+          const info = yield* provider.value.getInstanceInfo(instanceId);
+          const summary = yield* quota.value.readSummary;
+          return scheduledTargetQuota(
+            summary.snapshots.find((candidate) => candidate.providerInstanceId === instanceId),
+            info.driverKind,
+            model,
+            observedAfter,
+          );
+        }).pipe(Effect.catchCause(() => Effect.succeed(undefined)))
+      : Effect.succeed(undefined);
 
   /**
    * Start one target's thread. Returns the thread it created, or `undefined`
@@ -176,6 +227,7 @@ export const make = Effect.gen(function* () {
     readonly runId: string;
     readonly targetIndex: number;
   }) {
+    const previousQuota = yield* readQuota(input.target.instanceId, input.target.model);
     const createdAt = DateTime.formatIso(yield* DateTime.now);
     const threadId = ThreadId.make(yield* randomUUID);
     const pending = {
@@ -183,6 +235,8 @@ export const make = Effect.gen(function* () {
       runId: input.runId,
       targetIndex: input.targetIndex,
       instanceId: input.target.instanceId,
+      model: input.target.model,
+      ...(previousQuota?.resetsAt ? { previousResetAt: previousQuota.resetsAt } : {}),
     } satisfies PendingScheduledTarget;
     let threadCreated = false;
 
@@ -248,30 +302,6 @@ export const make = Effect.gen(function* () {
         )
       : Effect.succeed(undefined);
 
-  const readQuota = (instanceId: ProviderInstanceId) =>
-    Option.isSome(quota)
-      ? quota.value.readSummary.pipe(
-          Effect.map((summary) => {
-            const snapshot = summary.snapshots.find(
-              (candidate) => candidate.providerInstanceId === instanceId,
-            );
-            if (!snapshot) return undefined;
-            const windows = snapshot.groups.flatMap((group) => group.windows);
-            const shortWindow = windows
-              .filter((window) => window.kind === "short")
-              .sort((left, right) => right.usedPercent - left.usedPercent)[0];
-            if (!shortWindow) return undefined;
-            return {
-              usedPercent: shortWindow.usedPercent,
-              remainingPercent: Math.max(0, 100 - shortWindow.usedPercent),
-              ...(shortWindow.resetsAt ? { resetsAt: shortWindow.resetsAt } : {}),
-              observedAt: snapshot.observedAt,
-            };
-          }),
-          Effect.catchCause(() => Effect.succeed(undefined)),
-        )
-      : Effect.succeed(undefined);
-
   const completeRunIfFinished = Effect.fn("ScheduledTaskRunner.completeRunIfFinished")(function* (
     taskId: ScheduledTaskId,
     runId: string,
@@ -304,16 +334,41 @@ export const make = Effect.gen(function* () {
     threadId: ThreadId,
   ) {
     const thread = yield* readThread(threadId);
-    const quotaSnapshot = yield* readQuota(pending.instanceId);
     const completedAt = DateTime.formatIso(yield* DateTime.now);
-    const failed =
-      thread?.latestTurn?.state === "error" || thread?.latestTurn?.state === "interrupted";
+    const failed = thread?.latestTurn?.state !== "completed";
+    const refreshStartedAt = DateTime.formatIso(yield* DateTime.now);
+    if (!failed && Option.isSome(provider) && Option.isSome(quota)) {
+      const events = yield* (
+        provider.value.refreshQuota?.(pending.instanceId) ?? Effect.succeed([])
+      ).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("scheduled-tasks.quota-refresh-failed", {
+            instanceId: pending.instanceId,
+            cause,
+          }).pipe(Effect.as([])),
+        ),
+      );
+      // The provider event subscriber runs separately. Ingest here so the
+      // result below reads the refresh that just completed, as the RPC does.
+      yield* Effect.forEach(events, quota.value.ingest, { discard: true });
+    }
+    const quotaSnapshot = failed
+      ? undefined
+      : yield* readQuota(pending.instanceId, pending.model, refreshStartedAt);
+    const windowStatus = !quotaSnapshot
+      ? "unverified"
+      : pending.previousResetAt === quotaSnapshot.resetsAt
+        ? "active"
+        : pending.previousResetAt && Date.parse(pending.previousResetAt) <= Date.parse(completedAt)
+          ? "opened"
+          : "active";
     const update: Partial<ScheduledTaskRunTarget> = {
       status: failed ? "failed" : "completed",
       completedAt,
       ...(thread ? { durationMs: durationFromThread(thread) } : {}),
       ...(quotaSnapshot ? { quota5h: quotaSnapshot } : {}),
-      ...(failed ? { detail: "The provider turn ended before completing." } : {}),
+      ...(!failed ? { windowStatus } : {}),
+      ...(failed ? { detail: "The provider turn did not complete." } : {}),
     };
     yield* store.updateRunTarget(pending.taskId, pending.runId, pending.targetIndex, update);
     yield* completeRunIfFinished(pending.taskId, pending.runId);
@@ -399,6 +454,7 @@ export const make = Effect.gen(function* () {
             runId: run.id,
             targetIndex,
             instanceId: target.instanceId,
+            model: target.model,
           } satisfies PendingScheduledTarget;
 
           // A crash can happen after thread.create has been persisted but

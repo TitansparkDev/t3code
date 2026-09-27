@@ -8,9 +8,55 @@ import {
   type OrchestrationCommand,
 } from "@t3tools/contracts";
 import { ScheduledTaskId, type ScheduledTask } from "@t3tools/contracts/scheduledTasks";
+import type { AccountQuotaSnapshot } from "@t3tools/contracts/quota";
 import * as Effect from "effect/Effect";
 
-import { dispatchScheduledTaskTarget } from "./ScheduledTaskRunner.ts";
+import { dispatchScheduledTaskTarget, scheduledTargetQuota } from "./ScheduledTaskRunner.ts";
+
+describe("scheduled window evidence", () => {
+  const snapshot: AccountQuotaSnapshot = {
+    providerInstanceId: ProviderInstanceId.make("antigravity-1"),
+    source: "antigravity-quota-summary",
+    observedAt: "2026-09-27T05:01:00.000Z",
+    groups: [
+      {
+        key: "gemini",
+        displayName: "Gemini",
+        windows: [
+          {
+            kind: "short",
+            usedPercent: 1,
+            resetsAt: "2026-09-27T10:00:00.000Z",
+          },
+        ],
+      },
+      {
+        key: "claude-gpt",
+        displayName: "Claude & GPT",
+        windows: [
+          {
+            kind: "short",
+            usedPercent: 70,
+            resetsAt: "2026-09-27T07:00:00.000Z",
+          },
+        ],
+      },
+    ],
+  };
+
+  it("reports the Gemini window for a Gemini turn, not the more-used Claude pool", () => {
+    expect(scheduledTargetQuota(snapshot, "antigravity", "gemini-2.5-pro")?.resetsAt).toBe(
+      "2026-09-27T10:00:00.000Z",
+    );
+    expect(scheduledTargetQuota(snapshot, "antigravity", "antigravity-default")).toBeUndefined();
+  });
+
+  it("does not claim a window from an observation made before the run finished", () => {
+    expect(
+      scheduledTargetQuota(snapshot, "antigravity", "gemini-2.5-pro", "2026-09-27T05:02:00.000Z"),
+    ).toBeUndefined();
+  });
+});
 
 describe("dispatchScheduledTaskTarget", () => {
   it.effect("creates the hidden thread before starting its provider turn", () =>

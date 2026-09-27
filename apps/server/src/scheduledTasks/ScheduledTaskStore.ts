@@ -271,6 +271,9 @@ export const make = Effect.gen(function* () {
                             ? { durationMs: update.durationMs }
                             : {}),
                           ...(update.quota5h !== undefined ? { quota5h: update.quota5h } : {}),
+                          ...(update.windowStatus !== undefined
+                            ? { windowStatus: update.windowStatus }
+                            : {}),
                           ...(update.detail !== undefined ? { detail: update.detail } : {}),
                         },
                   ),

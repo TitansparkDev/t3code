@@ -37,5 +37,13 @@ skipped until the next slot, because a prompt meant to open a five-hour window a
 spends that window if it lands at lunchtime.
 
 Use **Run now** in the task's row to fire a task immediately without touching its
-schedule. **Last run** in the same row reports what happened, including targets that
-failed to start.
+schedule. **Run history** in the same row reports what happened, including targets
+that failed to start.
+
+Run history distinguishes a completed provider turn from its five-hour quota result.
+**Window opened** means a fresh provider reading shows a new reset time after the old
+window ended. **Window active** means a fresh reading shows an active window, but the
+run cannot prove it opened that window. **Window unverified** means the provider did
+not supply a fresh five-hour reading. For Antigravity, choose an explicit Gemini
+model to verify the Gemini window; its automatic model choice does not identify
+which quota pool the turn used.
