@@ -22069,6 +22069,7 @@ apps/web/src/hostedPairing.ts
 apps/web/src/index.css
 apps/web/src/keybindings.test.ts
 apps/web/src/keybindings.ts
+apps/web/src/latestRelease.ts
 apps/web/src/lib/archivedThreadsState.ts
 apps/web/src/lib/assistantCitationNavigation.test.ts
 apps/web/src/lib/assistantCitationNavigation.ts

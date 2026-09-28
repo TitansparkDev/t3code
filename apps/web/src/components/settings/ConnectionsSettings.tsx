@@ -41,7 +41,11 @@ import {
   type EnvironmentId,
   resolveEnvironmentMachineKind,
 } from "@t3tools/contracts";
-import { connectionStatusText } from "@t3tools/client-runtime/connection";
+import {
+  connectionStatusText,
+  RelayConnectionRegistration,
+  RelayConnectionTarget,
+} from "@t3tools/client-runtime/connection";
 import { createAdvertisedEndpoint } from "@t3tools/shared/advertisedEndpoint";
 import {
   isAtomCommandInterrupted,
@@ -143,6 +147,7 @@ import {
   supportsDesktopAppUpdate,
   supportsServerUpdateThreadContinuation,
 } from "~/versionSkew";
+import { useLatestReleaseVersion } from "~/latestRelease";
 import { hasCloudPublicConfig } from "~/cloud/publicConfig";
 import { usePrimaryCloudLinkState } from "~/cloud/primaryCloudLinkState";
 import { useCloudLinkController } from "~/cloud/useCloudLinkController";
@@ -1541,7 +1546,11 @@ function SavedBackendListRow({
     },
     [copyTraceIdToClipboard],
   );
-  const versionMismatch = resolveServerConfigVersionMismatch(environment.serverConfig);
+  const latestReleaseVersion = useLatestReleaseVersion();
+  const versionMismatch = resolveServerConfigVersionMismatch(
+    environment.serverConfig,
+    latestReleaseVersion,
+  );
   const serverUpdateState = useAtomValue(serverEnvironment.updateStateAtom(environmentId));
   const resumingServerUpdate =
     serverUpdateState.status === "running" && serverUpdateState.stage === "resuming";
@@ -1564,6 +1573,42 @@ function SavedBackendListRow({
     environment.serverConfig ??
       (lastDescriptor === undefined ? null : { environment: lastDescriptor }),
   );
+  // A machine paired by its address only works where that address is
+  // reachable. When the same machine is on this account's T3 Connect, offer
+  // to switch the saved route so it works from any network.
+  const registerEnvironment = useAtomCommand(environmentCatalog.register, {
+    reportFailure: false,
+  });
+  const [switchingToRelay, setSwitchingToRelay] = useState(false);
+  const canSwitchToRelay =
+    environment.entry.target._tag === "BearerConnectionTarget" &&
+    relayDiscovery.environments.has(environmentId);
+  const switchToRelay = async () => {
+    setSwitchingToRelay(true);
+    const result = await registerEnvironment(
+      new RelayConnectionRegistration({
+        target: new RelayConnectionTarget({ environmentId, label: environment.label }),
+      }),
+    );
+    setSwitchingToRelay(false);
+    if (result._tag === "Success") {
+      toastManager.add({
+        type: "success",
+        title: "Switched to T3 Connect",
+        description: `${environment.label} now connects through T3 Connect from any network.`,
+      });
+      return;
+    }
+    if (isAtomCommandInterrupted(result)) return;
+    const cause = squashAtomCommandFailure(result);
+    toastManager.add(
+      stackedThreadToast({
+        type: "error",
+        title: "Could not switch to T3 Connect",
+        description: cause instanceof Error ? cause.message : "Try again.",
+      }),
+    );
+  };
   const subtitleText = [
     environmentTransportLabel(environment),
     resumingServerUpdate ? "Restarting" : status.text,
@@ -1588,7 +1633,7 @@ function SavedBackendListRow({
         : "Switched off"
   }${
     versionMismatch
-      ? `\nUpdate available: ${versionMismatch.serverVersion} → ${versionMismatch.clientVersion}`
+      ? `\nUpdate available: ${versionMismatch.serverVersion} → ${versionMismatch.targetVersion}`
       : ""
   }`;
 
@@ -1627,6 +1672,16 @@ function SavedBackendListRow({
         ) : null
       }
     >
+      {canSwitchToRelay && !isConnected && enabled ? (
+        <Button
+          size="xs"
+          variant="outline"
+          disabled={switchingToRelay}
+          onClick={() => void switchToRelay()}
+        >
+          {switchingToRelay ? "Switching…" : "Use T3 Connect"}
+        </Button>
+      ) : null}
       {showUpdateAction ? (
         <ServerUpdateAction
           environmentId={environmentId}
@@ -1634,7 +1689,7 @@ function SavedBackendListRow({
           selfUpdate={resolveServerSelfUpdateCapability(environment.serverConfig)}
           desktopAppUpdate={supportsDesktopAppUpdate(environment.serverConfig)}
           threadContinuation={supportsServerUpdateThreadContinuation(environment.serverConfig)}
-          targetVersion={versionMismatch.clientVersion}
+          targetVersion={versionMismatch.targetVersion}
           label={serverUpdateState.status === "failed" ? "Retry update" : "Update"}
           appearance="icon"
         />
@@ -1676,6 +1731,11 @@ function SavedBackendListRow({
           />
           {errorTraceId ? (
             <MenuItem onClick={() => copyTraceId(errorTraceId)}>Copy trace ID</MenuItem>
+          ) : null}
+          {canSwitchToRelay ? (
+            <MenuItem disabled={switchingToRelay} onClick={() => void switchToRelay()}>
+              Connect through T3 Connect
+            </MenuItem>
           ) : null}
           <MenuSeparator />
           <MenuItem variant="destructive" onClick={() => onRemove(environment)}>
@@ -1904,11 +1964,15 @@ export function ConnectionsSettings() {
       ),
     [savedEnvironments],
   );
+  const latestReleaseVersion = useLatestReleaseVersion();
   const savedServerUpdateStates = useAtomValue(savedServerUpdateStatesAtom);
   const savedServerUpdateTargets = useMemo(
     () =>
       savedServerUpdateStates.flatMap(({ environment, updateStatus }): ServerUpdateTarget[] => {
-        const mismatch = resolveServerConfigVersionMismatch(environment.serverConfig);
+        const mismatch = resolveServerConfigVersionMismatch(
+          environment.serverConfig,
+          latestReleaseVersion,
+        );
         const selfUpdate = resolveServerSelfUpdateCapability(environment.serverConfig);
         const desktopAppUpdate = supportsDesktopAppUpdate(environment.serverConfig);
         if (
@@ -1932,11 +1996,11 @@ export function ConnectionsSettings() {
             threadContinuation: supportsServerUpdateThreadContinuation(environment.serverConfig),
             continueThreadsAfterServerUpdate:
               environment.serverConfig?.settings.continueThreadsAfterServerUpdate ?? false,
-            targetVersion: mismatch.clientVersion,
+            targetVersion: mismatch.targetVersion,
           },
         ];
       }),
-    [savedServerUpdateStates],
+    [savedServerUpdateStates, latestReleaseVersion],
   );
   // Switched-off machines never receive threads, so they stay out of the
   // load balancing and GitHub sharing lists. The WSL backend has no row in
@@ -2037,7 +2101,10 @@ export function ConnectionsSettings() {
     DesktopServerExposureState["mode"] | null
   >(null);
   const primaryServerConfig = primaryEnvironment?.serverConfig ?? null;
-  const primaryVersionMismatch = resolveServerConfigVersionMismatch(primaryServerConfig);
+  const primaryVersionMismatch = resolveServerConfigVersionMismatch(
+    primaryServerConfig,
+    latestReleaseVersion,
+  );
   const primaryServerUpdateState = useAtomValue(
     serverEnvironment.updateStateAtom(primaryEnvironmentId),
   );
@@ -3375,11 +3442,11 @@ export function ConnectionsSettings() {
                       threadContinuation={supportsServerUpdateThreadContinuation(
                         primaryServerConfig,
                       )}
-                      targetVersion={primaryVersionMismatch.clientVersion}
+                      targetVersion={primaryVersionMismatch.targetVersion}
                       label={
                         primaryServerUpdateState.status === "failed"
                           ? "Retry update"
-                          : `Update to ${primaryVersionMismatch.clientVersion}`
+                          : `Update to ${primaryVersionMismatch.targetVersion}`
                       }
                     />
                   ) : primaryServerUpdateState.status === "idle" && primaryServerConfig ? (

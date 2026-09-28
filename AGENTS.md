@@ -171,6 +171,10 @@ Full glossary with file links: `docs/internals/glossary.md`
 
 ## Recent request log
 
+- 2026-09-28 — Server self-update now downloads from this fork: `cliRelease.ts` points at
+  TitansparkDev/t3code and the fork release publishes `t3-<v>-linux-x64.tar.gz` plus `SHA256SUMS`.
+  The Update button also appears when a newer fork release exists, and a server saved by LAN
+  address offers "Use T3 Connect". The 2026-09-28 outage was a full disk, not a relay fault.
 - 2026-09-27 — Fixed the v0.0.51 upgrade crash for 0.0.48 fork databases: renumbered migration
   055 now skips existing usage-limit columns and 056 adds the skipped `title_state_json`; verified
   against a copy of the live database and released as v0.0.52.

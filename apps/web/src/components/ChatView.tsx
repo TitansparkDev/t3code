@@ -538,6 +538,7 @@ import {
 } from "./ui/alert-dialog";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { ServerUpdateAction } from "./ServerUpdateAction";
+import { useLatestReleaseVersion } from "~/latestRelease";
 import { useAutoBalanceUpdateBanner } from "./chat/useAutoBalanceUpdateBanner";
 import {
   ComposerServerUpdateIcon,
@@ -2793,7 +2794,8 @@ export default function ChatView(props: ChatViewProps) {
     [automaticEnvironment, logicalProjectEnvironments, environmentById],
   );
   const autoBalanceUpdateBanner = useAutoBalanceUpdateBanner(autoUpdateEnvironments);
-  const versionMismatch = resolveServerConfigVersionMismatch(serverConfig);
+  const latestReleaseVersion = useLatestReleaseVersion();
+  const versionMismatch = resolveServerConfigVersionMismatch(serverConfig, latestReleaseVersion);
   const versionMismatchDismissKey =
     versionMismatch && activeThread
       ? buildVersionMismatchDismissalKey(activeThread.environmentId, versionMismatch)
@@ -2912,7 +2914,7 @@ export default function ChatView(props: ChatViewProps) {
               />
               <TooltipPopup side="top">
                 {versionMismatchServerLabel} {versionMismatch.serverVersion}{" "}
-                <span aria-hidden="true">→</span> {versionMismatch.clientVersion}
+                <span aria-hidden="true">→</span> {versionMismatch.targetVersion}
               </TooltipPopup>
             </Tooltip>
           ) : (
@@ -2936,7 +2938,7 @@ export default function ChatView(props: ChatViewProps) {
             selfUpdate={versionMismatchSelfUpdate}
             desktopAppUpdate={versionMismatchDesktopAppUpdate}
             threadContinuation={versionMismatchThreadContinuation}
-            targetVersion={versionMismatch.clientVersion}
+            targetVersion={versionMismatch.targetVersion}
             label={updateFailed ? "Retry" : "Update"}
             variant="ghost"
           />

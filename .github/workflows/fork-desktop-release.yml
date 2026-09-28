@@ -23,7 +23,7 @@ env:
 
 jobs:
   linux-cli-archive:
-    name: Build Linux CLI archive for Windows WSL support
+    name: Build Linux CLI archive for server updates and Windows WSL support
     runs-on: ubuntu-latest
     steps:
       - name: Check out release tag
@@ -85,6 +85,8 @@ jobs:
           node scripts/smoke-cli-archive.ts \
             --archive release-cli/* \
             --expect-version "$version"
+          # Servers update themselves from this archive and verify it against SHA256SUMS.
+          (cd release-cli && sha256sum t3-*.tar.gz > SHA256SUMS)
 
       - name: Upload Linux CLI archive
         uses: actions/upload-artifact@v7
@@ -379,6 +381,12 @@ jobs:
           name: fork-android
           path: release-assets
 
+      - name: Download server runtime archive
+        uses: actions/download-artifact@v8
+        with:
+          name: fork-wsl-runtime
+          path: release-assets
+
       - name: Verify complete updater release
         shell: bash
         run: |
@@ -389,6 +397,8 @@ jobs:
           test -s release-assets/latest.yml
           test -s release-assets/latest-linux.yml
           test -s release-assets/t3code-android-*-production.apk
+          test -s release-assets/t3-*-linux-x64.tar.gz
+          (cd release-assets && sha256sum --check SHA256SUMS)
 
       - name: Publish installers and updater metadata
         env:
@@ -407,7 +417,7 @@ jobs:
               --repo "$GITHUB_REPOSITORY"
               --verify-tag
               --title "T3 Code $tag"
-              --notes "Desktop installers for $tag."
+              --notes "Desktop installers and server runtime for $tag."
             )
             if [[ "$tag" == *-* ]]; then args+=(--prerelease); fi
             gh "${args[@]}"

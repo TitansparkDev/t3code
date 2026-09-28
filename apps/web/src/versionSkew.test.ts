@@ -68,7 +68,7 @@ describe("versionSkew", () => {
 
   it("returns a mismatch when the server is behind the client", () => {
     expect(resolveVersionMismatch("0.0.33")).toEqual({
-      clientVersion: "0.0.34",
+      targetVersion: "0.0.34",
       serverVersion: "0.0.33",
       hint: MISMATCH_HINT,
     });
@@ -92,7 +92,7 @@ describe("versionSkew", () => {
       branding.APP_VERSION = "0.0.34-nightly.20260824.1125";
 
       expect(resolveVersionMismatch(serverVersion)).toEqual({
-        clientVersion: "0.0.34-nightly.20260824.1125",
+        targetVersion: "0.0.34-nightly.20260824.1125",
         serverVersion,
         hint: MISMATCH_HINT,
       });
@@ -113,7 +113,7 @@ describe("versionSkew", () => {
     branding.APP_VERSION = "0.0.35-nightly.20260818.1124";
 
     expect(resolveVersionMismatch("0.0.34")).toEqual({
-      clientVersion: "0.0.35-nightly.20260818.1124",
+      targetVersion: "0.0.35-nightly.20260818.1124",
       serverVersion: "0.0.34",
       hint: MISMATCH_HINT,
     });
@@ -121,7 +121,7 @@ describe("versionSkew", () => {
 
   it("falls back to string inequality when a version is not semver", () => {
     expect(resolveVersionMismatch("dev")).toEqual({
-      clientVersion: "0.0.34",
+      targetVersion: "0.0.34",
       serverVersion: "dev",
       hint: MISMATCH_HINT,
     });
@@ -129,6 +129,20 @@ describe("versionSkew", () => {
     branding.APP_VERSION = "dev";
     expect(resolveVersionMismatch("dev")).toBeNull();
     expect(resolveVersionMismatch("0.0.34")).toMatchObject({ serverVersion: "0.0.34" });
+  });
+
+  it("offers a newer published release even when the client matches the server", () => {
+    expect(resolveVersionMismatch("0.0.34", "0.0.35")).toEqual({
+      targetVersion: "0.0.35",
+      serverVersion: "0.0.34",
+      hint: "T3 Code 0.0.35 is available for this server.",
+    });
+  });
+
+  it("targets the client when it is newer than the published release", () => {
+    expect(resolveVersionMismatch("0.0.33", "0.0.33")).toMatchObject({ targetVersion: "0.0.34" });
+    expect(resolveVersionMismatch("0.0.34", "0.0.33")).toBeNull();
+    expect(resolveVersionMismatch("0.0.34", "not-a-version")).toBeNull();
   });
 
   it("reads the server version from config descriptors", () => {
@@ -155,7 +169,7 @@ describe("versionSkew", () => {
   it("keys dismissals by environment, client version, and server version", () => {
     const environmentId = EnvironmentId.make("environment-dismissal");
     const key = buildVersionMismatchDismissalKey(environmentId, {
-      clientVersion: APP_VERSION,
+      targetVersion: APP_VERSION,
       serverVersion: "9.9.9",
     });
 
@@ -168,7 +182,7 @@ describe("versionSkew", () => {
     expect(
       isVersionMismatchDismissed(
         buildVersionMismatchDismissalKey(environmentId, {
-          clientVersion: APP_VERSION,
+          targetVersion: APP_VERSION,
           serverVersion: "9.9.10",
         }),
       ),

@@ -16,6 +16,7 @@ import {
   supportsDesktopAppUpdate,
   supportsServerUpdateThreadContinuation,
 } from "~/versionSkew";
+import { useLatestReleaseVersion } from "~/latestRelease";
 import {
   ServerUpdateAction,
   ServerUpdateProgress,
@@ -30,6 +31,7 @@ import { ComposerServerUpdateIcon } from "./ComposerServerUpdateStatus";
 export function useAutoBalanceUpdateBanner(
   environments: readonly EnvironmentPresentation[],
 ): ComposerBannerStackItem | null {
+  const latestReleaseVersion = useLatestReleaseVersion();
   const statesAtom = useMemo(
     () =>
       Atom.make((get) =>
@@ -45,7 +47,10 @@ export function useAutoBalanceUpdateBanner(
     () => new Set(),
   );
   const machines = states.flatMap(({ environment, state }) => {
-    const mismatch = resolveServerConfigVersionMismatch(environment.serverConfig);
+    const mismatch = resolveServerConfigVersionMismatch(
+      environment.serverConfig,
+      latestReleaseVersion,
+    );
     const dismissKey = mismatch
       ? buildVersionMismatchDismissalKey(environment.environmentId, mismatch)
       : null;
@@ -68,7 +73,7 @@ export function useAutoBalanceUpdateBanner(
         threadContinuation: supportsServerUpdateThreadContinuation(environment.serverConfig),
         continueThreadsAfterServerUpdate:
           environment.serverConfig?.settings.continueThreadsAfterServerUpdate ?? false,
-        targetVersion: state.status === "idle" ? mismatch!.clientVersion : state.targetVersion,
+        targetVersion: state.status === "idle" ? mismatch!.targetVersion : state.targetVersion,
         connected: environment.connection.phase === "connected",
         remoteUpdate: selfUpdate !== null && (selfUpdate !== "desktop-managed" || desktopAppUpdate),
         state,
