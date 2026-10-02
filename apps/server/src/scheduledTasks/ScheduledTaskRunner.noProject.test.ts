@@ -1,5 +1,3 @@
-import * as NodePath from "node:path";
-
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
@@ -12,6 +10,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 
@@ -64,6 +63,7 @@ it.layer(NodeServices.layer)("ScheduledTaskRunner without a project", (it) => {
         const store = yield* ScheduledTaskStore.ScheduledTaskStore;
         const runner = yield* ScheduledTaskRunner.ScheduledTaskRunner;
         const config = yield* ServerConfig.ServerConfig;
+        const path = yield* Path.Path;
         yield* Effect.forkScoped(runner.loop);
 
         const [task] = yield* store.save({
@@ -77,7 +77,7 @@ it.layer(NodeServices.layer)("ScheduledTaskRunner without a project", (it) => {
 
         const projectCreate = commands.find((command) => command.type === "project.create");
         expect(projectCreate?.type === "project.create" && projectCreate.workspaceRoot).toBe(
-          NodePath.resolve(config.baseDir, "scratch"),
+          path.resolve(config.baseDir, "scratch"),
         );
         const threadCreate = commands.find((command) => command.type === "thread.create");
         expect(
