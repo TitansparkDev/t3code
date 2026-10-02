@@ -206,6 +206,8 @@ If a change isn't in this table, it shouldn't exist.
 | `packages/shared/src/providerRateLimit.ts`                              | centralizes explicit provider-limit detection and copy      | server and clients must agree on recoverable failures           | C2      |
 | `apps/mobile/src/features/threads/ThreadRateLimitNotice.tsx`            | shows the in-thread mobile recovery path                    | rate-limited threads must be recoverable on every client        | C2      |
 | `docs/user/usage.md`                                                    | documents rate-limit recovery                               | users need a clear way back after a provider reset              | C2      |
+| `apps/server/src/provider/Layers/ProviderService.ts`                    | times out provider session starts after two minutes         | one hung provider handshake otherwise stalls every thread       | FIX     |
+| `apps/server/src/provider/Layers/ProviderService.test.ts`               | covers the hung session start timeout                       | locks the reactor-unblocking behavior                           | FIX     |
 
 The C4 contract change is a narrow exception to the add-files preference: it promotes the
 already-persisted `thread.activity.append` command into the client-dispatchable union rather

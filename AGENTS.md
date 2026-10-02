@@ -173,6 +173,9 @@ Full glossary with file links: `docs/internals/glossary.md`
 
 ## Recent request log
 
+- 2026-10-02 — Merged 74 upstream commits into `omni/main`, made provider session starts
+  time out after two minutes so one hung Codex handshake can no longer stall every thread's
+  turns, and released v0.0.55.
 - 2026-09-28 — Server self-update now downloads from this fork: `cliRelease.ts` points at
   TitansparkDev/t3code and the fork release publishes `t3-<v>-linux-x64.tar.gz` plus `SHA256SUMS`.
   The Update button also appears when a newer fork release exists, and a server saved by LAN
