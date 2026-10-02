@@ -166,7 +166,7 @@ export async function persistComposerAttachmentFile(
         try {
           let copiedBytes = 0;
           while (true) {
-            const chunk = reader.readBytes(
+            const chunk = await reader.readBytes(
               Math.min(ATTACHMENT_COPY_CHUNK_BYTES, maxBytes - copiedBytes + 1),
             );
             if (chunk.byteLength === 0) {
@@ -176,7 +176,7 @@ export async function persistComposerAttachmentFile(
             if (copiedBytes > maxBytes) {
               throw new Error(fileAttachmentTooLargeMessage(name, maxBytes));
             }
-            writer.writeBytes(chunk);
+            await writer.writeBytes(chunk);
           }
         } finally {
           writer.close();
@@ -357,7 +357,7 @@ async function hasJpegMagicBytes(uri: string): Promise<boolean> {
     const { File, FileMode } = await import("expo-file-system");
     const handle = new File(uri).open(FileMode.ReadOnly);
     try {
-      const bytes = handle.readBytes(3);
+      const bytes = await handle.readBytes(3);
       return bytes.byteLength === 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
     } finally {
       handle.close();

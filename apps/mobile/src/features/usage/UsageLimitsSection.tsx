@@ -18,8 +18,8 @@ import {
   remainingPercent,
 } from "@t3tools/shared/usageLimits";
 import { type ReactNode, useEffect, useEffectEvent, useRef, useState } from "react";
-import { Alert, Pressable, View } from "react-native";
 import { refreshUsageLimits } from "@t3tools/client-runtime/state/usage";
+import { Alert, Linking, Pressable, View } from "react-native";
 
 import { AppText as Text } from "../../components/AppText";
 import { ProviderIcon } from "../../components/ProviderIcon";
@@ -159,6 +159,7 @@ export function AccountLimits(props: {
   const colors = useProviderColors();
   if (!limits) return null;
   const notice = limitsNotice(limits);
+  const externalUsage = limits.externalUsage;
   const padding = dense ? "px-4 py-3" : "p-4";
   return (
     <View
@@ -195,6 +196,15 @@ export function AccountLimits(props: {
           ))}
         </View>
       )}
+      {externalUsage ? (
+        <Pressable
+          accessibilityRole="link"
+          className="min-h-11 justify-center"
+          onPress={() => void Linking.openURL(externalUsage.url).catch(() => undefined)}
+        >
+          <Text className="text-sm font-t3-medium text-primary">Manage usage</Text>
+        </Pressable>
+      ) : null}
       {props.footer}
     </View>
   );

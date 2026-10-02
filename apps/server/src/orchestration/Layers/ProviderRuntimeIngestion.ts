@@ -581,6 +581,7 @@ export function runtimeEventToActivities(
             message: truncateDetail(event.payload.message),
             ...(event.payload.class !== undefined ? { class: event.payload.class } : {}),
             ...(event.payload.retryAt !== undefined ? { retryAt: event.payload.retryAt } : {}),
+            ...(event.payload.code ? { code: event.payload.code } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,

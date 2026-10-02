@@ -1,3 +1,4 @@
+import { isChatGptUsageLimitError } from "@t3tools/shared/usageLimits";
 import { useLoadBalancedEnvironment } from "../hooks/useLoadBalancedEnvironment";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 import {
@@ -10332,6 +10333,7 @@ export default function ChatView(props: ChatViewProps) {
                 onCancelUsageLimitResume={
                   isUsageLimitError ? handleCancelUsageLimitResume : undefined
                 }
+                chatGptUsageLimit={isChatGptUsageLimitError(threadActivities, visibleThreadError)}
                 onDismiss={() => {
                   setThreadError(activeThread.id, null);
                   dismissThreadErrorBannerForSession(threadErrorBannerKey);

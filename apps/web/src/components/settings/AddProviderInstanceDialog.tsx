@@ -14,6 +14,7 @@ import { useEnvironmentSettings, useUpdateEnvironmentSettings } from "../../hook
 import { cn } from "../../lib/utils";
 import { normalizeProviderAccentColor } from "../../providerInstances";
 import { Button } from "../ui/button";
+import { ChatGptConnectionButton } from "./ChatGptConnectionButton";
 import { ACPRegistryIcon, Gemini, GithubCopilotIcon, PiAgentIcon, type Icon } from "../Icons";
 import { Dialog } from "../ui/dialog";
 import { Badge } from "../ui/badge";
@@ -31,6 +32,7 @@ import {
 } from "./AddProviderInstanceDialog.logic";
 import { AddProviderInstanceWizardSteps } from "./AddProviderInstanceWizardSteps";
 import { getProviderProfilePresets } from "./providerProfilePresets";
+import { AddManagedCodexAccountDialog } from "./CodexSetupSection";
 
 const PROVIDER_ACCENT_SWATCHES = [
   "#2563eb",
@@ -127,6 +129,7 @@ export function AddProviderInstanceDialog({
   const updateSettings = useUpdateEnvironmentSettings(environmentId);
 
   const [wizardStep, setWizardStep] = useState(0);
+  const [addingChatGptAccount, setAddingChatGptAccount] = useState(false);
   const [driver, setDriver] = useState<ProviderDriverKind>(DEFAULT_DRIVER_KIND);
   const [label, setLabel] = useState("");
   const [accentColor, setAccentColor] = useState<string>("");
@@ -187,7 +190,10 @@ export function AddProviderInstanceDialog({
     setHasAttemptedSubmit(true);
     if (instanceIdError !== null) return;
 
-    const config = configByDriver[driver] ?? {};
+    const config =
+      driver === "codex"
+        ? { ...configByDriver[driver], setupMode: "existing" }
+        : (configByDriver[driver] ?? {});
     const hasConfig = Object.keys(config).length > 0;
     const normalizedAccentColor = normalizeProviderAccentColor(accentColor);
 
@@ -224,17 +230,21 @@ export function AddProviderInstanceDialog({
     }
   };
 
+  if (addingChatGptAccount) {
+    return (
+      <AddManagedCodexAccountDialog
+        environmentId={environmentId}
+        onClose={() => onOpenChange(false)}
+      />
+    );
+  }
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <WizardPopup>
+      <WizardPopup size="wide">
         <WizardHeader
           title="Add provider instance"
-          description={
-            <>
-              Configure an additional provider instance on {environmentLabel} — for example, a
-              second Codex install pointed at a different workspace.
-            </>
-          }
+          description={<>Add an account or configure a provider on {environmentLabel}.</>}
         >
           <AddProviderInstanceWizardSteps
             currentStep={wizardStep}
@@ -311,7 +321,7 @@ export function AddProviderInstanceDialog({
                     <button
                       key={preset.id}
                       type="button"
-                      className="rounded-lg bg-card px-3 py-2 text-left text-xs text-muted-foreground outline-none ring-1 ring-black/5 hover:bg-zinc-50 focus-visible:ring-2 focus-visible:ring-ring dark:bg-white/3 dark:ring-white/5 dark:hover:bg-white/5"
+                      className="rounded-lg bg-card px-3 py-2 text-left text-xs text-muted-foreground outline-none ring-1 ring-black/5 hover:bg-zinc-25 focus-visible:ring-2 focus-visible:ring-ring dark:bg-white/3 dark:ring-white/5 dark:hover:bg-white/5"
                       onClick={() => {
                         setLabel(preset.displayName);
                         setConfigDraft({ ...configDraft, ...preset.config });
@@ -422,7 +432,7 @@ export function AddProviderInstanceDialog({
 
         <WizardFooter>
           <Button
-            variant="outline"
+            variant={wizardStep === 0 ? "ghost-muted" : "outline"}
             onClick={() => {
               if (wizardStep === 0) {
                 onOpenChange(false);
@@ -433,7 +443,14 @@ export function AddProviderInstanceDialog({
           >
             {wizardStep === 0 ? "Cancel" : "Back"}
           </Button>
-          {wizardStep < ADD_PROVIDER_WIZARD_STEPS.length - 1 ? (
+          {wizardStep === 0 && driver === "codex" ? (
+            <>
+              <Button variant="outline" onClick={() => navigateToStep(1)}>
+                Configure manually
+              </Button>
+              <ChatGptConnectionButton onClick={() => setAddingChatGptAccount(true)} />
+            </>
+          ) : wizardStep < ADD_PROVIDER_WIZARD_STEPS.length - 1 ? (
             <Button onClick={() => navigateToStep(wizardStep + 1)}>Next</Button>
           ) : (
             <Button onClick={handleSave}>Add instance</Button>
