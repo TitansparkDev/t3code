@@ -144,7 +144,7 @@ export class ProjectNotFoundError extends Schema.TaggedError<ProjectNotFoundErro
 export class ProjectAlreadyExistsError extends Schema.TaggedError<ProjectAlreadyExistsError>()(
   "ProjectAlreadyExistsError",
   {
-    operation: Schema.Literal("addProject"),
+    operation: Schema.Literals(["addProject", "moveProject"]),
     projectId: ProjectId,
     workspaceRoot: Schema.String,
   },
@@ -568,7 +568,70 @@ const projectRenameCommand = Command.make("rename", {
   ),
 );
 
+const projectMoveCommand = Command.make("move", {
+  ...projectLocationFlags,
+  project: Argument.String("project").pipe(
+    Argument.withDescription("Project id or current workspace root to move."),
+  ),
+  workspaceRoot: Argument.String("path").pipe(
+    Argument.withDescription("The folder the project now lives in."),
+  ),
+}).pipe(
+  Command.withDescription(
+    "Point a project at the folder it was moved or renamed to. Its threads follow it.",
+  ),
+  Command.withHandler((flags) =>
+    runProjectMutation(
+      flags,
+      Effect.fn("projectMoveMutation")(function* ({
+        snapshot,
+        dispatch,
+      }: {
+        readonly snapshot: OrchestrationReadModel;
+        readonly dispatch: (
+          command: ProjectCliDispatchCommand,
+        ) => Effect.Effect<void, Error, FileSystem.FileSystem | HttpClient.HttpClient | Path.Path>;
+      }) {
+        const project = yield* findActiveProjectTarget({
+          snapshot,
+          identifier: flags.project,
+        });
+        const workspaceRoot = yield* normalizeWorkspaceRootForProjectCommand(flags.workspaceRoot);
+        if (workspaceRoot === project.workspaceRoot) {
+          return `Project ${project.id} is already at ${workspaceRoot}.`;
+        }
+        const existingProject = snapshot.projects.find(
+          (candidate) =>
+            candidate.deletedAt === null &&
+            candidate.id !== project.id &&
+            candidate.workspaceRoot === workspaceRoot,
+        );
+        if (existingProject) {
+          return yield* new ProjectAlreadyExistsError({
+            operation: "moveProject",
+            projectId: existingProject.id,
+            workspaceRoot,
+          });
+        }
+
+        yield* dispatch({
+          type: "project.meta.update",
+          commandId: CommandId.make(yield* projectCommandUuid),
+          projectId: project.id,
+          workspaceRoot,
+        });
+        return `Moved project ${project.id} (${project.title}) to ${workspaceRoot}.`;
+      }),
+    ),
+  ),
+);
+
 export const projectCommand = Command.make("project").pipe(
   Command.withDescription("Manage projects."),
-  Command.withSubcommands([projectAddCommand, projectRemoveCommand, projectRenameCommand]),
+  Command.withSubcommands([
+    projectAddCommand,
+    projectRemoveCommand,
+    projectRenameCommand,
+    projectMoveCommand,
+  ]),
 );

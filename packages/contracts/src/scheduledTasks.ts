@@ -15,10 +15,10 @@
  *  - **The environment's own clock decides.** A time is a wall-clock time on
  *    the machine running the server, not the client's. A phone in another
  *    timezone must not silently move when a window opens.
- *  - **Runs are settled, not hidden.** Each run is a real thread with real
- *    history, settled as soon as its turn finishes so it stays out of the
- *    active list. A run that needs a human — an approval, a failure — surfaces
- *    itself through the normal settle rules rather than disappearing.
+ *  - **Runs are archived, not deleted.** Each run is a real thread with real
+ *    history, archived as soon as its turn goes quiet so it stays out of the
+ *    thread list; run history links to it. A run blocked on an approval keeps
+ *    its session busy, so it is not archived while it needs a human.
  *
  * @module scheduledTasks
  */
@@ -45,9 +45,26 @@ export const ScheduledTaskDayOfWeek = Schema.Number.check(
   Schema.isBetween({ minimum: 0, maximum: 6 }),
 );
 
+/**
+ * Extra sends after the first one on the same day, e.g. every five hours so
+ * each send opens the next usage window. Repeats may run past midnight; they
+ * still belong to the day whose start time began them.
+ */
+export const ScheduledTaskRepeat = Schema.Struct({
+  everyMinutes: Schema.Number.check(
+    Schema.isInt(),
+    Schema.isBetween({ minimum: 15, maximum: 1440 }),
+  ),
+  /** Total sends per day, including the first. */
+  count: Schema.Number.check(Schema.isInt(), Schema.isBetween({ minimum: 1, maximum: 24 })),
+});
+export type ScheduledTaskRepeat = typeof ScheduledTaskRepeat.Type;
+
 export const ScheduledTaskSchedule = Schema.Struct({
+  /** The first send of the day. */
   timeOfDay: ScheduledTaskTimeOfDay,
   daysOfWeek: Schema.Array(ScheduledTaskDayOfWeek),
+  repeat: Schema.optional(ScheduledTaskRepeat),
 });
 export type ScheduledTaskSchedule = typeof ScheduledTaskSchedule.Type;
 
@@ -148,8 +165,11 @@ export const ScheduledTask = Schema.Struct({
   id: ScheduledTaskId,
   name: TrimmedNonEmptyString,
   prompt: TrimmedNonEmptyString,
-  /** Workspace the run happens in. Runs are ordinary threads in this project. */
-  projectId: ProjectId,
+  /**
+   * Workspace the run happens in. Absent runs in the server's own
+   * scheduled-tasks folder, for prompts that need no repository.
+   */
+  projectId: Schema.optional(ProjectId),
   targets: Schema.Array(ScheduledTaskTarget),
   schedule: ScheduledTaskSchedule,
   enabled: Schema.Boolean,
@@ -173,7 +193,7 @@ export const ScheduledTaskDraft = Schema.Struct({
   id: Schema.optional(ScheduledTaskId),
   name: TrimmedNonEmptyString,
   prompt: TrimmedNonEmptyString,
-  projectId: ProjectId,
+  projectId: Schema.optional(ProjectId),
   targets: Schema.Array(ScheduledTaskTarget),
   schedule: ScheduledTaskSchedule,
   enabled: Schema.Boolean,
@@ -181,24 +201,52 @@ export const ScheduledTaskDraft = Schema.Struct({
 });
 export type ScheduledTaskDraft = typeof ScheduledTaskDraft.Type;
 
+const MINUTES_PER_DAY = 24 * 60;
+
 /**
- * Local wall-clock instant of `timeOfDay` on the day containing `ms`.
+ * Every send `schedule` makes for the day `dayOffset` days from the day
+ * containing `ms`, in order. Repeats step on the local wall clock, so a
+ * five-hour repeat stays five hours of clock time across DST.
  */
-function timeOfDayOn(
+function slotsForDay(
   schedule: ScheduledTaskSchedule,
   ms: number,
   dayOffset: number,
   makeDate: (ms: number) => Date,
-): Date {
+): Date[] {
   const [hours, minutes] = schedule.timeOfDay.split(":").map(Number) as [number, number];
-  const candidate = makeDate(ms);
-  candidate.setDate(candidate.getDate() + dayOffset);
-  candidate.setHours(hours, minutes, 0, 0);
-  return candidate;
+  const first = makeDate(ms);
+  first.setDate(first.getDate() + dayOffset);
+  first.setHours(hours, minutes, 0, 0);
+  if (schedule.daysOfWeek.length > 0 && !schedule.daysOfWeek.includes(first.getDay())) return [];
+  const slots = [first];
+  const repeat = schedule.repeat;
+  if (!repeat) return slots;
+  // A day's repeats stop short of the next day's first send.
+  for (let index = 1; index < repeat.count; index += 1) {
+    const offsetMinutes = index * repeat.everyMinutes;
+    if (offsetMinutes >= MINUTES_PER_DAY) break;
+    const slot = new Date(first.getTime());
+    slot.setMinutes(slot.getMinutes() + offsetMinutes);
+    slots.push(slot);
+  }
+  return slots;
 }
 
-function matchesDay(schedule: ScheduledTaskSchedule, date: Date): boolean {
-  return schedule.daysOfWeek.length === 0 || schedule.daysOfWeek.includes(date.getDay());
+/** Local wall-clock times of every send in a day, for display. */
+export function scheduledTimesOfDay(schedule: ScheduledTaskSchedule): string[] {
+  const [hours, minutes] = schedule.timeOfDay.split(":").map(Number) as [number, number];
+  const first = hours * 60 + minutes;
+  const count = schedule.repeat?.count ?? 1;
+  const every = schedule.repeat?.everyMinutes ?? MINUTES_PER_DAY;
+  const times: string[] = [];
+  for (let index = 0; index < count && index * every < MINUTES_PER_DAY; index += 1) {
+    const total = (first + index * every) % MINUTES_PER_DAY;
+    times.push(
+      `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`,
+    );
+  }
+  return times;
 }
 
 /**
@@ -207,20 +255,22 @@ function matchesDay(schedule: ScheduledTaskSchedule, date: Date): boolean {
  * Local wall-clock, by design: "05:00" means five in the morning where the
  * server is, across DST changes, rather than a fixed offset that drifts an
  * hour twice a year. A schedule always fires within a week, so the bounded
- * scan is exact and needs no calendar arithmetic beyond "same day, later time".
+ * scan is exact. Yesterday is scanned too because its repeats can run past
+ * midnight.
  */
 export function nextScheduledRunAt(
   schedule: ScheduledTaskSchedule,
   afterMs: number,
   makeDate: (ms: number) => Date = (ms) => new Date(ms),
 ): number {
-  for (let dayOffset = 0; dayOffset <= 7; dayOffset += 1) {
-    const candidate = timeOfDayOn(schedule, afterMs, dayOffset, makeDate);
-    if (candidate.getTime() <= afterMs) continue;
-    if (!matchesDay(schedule, candidate)) continue;
-    return candidate.getTime();
+  let next: number | undefined;
+  for (let dayOffset = -1; dayOffset <= 7; dayOffset += 1) {
+    for (const slot of slotsForDay(schedule, afterMs, dayOffset, makeDate)) {
+      const at = slot.getTime();
+      if (at > afterMs && (next === undefined || at < next)) next = at;
+    }
   }
-  return afterMs;
+  return next ?? afterMs;
 }
 
 /** Most recent time this schedule fired at or before `atMs`, as epoch ms. */
@@ -229,13 +279,14 @@ export function previousScheduledRunAt(
   atMs: number,
   makeDate: (ms: number) => Date = (ms) => new Date(ms),
 ): number | undefined {
-  for (let dayOffset = 0; dayOffset >= -7; dayOffset -= 1) {
-    const candidate = timeOfDayOn(schedule, atMs, dayOffset, makeDate);
-    if (candidate.getTime() > atMs) continue;
-    if (!matchesDay(schedule, candidate)) continue;
-    return candidate.getTime();
+  let previous: number | undefined;
+  for (let dayOffset = 1; dayOffset >= -8; dayOffset -= 1) {
+    for (const slot of slotsForDay(schedule, atMs, dayOffset, makeDate)) {
+      const at = slot.getTime();
+      if (at <= atMs && (previous === undefined || at > previous)) previous = at;
+    }
   }
-  return undefined;
+  return previous;
 }
 
 /** How late a missed run may still fire before it is skipped to the next slot. */

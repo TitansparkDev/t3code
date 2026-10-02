@@ -384,22 +384,66 @@ function ProjectDetail({
     ],
   );
 
+  // The server checks the folder exists and is not another project's.
+  const moveMember = useCallback(
+    async (member: (typeof group.memberProjects)[number], input: HTMLInputElement) => {
+      const workspaceRoot = input.value.trim();
+      if (!workspaceRoot || workspaceRoot === member.workspaceRoot) {
+        input.value = member.workspaceRoot;
+        return;
+      }
+      const result = await updateProject({
+        environmentId: member.environmentId,
+        input: { projectId: member.id, workspaceRoot },
+      });
+      if (result._tag === "Failure") {
+        input.value = member.workspaceRoot;
+        reportFailure(
+          "Could not change the project folder",
+          mapAtomCommandResult(result, () => undefined),
+        );
+        return;
+      }
+      toastManager.add({ type: "success", title: "Project folder updated" });
+    },
+    [group.memberProjects, reportFailure, updateProject],
+  );
+
   const checkoutChoices = (
-    <SettingsSection title="Checkouts">
+    <SettingsSection title={hasMultipleCheckouts ? "Checkouts" : "Folder"}>
       {group.memberProjects.map((member) => (
         <SettingsRow
           key={member.physicalProjectKey}
           title={member.environmentLabel ?? "Environment"}
-          description={member.workspaceRoot}
+          description="Folder on that machine. Edit it after moving or renaming the folder."
           control={
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => void removeMembers([member])}
-              aria-label={`Remove checkout ${member.workspaceRoot}`}
-            >
-              Remove
-            </Button>
+            <div className="flex w-full items-center gap-2 sm:w-auto">
+              <Input
+                key={`${member.physicalProjectKey}:${member.workspaceRoot}`}
+                size="sm"
+                className="w-full sm:w-80"
+                aria-label={`Folder for ${member.environmentLabel ?? "this checkout"}`}
+                defaultValue={member.workspaceRoot}
+                onBlur={(event) => void moveMember(member, event.currentTarget)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") event.currentTarget.blur();
+                  if (event.key === "Escape") {
+                    event.currentTarget.value = member.workspaceRoot;
+                    event.currentTarget.blur();
+                  }
+                }}
+              />
+              {hasMultipleCheckouts ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => void removeMembers([member])}
+                  aria-label={`Remove checkout ${member.workspaceRoot}`}
+                >
+                  Remove
+                </Button>
+              ) : null}
+            </div>
           }
         />
       ))}
@@ -491,7 +535,7 @@ function ProjectDetail({
         </SettingsSection>
         <ProjectDefaultsSettings category="project" />
         <ProjectActionsSettings />
-        {hasMultipleCheckouts ? checkoutChoices : null}
+        {checkoutChoices}
         <SettingsSection title="Danger">
           <SettingsRow
             title={

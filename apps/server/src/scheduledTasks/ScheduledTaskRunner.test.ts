@@ -90,6 +90,7 @@ describe("dispatchScheduledTaskTarget", () => {
           return Effect.succeed({ sequence: commands.length });
         },
         task,
+        projectId: ProjectId.make("project-1"),
         target: task.targets[0]!,
         threadId: ThreadId.make("thread-1"),
         createCommandId: CommandId.make("create-1"),

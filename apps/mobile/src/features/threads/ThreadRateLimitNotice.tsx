@@ -4,25 +4,32 @@ import { View } from "react-native";
 
 import { AppText as Text } from "../../components/AppText";
 
+/** Why the thread's last turn could not run, shown above the composer. */
 export const ThreadRateLimitNotice = memo(function ThreadRateLimitNotice({
   error,
+  status,
 }: {
   readonly error: string | null;
+  readonly status: "rate-limited" | "error";
 }) {
-  const detail = error !== null && isProviderRateLimitFailure(error) ? error : null;
+  const rateLimited =
+    status === "rate-limited" || (error !== null && isProviderRateLimitFailure(error));
 
   return (
-    <View className="mx-4 mb-2 rounded-2xl border border-red-500/25 bg-red-500/10 px-3.5 py-3">
-      <Text className="text-sm font-t3-bold text-red-700 dark:text-red-300">
-        Usage limit reached
+    <View
+      accessibilityRole="alert"
+      className="mx-4 mb-2 rounded-2xl border border-danger-border bg-danger-subtle px-3.5 py-3"
+    >
+      <Text className="text-sm font-t3-bold text-danger-foreground">
+        {rateLimited ? "Usage limit reached" : "The agent could not run"}
       </Text>
-      {detail ? (
-        <Text className="mt-1 text-xs leading-5 text-red-800/80 dark:text-red-200/80">
-          {detail}
-        </Text>
+      {error ? (
+        <Text className="mt-1 text-xs leading-5 text-danger-foreground">{error}</Text>
       ) : null}
       <Text className="mt-1 text-xs leading-5 text-foreground-muted">
-        Wait for the provider reset window, then send a new message to resume this thread.
+        {rateLimited
+          ? "Wait for the provider reset window, then send a new message to resume this thread."
+          : "Send the message again to retry."}
       </Text>
     </View>
   );

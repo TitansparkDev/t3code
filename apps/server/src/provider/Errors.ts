@@ -97,7 +97,7 @@ export class ProviderWorkspaceMissingError extends Schema.TaggedError<ProviderWo
   },
 ) {
   override get message(): string {
-    return `This thread's workspace folder no longer exists or is not a directory: ${this.cwd}. Restore the folder at this path before retrying.`;
+    return `This thread's workspace folder no longer exists or is not a directory: ${this.cwd}. If you moved or renamed it, set the new folder in Settings → Project → Folder, then send the message again.`;
   }
 }
 

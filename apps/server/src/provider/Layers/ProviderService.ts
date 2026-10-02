@@ -1654,7 +1654,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
                   new ProviderAdapterRequestError({
                     provider: resolvedProvider,
                     method: "session/start",
-                    detail: `The provider session did not start within ${PROVIDER_SESSION_START_TIMEOUT}. Send the message again to retry.`,
+                    detail: `The provider session did not start within ${PROVIDER_SESSION_START_TIMEOUT}. This usually means the provider is waiting at startup, often on an MCP server that needs you to sign in again. Send the message again to retry.`,
                   }),
                 ),
             }),

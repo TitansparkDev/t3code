@@ -20963,6 +20963,7 @@ apps/server/src/resourceTelemetry/ResourceTelemetryHistory.test.ts
 apps/server/src/resourceTelemetry/ResourceTelemetryHistory.ts
 apps/server/src/review/ReviewService.test.ts
 apps/server/src/review/ReviewService.ts
+apps/server/src/scheduledTasks/ScheduledTaskRunner.noProject.test.ts
 apps/server/src/scheduledTasks/ScheduledTaskRunner.test.ts
 apps/server/src/scheduledTasks/ScheduledTaskRunner.ts
 apps/server/src/scheduledTasks/ScheduledTaskStore.test.ts

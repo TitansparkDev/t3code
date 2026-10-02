@@ -5,10 +5,10 @@
  * A run is deliberately an ordinary thread started by an ordinary
  * `thread.turn.start`: the same path a person's message takes, so provider
  * routing, checkpointing and history all work without a parallel code path.
- * The only difference is what happens afterwards — the runner settles the
- * thread once its turn goes quiet, so a scheduled run does not accumulate in
- * the active list. Settling has to wait for the turn to finish because a
- * session coming alive un-settles a thread by design.
+ * The only difference is what happens afterwards — the runner archives the
+ * thread once its turn goes quiet, so scheduled runs do not accumulate in the
+ * thread list. A task without a project runs in the environment's "No
+ * project" (Scratch) folder.
  *
  * A run that needs a person still surfaces: an approval or user-input request
  * un-settles the thread through the normal rules, which is the behaviour we
@@ -16,7 +16,13 @@
  *
  * @module scheduledTasks/ScheduledTaskRunner
  */
-import { CommandId, MessageId, ThreadId, type ProviderInstanceId } from "@t3tools/contracts";
+import {
+  CommandId,
+  MessageId,
+  ProjectId,
+  ThreadId,
+  type ProviderInstanceId,
+} from "@t3tools/contracts";
 import type { OrchestrationThread, OrchestrationThreadActivity } from "@t3tools/contracts";
 import type { AccountQuotaSnapshot } from "@t3tools/contracts/quota";
 import {
@@ -31,11 +37,14 @@ import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
 
+import { ServerConfig } from "../config.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import type { OrchestrationEngineShape } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
@@ -132,6 +141,8 @@ export const dispatchScheduledTaskTarget = Effect.fn(
 )(function* (input: {
   readonly dispatch: OrchestrationEngineShape["dispatch"];
   readonly task: ScheduledTask;
+  /** The task's project, or the one it runs in when it names none. */
+  readonly projectId: ProjectId;
   readonly target: ScheduledTask["targets"][number];
   readonly threadId: ThreadId;
   readonly createCommandId: CommandId;
@@ -151,7 +162,7 @@ export const dispatchScheduledTaskTarget = Effect.fn(
     type: "thread.create",
     commandId: input.createCommandId,
     threadId: input.threadId,
-    projectId: input.task.projectId,
+    projectId: input.projectId,
     title: input.task.name,
     modelSelection,
     runtimeMode: input.task.runtimeMode,
@@ -197,6 +208,9 @@ export const make = Effect.gen(function* () {
   const projection = yield* Effect.serviceOption(ProjectionSnapshotQuery);
   const quota = yield* Effect.serviceOption(QuotaService);
   const provider = yield* Effect.serviceOption(ProviderService);
+  const serverConfig = yield* Effect.serviceOption(ServerConfig);
+  const fileSystem = yield* Effect.serviceOption(FileSystem.FileSystem);
+  const pathService = yield* Effect.serviceOption(Path.Path);
 
   /** Threads started by a run, waiting for their turn to go quiet. */
   const pendingSettles = new Map<ThreadId, PendingScheduledTarget>();
@@ -218,11 +232,50 @@ export const make = Effect.gen(function* () {
       : Effect.succeed(undefined);
 
   /**
+   * Where a task without a project runs: the environment's "No project"
+   * (Scratch) project, the same home threads without a project get in the
+   * app. Created on first use, exactly as the app creates it.
+   */
+  const noProjectId = Effect.fn("ScheduledTaskRunner.noProjectId")(function* () {
+    if (
+      Option.isNone(serverConfig) ||
+      Option.isNone(fileSystem) ||
+      Option.isNone(pathService) ||
+      Option.isNone(projection)
+    ) {
+      return yield* Effect.die("Tasks without a project need the full server.");
+    }
+    const workspaceRoot = pathService.value.resolve(serverConfig.value.baseDir, "scratch");
+    yield* fileSystem.value.makeDirectory(workspaceRoot, { recursive: true });
+    const existing = yield* projection.value.getActiveProjectByWorkspaceRoot(workspaceRoot);
+    if (Option.isSome(existing)) return existing.value.id;
+    const projectId = ProjectId.make(yield* randomUUID);
+    yield* engine.dispatch({
+      type: "project.create",
+      commandId: CommandId.make(`scheduled-scratch-project:${yield* randomUUID}`),
+      projectId,
+      title: "No project",
+      workspaceRoot,
+      createdAt: DateTime.formatIso(yield* DateTime.now),
+    });
+    yield* engine
+      .dispatch({
+        type: "project.meta.update",
+        commandId: CommandId.make(`scheduled-scratch-icon:${yield* randomUUID}`),
+        projectId,
+        projectIcon: { kind: "lucide", name: "message-square-dashed", color: "gray" },
+      })
+      .pipe(Effect.ignoreCause({ log: true }));
+    return projectId;
+  });
+
+  /**
    * Start one target's thread. Returns the thread it created, or `undefined`
    * when dispatch failed — one bad account must not stop the others.
    */
   const startTarget = Effect.fn("ScheduledTaskRunner.startTarget")(function* (input: {
     readonly task: ScheduledTask;
+    readonly projectId: ProjectId;
     readonly target: ScheduledTask["targets"][number];
     readonly runId: string;
     readonly targetIndex: number;
@@ -251,6 +304,7 @@ export const make = Effect.gen(function* () {
             ),
           ),
         task: input.task,
+        projectId: input.projectId,
         target: input.target,
         threadId,
         createCommandId: CommandId.make(`scheduled-create:${yield* randomUUID}`),
@@ -385,12 +439,39 @@ export const make = Effect.gen(function* () {
     if (!run) return;
     activeRuns.add(input.task.id);
 
+    const projectId = input.task.projectId
+      ? Option.some(input.task.projectId)
+      : yield* noProjectId().pipe(
+          Effect.map(Option.some),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("scheduled-tasks.no-project-failed", {
+              taskId: input.task.id,
+              cause,
+            }).pipe(Effect.as(Option.none<ProjectId>())),
+          ),
+        );
+    if (Option.isNone(projectId)) {
+      for (const [targetIndex] of input.task.targets.entries()) {
+        yield* store.updateRunTarget(input.task.id, run.id, targetIndex, {
+          status: "failed",
+          completedAt: DateTime.formatIso(yield* DateTime.now),
+          detail: "Could not prepare the folder for a task without a project.",
+        });
+      }
+      yield* completeRunIfFinished(input.task.id, run.id);
+      return;
+    }
+
     const started = yield* Effect.forEach(
       input.task.targets.map((target, targetIndex) => ({ target, targetIndex })),
       ({ target, targetIndex }) =>
-        startTarget({ task: input.task, target, runId: run.id, targetIndex }).pipe(
-          Effect.map((result) => ({ target, targetIndex, result })),
-        ),
+        startTarget({
+          task: input.task,
+          projectId: projectId.value,
+          target,
+          runId: run.id,
+          targetIndex,
+        }).pipe(Effect.map((result) => ({ target, targetIndex, result }))),
       { concurrency: "unbounded" },
     );
 
@@ -478,6 +559,7 @@ export const make = Effect.gen(function* () {
             }
             if (thread && !sessionIsBusy) {
               yield* finishTarget(pending, threadId);
+              if (thread.archivedAt === null) yield* archiveRunThread(threadId);
               continue;
             }
           }
@@ -487,6 +569,23 @@ export const make = Effect.gen(function* () {
       }
     }
   });
+
+  /**
+   * Finished runs are archived so they stay out of the thread list; the
+   * task's run history in Settings still links to each one.
+   */
+  const archiveRunThread = (threadId: ThreadId) =>
+    Effect.gen(function* () {
+      yield* engine.dispatch({
+        type: "thread.archive",
+        commandId: CommandId.make(`scheduled-archive:${yield* randomUUID}`),
+        threadId,
+      });
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("scheduled-tasks.archive-failed", { threadId, cause }),
+      ),
+    );
 
   /**
    * Settle the threads a run created, once their turn is over.
@@ -506,17 +605,7 @@ export const make = Effect.gen(function* () {
 
       pendingSettles.delete(threadId);
       yield* finishTarget(pending, threadId);
-      yield* engine
-        .dispatch({
-          type: "thread.settle",
-          commandId: CommandId.make(`scheduled-settle:${yield* randomUUID}`),
-          threadId,
-        })
-        .pipe(
-          Effect.catchCause((cause) =>
-            Effect.logWarning("scheduled-tasks.settle-failed", { threadId, cause }),
-          ),
-        );
+      yield* archiveRunThread(threadId);
     }),
   );
 

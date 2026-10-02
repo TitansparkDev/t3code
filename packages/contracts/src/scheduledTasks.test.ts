@@ -7,6 +7,7 @@ import {
   isScheduledTaskDue,
   nextScheduledRunAt,
   previousScheduledRunAt,
+  scheduledTimesOfDay,
   ScheduledTaskId,
   SCHEDULED_TASK_GRACE_MS,
   type ScheduledTask,
@@ -114,5 +115,75 @@ describe("isScheduledTaskDue", () => {
 
   it("never fires while disabled", () => {
     expect(isScheduledTaskDue(task({ enabled: false }), slot + 60_000)).toBe(false);
+  });
+});
+
+describe("repeating schedules", () => {
+  // 05:00 then every five hours, five sends: 05, 10, 15, 20, and 01:00 next day.
+  const fiveWindows = {
+    timeOfDay: "05:00",
+    daysOfWeek: [],
+    repeat: { everyMinutes: 300, count: 5 },
+  } satisfies ScheduledTaskSchedule;
+
+  it("lists each send of the day, past midnight included", () => {
+    expect(scheduledTimesOfDay(fiveWindows)).toEqual(["05:00", "10:00", "15:00", "20:00", "01:00"]);
+    expect(scheduledTimesOfDay(everyDayAt5)).toEqual(["05:00"]);
+  });
+
+  it("fires at every repeat in order, including the one after midnight", () => {
+    const morning = localMs({ year: 2026, month: 9, day: 1, hour: 4 });
+    const sends: number[] = [];
+    let cursor = morning;
+    for (let index = 0; index < 6; index += 1) {
+      cursor = nextScheduledRunAt(fiveWindows, cursor);
+      sends.push(cursor);
+    }
+    expect(sends).toEqual([
+      localMs({ year: 2026, month: 9, day: 1, hour: 5 }),
+      localMs({ year: 2026, month: 9, day: 1, hour: 10 }),
+      localMs({ year: 2026, month: 9, day: 1, hour: 15 }),
+      localMs({ year: 2026, month: 9, day: 1, hour: 20 }),
+      localMs({ year: 2026, month: 9, day: 2, hour: 1 }),
+      localMs({ year: 2026, month: 9, day: 2, hour: 5 }),
+    ]);
+  });
+
+  it("finds the latest repeat that has passed", () => {
+    expect(
+      previousScheduledRunAt(fiveWindows, localMs({ year: 2026, month: 9, day: 2, hour: 2 })),
+    ).toBe(localMs({ year: 2026, month: 9, day: 2, hour: 1 }));
+    expect(
+      previousScheduledRunAt(fiveWindows, localMs({ year: 2026, month: 9, day: 1, hour: 12 })),
+    ).toBe(localMs({ year: 2026, month: 9, day: 1, hour: 10 }));
+  });
+
+  it("keeps repeats on the start day's weekday rule", () => {
+    const mondayWindows = { ...fiveWindows, daysOfWeek: [1] } satisfies ScheduledTaskSchedule;
+    // Monday's 20:00 send leads to Tuesday 01:00, then next Monday 05:00.
+    const afterMondayEvening = localMs({ year: 2026, month: 8, day: 31, hour: 21 });
+    expect(nextScheduledRunAt(mondayWindows, afterMondayEvening)).toBe(
+      localMs({ year: 2026, month: 9, day: 1, hour: 1 }),
+    );
+    expect(
+      nextScheduledRunAt(mondayWindows, localMs({ year: 2026, month: 9, day: 1, hour: 2 })),
+    ).toBe(localMs({ year: 2026, month: 9, day: 7, hour: 5 }));
+  });
+
+  it("is due once per repeat and never replays a missed earlier send", () => {
+    const repeating = task({
+      schedule: fiveWindows,
+      updatedAt: new Date(localMs({ year: 2026, month: 8, day: 30, hour: 0 })).toISOString(),
+    });
+    const at10 = localMs({ year: 2026, month: 9, day: 1, hour: 10, minute: 1 });
+    expect(isScheduledTaskDue(repeating, at10)).toBe(true);
+    const ranAt10 = task({
+      ...repeating,
+      lastRun: { at: new Date(at10).toISOString(), outcome: "started", startedTargets: [] },
+    });
+    expect(isScheduledTaskDue(ranAt10, at10 + 60_000)).toBe(false);
+    expect(isScheduledTaskDue(ranAt10, localMs({ year: 2026, month: 9, day: 1, hour: 15 }))).toBe(
+      true,
+    );
   });
 });

@@ -312,6 +312,30 @@ it.layer(NodeServices.layer)("project lookup with unavailable workspaces", (it) 
     }),
   );
 
+  it.effect("moves a project whose folder was renamed, keeping its threads", () =>
+    Effect.gen(function* () {
+      const { baseDir, workspaceRoot, project } = yield* makeProjectLookupFixture(true, true);
+      const movedRoot = NodeFS.mkdtempSync(
+        NodePath.join(NodeOS.tmpdir(), "t3-cli-project-lookup-moved-"),
+      );
+      yield* runCliWithRuntime([
+        "project",
+        "move",
+        workspaceRoot,
+        movedRoot,
+        "--base-dir",
+        baseDir,
+      ]);
+      const after = yield* readPersistedSnapshot(baseDir);
+      const moved = after.projects.find((candidate) => candidate.id === project.id)!;
+      assert.equal(moved.workspaceRoot, movedRoot);
+      assert.isNull(moved.deletedAt);
+      const thread = after.threads.find((candidate) => candidate.id === "thread-project-lookup")!;
+      assert.equal(thread.projectId, project.id);
+      assert.isNull(thread.deletedAt);
+    }),
+  );
+
   it.effect("preserves normalized paths and distinct symlink project entries", () =>
     Effect.gen(function* () {
       const { baseDir, workspaceRoot, project } = yield* makeProjectLookupFixture(false, false);

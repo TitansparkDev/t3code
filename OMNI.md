@@ -208,6 +208,11 @@ If a change isn't in this table, it shouldn't exist.
 | `docs/user/usage.md`                                                    | documents rate-limit recovery                               | users need a clear way back after a provider reset              | C2      |
 | `apps/server/src/provider/Layers/ProviderService.ts`                    | times out provider session starts after two minutes         | one hung provider handshake otherwise stalls every thread       | FIX     |
 | `apps/server/src/provider/Layers/ProviderService.test.ts`               | covers the hung session start timeout                       | locks the reactor-unblocking behavior                           | FIX     |
+| `apps/server/src/cli/project.ts`                                        | adds `t3 project move`                                      | re-link a project after its folder moves or is renamed          | RELINK  |
+| `apps/server/src/bin.test.ts`                                           | covers `t3 project move`                                    | keeps threads attached when a project moves                     | RELINK  |
+| `apps/server/src/provider/Errors.ts`                                    | missing-folder error names the fix                          | points users at Settings → Project → Folder                     | RELINK  |
+| `apps/web/src/components/settings/ProjectSettingsPanel.tsx`             | editable folder for every project                           | re-link moved projects without a command line                   | RELINK  |
+| `apps/mobile/src/features/threads/ThreadDetailScreen.tsx`               | shows failed and rate-limited turns                         | a turn that cannot start must explain itself on mobile          | C2      |
 
 The C4 contract change is a narrow exception to the add-files preference: it promotes the
 already-persisted `thread.activity.append` command into the client-dispatchable union rather

@@ -15,6 +15,7 @@
 import type { EnvironmentId, ProviderInstanceId } from "@t3tools/contracts";
 import {
   nextScheduledRunAt,
+  scheduledTimesOfDay,
   type ScheduledTask,
   type ScheduledTaskDraft,
   type ScheduledTaskRun,
@@ -45,16 +46,22 @@ interface DraftState {
   prompt: string;
   projectId: string;
   timeOfDay: string;
+  /** Total sends per day, including the first. */
+  sendsPerDay: number;
+  /** Hours between sends when there is more than one. */
+  everyHours: number;
   daysOfWeek: ReadonlyArray<number>;
   enabled: boolean;
   targets: ReadonlyArray<ScheduledTaskTarget>;
 }
 
-const emptyDraft = (projectId: string): DraftState => ({
+const emptyDraft = (): DraftState => ({
   name: "",
   prompt: "",
-  projectId,
+  projectId: "",
   timeOfDay: "05:00",
+  sendsPerDay: 1,
+  everyHours: 5,
   daysOfWeek: [],
   enabled: true,
   targets: [],
@@ -64,12 +71,34 @@ const draftFromTask = (task: ScheduledTask): DraftState => ({
   id: task.id,
   name: task.name,
   prompt: task.prompt,
-  projectId: task.projectId,
+  projectId: task.projectId ?? "",
   timeOfDay: task.schedule.timeOfDay,
+  sendsPerDay: task.schedule.repeat?.count ?? 1,
+  everyHours: (task.schedule.repeat?.everyMinutes ?? 300) / 60,
   daysOfWeek: task.schedule.daysOfWeek,
   enabled: task.enabled,
   targets: task.targets,
 });
+
+function draftSchedule(draft: DraftState): ScheduledTaskDraft["schedule"] {
+  const sends = Math.round(draft.sendsPerDay);
+  return {
+    timeOfDay: draft.timeOfDay,
+    daysOfWeek: draft.daysOfWeek,
+    ...(sends > 1
+      ? { repeat: { everyMinutes: Math.round(draft.everyHours * 60), count: sends } }
+      : {}),
+  };
+}
+
+/** Repeats are a same-day idea: they must not reach the next day's first send. */
+function draftRepeatIsValid(draft: DraftState): boolean {
+  const sends = Math.round(draft.sendsPerDay);
+  if (sends < 1 || sends > 24) return false;
+  if (sends === 1) return true;
+  const everyMinutes = Math.round(draft.everyHours * 60);
+  return everyMinutes >= 15 && (sends - 1) * everyMinutes < 24 * 60;
+}
 
 function describeSchedule(task: ScheduledTask): string {
   const days =
@@ -80,7 +109,7 @@ function describeSchedule(task: ScheduledTask): string {
           .sort((left, right) => left - right)
           .map((day) => DAY_LABELS[day])
           .join(", ");
-  return `${task.schedule.timeOfDay} · ${days}`;
+  return `${scheduledTimesOfDay(task.schedule).join(", ")} · ${days}`;
 }
 
 function formatRunDuration(durationMs: number | undefined): string {
@@ -160,8 +189,8 @@ function EnvironmentScheduledTasks({
   const [busy, setBusy] = useState(false);
 
   const startNew = useCallback(() => {
-    setDraft(emptyDraft(projects[0]?.id ?? ""));
-  }, [projects]);
+    setDraft(emptyDraft());
+  }, []);
 
   const save = useCallback(async () => {
     if (!draft) return;
@@ -171,9 +200,9 @@ function EnvironmentScheduledTasks({
         ...(draft.id ? { id: draft.id } : {}),
         name: draft.name.trim(),
         prompt: draft.prompt.trim(),
-        projectId: draft.projectId,
+        ...(draft.projectId ? { projectId: draft.projectId } : {}),
         targets: draft.targets,
-        schedule: { timeOfDay: draft.timeOfDay, daysOfWeek: draft.daysOfWeek },
+        schedule: draftSchedule(draft),
         enabled: draft.enabled,
       } as ScheduledTaskDraft;
       await scheduled.save(environmentId, payload);
@@ -198,8 +227,8 @@ function EnvironmentScheduledTasks({
     draft !== null &&
     draft.name.trim().length > 0 &&
     draft.prompt.trim().length > 0 &&
-    draft.projectId.length > 0 &&
-    draft.targets.length > 0;
+    draft.targets.length > 0 &&
+    draftRepeatIsValid(draft);
 
   return (
     <div className="space-y-2 rounded-lg border border-border/60 p-3">
@@ -321,7 +350,7 @@ function EnvironmentScheduledTasks({
               onChange={(event) => setDraft({ ...draft, projectId: event.target.value })}
               value={draft.projectId}
             >
-              <option value="">Select a project…</option>
+              <option value="">No project (runs stay out of your thread list)</option>
               {projects.map((project) => (
                 <option key={project.id} value={project.id}>
                   {project.title}
@@ -353,6 +382,39 @@ function EnvironmentScheduledTasks({
                 value={draft.timeOfDay}
               />
             </label>
+
+            <label className="space-y-1">
+              <span className="block text-xs text-muted-foreground">Sends per day</span>
+              <Input
+                className="w-24"
+                inputMode="numeric"
+                max={24}
+                min={1}
+                onChange={(event) =>
+                  setDraft({ ...draft, sendsPerDay: Number(event.target.value) || 1 })
+                }
+                type="number"
+                value={draft.sendsPerDay}
+              />
+            </label>
+
+            {draft.sendsPerDay > 1 ? (
+              <label className="space-y-1">
+                <span className="block text-xs text-muted-foreground">Every (hours)</span>
+                <Input
+                  className="w-24"
+                  inputMode="decimal"
+                  max={24}
+                  min={0.25}
+                  onChange={(event) =>
+                    setDraft({ ...draft, everyHours: Number(event.target.value) || 0 })
+                  }
+                  step={0.25}
+                  type="number"
+                  value={draft.everyHours}
+                />
+              </label>
+            ) : null}
 
             <div className="space-y-1">
               <span className="block text-xs text-muted-foreground">
@@ -392,6 +454,12 @@ function EnvironmentScheduledTasks({
               <span className="text-xs text-muted-foreground">Enabled</span>
             </label>
           </div>
+
+          <p className="text-xs text-muted-foreground">
+            {draftRepeatIsValid(draft)
+              ? `Sends at ${scheduledTimesOfDay(draftSchedule(draft)).join(", ")} on the environment's clock.`
+              : "Repeats must fit in one day: sends per day × hours apart has to stay under 24 hours."}
+          </p>
 
           <div className="flex justify-end gap-2">
             <Button onClick={() => setDraft(null)} size="sm" type="button" variant="ghost">

@@ -137,7 +137,7 @@ export const make = Effect.gen(function* () {
         id: existing?.id ?? generatedId,
         name: draft.name,
         prompt: draft.prompt,
-        projectId: draft.projectId,
+        ...(draft.projectId ? { projectId: draft.projectId } : {}),
         targets: draft.targets,
         schedule: draft.schedule,
         enabled: draft.enabled,

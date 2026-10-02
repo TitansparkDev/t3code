@@ -173,6 +173,13 @@ Full glossary with file links: `docs/internals/glossary.md`
 
 ## Recent request log
 
+- 2026-10-02 — v0.0.56: scheduled tasks gain same-day repeats (e.g. 05:00 then every 5h),
+  optional project (runs in "No project") and archive finished runs; projects can be re-linked
+  after a folder move (Settings → Project → Folder, `t3 project move`); mobile shows why a turn
+  could not start. Outage causes were outside the fork: Codex MCP servers awaiting OAuth hung
+  every Codex start, renamed repos left projects pointing at missing folders, and the
+  `t3.artnas.net` tunnel targets 3773 while the service listens on 3774 (now forwarded by the
+  `t3code-tunnel-origin` user socket).
 - 2026-10-02 — Merged 74 upstream commits into `omni/main`, made provider session starts
   time out after two minutes so one hung Codex handshake can no longer stall every thread's
   turns, and released v0.0.55.

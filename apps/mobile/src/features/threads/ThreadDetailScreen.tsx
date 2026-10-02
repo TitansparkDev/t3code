@@ -986,6 +986,13 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                 onScrollToEnd={handleScrollToEnd}
               />
               <View className="w-full self-center" style={{ maxWidth: contentMaxWidth }}>
+                {props.selectedThread.session?.status === "rate-limited" ||
+                props.selectedThread.session?.status === "error" ? (
+                  <ThreadRateLimitNotice
+                    error={props.selectedThread.session.lastError}
+                    status={props.selectedThread.session.status}
+                  />
+                ) : null}
                 {props.feedbackSubmissions.map((submission) => (
                   <ComposerFeedback
                     key={submission.id}
