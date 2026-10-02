@@ -64,7 +64,7 @@ import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import * as ProviderAdapterRegistry from "../Services/ProviderAdapterRegistry.ts";
 import * as ProviderService from "../Services/ProviderService.ts";
 import * as ProviderSessionDirectory from "../Services/ProviderSessionDirectory.ts";
-import { makeProviderServiceLive } from "./ProviderService.ts";
+import { makeProviderServiceLive, PROVIDER_SESSION_START_TIMEOUT } from "./ProviderService.ts";
 import * as ProviderEventLoggers from "./ProviderEventLoggers.ts";
 import { ProviderSessionDirectoryLive } from "./ProviderSessionDirectory.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -1259,6 +1259,35 @@ antigravityInstanceRouting.layer("ProviderServiceLive instance-owned conversatio
           }
         }
       }),
+  );
+});
+
+const hungStart = makeProviderServiceLayer();
+hungStart.layer("ProviderServiceLive session start timeout", (it) => {
+  it.effect("fails a provider start that never answers so later starts can run", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      hungStart.codex.startSession.mockImplementationOnce(() => Effect.never);
+      const startInput = (threadId: ThreadId) => ({
+        providerInstanceId: codexInstanceId,
+        threadId,
+        runtimeMode: "full-access" as const,
+      });
+
+      const hungThreadId = asThreadId("thread-hung-start");
+      const hung = yield* provider
+        .startSession(hungThreadId, startInput(hungThreadId))
+        .pipe(Effect.flip, Effect.forkChild);
+      yield* TestClock.adjust(PROVIDER_SESSION_START_TIMEOUT);
+      const failure = yield* Fiber.join(hung);
+
+      assert.instanceOf(failure, ProviderAdapterRequestError);
+      assert.equal(failure.method, "session/start");
+
+      const nextThreadId = asThreadId("thread-after-hung-start");
+      const session = yield* provider.startSession(nextThreadId, startInput(nextThreadId));
+      assert.equal(session.status, "ready");
+    }),
   );
 });
 

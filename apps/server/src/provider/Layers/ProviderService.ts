@@ -231,6 +231,10 @@ function compactAccessibilityForPrompt(
 
 /** How long a manual context compaction may run before ProviderService gives up on it. */
 const COMPACTION_COMPLETION_TIMEOUT = "10 minutes";
+// Session starts run inside the orchestration reactor's single queue, so a
+// provider that never answers its handshake would stall every later turn on
+// every thread. Fail the start instead; the user can send the message again.
+export const PROVIDER_SESSION_START_TIMEOUT = "2 minutes";
 
 interface PendingCompaction {
   readonly completion: Deferred.Deferred<string>;
@@ -1642,7 +1646,20 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             ...(effectiveCwd !== undefined ? { cwd: effectiveCwd } : {}),
             ...(effectiveResumeCursor !== undefined ? { resumeCursor: effectiveResumeCursor } : {}),
           })
-          .pipe(Effect.onError(() => clearMcpSession(threadId)));
+          .pipe(
+            Effect.timeoutOrElse({
+              duration: PROVIDER_SESSION_START_TIMEOUT,
+              orElse: () =>
+                Effect.fail(
+                  new ProviderAdapterRequestError({
+                    provider: resolvedProvider,
+                    method: "session/start",
+                    detail: `The provider session did not start within ${PROVIDER_SESSION_START_TIMEOUT}. Send the message again to retry.`,
+                  }),
+                ),
+            }),
+            Effect.onError(() => clearMcpSession(threadId)),
+          );
 
         if (session.provider !== adapter.provider) {
           yield* clearMcpSession(threadId);
