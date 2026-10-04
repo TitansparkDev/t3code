@@ -92,6 +92,13 @@ in the thread on web, desktop, or mobile. Some tools offer access for one reques
 the current session, or permanently. See [Permission modes](./permission-modes.md)
 for command and file approvals.
 
+## Resume after a usage limit without being there
+
+In **Settings → Auto-resume**, switch on a provider account and model (or **All
+models**). A thread on that account and model that stops on a usage limit then resumes
+by itself when the limit resets, even with no T3 Code window open. This works for every
+provider, not only Codex. A resume you cancel stays cancelled.
+
 ## Codex says I hit a usage limit
 
 When Codex stops on a usage limit, the thread names the window that ran out and

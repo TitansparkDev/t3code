@@ -260,6 +260,7 @@ import {
   ResourceTelemetrySnapshot,
 } from "./resourceTelemetry.ts";
 import { QuotaSummary } from "./quota.ts";
+import { GoalId, GoalList } from "./goals.ts";
 import { ScheduledTaskDraft, ScheduledTaskId, ScheduledTaskList } from "./scheduledTasks.ts";
 import {
   UsageLimitSourceError,
@@ -413,6 +414,10 @@ export const WS_METHODS = {
   serverSaveScheduledTask: "server.saveScheduledTask",
   serverDeleteScheduledTask: "server.deleteScheduledTask",
   serverRunScheduledTask: "server.runScheduledTask",
+  serverListGoals: "server.listGoals",
+  serverStopGoal: "server.stopGoal",
+  serverRestartGoal: "server.restartGoal",
+  serverDeleteGoal: "server.deleteGoal",
   serverRefreshUsageRates: "server.refreshUsageRates",
 
   // Cloud environment methods
@@ -727,6 +732,32 @@ export const WsServerSaveScheduledTaskRpc = Rpc.make(WS_METHODS.serverSaveSchedu
 export const WsServerDeleteScheduledTaskRpc = Rpc.make(WS_METHODS.serverDeleteScheduledTask, {
   payload: Schema.Struct({ id: ScheduledTaskId }),
   success: ScheduledTaskList,
+  error: EnvironmentAuthorizationError,
+});
+
+/** Goals are environment-owned like tasks: every call answers with the full list. */
+export const WsServerListGoalsRpc = Rpc.make(WS_METHODS.serverListGoals, {
+  payload: Schema.Struct({}),
+  success: GoalList,
+  error: EnvironmentAuthorizationError,
+});
+
+export const WsServerStopGoalRpc = Rpc.make(WS_METHODS.serverStopGoal, {
+  payload: Schema.Struct({ id: GoalId }),
+  success: GoalList,
+  error: EnvironmentAuthorizationError,
+});
+
+/** Start a stopped, failed, or finished goal again. */
+export const WsServerRestartGoalRpc = Rpc.make(WS_METHODS.serverRestartGoal, {
+  payload: Schema.Struct({ id: GoalId }),
+  success: GoalList,
+  error: EnvironmentAuthorizationError,
+});
+
+export const WsServerDeleteGoalRpc = Rpc.make(WS_METHODS.serverDeleteGoal, {
+  payload: Schema.Struct({ id: GoalId }),
+  success: GoalList,
   error: EnvironmentAuthorizationError,
 });
 
@@ -1550,6 +1581,10 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerSaveScheduledTaskRpc,
   WsServerDeleteScheduledTaskRpc,
   WsServerRunScheduledTaskRpc,
+  WsServerListGoalsRpc,
+  WsServerStopGoalRpc,
+  WsServerRestartGoalRpc,
+  WsServerDeleteGoalRpc,
   WsServerRefreshUsageRatesRpc,
   WsServerSignalProcessRpc,
   WsServerReportClientActivityRpc,

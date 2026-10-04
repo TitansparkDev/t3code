@@ -53,6 +53,7 @@ import { forkParked } from "./serverActivation.ts";
 import * as ServiceLauncherClient from "./cloud/serviceLauncherClient.ts";
 import { seedCodexQuotaFromTranscripts } from "./quota/CodexTranscriptQuota.ts";
 import { makeQuotaRefreshLoop } from "./quota/QuotaRefreshLoop.ts";
+import * as GoalService from "./goals/GoalService.ts";
 import * as ScheduledTaskRunner from "./scheduledTasks/ScheduledTaskRunner.ts";
 import * as QuotaService from "./quota/QuotaService.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
@@ -1140,6 +1141,7 @@ export const make = (options?: StartupOptions) =>
     const scheduledTaskRunner = yield* Effect.serviceOption(
       ScheduledTaskRunner.ScheduledTaskRunner,
     );
+    const goalService = yield* Effect.serviceOption(GoalService.GoalService);
     const startupProviderService = yield* Effect.serviceOption(ProviderService.ProviderService);
 
     const commandGate = yield* makeCommandGate;
@@ -1225,6 +1227,9 @@ export const make = (options?: StartupOptions) =>
 
       if (Option.isSome(scheduledTaskRunner)) {
         yield* forkParked(scheduledTaskRunner.value.loop);
+      }
+      if (Option.isSome(goalService)) {
+        yield* forkParked(goalService.value.loop);
       }
 
       yield* Effect.logDebug("startup phase: parking orchestration roots at activation");

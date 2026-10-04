@@ -20384,6 +20384,9 @@ apps/server/src/git/GitWorkflowService.ts
 apps/server/src/git/linkCreatedPullRequest.test.ts
 apps/server/src/git/linkCreatedPullRequest.ts
 apps/server/src/git/remoteRefs.ts
+apps/server/src/goals/GoalService.test.ts
+apps/server/src/goals/GoalService.ts
+apps/server/src/goals/GoalStore.ts
 apps/server/src/http.test.ts
 apps/server/src/http.ts
 apps/server/src/httpCors.ts
@@ -21607,6 +21610,9 @@ apps/web/src/components/files/projectFilesQueryState.ts
 apps/web/src/components/files/useDirectoryEntries.ts
 apps/web/src/components/files/useFileSaveCoordinator.test.tsx
 apps/web/src/components/files/useFileSaveCoordinator.ts
+apps/web/src/components/goals/GoalsPage.tsx
+apps/web/src/components/goals/goalProgress.test.ts
+apps/web/src/components/goals/goalProgress.ts
 apps/web/src/components/media/MediaActions.tsx
 apps/web/src/components/media/MediaVideoPlayer.tsx
 apps/web/src/components/media/OpenMediaLink.tsx
@@ -21922,6 +21928,7 @@ apps/web/src/components/settings/useSettingsProjectGroups.ts
 apps/web/src/components/settings/useSnapShotShortcutRecorder.test.tsx
 apps/web/src/components/settings/useSnapShotShortcutRecorder.tsx
 apps/web/src/components/sidebar/DesktopUpdateStatusIcon.tsx
+apps/web/src/components/sidebar/HostCapacityChip.tsx
 apps/web/src/components/sidebar/SidebarChrome.tsx
 apps/web/src/components/sidebar/SidebarProviderUpdatePill.tsx
 apps/web/src/components/sidebar/SidebarThreadHeader.tsx
@@ -22127,6 +22134,8 @@ apps/web/src/index.css
 apps/web/src/keybindings.test.ts
 apps/web/src/keybindings.ts
 apps/web/src/latestRelease.ts
+apps/web/src/lib/agentCapacity.test.ts
+apps/web/src/lib/agentCapacity.ts
 apps/web/src/lib/archivedThreadsState.ts
 apps/web/src/lib/assistantCitationNavigation.test.ts
 apps/web/src/lib/assistantCitationNavigation.ts
@@ -22314,6 +22323,7 @@ apps/web/src/routes/_chat.index.tsx
 apps/web/src/routes/_chat.pull-requests.tsx
 apps/web/src/routes/_chat.tsx
 apps/web/src/routes/connect.tsx
+apps/web/src/routes/goals.tsx
 apps/web/src/routes/pair.tsx
 apps/web/src/routes/projects.$projectKey.tsx
 apps/web/src/routes/settings.appearance.tsx
@@ -22366,6 +22376,7 @@ apps/web/src/state/entities.ts
 apps/web/src/state/environments.ts
 apps/web/src/state/filesystem.ts
 apps/web/src/state/git.ts
+apps/web/src/state/goals.ts
 apps/web/src/state/orchestration.ts
 apps/web/src/state/paginatedBranches.test.ts
 apps/web/src/state/paginatedBranches.ts
@@ -22534,6 +22545,7 @@ docs/user/browser-import.md
 docs/user/composer.md
 docs/user/dev-servers.md
 docs/user/devices.md
+docs/user/goals.md
 docs/user/install.md
 docs/user/keybindings.md
 docs/user/keyboard-focus.md
@@ -23047,6 +23059,8 @@ packages/contracts/src/filesystem.test.ts
 packages/contracts/src/filesystem.ts
 packages/contracts/src/git.test.ts
 packages/contracts/src/git.ts
+packages/contracts/src/goals.test.ts
+packages/contracts/src/goals.ts
 packages/contracts/src/index.ts
 packages/contracts/src/ipc.test.ts
 packages/contracts/src/ipc.ts

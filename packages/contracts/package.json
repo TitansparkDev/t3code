@@ -30,6 +30,10 @@
     "./scheduledTasks": {
       "types": "./src/scheduledTasks.ts",
       "import": "./src/scheduledTasks.ts"
+    },
+    "./goals": {
+      "types": "./src/goals.ts",
+      "import": "./src/goals.ts"
     }
   },
   "scripts": {

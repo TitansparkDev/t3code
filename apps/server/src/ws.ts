@@ -176,6 +176,7 @@ import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
 import * as UsageService from "./usage/UsageService.ts";
 import * as QuotaService from "./quota/QuotaService.ts";
+import * as GoalService from "./goals/GoalService.ts";
 import * as ScheduledTaskRunner from "./scheduledTasks/ScheduledTaskRunner.ts";
 import * as ScheduledTaskStore from "./scheduledTasks/ScheduledTaskStore.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
@@ -699,6 +700,7 @@ const makeWsRpcLayer = (
       const quota = yield* QuotaService.QuotaService;
       const scheduledTasks = yield* ScheduledTaskStore.ScheduledTaskStore;
       const scheduledTaskRunner = yield* ScheduledTaskRunner.ScheduledTaskRunner;
+      const goals = yield* GoalService.GoalService;
       const relayClient = yield* RelayClient.RelayClient;
       const authorizationError = (requiredScope: AuthEnvironmentScope) =>
         new EnvironmentAuthorizationError({
@@ -2165,7 +2167,10 @@ const makeWsRpcLayer = (
             ORCHESTRATION_WS_METHODS.dispatchCommand,
             Effect.gen(function* () {
               yield* ProjectCloneTracker.rejectCommandsDuringClone(projectCloneTracker, command);
-              const normalizedCommand = yield* normalizeDispatchCommand(command);
+              // A message beginning !goal starts a goal and becomes its first chat's prompt.
+              const normalizedCommand = yield* goals
+                .interceptTurnStart(command)
+                .pipe(Effect.flatMap(normalizeDispatchCommand));
               // Archive removes the thread from the client, so this transport
               // closes its session and terminals after the command lands.
               // Settlement cleanup is driven by thread.settled events in the
@@ -2984,6 +2989,30 @@ const makeWsRpcLayer = (
           observeRpcEffect(WS_METHODS.serverGetQuota, quota.readSummary, {
             "rpc.aggregate": "server",
           }),
+        [WS_METHODS.serverListGoals]: (_input) =>
+          observeRpcEffect(
+            WS_METHODS.serverListGoals,
+            goals.list.pipe(Effect.map((list) => ({ goals: list }))),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverStopGoal]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverStopGoal,
+            goals.stop(input.id).pipe(Effect.map((list) => ({ goals: list }))),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverRestartGoal]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverRestartGoal,
+            goals.restart(input.id).pipe(Effect.map((list) => ({ goals: list }))),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverDeleteGoal]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverDeleteGoal,
+            goals.remove(input.id).pipe(Effect.map((list) => ({ goals: list }))),
+            { "rpc.aggregate": "server" },
+          ),
         [WS_METHODS.serverListScheduledTasks]: (_input) =>
           observeRpcEffect(
             WS_METHODS.serverListScheduledTasks,

@@ -1092,6 +1092,11 @@ export function createServerEnvironmentAtoms<R, E>(
       tag: WS_METHODS.serverListScheduledTasks,
       staleTimeMs: 0,
     }),
+    goals: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:server:goals",
+      tag: WS_METHODS.serverListGoals,
+      staleTimeMs: 0,
+    }),
     quota: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:server:quota",
       tag: WS_METHODS.subscribeQuota,
@@ -1157,6 +1162,24 @@ export function createServerEnvironmentAtoms<R, E>(
     runScheduledTask: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:run-scheduled-task",
       tag: WS_METHODS.serverRunScheduledTask,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
+    }),
+    stopGoal: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:stop-goal",
+      tag: WS_METHODS.serverStopGoal,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
+    }),
+    restartGoal: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:restart-goal",
+      tag: WS_METHODS.serverRestartGoal,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
+    }),
+    deleteGoal: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:delete-goal",
+      tag: WS_METHODS.serverDeleteGoal,
       scheduler: configScheduler,
       concurrency: configConcurrency,
     }),

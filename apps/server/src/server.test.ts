@@ -139,6 +139,7 @@ import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
 import * as ModelManifest from "./provider/ModelManifest.ts";
 import * as ProviderService from "./provider/Services/ProviderService.ts";
 import * as QuotaService from "./quota/QuotaService.ts";
+import * as GoalService from "./goals/GoalService.ts";
 import * as ScheduledTaskRunner from "./scheduledTasks/ScheduledTaskRunner.ts";
 import * as ScheduledTaskStore from "./scheduledTasks/ScheduledTaskStore.ts";
 import { ProviderAuthService } from "./provider/Services/ProviderAuthService.ts";
@@ -1092,6 +1093,7 @@ const buildAppUnderTest = (options?: {
       Layer.provide(UsageService.layerTest),
       Layer.provide(QuotaService.layerTest),
       Layer.provide(ScheduledTaskRunner.layerTest),
+      Layer.provide(GoalService.layerTest),
       Layer.provide(ScheduledTaskStore.layerTest),
       Layer.provide(
         Layer.mock(AnalyticsService.AnalyticsService)({
