@@ -416,6 +416,7 @@ export const WS_METHODS = {
   serverRunScheduledTask: "server.runScheduledTask",
   serverListGoals: "server.listGoals",
   serverCreateGoal: "server.createGoal",
+  serverUpdateGoal: "server.updateGoal",
   serverStopGoal: "server.stopGoal",
   serverRestartGoal: "server.restartGoal",
   serverDeleteGoal: "server.deleteGoal",
@@ -746,6 +747,13 @@ export const WsServerListGoalsRpc = Rpc.make(WS_METHODS.serverListGoals, {
 /** Start a goal from the setup page. The list comes back with the new goal first. */
 export const WsServerCreateGoalRpc = Rpc.make(WS_METHODS.serverCreateGoal, {
   payload: Schema.Struct({ goal: GoalSettings }),
+  success: GoalList,
+  error: Schema.Union([OrchestrationDispatchCommandError, EnvironmentAuthorizationError]),
+});
+
+/** Change a goal's settings. The project cannot change; running chats keep their instructions. */
+export const WsServerUpdateGoalRpc = Rpc.make(WS_METHODS.serverUpdateGoal, {
+  payload: Schema.Struct({ id: GoalId, goal: GoalSettings }),
   success: GoalList,
   error: Schema.Union([OrchestrationDispatchCommandError, EnvironmentAuthorizationError]),
 });
@@ -1591,6 +1599,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerRunScheduledTaskRpc,
   WsServerListGoalsRpc,
   WsServerCreateGoalRpc,
+  WsServerUpdateGoalRpc,
   WsServerStopGoalRpc,
   WsServerRestartGoalRpc,
   WsServerDeleteGoalRpc,

@@ -1,7 +1,12 @@
 import { ProjectId, ProviderInstanceId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { defaultGoalSetup, goalSetupProblem, goalSetupToSettings } from "./goalSetup.ts";
+import {
+  defaultGoalSetup,
+  goalSetupProblem,
+  goalSetupToSettings,
+  goalToSetup,
+} from "./goalSetup.ts";
 
 const agent = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6" };
 const ready = {
@@ -34,6 +39,34 @@ describe("goal setup", () => {
     });
   });
 
+  it("keeps the name and the agent instructions apart, and the Beads choices", () => {
+    expect(
+      goalSetupToSettings({ ...ready, prompt: " Work PLAN.md ", beadsScope: " plan-1 " }),
+    ).toMatchObject({
+      name: "Finish PLAN.md",
+      prompt: "Work PLAN.md",
+      beadsScope: "plan-1",
+      useBeads: true,
+    });
+  });
+
+  it("allows more than sixteen agents at once", () => {
+    expect(
+      goalSetupProblem({ ...ready, concurrency: 40, agents: [{ ...agent, count: 40 }] }),
+    ).toBeUndefined();
+  });
+
+  it("round-trips an existing goal for editing", () => {
+    const settings = goalSetupToSettings({
+      ...ready,
+      prompt: "Go",
+      beadsScope: "e-1",
+      stopAfterProblems: 5,
+    })!;
+    const form = goalToSetup({ ...settings, id: "g", status: "running", chats: [] } as never);
+    expect(goalSetupToSettings(form)).toEqual(settings);
+  });
+
   it("allows running until complete", () => {
     expect(goalSetupToSettings({ ...ready, maxChats: null })?.maxChats).toBeNull();
   });
@@ -46,7 +79,7 @@ describe("goal setup", () => {
     expect(goalSetupProblem({ ...ready, concurrency: 5, maxChats: 3 })).toContain(
       "at least as many",
     );
-    expect(goalSetupProblem({ ...ready, agents: [{ ...agent, count: 99 }] })).toContain(
+    expect(goalSetupProblem({ ...ready, agents: [{ ...agent, count: 101 }] })).toContain(
       "Each model",
     );
     expect(goalSetupToSettings({ ...ready, name: "" })).toBeUndefined();

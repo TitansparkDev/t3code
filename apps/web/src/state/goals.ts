@@ -71,6 +71,18 @@ export function useGoals() {
     },
     [refresh],
   );
+  const update = useCallback(
+    async (environmentId: EnvironmentId, id: GoalId, goal: GoalSettings) => {
+      await runAtomCommand(
+        appAtomRegistry,
+        serverEnvironment.updateGoal,
+        { environmentId, input: { id, goal } },
+        { label: "update goal" },
+      );
+      refresh(environmentId);
+    },
+    [refresh],
+  );
   const stop = useMemo(() => command(serverEnvironment.stopGoal, "stop goal"), [command]);
   const restart = useMemo(() => command(serverEnvironment.restartGoal, "restart goal"), [command]);
   const remove = useMemo(() => command(serverEnvironment.deleteGoal, "delete goal"), [command]);
@@ -84,7 +96,7 @@ export function useGoals() {
   }, [environments, refresh]);
 
   return useMemo(
-    () => ({ environments, create, stop, restart, remove }),
-    [environments, create, stop, restart, remove],
+    () => ({ environments, create, update, stop, restart, remove }),
+    [environments, create, update, stop, restart, remove],
   );
 }

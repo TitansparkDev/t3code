@@ -13,6 +13,9 @@ import {
 import {
   DEFAULT_GOAL_CONCURRENCY,
   DEFAULT_GOAL_MAX_CHATS,
+  DEFAULT_GOAL_STOP_AFTER_PROBLEMS,
+  MAX_GOAL_STOP_AFTER_PROBLEMS,
+  type Goal,
   MAX_GOAL_AGENT_COUNT,
   MAX_GOAL_CONCURRENCY,
   MAX_GOAL_MAX_CHATS,
@@ -29,7 +32,10 @@ export interface GoalSetupAgent {
 }
 
 export interface GoalSetupForm {
+  /** The goal's name and description. */
   readonly name: string;
+  /** What each agent is told. Empty uses the name. */
+  readonly prompt: string;
   readonly projectId: ProjectId | null;
   readonly agents: ReadonlyArray<GoalSetupAgent>;
   readonly concurrency: number;
@@ -38,6 +44,10 @@ export interface GoalSetupForm {
   readonly runtimeMode: RuntimeMode;
   readonly autoResume: boolean;
   readonly standardRules: boolean;
+  readonly useBeads: boolean;
+  /** A Beads epic or plan id, or empty for the whole queue. */
+  readonly beadsScope: string;
+  readonly stopAfterProblems: number;
 }
 
 export function defaultGoalSetup(input: {
@@ -47,6 +57,7 @@ export function defaultGoalSetup(input: {
 }): GoalSetupForm {
   return {
     name: "",
+    prompt: "",
     projectId: input.projectId,
     agents: input.agent ? [{ ...input.agent, count: DEFAULT_GOAL_CONCURRENCY }] : [],
     concurrency: DEFAULT_GOAL_CONCURRENCY,
@@ -54,6 +65,32 @@ export function defaultGoalSetup(input: {
     runtimeMode: input.runtimeMode,
     autoResume: true,
     standardRules: true,
+    useBeads: true,
+    beadsScope: "",
+    stopAfterProblems: DEFAULT_GOAL_STOP_AFTER_PROBLEMS,
+  };
+}
+
+/** The form for editing a goal that already exists. */
+export function goalToSetup(goal: Goal): GoalSetupForm {
+  return {
+    name: goal.name,
+    prompt: goal.prompt ?? "",
+    projectId: goal.projectId,
+    agents: goal.agents.map((agent) => ({
+      instanceId: agent.modelSelection.instanceId,
+      model: agent.modelSelection.model,
+      options: agent.modelSelection.options,
+      count: agent.count,
+    })),
+    concurrency: goal.concurrency,
+    maxChats: goal.maxChats,
+    runtimeMode: goal.runtimeMode,
+    autoResume: goal.autoResume,
+    standardRules: goal.standardRules,
+    useBeads: goal.useBeads ?? false,
+    beadsScope: goal.beadsScope ?? "",
+    stopAfterProblems: goal.stopAfterProblems ?? DEFAULT_GOAL_STOP_AFTER_PROBLEMS,
   };
 }
 
@@ -79,6 +116,10 @@ export function goalSetupProblem(form: GoalSetupForm): string | undefined {
   ) {
     return `Most agents to run must be between 1 and ${MAX_GOAL_MAX_CHATS}, or until complete.`;
   }
+  const stopAfter = whole(form.stopAfterProblems);
+  if (!(stopAfter >= 1 && stopAfter <= MAX_GOAL_STOP_AFTER_PROBLEMS)) {
+    return `Stop after between 1 and ${MAX_GOAL_STOP_AFTER_PROBLEMS} agents in a row that cannot finish.`;
+  }
   return goalSettingsProblem({
     name: form.name,
     agents: form.agents.map(() => ({}) as never),
@@ -92,6 +133,7 @@ export function goalSetupToSettings(form: GoalSetupForm): GoalSettings | undefin
   if (form.projectId === null || goalSetupProblem(form) !== undefined) return undefined;
   return {
     name: form.name.trim(),
+    prompt: form.prompt.trim(),
     projectId: form.projectId,
     agents: form.agents.map((agent) => ({
       modelSelection: {
@@ -106,5 +148,8 @@ export function goalSetupToSettings(form: GoalSetupForm): GoalSettings | undefin
     runtimeMode: form.runtimeMode,
     autoResume: form.autoResume,
     standardRules: form.standardRules,
+    useBeads: form.useBeads,
+    beadsScope: form.beadsScope.trim(),
+    stopAfterProblems: whole(form.stopAfterProblems),
   };
 }

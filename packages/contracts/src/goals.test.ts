@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  goalInstructions,
   goalPrompt,
+  problemStreak,
+  replyReportsBlockedWork,
   goalSettingsProblem,
   goalTitle,
   replyNeedsAttention,
@@ -30,8 +33,9 @@ describe("goalPrompt", () => {
     const prompt = goalPrompt({ name: "Finish PLAN.md.", concurrency: 3, standardRules: false });
     expect(prompt.startsWith("Finish PLAN.md.")).toBe(true);
     expect(prompt).toContain("up to 3 agents");
-    expect(prompt).toContain("GOAL COMPLETE on a line by itself");
-    expect(prompt).toContain("NEEDS ATTENTION on a line by itself");
+    expect(prompt).toContain("GOAL COMPLETE");
+    expect(prompt).toContain("BLOCKED TASKS");
+    expect(prompt).toContain("NEEDS ATTENTION");
     expect(prompt).not.toContain("git worktree");
   });
 
@@ -70,5 +74,53 @@ describe("goalSettingsProblem", () => {
     expect(
       goalSettingsProblem({ name: "Do it", agents: [agent], concurrency: 5, maxChats: 3 }),
     ).toContain("at least as many");
+  });
+});
+
+describe("goal instructions", () => {
+  it("send the agent prompt, not the name, when there is one", () => {
+    const goal = { name: "Ship v2", concurrency: 2, standardRules: false };
+    expect(goalInstructions(goal)).toBe("Ship v2");
+    expect(goalInstructions({ ...goal, prompt: "  " })).toBe("Ship v2");
+    expect(goalPrompt({ ...goal, prompt: "Work PLAN.md" }).startsWith("Work PLAN.md")).toBe(true);
+  });
+
+  it("hands a Beads chunk to the agent", () => {
+    const prompt = goalPrompt(
+      { name: "Ship v2", concurrency: 2, standardRules: true },
+      { id: "bd-7", title: "Add login" },
+    );
+    expect(prompt).toContain("Your chunk is bd-7: Add login");
+    expect(prompt).not.toContain("claim one unfinished chunk");
+  });
+
+  it("recognises blocked work on its own line", () => {
+    expect(replyReportsBlockedWork("Waiting.\nBLOCKED TASKS")).toBe(true);
+    expect(replyReportsBlockedWork("some BLOCKED TASKS here")).toBe(false);
+  });
+});
+
+describe("problemStreak", () => {
+  const chat = (status: string, minute: number, blockedWork = false) =>
+    ({
+      status,
+      completedAt: `2026-10-04T12:0${minute}:00.000Z`,
+      ...(blockedWork ? { blockedWork } : {}),
+    }) as never;
+
+  it("counts the latest chats in a row that did not finish their work", () => {
+    expect(
+      problemStreak([
+        chat("completed", 1),
+        chat("failed", 2),
+        chat("attention", 3),
+        chat("completed", 4, true),
+      ]),
+    ).toBe(3);
+  });
+
+  it("resets on a success and ignores chats still running", () => {
+    expect(problemStreak([chat("failed", 1), chat("completed", 2), chat("failed", 3)])).toBe(1);
+    expect(problemStreak([{ status: "running" } as never, chat("completed", 1)])).toBe(0);
   });
 });

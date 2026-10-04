@@ -166,6 +166,7 @@ import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
 import * as UsageService from "./usage/UsageService.ts";
 import * as QuotaService from "./quota/QuotaService.ts";
 import * as GoalService from "./goals/GoalService.ts";
+import * as GoalBeads from "./goals/GoalBeads.ts";
 import * as GoalStore from "./goals/GoalStore.ts";
 import * as ScheduledTaskRunner from "./scheduledTasks/ScheduledTaskRunner.ts";
 import * as ScheduledTaskStore from "./scheduledTasks/ScheduledTaskStore.ts";
@@ -245,7 +246,10 @@ const ScheduledTaskLayerLive = ScheduledTaskRunner.layer.pipe(
 );
 
 /** Goals start chats through the engine, like scheduled tasks, and title them with text generation. */
-const GoalLayerLive = GoalService.layer.pipe(Layer.provideMerge(GoalStore.layer));
+const GoalLayerLive = GoalService.layer.pipe(
+  Layer.provideMerge(GoalStore.layer),
+  Layer.provideMerge(GoalBeads.layer),
+);
 
 const ResourceDiagnosticsLayerLive = Layer.mergeAll(
   HostResources.layer,

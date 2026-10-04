@@ -5,6 +5,7 @@ import {
   CheckCircle2Icon,
   CircleAlertIcon,
   ExternalLinkIcon,
+  PencilIcon,
   PlayIcon,
   SquareIcon,
   Trash2Icon,
@@ -17,7 +18,7 @@ import { Button } from "../ui/button";
 import { toastManager } from "../ui/toast";
 import { WorkspacePageContainer } from "../WorkspacePageContainer";
 import { WorkspacePageHeader } from "../WorkspacePageHeader";
-import { describeGoalProgress } from "./goalProgress";
+import { describeGoalProgress, describeGoalQueue } from "./goalProgress";
 
 const STATUS_LABEL: Record<Goal["status"], string> = {
   running: "Running",
@@ -48,6 +49,10 @@ function GoalCard({
   goal: Goal;
   onAction: (action: "stop" | "restart" | "remove", goal: Goal) => void;
 }) {
+  // Working and finished agents are only counted; the ones that need a look are listed.
+  const attentionChats = goal.chats.filter(
+    (chat) => chat.status === "attention" || chat.status === "failed",
+  );
   return (
     <li className="space-y-3 rounded-lg border border-border/60 p-4">
       <div className="flex items-start gap-3">
@@ -59,9 +64,17 @@ function GoalCard({
               {goal.name.slice(goal.name.indexOf("\n") + 1).trim()}
             </p>
           ) : null}
+          {goal.prompt?.trim() ? (
+            <p className="line-clamp-2 whitespace-pre-line text-xs text-muted-foreground">
+              {goal.prompt.trim()}
+            </p>
+          ) : null}
           <p className="pt-1 text-2xs text-muted-foreground/80">
             {STATUS_LABEL[goal.status]} · {describeGoalProgress(goal)}
           </p>
+          {describeGoalQueue(goal) ? (
+            <p className="text-2xs text-muted-foreground/80">{describeGoalQueue(goal)}</p>
+          ) : null}
           {goal.detail ? <p className="text-2xs text-muted-foreground/80">{goal.detail}</p> : null}
         </div>
         <div className="flex shrink-0 items-center gap-1">
@@ -85,6 +98,14 @@ function GoalCard({
             </Button>
           )}
           <Button
+            aria-label={`Edit ${goalTitle(goal)}`}
+            render={<Link search={{ environmentId, goalId: goal.id }} to="/edit-goal" />}
+            size="sm"
+            variant="ghost"
+          >
+            <PencilIcon className="size-3.5" />
+          </Button>
+          <Button
             aria-label={`Delete ${goalTitle(goal)}`}
             onClick={() => onAction("remove", goal)}
             size="sm"
@@ -95,35 +116,32 @@ function GoalCard({
           </Button>
         </div>
       </div>
-      <ul className="space-y-1">
-        {goal.chats.toReversed().map((chat, index) => (
-          <li
-            className="flex items-center justify-between gap-3 text-xs text-muted-foreground"
-            key={chat.threadId}
-          >
-            <span>
-              Agent {goal.chats.length - index} ·{" "}
-              {chat.waitingForLimit
-                ? "waiting for a usage limit, will resume"
-                : chat.status === "attention"
-                  ? "needs you"
-                  : chat.status}
-            </span>
-            <Button
-              render={
-                <Link
-                  params={{ environmentId, threadId: chat.threadId }}
-                  to="/$environmentId/$threadId"
-                />
-              }
-              size="xs"
-              variant="outline"
+      {attentionChats.length > 0 ? (
+        <ul className="space-y-1">
+          {attentionChats.map((chat) => (
+            <li
+              className="flex items-center justify-between gap-3 text-xs text-muted-foreground"
+              key={chat.threadId}
             >
-              <ExternalLinkIcon className="size-3" /> Open chat
-            </Button>
-          </li>
-        ))}
-      </ul>
+              <span>
+                {chat.beadTitle ?? "An agent"} · {chat.status === "failed" ? "failed" : "needs you"}
+              </span>
+              <Button
+                render={
+                  <Link
+                    params={{ environmentId, threadId: chat.threadId }}
+                    to="/$environmentId/$threadId"
+                  />
+                }
+                size="xs"
+                variant="outline"
+              >
+                <ExternalLinkIcon className="size-3" /> Open chat
+              </Button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
     </li>
   );
 }
@@ -156,9 +174,8 @@ export function GoalsPage() {
       <div className="topbar-scroll-fade min-h-0 flex-1 overflow-y-auto">
         <WorkspacePageContainer className="min-h-full gap-4">
           <p className="text-xs text-muted-foreground">
-            Start a goal by sending <code>!goal</code> followed by what should get done, in any
-            chat. Add more lines for instructions, and <code>x4</code> after <code>!goal</code> to
-            run four chats at once. A goal keeps starting chats until an agent says nothing is left.
+            Start a goal from the new chat menu: switch Goal on, then choose a project. Open the
+            pencil on a goal to change any of its settings.
           </p>
           {total === 0 ? (
             <p className="text-sm text-muted-foreground">No goals yet.</p>

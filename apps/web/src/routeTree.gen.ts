@@ -14,6 +14,7 @@ import { Route as UsageRouteImport } from './routes/usage'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as PairRouteImport } from './routes/pair'
 import { Route as NewGoalRouteImport } from './routes/new-goal'
+import { Route as EditGoalRouteImport } from './routes/edit-goal'
 import { Route as GoalsRouteImport } from './routes/goals'
 import { Route as ConnectRouteImport } from './routes/connect'
 import { Route as ChatRouteImport } from './routes/_chat'
@@ -56,6 +57,11 @@ const SettingsRoute = SettingsRouteImport.update({
 const PairRoute = PairRouteImport.update({
   id: '/pair',
   path: '/pair',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const EditGoalRoute = EditGoalRouteImport.update({
+  id: '/edit-goal',
+  path: '/edit-goal',
   getParentRoute: () => rootRouteImport,
 } as any)
 const NewGoalRoute = NewGoalRouteImport.update({
@@ -184,6 +190,7 @@ export interface FileRoutesByFullPath {
   '/': typeof ChatIndexRoute
   '/connect': typeof ConnectRoute
   '/goals': typeof GoalsRoute
+  '/edit-goal': typeof EditGoalRoute
   '/new-goal': typeof NewGoalRoute
   '/pair': typeof PairRoute
   '/settings': typeof SettingsRouteWithChildren
@@ -212,6 +219,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/connect': typeof ConnectRoute
   '/goals': typeof GoalsRoute
+  '/edit-goal': typeof EditGoalRoute
   '/new-goal': typeof NewGoalRoute
   '/pair': typeof PairRoute
   '/settings': typeof SettingsRouteWithChildren
@@ -243,6 +251,7 @@ export interface FileRoutesById {
   '/_chat': typeof ChatRouteWithChildren
   '/connect': typeof ConnectRoute
   '/goals': typeof GoalsRoute
+  '/edit-goal': typeof EditGoalRoute
   '/new-goal': typeof NewGoalRoute
   '/pair': typeof PairRoute
   '/settings': typeof SettingsRouteWithChildren
@@ -275,6 +284,7 @@ export interface FileRouteTypes {
     | '/'
     | '/connect'
     | '/goals'
+    | '/edit-goal'
     | '/new-goal'
     | '/pair'
     | '/settings'
@@ -303,6 +313,7 @@ export interface FileRouteTypes {
   to:
     | '/connect'
     | '/goals'
+    | '/edit-goal'
     | '/new-goal'
     | '/pair'
     | '/settings'
@@ -333,6 +344,7 @@ export interface FileRouteTypes {
     | '/_chat'
     | '/connect'
     | '/goals'
+    | '/edit-goal'
     | '/new-goal'
     | '/pair'
     | '/settings'
@@ -364,6 +376,7 @@ export interface RootRouteChildren {
   ChatRoute: typeof ChatRouteWithChildren
   ConnectRoute: typeof ConnectRoute
   GoalsRoute: typeof GoalsRoute
+  EditGoalRoute: typeof EditGoalRoute
   NewGoalRoute: typeof NewGoalRoute
   PairRoute: typeof PairRoute
   SettingsRoute: typeof SettingsRouteWithChildren
@@ -400,6 +413,13 @@ declare module '@tanstack/react-router' {
       path: '/pair'
       fullPath: '/pair'
       preLoaderRoute: typeof PairRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/edit-goal': {
+      id: '/edit-goal'
+      path: '/edit-goal'
+      fullPath: '/edit-goal'
+      preLoaderRoute: typeof EditGoalRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/new-goal': {
@@ -633,6 +653,7 @@ const rootRouteChildren: RootRouteChildren = {
   ChatRoute: ChatRouteWithChildren,
   ConnectRoute: ConnectRoute,
   GoalsRoute: GoalsRoute,
+  EditGoalRoute: EditGoalRoute,
   NewGoalRoute: NewGoalRoute,
   PairRoute: PairRoute,
   SettingsRoute: SettingsRouteWithChildren,

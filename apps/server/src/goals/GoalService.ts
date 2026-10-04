@@ -17,6 +17,14 @@
  *    resume on, it is scheduled to continue when the limit resets and the goal
  *    waits for it.
  *  - A goal never starts more chats than its cap, per start.
+ *  - Chats start at most one every START_SPACING, so providers get breathing room.
+ *  - A goal stops starting chats once `stopAfterProblems` finished chats in a
+ *    row failed, needed the person, or found only blocked work, so a plan that
+ *    cannot be finished does not spend usage all night.
+ *  - Stopping a goal never interrupts chats already working; they finish and
+ *    are recorded like any other.
+ *  - With Beads, a chat starts only when a chunk is ready and is handed that
+ *    chunk; with nothing ready the goal waits for working chats to unblock more.
  *
  * @module goals/GoalService
  */
@@ -34,8 +42,11 @@ import {
   type GoalSettings,
   goalPrompt,
   goalSettingsProblem,
+  DEFAULT_GOAL_STOP_AFTER_PROBLEMS,
   goalTitle,
+  problemStreak,
   replyNeedsAttention,
+  replyReportsBlockedWork,
   replyReportsGoalComplete,
 } from "@t3tools/contracts/goals";
 import * as Cause from "effect/Cause";
@@ -51,7 +62,18 @@ import * as Stream from "effect/Stream";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { nextUsageLimitRetryAt } from "../provider/usageLimits.ts";
+import { type Bead, type BeadsSnapshot, GoalBeads } from "./GoalBeads.ts";
 import { GoalStore } from "./GoalStore.ts";
+
+/** Time between one chat starting and the next, per goal. Zero in tests. */
+export const StartSpacingMillis = Context.Reference<number>("t3/goals/StartSpacingMillis", {
+  defaultValue: () => 15_000,
+});
+
+/** How often running goals look for room to start another chat. */
+const TICK_INTERVAL = "5 seconds";
+/** A Beads answer this fresh is reused, so ticks do not run `bd` every few seconds. */
+const BEADS_FRESH_MILLIS = 10_000;
 
 export class GoalService extends Context.Service<
   GoalService,
@@ -61,6 +83,12 @@ export class GoalService extends Context.Service<
       settings: GoalSettings,
     ) => Effect.Effect<ReadonlyArray<Goal>, OrchestrationDispatchCommandError>;
     readonly list: Effect.Effect<ReadonlyArray<Goal>>;
+    /** Change any setting. Chats already working keep the instructions they started with. */
+    readonly update: (
+      id: GoalId,
+      settings: GoalSettings,
+    ) => Effect.Effect<ReadonlyArray<Goal>, OrchestrationDispatchCommandError>;
+    /** Stop starting chats. Chats already working are left to finish. */
     readonly stop: (id: GoalId) => Effect.Effect<ReadonlyArray<Goal>>;
     readonly restart: (id: GoalId) => Effect.Effect<ReadonlyArray<Goal>>;
     readonly remove: (id: GoalId) => Effect.Effect<ReadonlyArray<Goal>>;
@@ -80,7 +108,7 @@ export function chatsSinceStart(goal: Goal): ReadonlyArray<GoalChat> {
  * agent furthest below its own count goes first, so counts fill evenly.
  */
 export function nextAgentIndex(goal: Goal): number | undefined {
-  if (goal.status !== "running") return undefined;
+  if (goal.status !== "running" || goal.holdStarts) return undefined;
   const chats = chatsSinceStart(goal);
   const running = chats.filter((chat) => chat.status === "running");
   const blocked = chats.filter(
@@ -113,6 +141,13 @@ export const make = Effect.gen(function* () {
   const watching = new Map<ThreadId, { goalId: GoalId; seenRunning: boolean }>();
   /** Serializes everything that changes a goal's chats, so lanes are never over-filled. */
   const lock = yield* Semaphore.make(1);
+  const beads = yield* GoalBeads;
+  const spacing = yield* StartSpacingMillis;
+  const nowMillis = Effect.map(DateTime.now, DateTime.toEpochMillis);
+  /** When each goal last started a chat, for spacing starts apart. */
+  const lastStart = new Map<GoalId, number>();
+  /** The latest Beads answer per goal, and when it was read. */
+  const beadsCache = new Map<GoalId, { readonly at: number; readonly snapshot: BeadsSnapshot }>();
 
   const logFailure = (message: string) => (cause: Cause.Cause<unknown>) =>
     Cause.hasInterruptsOnly(cause)
@@ -157,8 +192,69 @@ export const make = Effect.gen(function* () {
       }));
     });
 
+  const currentGoal = (goalId: GoalId) =>
+    Effect.map(store.list, (goals) => goals.find((candidate) => candidate.id === goalId));
+
+  const workspaceRootOf = (projectId: Goal["projectId"]) =>
+    snapshots.getProjectShells([projectId]).pipe(
+      Effect.map((projects) => projects[0]?.workspaceRoot),
+      Effect.catchCause(() => Effect.succeed(undefined)),
+    );
+
+  /**
+   * The goal's Beads queue, reused for a few seconds unless `fresh`. Undefined
+   * when Beads cannot be read right now; the goal then waits for the next tick.
+   */
+  const queueOf = Effect.fn("GoalService.queueOf")(function* (goal: Goal, fresh: boolean) {
+    const now = yield* nowMillis;
+    const checkedAt = yield* nowIso;
+    const cached = beadsCache.get(goal.id);
+    if (!fresh && cached && now - cached.at < BEADS_FRESH_MILLIS) return cached.snapshot;
+    const root = yield* workspaceRootOf(goal.projectId);
+    if (!root) return undefined;
+    const snapshot = yield* beads
+      .snapshot(root, goal.beadsScope)
+      .pipe(
+        Effect.catch((error) =>
+          Effect.logWarning("goals.beads-unreadable", { cause: error.message }).pipe(
+            Effect.as(undefined),
+          ),
+        ),
+      );
+    if (!snapshot) return undefined;
+    beadsCache.set(goal.id, { at: now, snapshot });
+    const queue = goal.queue;
+    if (
+      !queue ||
+      queue.ready !== snapshot.ready.length ||
+      queue.working !== snapshot.working ||
+      queue.blocked !== snapshot.blocked ||
+      queue.done !== snapshot.done
+    ) {
+      yield* store.update(goal.id, (current) => ({
+        ...current,
+        queue: {
+          ready: snapshot.ready.length,
+          working: snapshot.working,
+          blocked: snapshot.blocked,
+          done: snapshot.done,
+          checkedAt,
+        },
+      }));
+    }
+    return snapshot;
+  });
+
+  /** Beads only counts when the project has it; otherwise the goal runs plain agents. */
+  const usesBeads = (settings: GoalSettings, workspaceRoot: string) =>
+    settings.useBeads === true ? beads.available(workspaceRoot) : Effect.succeed(false);
+
   /** Open one new chat for the goal on `agentIndex`. Returns whether it started. */
-  const startChat = Effect.fn("GoalService.startChat")(function* (goal: Goal, agentIndex: number) {
+  const startChat = Effect.fn("GoalService.startChat")(function* (
+    goal: Goal,
+    agentIndex: number,
+    bead?: Bead,
+  ) {
     const agent = goal.agents[agentIndex];
     if (!agent) return false;
     const threadId = ThreadId.make(yield* randomUUID);
@@ -170,7 +266,7 @@ export const make = Effect.gen(function* () {
         commandId: CommandId.make(`goal-create:${yield* randomUUID}`),
         threadId,
         projectId: goal.projectId,
-        title: `${goalTitle(goal)} · ${goal.chats.length + 1}`,
+        title: `${goalTitle(goal)} · ${bead ? bead.id : goal.chats.length + 1}`,
         modelSelection,
         runtimeMode: goal.runtimeMode,
         interactionMode: "default",
@@ -187,7 +283,13 @@ export const make = Effect.gen(function* () {
     if (!created) return false;
     // Registered before the turn starts so a fast provider cannot finish unseen.
     watching.set(threadId, { goalId: goal.id, seenRunning: false });
-    yield* addChat(goal.id, { threadId, agentIndex, status: "running", startedAt: createdAt });
+    yield* addChat(goal.id, {
+      threadId,
+      agentIndex,
+      status: "running",
+      startedAt: createdAt,
+      ...(bead ? { beadId: bead.id, beadTitle: bead.title } : {}),
+    });
     const started = yield* engine
       .dispatch({
         type: "thread.turn.start",
@@ -196,7 +298,7 @@ export const make = Effect.gen(function* () {
         message: {
           messageId: MessageId.make(yield* randomUUID),
           role: "user",
-          text: goalPrompt(goal),
+          text: goalPrompt(goal, bead),
           attachments: [],
         },
         modelSelection,
@@ -225,23 +327,70 @@ export const make = Effect.gen(function* () {
     return started;
   });
 
-  /** Start chats until the lanes are full, the cap is reached, or a start fails. */
+  /**
+   * Start chats until the lanes are full, the cap is reached, or a start fails;
+   * at most one per START_SPACING. With Beads, only as many as there are ready
+   * chunks that no working chat already holds.
+   */
   const fillLanes = Effect.fn("GoalService.fillLanes")(function* (goalId: GoalId) {
+    const first = yield* currentGoal(goalId);
+    if (!first || first.status !== "running") return;
+    let candidates: Array<Bead> | undefined;
+    if (first.useBeads) {
+      const queue = yield* queueOf(first, false);
+      // Unreadable right now: do not guess, try again on the next tick.
+      if (!queue) return;
+      const held = new Set(
+        first.chats
+          .filter((chat) => chat.status === "running" || chat.status === "attention")
+          .flatMap((chat) => (chat.beadId ? [chat.beadId] : [])),
+      );
+      candidates = queue.ready.filter((bead) => !held.has(bead.id));
+    }
     while (true) {
-      const goal = (yield* store.list).find((candidate) => candidate.id === goalId);
+      const goal = yield* currentGoal(goalId);
       const agentIndex = goal ? nextAgentIndex(goal) : undefined;
       if (!goal || agentIndex === undefined) break;
-      if (!(yield* startChat(goal, agentIndex))) break;
+      const now = yield* nowMillis;
+      const last = lastStart.get(goalId);
+      if (spacing > 0 && last !== undefined && now - last < spacing) break;
+      const bead = candidates?.shift();
+      if (candidates && !bead) break;
+      if (!(yield* startChat(goal, agentIndex, bead))) break;
+      lastStart.set(goalId, now);
     }
     yield* settleIfIdle(goalId);
   });
 
-  /** A running goal with nothing running and nothing left to start is over. */
+  /** A running goal with nothing running and nothing left to start is over, or stuck. */
   const settleIfIdle = Effect.fn("GoalService.settleIfIdle")(function* (goalId: GoalId) {
-    const goal = (yield* store.list).find((candidate) => candidate.id === goalId);
+    const goal = yield* currentGoal(goalId);
     if (!goal || goal.status !== "running") return;
     const chats = chatsSinceStart(goal);
-    if (chats.some((chat) => chat.status === "running") || nextAgentIndex(goal) !== undefined) {
+    if (chats.some((chat) => chat.status === "running")) return;
+    const next = nextAgentIndex(goal);
+    if (goal.useBeads) {
+      const queue = beadsCache.get(goalId)?.snapshot;
+      if (!queue) return;
+      if (queue.ready.length + queue.working + queue.blocked === 0) {
+        yield* setStatus(goalId, "complete", "Beads has no unfinished work left.");
+        return;
+      }
+      if (next !== undefined && queue.ready.length > 0) return;
+      if (queue.ready.length === 0) {
+        const holding = chats.filter((chat) => chat.status === "attention").length;
+        // Chunks claimed by someone else may still finish and unblock more.
+        if (queue.working > holding) return;
+        yield* setStatus(
+          goalId,
+          "failed",
+          holding > 0
+            ? `Waiting on you: ${holding} agent${holding === 1 ? "" : "s"} need${holding === 1 ? "s" : ""} attention, and the other ${queue.blocked} unfinished chunks are blocked behind ${holding === 1 ? "it" : "them"}.`
+            : `Stalled: ${queue.blocked} unfinished chunks are blocked and none is ready or being worked on. Check their dependencies.`,
+        );
+        return;
+      }
+    } else if (next !== undefined) {
       return;
     }
     const blocked = chats.filter(
@@ -250,9 +399,11 @@ export const make = Effect.gen(function* () {
     yield* setStatus(
       goalId,
       "failed",
-      blocked >= goal.concurrency
-        ? "Every chat failed or needs you, so the goal stopped. Open them to see why."
-        : `Reached the limit of ${goal.maxChats} chats without a GOAL COMPLETE.`,
+      goal.holdStarts
+        ? "Stalled: the remaining tasks are blocked and no agent is working to unblock them."
+        : blocked >= goal.concurrency
+          ? "Every chat failed or needs you, so the goal stopped. Open them to see why."
+          : `Reached the limit of ${goal.maxChats} chats without a GOAL COMPLETE.`,
     );
   });
 
@@ -263,18 +414,34 @@ export const make = Effect.gen(function* () {
   ) {
     watching.delete(threadId);
     const thread = yield* readThread(threadId);
+    const before = yield* currentGoal(goalId);
+    const chat = before?.chats.find((candidate) => candidate.threadId === threadId);
+    if (!before || !chat) return;
+    const root = chat.beadId ? yield* workspaceRootOf(before.projectId) : undefined;
     const failed = thread?.latestTurn?.state !== "completed";
     const reply = lastAssistantReply(thread);
     const needsAttention = !failed && replyNeedsAttention(reply);
-    const goal = yield* updateChat(goalId, threadId, {
-      status: failed ? "failed" : needsAttention ? "attention" : "completed",
+    const blockedWork = !failed && !needsAttention && replyReportsBlockedWork(reply);
+    let status: GoalChat["status"] = failed ? "failed" : needsAttention ? "attention" : "completed";
+    if (chat.beadId && root) {
+      if (failed) {
+        yield* beads.release(root, chat.beadId);
+      } else if (status === "completed" && !blockedWork) {
+        // Finished work leaves its chunk closed; anything else is for the person to look at.
+        const chunk = yield* beads.statusOf(root, chat.beadId);
+        if (chunk !== undefined && chunk !== "closed") status = "attention";
+      }
+    }
+    beadsCache.delete(goalId);
+    yield* updateChat(goalId, threadId, {
+      status,
       completedAt: yield* nowIso,
       waitingForLimit: undefined,
+      ...(blockedWork ? { blockedWork: true } : {}),
     });
-    if (!goal) return;
     // Only successful work tidies itself out of the thread list (the Goals page still links it).
     // A chat with a problem or a question stays visible until the person has seen it.
-    if (!failed && !needsAttention) {
+    if (status === "completed") {
       yield* engine
         .dispatch({
           type: "thread.archive",
@@ -283,9 +450,30 @@ export const make = Effect.gen(function* () {
         })
         .pipe(Effect.ignoreCause({ log: true }));
     }
-    if (goal.status !== "running") return;
-    if (!failed && !needsAttention && replyReportsGoalComplete(lastAssistantReply(thread))) {
+    if (before.status !== "running") return;
+    // Real progress frees blocked work to start again; a blocked chat means wait for the others.
+    if (status === "completed" && !blockedWork && before.holdStarts) {
+      yield* store.update(goalId, (goal) => ({ ...goal, holdStarts: undefined }));
+    } else if (blockedWork && !before.useBeads) {
+      yield* store.update(goalId, (goal) => ({ ...goal, holdStarts: true }));
+    }
+    if (
+      status === "completed" &&
+      !blockedWork &&
+      !before.useBeads &&
+      replyReportsGoalComplete(reply)
+    ) {
       yield* setStatus(goalId, "complete", "An agent reported there is nothing left to do.");
+      return;
+    }
+    const after = yield* currentGoal(goalId);
+    const limit = before.stopAfterProblems ?? DEFAULT_GOAL_STOP_AFTER_PROBLEMS;
+    if (after && problemStreak(chatsSinceStart(after)) >= limit) {
+      yield* setStatus(
+        goalId,
+        "failed",
+        `Stopped to protect your usage: the last ${limit} agents in a row could not finish (failed, needed you, or found only blocked work). Agents already working are left to finish.`,
+      );
       return;
     }
     yield* fillLanes(goalId);
@@ -343,7 +531,7 @@ export const make = Effect.gen(function* () {
       }
       if (session.lastErrorClass === "usage_limit") {
         const goal = yield* updateChat(watch.goalId, event.threadId, { waitingForLimit: true });
-        if (goal?.autoResume && goal.status === "running") {
+        if (goal?.autoResume) {
           yield* scheduleResume(event.threadId, session).pipe(
             Effect.catchCause(logFailure("goals.resume-schedule-failed")),
           );
@@ -357,7 +545,7 @@ export const make = Effect.gen(function* () {
 
   const recover = Effect.gen(function* () {
     for (const goal of yield* store.list) {
-      if (goal.status !== "running") continue;
+      // Chats of a stopped goal are still working and still need their result recorded.
       for (const chat of goal.chats) {
         if (chat.status !== "running") continue;
         const thread = yield* readThread(chat.threadId);
@@ -384,9 +572,20 @@ export const make = Effect.gen(function* () {
           watching.set(chat.threadId, { goalId: goal.id, seenRunning: true });
         }
       }
-      yield* fillLanes(goal.id);
+      if (goal.status === "running") yield* fillLanes(goal.id);
     }
   }).pipe(lock.withPermits(1));
+
+  /** Running goals look for room to start the next chat, and for chunks Beads has freed. */
+  const tick = Effect.gen(function* () {
+    for (const goal of yield* store.list) {
+      if (goal.status !== "running") continue;
+      yield* fillLanes(goal.id).pipe(
+        lock.withPermits(1),
+        Effect.catchCause(logFailure("goals.tick-failed")),
+      );
+    }
+  });
 
   const loop = Effect.all(
     [
@@ -398,26 +597,37 @@ export const make = Effect.gen(function* () {
             )
           : Effect.void,
       ).pipe(Effect.catchCause(logFailure("goals.stream-failed"))),
+      Effect.forever(Effect.sleep(TICK_INTERVAL).pipe(Effect.andThen(tick))),
     ],
     { concurrency: "unbounded", discard: true },
   );
 
+  /** Why a setup cannot be saved, or the folder of its project. */
+  const checkSettings = Effect.fn("GoalService.checkSettings")(function* (settings: GoalSettings) {
+    const problem = goalSettingsProblem(settings);
+    if (problem) return yield* new OrchestrationDispatchCommandError({ message: problem });
+    const projects = yield* snapshots
+      .getProjectShells([settings.projectId])
+      .pipe(
+        Effect.mapError(
+          (cause) => new OrchestrationDispatchCommandError({ message: cause.message }),
+        ),
+      );
+    const project = projects[0];
+    if (!project) {
+      return yield* new OrchestrationDispatchCommandError({
+        message: "That project no longer exists.",
+      });
+    }
+    return {
+      ...settings,
+      useBeads: yield* usesBeads(settings, project.workspaceRoot),
+    };
+  });
+
   const create: GoalService["Service"]["create"] = Effect.fn("GoalService.create")(
-    function* (settings) {
-      const problem = goalSettingsProblem(settings);
-      if (problem) return yield* new OrchestrationDispatchCommandError({ message: problem });
-      const projects = yield* snapshots
-        .getProjectShells([settings.projectId])
-        .pipe(
-          Effect.mapError(
-            (cause) => new OrchestrationDispatchCommandError({ message: cause.message }),
-          ),
-        );
-      if (projects.length === 0) {
-        return yield* new OrchestrationDispatchCommandError({
-          message: "That project no longer exists.",
-        });
-      }
+    function* (input) {
+      const settings = yield* checkSettings(input);
       const now = yield* nowIso;
       const goal: Goal = {
         ...settings,
@@ -433,26 +643,32 @@ export const make = Effect.gen(function* () {
     },
   );
 
+  const update: GoalService["Service"]["update"] = Effect.fn("GoalService.update")(
+    function* (id, input) {
+      const settings = yield* checkSettings(input);
+      yield* lock.withPermits(1)(
+        Effect.gen(function* () {
+          const now = yield* nowIso;
+          const changed = yield* store.update(id, (goal) => ({
+            ...goal,
+            ...settings,
+            updatedAt: now,
+          }));
+          beadsCache.delete(id);
+          if (changed?.status === "running") yield* fillLanes(id);
+        }),
+      );
+      return yield* store.list;
+    },
+  );
+
   const stop = Effect.fn("GoalService.stop")(function* (id: GoalId) {
     yield* lock.withPermits(1)(
       Effect.gen(function* () {
-        const goal = (yield* store.list).find((candidate) => candidate.id === id);
+        const goal = yield* currentGoal(id);
         if (!goal || goal.status !== "running") return;
-        yield* setStatus(id, "stopped", "Stopped by you.");
-        // Ending the goal ends its running turns; they finish as stopped chats.
-        yield* Effect.forEach(
-          goal.chats.filter((chat) => chat.status === "running"),
-          (chat) =>
-            Effect.gen(function* () {
-              yield* engine.dispatch({
-                type: "thread.turn.interrupt",
-                commandId: CommandId.make(`goal-interrupt:${yield* randomUUID}`),
-                threadId: chat.threadId,
-                createdAt: yield* nowIso,
-              });
-            }).pipe(Effect.ignoreCause({ log: true })),
-          { discard: true },
-        );
+        // Chats already working are left alone: they finish, and are recorded as usual.
+        yield* setStatus(id, "stopped", "Stopped by you. Agents already working will finish.");
       }),
     );
     return yield* store.list;
@@ -461,9 +677,10 @@ export const make = Effect.gen(function* () {
   const restart = Effect.fn("GoalService.restart")(function* (id: GoalId) {
     yield* lock.withPermits(1)(
       Effect.gen(function* () {
-        const goal = (yield* store.list).find((candidate) => candidate.id === id);
+        const goal = yield* currentGoal(id);
         if (!goal || goal.status === "running") return;
         yield* setStatus(id, "running");
+        yield* store.update(id, (current) => ({ ...current, holdStarts: undefined }));
         yield* fillLanes(id);
       }),
     );
@@ -471,12 +688,21 @@ export const make = Effect.gen(function* () {
   });
 
   const remove = Effect.fn("GoalService.remove")(function* (id: GoalId) {
-    yield* stop(id);
-    yield* store.remove(id);
+    yield* lock.withPermits(1)(
+      Effect.gen(function* () {
+        // Deleting a goal forgets it; chats it started keep working as ordinary threads.
+        for (const [threadId, watch] of watching) {
+          if (watch.goalId === id) watching.delete(threadId);
+        }
+        lastStart.delete(id);
+        beadsCache.delete(id);
+        yield* store.remove(id);
+      }),
+    );
     return yield* store.list;
   });
 
-  return GoalService.of({ create, list: store.list, stop, restart, remove, loop });
+  return GoalService.of({ create, update, list: store.list, stop, restart, remove, loop });
 });
 
 export const layer = Layer.effect(GoalService, make);
@@ -487,6 +713,7 @@ export const layerTest = Layer.succeed(
   GoalService.of({
     create: () => Effect.succeed([]),
     list: Effect.succeed([]),
+    update: () => Effect.succeed([]),
     stop: () => Effect.succeed([]),
     restart: () => Effect.succeed([]),
     remove: () => Effect.succeed([]),

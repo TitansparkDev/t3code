@@ -2,11 +2,17 @@ import type { EnvironmentId, ProjectId, RuntimeMode } from "@t3tools/contracts";
 import {
   defaultGoalSetup,
   goalSetupProblem,
+  goalToSetup,
   goalSetupToSettings,
   type GoalSetupAgent,
   type GoalSetupForm,
 } from "@t3tools/client-runtime/goal-setup";
-import { MAX_GOAL_AGENT_COUNT, MAX_GOAL_CONCURRENCY } from "@t3tools/contracts/goals";
+import {
+  type Goal,
+  MAX_GOAL_AGENT_COUNT,
+  MAX_GOAL_CONCURRENCY,
+  MAX_GOAL_STOP_AFTER_PROBLEMS,
+} from "@t3tools/contracts/goals";
 import { useNavigate } from "@tanstack/react-router";
 import { PlusIcon, XIcon } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -35,21 +41,24 @@ function firstAgent(instances: ProviderInstances): Omit<GoalSetupAgent, "count">
 }
 
 /**
- * Where a goal is set up after choosing a project with the Goal switch on.
- * The project fixes the environment, so models come from that environment's
- * provider accounts.
+ * Where a goal is set up after choosing a project with the Goal switch on, and
+ * where every setting of an existing goal is edited. The project fixes the
+ * environment, so models come from that environment's provider accounts.
  */
 export function GoalSetupPage({
   environmentId,
   projectId,
+  goal,
 }: {
   environmentId: EnvironmentId | undefined;
   projectId: ProjectId | undefined;
+  /** Set when editing a goal that already exists. */
+  goal?: Goal;
 }) {
   const navigate = useNavigate();
   const { environments } = useEnvironments();
   const projects = useProjects();
-  const { create } = useGoals();
+  const { create, update } = useGoals();
   const project = projects.find(
     (candidate) => candidate.environmentId === environmentId && candidate.id === projectId,
   );
@@ -62,15 +71,17 @@ export function GoalSetupPage({
     [environments, environmentId],
   );
   const [form, setForm] = useState<GoalSetupForm>(() =>
-    defaultGoalSetup({
-      projectId: projectId ?? null,
-      agent: firstAgent(instances),
-      runtimeMode: "full-access",
-    }),
+    goal
+      ? goalToSetup(goal)
+      : defaultGoalSetup({
+          projectId: projectId ?? null,
+          agent: firstAgent(instances),
+          runtimeMode: "full-access",
+        }),
   );
   // Provider accounts may load after the page opens; give the form a first model then.
   const agents =
-    form.agents.length === 0 && firstAgent(instances)
+    form.agents.length === 0 && !goal && firstAgent(instances)
       ? [{ ...firstAgent(instances)!, count: form.concurrency }]
       : form.agents;
   const current: GoalSetupForm = { ...form, agents };
@@ -89,12 +100,13 @@ export function GoalSetupPage({
     if (!settings || !environmentId) return;
     setStarting(true);
     try {
-      await create(environmentId, settings);
+      if (goal) await update(environmentId, goal.id, settings);
+      else await create(environmentId, settings);
       void navigate({ to: "/goals" });
     } catch (error: unknown) {
       toastManager.add({
         type: "error",
-        title: "Could not start the goal",
+        title: goal ? "Could not save the goal" : "Could not start the goal",
         description: error instanceof Error ? error.message : "Try again.",
       });
       setStarting(false);
@@ -106,7 +118,10 @@ export function GoalSetupPage({
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background">
       <WorkspacePageHeader electron={isElectron} className="relative bg-background">
-        <h1 className="text-sm font-medium">New goal{project ? ` in ${project.title}` : ""}</h1>
+        <h1 className="text-sm font-medium">
+          {goal ? "Edit goal" : "New goal"}
+          {project ? ` in ${project.title}` : ""}
+        </h1>
       </WorkspacePageHeader>
       <div className="topbar-scroll-fade min-h-0 flex-1 overflow-y-auto">
         <WorkspacePageContainer className="min-h-full gap-5">
@@ -118,16 +133,44 @@ export function GoalSetupPage({
             <>
               <label className="block space-y-1">
                 <span className="text-xs text-muted-foreground">
-                  Goal — what should be done? Every agent receives this.
+                  Goal name — what you are trying to get done
                 </span>
-                <Textarea
-                  autoFocus
+                <Input
+                  autoFocus={!goal}
                   onChange={(event) => patch({ name: event.target.value })}
                   placeholder="Finish everything in PLAN.md"
-                  rows={4}
                   value={current.name}
                 />
               </label>
+              <label className="block space-y-1">
+                <span className="text-xs text-muted-foreground">
+                  Instructions for each agent — leave empty to send the goal name
+                </span>
+                <Textarea
+                  onChange={(event) => patch({ prompt: event.target.value })}
+                  placeholder="Work through PLAN.md: take one unfinished chunk, build it, test it, and merge it."
+                  rows={4}
+                  value={current.prompt}
+                />
+              </label>
+              {goal ? (
+                <label className="block space-y-1">
+                  <span className="text-xs text-muted-foreground">Project</span>
+                  <select
+                    className="rounded-md border border-border bg-background px-2 py-1 text-xs"
+                    onChange={(event) => patch({ projectId: event.target.value as ProjectId })}
+                    value={current.projectId ?? ""}
+                  >
+                    {projects
+                      .filter((candidate) => candidate.environmentId === environmentId)
+                      .map((candidate) => (
+                        <option key={candidate.id} value={candidate.id}>
+                          {candidate.title}
+                        </option>
+                      ))}
+                  </select>
+                </label>
+              ) : null}
 
               <div className="flex flex-wrap items-end gap-4">
                 <label className="space-y-1">
@@ -296,6 +339,44 @@ export function GoalSetupPage({
                 </label>
                 <label className="flex items-center gap-2">
                   <Switch
+                    checked={current.useBeads}
+                    onCheckedChange={(useBeads) => patch({ useBeads })}
+                  />
+                  <span className="text-xs">
+                    Take work from Beads: start an agent only when a chunk is ready
+                  </span>
+                </label>
+                {current.useBeads ? (
+                  <label className="block space-y-1">
+                    <span className="text-xs text-muted-foreground">
+                      Only this Beads epic or plan (id, optional). Ignored if the project has no
+                      Beads.
+                    </span>
+                    <Input
+                      className="w-64"
+                      onChange={(event) => patch({ beadsScope: event.target.value })}
+                      value={current.beadsScope}
+                    />
+                  </label>
+                ) : null}
+                <label className="flex items-center gap-2">
+                  <Input
+                    className="w-16"
+                    inputMode="numeric"
+                    max={MAX_GOAL_STOP_AFTER_PROBLEMS}
+                    min={1}
+                    onChange={(event) =>
+                      patch({ stopAfterProblems: Number(event.target.value) || 1 })
+                    }
+                    type="number"
+                    value={current.stopAfterProblems}
+                  />
+                  <span className="text-xs">
+                    Stop the goal after this many agents in a row cannot finish
+                  </span>
+                </label>
+                <label className="flex items-center gap-2">
+                  <Switch
                     checked={current.standardRules}
                     onCheckedChange={(standardRules) => patch({ standardRules })}
                   />
@@ -324,6 +405,12 @@ export function GoalSetupPage({
                 ) : null}
               </section>
 
+              {goal ? (
+                <p className="text-2xs text-muted-foreground">
+                  Changes apply to agents started from now on. Agents already working keep what they
+                  were given.
+                </p>
+              ) : null}
               <div className="flex items-center justify-end gap-3">
                 {problem ? <p className="text-2xs text-muted-foreground">{problem}</p> : null}
                 <Button
@@ -331,7 +418,13 @@ export function GoalSetupPage({
                   onClick={() => void start()}
                   type="button"
                 >
-                  {starting ? "Starting…" : "Start goal"}
+                  {goal
+                    ? starting
+                      ? "Saving…"
+                      : "Save changes"
+                    : starting
+                      ? "Starting…"
+                      : "Start goal"}
                 </Button>
               </div>
             </>

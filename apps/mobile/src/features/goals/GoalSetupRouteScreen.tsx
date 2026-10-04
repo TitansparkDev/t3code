@@ -283,14 +283,22 @@ export function GoalSetupRouteScreen({ route }: StaticScreenProps<GoalSetupParam
             paddingTop: 12,
           }}
         >
-          <Field label="Goal: what should be done? Every agent receives this.">
+          <Field label="Goal name: what you are trying to get done">
+            <TextInput
+              className="h-12 min-h-12 rounded-[24px] px-4 py-0 text-base leading-snug"
+              onChangeText={(name) => patch({ name })}
+              placeholder="Finish everything in PLAN.md"
+              value={current.name}
+            />
+          </Field>
+          <Field label="Instructions for each agent (empty sends the goal name)">
             <TextInput
               className="min-h-28 rounded-[24px] px-4 py-3 text-base leading-snug"
               multiline
-              onChangeText={(name) => patch({ name })}
-              placeholder="Finish everything in PLAN.md"
+              onChangeText={(prompt) => patch({ prompt })}
+              placeholder="Work through PLAN.md: take one unfinished chunk, build it, test it, and merge it."
               textAlignVertical="top"
-              value={current.name}
+              value={current.prompt}
             />
           </Field>
 
@@ -359,6 +367,28 @@ export function GoalSetupRouteScreen({ route }: StaticScreenProps<GoalSetupParam
               onChange={(autoResume) => patch({ autoResume })}
               value={current.autoResume}
             />
+            <SwitchRow
+              label="Take work from Beads: start an agent only when a chunk is ready"
+              onChange={(useBeads) => patch({ useBeads })}
+              value={current.useBeads}
+            />
+            {current.useBeads ? (
+              <Field label="Only this Beads epic or plan (optional)">
+                <TextInput
+                  autoCapitalize="none"
+                  className="h-12 min-h-12 rounded-[24px] px-4 py-0 text-base leading-snug"
+                  onChangeText={(beadsScope) => patch({ beadsScope })}
+                  value={current.beadsScope}
+                />
+              </Field>
+            ) : null}
+            <Field label="Stop the goal after this many agents in a row cannot finish">
+              <NumberInput
+                accessibilityLabel="Stop after agents that cannot finish"
+                onChange={(stopAfterProblems) => patch({ stopAfterProblems })}
+                value={current.stopAfterProblems}
+              />
+            </Field>
             <SwitchRow
               label="Working rules: claim a chunk, own worktree, merge, push, clean up"
               onChange={(standardRules) => patch({ standardRules })}

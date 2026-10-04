@@ -173,6 +173,11 @@ Full glossary with file links: `docs/internals/glossary.md`
 
 ## Recent request log
 
+- 2026-10-05 — v0.0.59: goals take work from Beads (start an agent only per ready chunk, hand it
+  the chunk, wait when everything is blocked, complete when Beads is empty), have a separate name
+  and agent instructions, allow up to 100 agents, start chats 15 s apart, stop after repeated
+  failures, accept `BLOCKED TASKS`, can be edited from the Goals page, and no longer interrupt
+  working chats when stopped. The header RAM chip refreshes every 30 s and on agent start/finish.
 - 2026-10-04 — v0.0.58: goal chats are archived only when they finish successfully. A failed,
   stopped, or usage-limited chat stays open (a limited one is archived only after it resumes and
   finishes), and an agent that is blocked or needs the person replies NEEDS ATTENTION to keep its

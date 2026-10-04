@@ -1171,6 +1171,12 @@ export function createServerEnvironmentAtoms<R, E>(
       scheduler: configScheduler,
       concurrency: configConcurrency,
     }),
+    updateGoal: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:update-goal",
+      tag: WS_METHODS.serverUpdateGoal,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
+    }),
     stopGoal: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:stop-goal",
       tag: WS_METHODS.serverStopGoal,
