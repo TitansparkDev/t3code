@@ -96,6 +96,12 @@ const makeHarness = Effect.gen(function* () {
     return log.filter((command) => command.type === type);
   });
 
+  /** Collect every command dispatched so far, so a test can assert one never happened. */
+  const drain = Effect.gen(function* () {
+    log.push(...(yield* Queue.clear(commands)));
+    return log;
+  });
+
   const sessionEvent = (threadId: string, session: Record<string, unknown>) =>
     PubSub.publish(events, {
       sequence: 2,
@@ -127,7 +133,7 @@ const makeHarness = Effect.gen(function* () {
     yield* sessionEvent(threadId, { status: "ready", activeTurnId: null });
   });
 
-  return { layer, waitFor, log, threadState, hasResume, sessionEvent, runAndFinish };
+  return { layer, waitFor, drain, log, threadState, hasResume, sessionEvent, runAndFinish };
 });
 
 const threadIdOf = (command: OrchestrationCommand | undefined) =>
@@ -249,6 +255,65 @@ it.layer(NodeServices.layer)("GoalService", (it) => {
         expect(goal?.status).toBe("failed");
         expect(goal?.chats.map((chat) => chat.status)).toEqual(["failed"]);
         expect(harness.log.filter((command) => command.type === "thread.create")).toHaveLength(1);
+        // A chat with a problem stays in the thread list for the person to read.
+        expect(
+          (yield* harness.drain).filter((command) => command.type === "thread.archive"),
+        ).toEqual([]);
+      }).pipe(Effect.provide(harness.layer), Effect.scoped);
+    }),
+  );
+
+  it.effect("keeps a chat that asks for the person open and holds its lane", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      yield* Effect.gen(function* () {
+        const service = yield* GoalService.GoalService;
+        yield* Effect.forkScoped(service.loop);
+        yield* Effect.yieldNow;
+        yield* Ref.set(harness.threadState, {
+          reply: "I need a login.\nNEEDS ATTENTION",
+          turnState: "completed",
+        });
+        yield* service.create(settings({ concurrency: 2, maxChats: null }));
+        const [first] = yield* harness.waitFor("thread.create", 2);
+        yield* harness.runAndFinish(threadIdOf(first));
+        while ((yield* service.list)[0]?.chats[0]?.status === "running") yield* Effect.yieldNow;
+        const [goal] = yield* service.list;
+        expect(goal?.status).toBe("running");
+        expect(goal?.chats[0]?.status).toBe("attention");
+        // The blocked lane is not refilled: the other chat is still the only one working.
+        expect(harness.log.filter((command) => command.type === "thread.create")).toHaveLength(2);
+        expect(
+          (yield* harness.drain).filter((command) => command.type === "thread.archive"),
+        ).toEqual([]);
+      }).pipe(Effect.provide(harness.layer), Effect.scoped);
+    }),
+  );
+
+  it.effect("archives a usage-limited chat only after it resumes and finishes", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      yield* Effect.gen(function* () {
+        const service = yield* GoalService.GoalService;
+        yield* Effect.forkScoped(service.loop);
+        yield* Effect.yieldNow;
+        yield* service.create(settings({ concurrency: 1, maxChats: 1 }));
+        const [only] = yield* harness.waitFor("thread.create", 1);
+        const threadId = threadIdOf(only);
+        yield* harness.sessionEvent(threadId, { status: "running", activeTurnId: "turn-1" });
+        yield* harness.sessionEvent(threadId, {
+          status: "rate-limited",
+          activeTurnId: null,
+          lastErrorClass: "usage_limit",
+          retryAt: "2099-01-01T00:00:00.000Z",
+        });
+        yield* harness.waitFor("thread.usage-limit-resume.schedule", 1);
+        expect(
+          (yield* harness.drain).filter((command) => command.type === "thread.archive"),
+        ).toEqual([]);
+        // After the limit resets the chat works again and finishes successfully.
+        yield* harness.runAndFinish(threadId);
+        yield* harness.waitFor("thread.archive", 1);
       }).pipe(Effect.provide(harness.layer), Effect.scoped);
     }),
   );

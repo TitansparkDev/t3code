@@ -22,6 +22,8 @@ export type GoalId = typeof GoalId.Type;
 
 /** What an agent replies, on its own line, when a goal has no work left. */
 export const GOAL_COMPLETE_MARKER = "GOAL COMPLETE";
+/** What an agent replies, on its own line, when it is stuck or needs the person. */
+export const GOAL_NEEDS_ATTENTION_MARKER = "NEEDS ATTENTION";
 export const DEFAULT_GOAL_CONCURRENCY = 3;
 export const MAX_GOAL_CONCURRENCY = 16;
 export const MAX_GOAL_AGENT_COUNT = 16;
@@ -31,7 +33,7 @@ export const MAX_GOAL_MAX_CHATS = 10_000;
 export const GoalStatus = Schema.Literals(["running", "complete", "stopped", "failed"]);
 export type GoalStatus = typeof GoalStatus.Type;
 
-export const GoalChatStatus = Schema.Literals(["running", "completed", "failed"]);
+export const GoalChatStatus = Schema.Literals(["running", "completed", "failed", "attention"]);
 export type GoalChatStatus = typeof GoalChatStatus.Type;
 
 const PositiveCount = (maximum: number) =>
@@ -98,10 +100,16 @@ export function goalTitle(goal: Pick<Goal, "name">): string {
 }
 
 const GOAL_COMPLETE_LINE = new RegExp(`^\\s*${GOAL_COMPLETE_MARKER}\\s*$`, "mu");
+const GOAL_NEEDS_ATTENTION_LINE = new RegExp(`^\\s*${GOAL_NEEDS_ATTENTION_MARKER}\\s*$`, "mu");
 
 /** Whether an agent's reply says the goal has no work left. */
 export function replyReportsGoalComplete(reply: string | undefined): boolean {
   return reply !== undefined && GOAL_COMPLETE_LINE.test(reply);
+}
+
+/** Whether an agent's reply says it is blocked or needs the person to do something. */
+export function replyNeedsAttention(reply: string | undefined): boolean {
+  return reply !== undefined && GOAL_NEEDS_ATTENTION_LINE.test(reply);
 }
 
 /**
@@ -115,6 +123,7 @@ export function goalPrompt(goal: Pick<Goal, "name" | "concurrency" | "standardRu
     "",
     "--- Goal rules (added automatically) ---",
     `You are one of up to ${goal.concurrency} agents working on this goal at the same time, each in its own chat. Nobody is available to answer questions: use your best judgment, choose the safest reasonable option, and say what you chose.`,
+    `Only if you are truly blocked, hit a problem you cannot fix, or something can only be done by a person (a login, a decision, a missing secret), explain it and reply with ${GOAL_NEEDS_ATTENTION_MARKER} on a line by itself. That chat is then kept open for the person to read.`,
     ...(goal.standardRules
       ? [
           "Find where the work is tracked (for example a plan file in the repository root) and claim one unfinished chunk by marking it with your branch name and committing and pushing that mark, so other agents skip it. If a chunk is already claimed, take another.",

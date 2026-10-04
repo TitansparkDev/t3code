@@ -18,6 +18,16 @@ describe("describeGoalProgress", () => {
     );
   });
 
+  it("shows chats that need the person", () => {
+    expect(
+      describeGoalProgress({
+        concurrency: 2,
+        maxChats: null,
+        chats: [chat("attention"), chat("running")],
+      }),
+    ).toBe("1 of 2 working · 0 finished · 1 need you · 2 started, until complete");
+  });
+
   it("says when there is no cap", () => {
     expect(describeGoalProgress({ concurrency: 2, maxChats: null, chats: [chat("running")] })).toBe(
       "1 of 2 working · 0 finished · 1 started, until complete",

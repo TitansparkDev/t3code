@@ -8,8 +8,11 @@
  * provider routing, history and approvals all behave normally.
  *
  * Rules that keep unattended work from running away:
- *  - A chat that fails does not restart its lane, so a broken setup cannot
- *    loop through the chat budget (or forever, when there is no cap).
+ *  - A chat that fails, or says NEEDS ATTENTION, does not restart its lane, so a
+ *    broken setup cannot loop through the chat budget (or forever, when there
+ *    is no cap).
+ *  - Only a chat that finished its work successfully is archived. One that
+ *    failed, was stopped, or needs the person stays in the thread list.
  *  - A chat stopped by a provider usage limit is not a failure. With auto
  *    resume on, it is scheduled to continue when the limit resets and the goal
  *    waits for it.
@@ -32,6 +35,7 @@ import {
   goalPrompt,
   goalSettingsProblem,
   goalTitle,
+  replyNeedsAttention,
   replyReportsGoalComplete,
 } from "@t3tools/contracts/goals";
 import * as Cause from "effect/Cause";
@@ -79,9 +83,11 @@ export function nextAgentIndex(goal: Goal): number | undefined {
   if (goal.status !== "running") return undefined;
   const chats = chatsSinceStart(goal);
   const running = chats.filter((chat) => chat.status === "running");
-  const failed = chats.filter((chat) => chat.status === "failed").length;
-  // A failed chat keeps its lane closed for the rest of this start.
-  if (running.length + failed >= goal.concurrency) return undefined;
+  const blocked = chats.filter(
+    (chat) => chat.status === "failed" || chat.status === "attention",
+  ).length;
+  // A failed chat, or one waiting for the person, keeps its lane closed for the rest of this start.
+  if (running.length + blocked >= goal.concurrency) return undefined;
   if (goal.maxChats !== null && chats.length >= goal.maxChats) return undefined;
   let best: { index: number; load: number } | undefined;
   goal.agents.forEach((agent, index) => {
@@ -238,12 +244,14 @@ export const make = Effect.gen(function* () {
     if (chats.some((chat) => chat.status === "running") || nextAgentIndex(goal) !== undefined) {
       return;
     }
-    const failed = chats.filter((chat) => chat.status === "failed").length;
+    const blocked = chats.filter(
+      (chat) => chat.status === "failed" || chat.status === "attention",
+    ).length;
     yield* setStatus(
       goalId,
       "failed",
-      failed >= goal.concurrency
-        ? "Every chat failed, so the goal stopped. Open a failed chat to see why."
+      blocked >= goal.concurrency
+        ? "Every chat failed or needs you, so the goal stopped. Open them to see why."
         : `Reached the limit of ${goal.maxChats} chats without a GOAL COMPLETE.`,
     );
   });
@@ -256,22 +264,27 @@ export const make = Effect.gen(function* () {
     watching.delete(threadId);
     const thread = yield* readThread(threadId);
     const failed = thread?.latestTurn?.state !== "completed";
+    const reply = lastAssistantReply(thread);
+    const needsAttention = !failed && replyNeedsAttention(reply);
     const goal = yield* updateChat(goalId, threadId, {
-      status: failed ? "failed" : "completed",
+      status: failed ? "failed" : needsAttention ? "attention" : "completed",
       completedAt: yield* nowIso,
       waitingForLimit: undefined,
     });
     if (!goal) return;
-    // Finished chats tidy themselves out of the thread list; the Goals page still links them.
-    yield* engine
-      .dispatch({
-        type: "thread.archive",
-        commandId: CommandId.make(`goal-archive:${yield* randomUUID}`),
-        threadId,
-      })
-      .pipe(Effect.ignoreCause({ log: true }));
+    // Only successful work tidies itself out of the thread list (the Goals page still links it).
+    // A chat with a problem or a question stays visible until the person has seen it.
+    if (!failed && !needsAttention) {
+      yield* engine
+        .dispatch({
+          type: "thread.archive",
+          commandId: CommandId.make(`goal-archive:${yield* randomUUID}`),
+          threadId,
+        })
+        .pipe(Effect.ignoreCause({ log: true }));
+    }
     if (goal.status !== "running") return;
-    if (!failed && replyReportsGoalComplete(lastAssistantReply(thread))) {
+    if (!failed && !needsAttention && replyReportsGoalComplete(lastAssistantReply(thread))) {
       yield* setStatus(goalId, "complete", "An agent reported there is nothing left to do.");
       return;
     }

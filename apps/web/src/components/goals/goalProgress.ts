@@ -8,10 +8,12 @@ export function describeGoalProgress(
   const waiting = running.filter((chat) => chat.waitingForLimit).length;
   const done = goal.chats.filter((chat) => chat.status === "completed").length;
   const failed = goal.chats.filter((chat) => chat.status === "failed").length;
+  const attention = goal.chats.filter((chat) => chat.status === "attention").length;
   const parts = [
     `${running.length} of ${goal.concurrency} working`,
     `${done} finished`,
     ...(failed > 0 ? [`${failed} failed`] : []),
+    ...(attention > 0 ? [`${attention} need you`] : []),
     ...(waiting > 0 ? [`${waiting} waiting for a usage limit`] : []),
     goal.maxChats === null
       ? `${goal.chats.length} started, until complete`

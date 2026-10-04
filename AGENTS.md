@@ -173,6 +173,10 @@ Full glossary with file links: `docs/internals/glossary.md`
 
 ## Recent request log
 
+- 2026-10-04 — v0.0.58: goal chats are archived only when they finish successfully. A failed,
+  stopped, or usage-limited chat stays open (a limited one is archived only after it resumes and
+  finishes), and an agent that is blocked or needs the person replies NEEDS ATTENTION to keep its
+  chat open and marked "needs you" on the Goals page.
 - 2026-10-04 — v0.0.57: goals (agents that keep working until nothing is left) are set up from
   the new-chat project picker with a Goal switch (web, desktop, mobile) and tracked on a Goals page;
   usage-limited threads can resume on their own per provider/model (Settings → Auto-resume) and goal

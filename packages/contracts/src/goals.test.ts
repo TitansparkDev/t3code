@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { goalPrompt, goalSettingsProblem, goalTitle, replyReportsGoalComplete } from "./goals.ts";
+import {
+  goalPrompt,
+  goalSettingsProblem,
+  goalTitle,
+  replyNeedsAttention,
+  replyReportsGoalComplete,
+} from "./goals.ts";
 
 describe("goal completion", () => {
   it("counts only the marker on its own line", () => {
@@ -11,12 +17,21 @@ describe("goal completion", () => {
   });
 });
 
+describe("needs attention", () => {
+  it("counts only the marker on its own line", () => {
+    expect(replyNeedsAttention("Blocked on a login.\nNEEDS ATTENTION")).toBe(true);
+    expect(replyNeedsAttention("This needs attention soon.")).toBe(false);
+    expect(replyNeedsAttention(undefined)).toBe(false);
+  });
+});
+
 describe("goalPrompt", () => {
   it("always tells the agent how to work alone and how to say nothing is left", () => {
     const prompt = goalPrompt({ name: "Finish PLAN.md.", concurrency: 3, standardRules: false });
     expect(prompt.startsWith("Finish PLAN.md.")).toBe(true);
     expect(prompt).toContain("up to 3 agents");
     expect(prompt).toContain("GOAL COMPLETE on a line by itself");
+    expect(prompt).toContain("NEEDS ATTENTION on a line by itself");
     expect(prompt).not.toContain("git worktree");
   });
 

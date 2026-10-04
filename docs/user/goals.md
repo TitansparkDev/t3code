@@ -29,21 +29,27 @@ Every agent is also told to work alone, use best judgment instead of asking, and
 after one piece of work. Because agents run unattended, choose a permission mode that
 does not wait for approvals; any approval an agent asks for waits for you.
 
-You can also start from **Goals → New goal** on desktop and web. Every goal chat is a
-new ordinary thread in the project, so mobile shows the working agents in the thread
-list.
+Every goal chat is a new ordinary thread in the project, so mobile shows the working
+agents in the thread list.
 
 ## What happens next
 
 Each time an agent finishes, the next one starts in its place. When an agent replies
 `GOAL COMPLETE` on its own line because nothing is left, the goal is complete and no
-more chats start; agents still working finish on their own. Finished chats are
-archived.
+more chats start; agents still working finish on their own.
 
-- A chat that fails does not restart its lane, so a broken setup cannot burn through
-  usage. If every lane fails, the goal stops early.
-- A chat that stops on a usage limit is resumed when the limit resets, and the goal
-  waits for it. Without that setting, the chat waits for you to resume it.
+A chat is archived (tidied out of your thread list) only when it finished its work
+successfully. A chat that needs you stays where you can see it:
+
+- A chat that fails or is stopped stays open. Its lane is not refilled, so a broken
+  setup cannot burn through usage. If every lane is blocked, the goal stops early.
+- An agent that is truly stuck, or needs something only you can do (a login, a
+  decision), replies `NEEDS ATTENTION` on its own line. The chat stays open, is marked
+  **needs you** on the Goals page, and its lane stays closed until you deal with it. An
+  approval or question an agent is waiting on also keeps its chat open and working.
+- A chat that stops on a usage limit stays open and is resumed when the limit resets,
+  and the goal waits for it. It is archived only if the resumed work finishes
+  successfully. Without that setting, the chat waits for you to resume it.
 
 ## Check on goals
 

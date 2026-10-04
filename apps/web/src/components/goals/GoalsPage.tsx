@@ -6,12 +6,10 @@ import {
   CircleAlertIcon,
   ExternalLinkIcon,
   PlayIcon,
-  PlusIcon,
   SquareIcon,
   Trash2Icon,
 } from "lucide-react";
 
-import { openCommandPalette } from "../../commandPaletteBus";
 import { isElectron } from "../../env";
 import { useEnvironments } from "../../state/environments";
 import { useGoals } from "../../state/goals";
@@ -105,7 +103,11 @@ function GoalCard({
           >
             <span>
               Agent {goal.chats.length - index} ·{" "}
-              {chat.waitingForLimit ? "waiting for a usage limit, will resume" : chat.status}
+              {chat.waitingForLimit
+                ? "waiting for a usage limit, will resume"
+                : chat.status === "attention"
+                  ? "needs you"
+                  : chat.status}
             </span>
             <Button
               render={
