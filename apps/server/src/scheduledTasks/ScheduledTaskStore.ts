@@ -51,6 +51,12 @@ export class ScheduledTaskStore extends Context.Service<
       trigger: ScheduledTaskRunTrigger,
       scheduledFor?: string,
     ) => Effect.Effect<ScheduledTaskRun | undefined>;
+    /** Add one more thread to a running goal. Returns its index in the run. */
+    readonly appendRunTarget: (
+      id: ScheduledTaskId,
+      runId: string,
+      target: ScheduledTask["targets"][number],
+    ) => Effect.Effect<number | undefined>;
     readonly updateRun: (
       id: ScheduledTaskId,
       runId: string,
@@ -141,6 +147,7 @@ export const make = Effect.gen(function* () {
         targets: draft.targets,
         schedule: draft.schedule,
         enabled: draft.enabled,
+        ...(draft.goal ? { goal: draft.goal } : {}),
         runtimeMode: draft.runtimeMode ?? existing?.runtimeMode ?? "full-access",
         createdAt: existing?.createdAt ?? now,
         updatedAt: now,
@@ -185,10 +192,14 @@ export const make = Effect.gen(function* () {
         status: "running",
         startedAt: now,
         ...(scheduledFor ? { scheduledFor } : {}),
-        targets: task.targets.map((target) => ({
-          ...target,
-          status: "starting" as const,
-        })),
+        // A goal opens one thread per lane, cycling through the accounts.
+        targets: Array.from(
+          { length: task.goal ? task.goal.lanes : task.targets.length },
+          (_, lane) => ({
+            ...task.targets[lane % task.targets.length]!,
+            status: "starting" as const,
+          }),
+        ),
       };
       const runHistory = [run, ...(task.runHistory ?? [])].slice(0, 50);
       const next = tasks.map((candidate) =>
@@ -203,6 +214,31 @@ export const make = Effect.gen(function* () {
           : candidate,
       );
       return { value: run, next };
+    });
+  });
+
+  const appendRunTarget = Effect.fn("ScheduledTaskStore.appendRunTarget")(function* (
+    id: ScheduledTaskId,
+    runId: string,
+    target: ScheduledTask["targets"][number],
+  ) {
+    return yield* modify((tasks) => {
+      let index: number | undefined;
+      const next = tasks.map((task) => {
+        if (task.id !== id || !task.runHistory) return task;
+        return {
+          ...task,
+          runHistory: task.runHistory.map((run) => {
+            if (run.id !== runId) return run;
+            index = run.targets.length;
+            return {
+              ...run,
+              targets: [...run.targets, { ...target, status: "starting" as const }],
+            };
+          }),
+        };
+      });
+      return { value: index, next };
     });
   });
 
@@ -300,6 +336,7 @@ export const make = Effect.gen(function* () {
     save,
     remove,
     startRun,
+    appendRunTarget,
     updateRun,
     updateRunTarget,
     recordRun,
@@ -318,6 +355,7 @@ export const layerTest = Layer.effect(
       save: () => Ref.get(state),
       remove: () => Ref.get(state),
       startRun: () => Effect.succeed(undefined),
+      appendRunTarget: () => Effect.succeed(undefined),
       updateRun: () => Ref.get(state),
       updateRunTarget: () => Ref.get(state),
       recordRun: () => Ref.get(state),

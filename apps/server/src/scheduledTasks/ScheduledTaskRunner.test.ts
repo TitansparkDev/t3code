@@ -6,12 +6,23 @@ import {
   ProviderInstanceId,
   ThreadId,
   type OrchestrationCommand,
+  type OrchestrationThread,
 } from "@t3tools/contracts";
-import { ScheduledTaskId, type ScheduledTask } from "@t3tools/contracts/scheduledTasks";
+import {
+  GOAL_COMPLETE_DETAIL,
+  ScheduledTaskId,
+  isGoalComplete,
+  type ScheduledTask,
+} from "@t3tools/contracts/scheduledTasks";
 import type { AccountQuotaSnapshot } from "@t3tools/contracts/quota";
 import * as Effect from "effect/Effect";
 
-import { dispatchScheduledTaskTarget, scheduledTargetQuota } from "./ScheduledTaskRunner.ts";
+import {
+  dispatchScheduledTaskTarget,
+  goalPrompt,
+  reportsGoalComplete,
+  scheduledTargetQuota,
+} from "./ScheduledTaskRunner.ts";
 
 describe("scheduled window evidence", () => {
   const snapshot: AccountQuotaSnapshot = {
@@ -55,6 +66,38 @@ describe("scheduled window evidence", () => {
     expect(
       scheduledTargetQuota(snapshot, "antigravity", "gemini-2.5-pro", "2026-09-27T05:02:00.000Z"),
     ).toBeUndefined();
+  });
+});
+
+describe("goal completion", () => {
+  const thread = (replies: ReadonlyArray<string>) =>
+    ({
+      messages: replies.map((text) => ({ role: "assistant", text })),
+    }) as unknown as OrchestrationThread;
+
+  it("ends a goal only when the last reply has the marker on its own line", () => {
+    expect(reportsGoalComplete(thread(["Fixed it.\n\nGOAL COMPLETE"]))).toBe(true);
+    expect(reportsGoalComplete(thread(["  GOAL COMPLETE  "]))).toBe(true);
+    expect(reportsGoalComplete(thread(["I will say GOAL COMPLETE when done."]))).toBe(false);
+    expect(reportsGoalComplete(thread(["GOAL COMPLETE", "Found one more bug."]))).toBe(false);
+    expect(reportsGoalComplete(thread([]))).toBe(false);
+    expect(reportsGoalComplete(undefined)).toBe(false);
+  });
+
+  it("tells the agent to work alone and how to report that nothing is left", () => {
+    const prompt = goalPrompt("Work through PLAN.md.");
+    expect(prompt.startsWith("Work through PLAN.md.")).toBe(true);
+    expect(prompt).toContain("no one available to answer questions");
+    expect(prompt).toContain("GOAL COMPLETE on a line by itself");
+  });
+
+  it("marks a goal complete from its latest run only", () => {
+    const goal = { lanes: 2, maxThreads: 10 };
+    const done = { id: "r2", detail: GOAL_COMPLETE_DETAIL } as never;
+    const older = { id: "r1" } as never;
+    expect(isGoalComplete({ goal, runHistory: [done, older] })).toBe(true);
+    expect(isGoalComplete({ goal, runHistory: [older, done] })).toBe(false);
+    expect(isGoalComplete({ runHistory: [done] })).toBe(false);
   });
 });
 

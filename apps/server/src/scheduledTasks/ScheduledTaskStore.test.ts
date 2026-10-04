@@ -48,6 +48,31 @@ it.layer(NodeServices.layer)("ScheduledTaskStore", (it) => {
     }).pipe(Effect.provide(storeLayer())),
   );
 
+  it.effect("opens one thread per goal lane, cycling accounts, and appends more", () =>
+    Effect.gen(function* () {
+      const store = yield* ScheduledTaskStore.ScheduledTaskStore;
+      const codex = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6" };
+      const claude = { instanceId: ProviderInstanceId.make("claudeAgent"), model: "opus" };
+      const [task] = yield* store.save(
+        draft({ targets: [codex, claude], goal: { lanes: 3, maxThreads: 10 } }),
+      );
+      const run = yield* store.startRun(task!.id, "manual");
+      expect(run?.targets.map((target) => target.instanceId)).toEqual([
+        "codex",
+        "claudeAgent",
+        "codex",
+      ]);
+
+      expect(yield* store.appendRunTarget(task!.id, run!.id, claude)).toBe(3);
+      const [stored] = yield* store.list;
+      expect(stored?.runHistory?.[0]?.targets).toHaveLength(4);
+      expect(stored?.runHistory?.[0]?.targets[3]).toMatchObject({
+        instanceId: "claudeAgent",
+        status: "starting",
+      });
+    }).pipe(Effect.provide(storeLayer())),
+  );
+
   it.effect("keeps run history across edits and survives a reload", () =>
     Effect.gen(function* () {
       const store = yield* ScheduledTaskStore.ScheduledTaskStore;

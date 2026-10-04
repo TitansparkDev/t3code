@@ -14,6 +14,7 @@
  */
 import type { EnvironmentId, ProviderInstanceId } from "@t3tools/contracts";
 import {
+  isGoalComplete,
   nextScheduledRunAt,
   scheduledTimesOfDay,
   type ScheduledTask,
@@ -23,7 +24,14 @@ import {
 } from "@t3tools/contracts/scheduledTasks";
 import { getProviderOptionCurrentValue, getProviderOptionDescriptors } from "@t3tools/shared/model";
 import { Link } from "@tanstack/react-router";
-import { ChevronDownIcon, ExternalLinkIcon, PlayIcon, PlusIcon, Trash2Icon } from "lucide-react";
+import {
+  CheckCircle2Icon,
+  ChevronDownIcon,
+  ExternalLinkIcon,
+  PlayIcon,
+  PlusIcon,
+  Trash2Icon,
+} from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
 
 import { deriveProviderInstanceEntries } from "../../providerInstances";
@@ -52,6 +60,10 @@ interface DraftState {
   everyHours: number;
   daysOfWeek: ReadonlyArray<number>;
   enabled: boolean;
+  /** Keep several chats running until an agent reports nothing is left. */
+  goal: boolean;
+  lanes: number;
+  maxThreads: number;
   targets: ReadonlyArray<ScheduledTaskTarget>;
 }
 
@@ -64,6 +76,9 @@ const emptyDraft = (): DraftState => ({
   everyHours: 5,
   daysOfWeek: [],
   enabled: true,
+  goal: false,
+  lanes: 3,
+  maxThreads: 50,
   targets: [],
 });
 
@@ -77,6 +92,9 @@ const draftFromTask = (task: ScheduledTask): DraftState => ({
   everyHours: (task.schedule.repeat?.everyMinutes ?? 300) / 60,
   daysOfWeek: task.schedule.daysOfWeek,
   enabled: task.enabled,
+  goal: task.goal !== undefined,
+  lanes: task.goal?.lanes ?? 3,
+  maxThreads: task.goal?.maxThreads ?? 50,
   targets: task.targets,
 });
 
@@ -98,6 +116,14 @@ function draftRepeatIsValid(draft: DraftState): boolean {
   if (sends === 1) return true;
   const everyMinutes = Math.round(draft.everyHours * 60);
   return everyMinutes >= 15 && (sends - 1) * everyMinutes < 24 * 60;
+}
+
+/** A goal needs 1 to 8 chats at a time and a cap of 1 to 500 chats in total. */
+function draftGoalIsValid(draft: DraftState): boolean {
+  if (!draft.goal) return true;
+  const lanes = Math.round(draft.lanes);
+  const maxThreads = Math.round(draft.maxThreads);
+  return lanes >= 1 && lanes <= 8 && maxThreads >= lanes && maxThreads <= 500;
 }
 
 function describeSchedule(task: ScheduledTask): string {
@@ -204,6 +230,9 @@ function EnvironmentScheduledTasks({
         targets: draft.targets,
         schedule: draftSchedule(draft),
         enabled: draft.enabled,
+        ...(draft.goal
+          ? { goal: { lanes: Math.round(draft.lanes), maxThreads: Math.round(draft.maxThreads) } }
+          : {}),
       } as ScheduledTaskDraft;
       await scheduled.save(environmentId, payload);
       setDraft(null);
@@ -228,7 +257,8 @@ function EnvironmentScheduledTasks({
     draft.name.trim().length > 0 &&
     draft.prompt.trim().length > 0 &&
     draft.targets.length > 0 &&
-    draftRepeatIsValid(draft);
+    draftRepeatIsValid(draft) &&
+    draftGoalIsValid(draft);
 
   return (
     <div className="space-y-2 rounded-lg border border-border/60 p-3">
@@ -253,6 +283,12 @@ function EnvironmentScheduledTasks({
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <p className="truncate text-sm">
+                  {isGoalComplete(task) ? (
+                    <CheckCircle2Icon
+                      aria-label="Goal complete"
+                      className="mr-1.5 inline size-4 -translate-y-px text-success"
+                    />
+                  ) : null}
                   {task.name}
                   {task.enabled ? null : (
                     <span className="ml-2 text-2xs text-muted-foreground">(disabled)</span>
@@ -261,7 +297,15 @@ function EnvironmentScheduledTasks({
                 <p className="truncate text-xs text-muted-foreground">
                   {describeSchedule(task)} · {task.targets.length} account
                   {task.targets.length === 1 ? "" : "s"}
+                  {task.goal
+                    ? ` · goal: ${task.goal.lanes} at a time, up to ${task.goal.maxThreads} chats`
+                    : ""}
                 </p>
+                {isGoalComplete(task) ? (
+                  <p className="truncate text-2xs text-success">
+                    Complete: an agent reported nothing left to do.
+                  </p>
+                ) : null}
                 <p className="truncate text-2xs text-muted-foreground/80">
                   Next {new Date(nextScheduledRunAt(task.schedule, Date.now())).toLocaleString()}
                 </p>
@@ -453,12 +497,57 @@ function EnvironmentScheduledTasks({
               />
               <span className="text-xs text-muted-foreground">Enabled</span>
             </label>
+
+            <label className="flex items-center gap-2">
+              <Switch
+                checked={draft.goal}
+                onCheckedChange={(goal) => setDraft({ ...draft, goal })}
+              />
+              <span className="text-xs text-muted-foreground">
+                Goal: keep going until nothing is left
+              </span>
+            </label>
+
+            {draft.goal ? (
+              <>
+                <label className="space-y-1">
+                  <span className="block text-xs text-muted-foreground">At a time</span>
+                  <Input
+                    className="w-24"
+                    inputMode="numeric"
+                    max={8}
+                    min={1}
+                    onChange={(event) =>
+                      setDraft({ ...draft, lanes: Number(event.target.value) || 1 })
+                    }
+                    type="number"
+                    value={draft.lanes}
+                  />
+                </label>
+                <label className="space-y-1">
+                  <span className="block text-xs text-muted-foreground">Most chats in total</span>
+                  <Input
+                    className="w-28"
+                    inputMode="numeric"
+                    max={500}
+                    min={1}
+                    onChange={(event) =>
+                      setDraft({ ...draft, maxThreads: Number(event.target.value) || 1 })
+                    }
+                    type="number"
+                    value={draft.maxThreads}
+                  />
+                </label>
+              </>
+            ) : null}
           </div>
 
           <p className="text-xs text-muted-foreground">
-            {draftRepeatIsValid(draft)
-              ? `Sends at ${scheduledTimesOfDay(draftSchedule(draft)).join(", ")} on the environment's clock.`
-              : "Repeats must fit in one day: sends per day × hours apart has to stay under 24 hours."}
+            {!draftGoalIsValid(draft)
+              ? "A goal runs 1 to 8 chats at a time, and its total cap must be at least that many (at most 500)."
+              : draftRepeatIsValid(draft)
+                ? `Sends at ${scheduledTimesOfDay(draftSchedule(draft)).join(", ")} on the environment's clock.`
+                : "Repeats must fit in one day: sends per day × hours apart has to stay under 24 hours."}
           </p>
 
           <div className="flex justify-end gap-2">

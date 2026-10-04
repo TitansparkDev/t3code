@@ -26,6 +26,21 @@ For each task you choose:
   each send opens the next five-hour window. Repeats that pass midnight still belong to
   the day that started them, and all of them must fit within 24 hours.
 
+## Goals
+
+Turn on **Goal** in a task's form to keep several chats working until the job is done.
+Set **At a time** (1 to 8 chats) and **Most chats in total**. Each chat gets your prompt
+plus a standing instruction to work alone, use its best judgment instead of asking, take
+the next unfinished piece of work, and stop. When one chat finishes, the next starts in
+its place, cycling through the task's accounts.
+
+The goal ends when an agent replies **GOAL COMPLETE** on its own line because nothing
+is left. The task stays in the list with a green tick and is not restarted by its
+schedule; **Run now** starts it again. A chat that fails does not restart its lane, and
+disabling the task stops new chats. A chat that stops on a usage limit waits for the
+limit to reset instead of counting as a failure; turn on
+**Settings → Auto-resume** for its provider and model so it continues without you.
+
 ## What a run looks like
 
 Each target gets its own ordinary thread with real history. As soon as its turn

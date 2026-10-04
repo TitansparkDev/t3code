@@ -20965,6 +20965,7 @@ apps/server/src/resourceTelemetry/ResourceTelemetryHistory.test.ts
 apps/server/src/resourceTelemetry/ResourceTelemetryHistory.ts
 apps/server/src/review/ReviewService.test.ts
 apps/server/src/review/ReviewService.ts
+apps/server/src/scheduledTasks/ScheduledGoal.test.ts
 apps/server/src/scheduledTasks/ScheduledTaskRunner.noProject.test.ts
 apps/server/src/scheduledTasks/ScheduledTaskRunner.test.ts
 apps/server/src/scheduledTasks/ScheduledTaskRunner.ts
@@ -21922,6 +21923,7 @@ apps/web/src/components/settings/useSettingsProjectGroups.ts
 apps/web/src/components/settings/useSnapShotShortcutRecorder.test.tsx
 apps/web/src/components/settings/useSnapShotShortcutRecorder.tsx
 apps/web/src/components/sidebar/DesktopUpdateStatusIcon.tsx
+apps/web/src/components/sidebar/HostCapacityChip.tsx
 apps/web/src/components/sidebar/SidebarChrome.tsx
 apps/web/src/components/sidebar/SidebarProviderUpdatePill.tsx
 apps/web/src/components/sidebar/SidebarThreadHeader.tsx
@@ -22127,6 +22129,8 @@ apps/web/src/index.css
 apps/web/src/keybindings.test.ts
 apps/web/src/keybindings.ts
 apps/web/src/latestRelease.ts
+apps/web/src/lib/agentCapacity.test.ts
+apps/web/src/lib/agentCapacity.ts
 apps/web/src/lib/archivedThreadsState.ts
 apps/web/src/lib/assistantCitationNavigation.test.ts
 apps/web/src/lib/assistantCitationNavigation.ts

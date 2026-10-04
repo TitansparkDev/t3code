@@ -26,6 +26,9 @@ import {
 import type { OrchestrationThread, OrchestrationThreadActivity } from "@t3tools/contracts";
 import type { AccountQuotaSnapshot } from "@t3tools/contracts/quota";
 import {
+  GOAL_COMPLETE_DETAIL,
+  GOAL_COMPLETE_MARKER,
+  isGoalComplete,
   isScheduledTaskDue,
   type ScheduledTask,
   type ScheduledTaskId,
@@ -111,6 +114,28 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
+const GOAL_COMPLETE_LINE = new RegExp(`^\\s*${GOAL_COMPLETE_MARKER}\\s*$`, "m");
+
+/**
+ * A goal's runs have nobody watching, so the prompt tells the agent how to
+ * work alone and how to say there is nothing left.
+ */
+export function goalPrompt(prompt: string): string {
+  return [
+    prompt,
+    "",
+    "You are one of several agents working through this goal on your own, with no one available to answer questions.",
+    "Take the next unfinished piece of work, finish it properly, and stop. Use your best judgment instead of asking; if you are unsure, choose the safest reasonable option and say what you chose.",
+    `If there is no unfinished work left at all, reply with ${GOAL_COMPLETE_MARKER} on a line by itself.`,
+  ].join("\n");
+}
+
+/** Whether the agent's last reply says the goal has no work left. */
+export function reportsGoalComplete(thread: OrchestrationThread | undefined): boolean {
+  const reply = thread?.messages.findLast((message) => message.role === "assistant");
+  return reply !== undefined && GOAL_COMPLETE_LINE.test(reply.text);
+}
+
 function durationFromThread(thread: OrchestrationThread | undefined): number | undefined {
   if (!thread) return undefined;
   for (let index = thread.activities.length - 1; index >= 0; index -= 1) {
@@ -179,7 +204,7 @@ export const dispatchScheduledTaskTarget = Effect.fn(
     message: {
       messageId: input.messageId,
       role: "user",
-      text: input.task.prompt,
+      text: input.task.goal ? goalPrompt(input.task.prompt) : input.task.prompt,
       attachments: [],
     },
     modelSelection,
@@ -268,6 +293,19 @@ export const make = Effect.gen(function* () {
       .pipe(Effect.ignoreCause({ log: true }));
     return projectId;
   });
+
+  const resolveProjectId = (task: ScheduledTask) =>
+    task.projectId
+      ? Effect.succeed(Option.some(task.projectId))
+      : noProjectId().pipe(
+          Effect.map(Option.some),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("scheduled-tasks.no-project-failed", {
+              taskId: task.id,
+              cause,
+            }).pipe(Effect.as(Option.none<ProjectId>())),
+          ),
+        );
 
   /**
    * Start one target's thread. Returns the thread it created, or `undefined`
@@ -383,6 +421,52 @@ export const make = Effect.gen(function* () {
     activeRuns.delete(taskId);
   });
 
+  /**
+   * A goal's lane just finished a thread: end the goal if the agent says
+   * nothing is left, otherwise start the next thread in that lane. A lane
+   * whose thread failed stays stopped, so a broken setup cannot loop.
+   */
+  const continueGoal = Effect.fn("ScheduledTaskRunner.continueGoal")(function* (
+    pending: PendingScheduledTarget,
+    thread: OrchestrationThread | undefined,
+    failed: boolean,
+  ) {
+    const task = (yield* store.list).find((candidate) => candidate.id === pending.taskId);
+    const run = task?.runHistory?.find((candidate) => candidate.id === pending.runId);
+    if (!task?.goal || !run || run.status !== "running") return;
+    if (!failed && reportsGoalComplete(thread)) {
+      yield* store.updateRun(task.id, run.id, { detail: GOAL_COMPLETE_DETAIL });
+      return;
+    }
+    if (
+      failed ||
+      run.detail === GOAL_COMPLETE_DETAIL ||
+      !task.enabled ||
+      run.targets.length >= task.goal.maxThreads
+    ) {
+      return;
+    }
+    const projectId = yield* resolveProjectId(task);
+    const target = task.targets[run.targets.length % task.targets.length];
+    if (Option.isNone(projectId) || !target) return;
+    const targetIndex = yield* store.appendRunTarget(task.id, run.id, target);
+    if (targetIndex === undefined) return;
+    const result = yield* startTarget({
+      task,
+      projectId: projectId.value,
+      target,
+      runId: run.id,
+      targetIndex,
+    });
+    if (!result) {
+      yield* store.updateRunTarget(task.id, run.id, targetIndex, {
+        status: "failed",
+        completedAt: DateTime.formatIso(yield* DateTime.now),
+        detail: "Provider turn could not be started.",
+      });
+    }
+  });
+
   const finishTarget = Effect.fn("ScheduledTaskRunner.finishTarget")(function* (
     pending: PendingScheduledTarget,
     threadId: ThreadId,
@@ -425,6 +509,7 @@ export const make = Effect.gen(function* () {
       ...(failed ? { detail: "The provider turn did not complete." } : {}),
     };
     yield* store.updateRunTarget(pending.taskId, pending.runId, pending.targetIndex, update);
+    yield* continueGoal(pending, thread, failed);
     yield* completeRunIfFinished(pending.taskId, pending.runId);
   });
 
@@ -439,17 +524,7 @@ export const make = Effect.gen(function* () {
     if (!run) return;
     activeRuns.add(input.task.id);
 
-    const projectId = input.task.projectId
-      ? Option.some(input.task.projectId)
-      : yield* noProjectId().pipe(
-          Effect.map(Option.some),
-          Effect.catchCause((cause) =>
-            Effect.logWarning("scheduled-tasks.no-project-failed", {
-              taskId: input.task.id,
-              cause,
-            }).pipe(Effect.as(Option.none<ProjectId>())),
-          ),
-        );
+    const projectId = yield* resolveProjectId(input.task);
     if (Option.isNone(projectId)) {
       for (const [targetIndex] of input.task.targets.entries()) {
         yield* store.updateRunTarget(input.task.id, run.id, targetIndex, {
@@ -463,7 +538,8 @@ export const make = Effect.gen(function* () {
     }
 
     const started = yield* Effect.forEach(
-      input.task.targets.map((target, targetIndex) => ({ target, targetIndex })),
+      // The run's own targets: one per account, or one per lane for a goal.
+      run.targets.map((target, targetIndex) => ({ target, targetIndex })),
       ({ target, targetIndex }) =>
         startTarget({
           task: input.task,
@@ -497,7 +573,11 @@ export const make = Effect.gen(function* () {
 
   const tick = Effect.gen(function* () {
     const now = yield* Clock.currentTimeMillis;
-    const due = (yield* store.list).filter((task) => isScheduledTaskDue(task, now));
+    // A finished goal stays listed with its tick and is not restarted by its
+    // schedule; "Run now" starts it again.
+    const due = (yield* store.list).filter(
+      (task) => isScheduledTaskDue(task, now) && !isGoalComplete(task),
+    );
     yield* Effect.forEach(
       due,
       (task) =>
@@ -602,6 +682,12 @@ export const make = Effect.gen(function* () {
       if (!pending) return;
       if (session.activeTurnId !== null) return;
       if (session.status === "starting" || session.status === "running") return;
+      // A goal waits out a usage limit instead of counting it as a failure:
+      // auto-resume or the person resumes the thread, and it finishes later.
+      if (session.lastErrorClass === "usage_limit") {
+        const task = (yield* store.list).find((candidate) => candidate.id === pending.taskId);
+        if (task?.goal) return;
+      }
 
       pendingSettles.delete(threadId);
       yield* finishTarget(pending, threadId);
