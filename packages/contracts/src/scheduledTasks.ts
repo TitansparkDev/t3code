@@ -69,27 +69,6 @@ export const ScheduledTaskSchedule = Schema.Struct({
 export type ScheduledTaskSchedule = typeof ScheduledTaskSchedule.Type;
 
 /**
- * Turns a task into a goal: it keeps `lanes` threads running, starting the next
- * one as each finishes, until an agent reports nothing is left, `maxThreads`
- * threads have started, or the task is disabled.
- */
-export const ScheduledTaskGoal = Schema.Struct({
-  lanes: Schema.Number.check(Schema.isInt(), Schema.isBetween({ minimum: 1, maximum: 8 })),
-  maxThreads: Schema.Number.check(Schema.isInt(), Schema.isBetween({ minimum: 1, maximum: 500 })),
-});
-export type ScheduledTaskGoal = typeof ScheduledTaskGoal.Type;
-
-/** What an agent replies, on its own line, when a goal has no work left. */
-export const GOAL_COMPLETE_MARKER = "GOAL COMPLETE";
-/** Run detail recorded once a goal has finished, so a restart does not refill it. */
-export const GOAL_COMPLETE_DETAIL = "Goal complete: an agent reported nothing left to do.";
-
-/** Whether a goal's latest run ended because an agent said nothing was left. */
-export function isGoalComplete(task: Pick<ScheduledTask, "goal" | "runHistory">): boolean {
-  return task.goal !== undefined && task.runHistory?.[0]?.detail === GOAL_COMPLETE_DETAIL;
-}
-
-/**
  * One account the prompt goes to.
  *
  * The model is stored per target because the point of running the same prompt
@@ -194,7 +173,6 @@ export const ScheduledTask = Schema.Struct({
   targets: Schema.Array(ScheduledTaskTarget),
   schedule: ScheduledTaskSchedule,
   enabled: Schema.Boolean,
-  goal: Schema.optional(ScheduledTaskGoal),
   runtimeMode: RuntimeMode,
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
@@ -219,7 +197,6 @@ export const ScheduledTaskDraft = Schema.Struct({
   targets: Schema.Array(ScheduledTaskTarget),
   schedule: ScheduledTaskSchedule,
   enabled: Schema.Boolean,
-  goal: Schema.optional(ScheduledTaskGoal),
   runtimeMode: Schema.optional(RuntimeMode),
 });
 export type ScheduledTaskDraft = typeof ScheduledTaskDraft.Type;
