@@ -183,11 +183,10 @@ export const DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER: Partial<
   Record<ProviderDriverKind, string>
 > = {
   [CODEX_DRIVER_KIND]: DEFAULT_TEXT_GENERATION_MODEL,
-  [ProviderDriverKind.make("antigravity")]: ANTIGRAVITY_DEFAULT_MODEL,
   [CLAUDE_DRIVER_KIND]: "claude-haiku-4-5",
   [CURSOR_DRIVER_KIND]: "composer-2",
   [OPENCODE_DRIVER_KIND]: "openai/gpt-5",
-  [ANTIGRAVITY_DRIVER_KIND]: "gemini-3.7-flash-low",
+  [ANTIGRAVITY_DRIVER_KIND]: "gemini-3.8-flash",
 };
 
 export const MODEL_SLUG_ALIASES_BY_PROVIDER: Partial<
@@ -214,6 +213,17 @@ export const MODEL_SLUG_ALIASES_BY_PROVIDER: Partial<
     "opus-4.5": "claude-opus-4-5",
   },
   [OPENCODE_DRIVER_KIND]: {},
+  [ANTIGRAVITY_DRIVER_KIND]: {
+    "gemini-3.8-flash-high": "gemini-3.8-flash",
+    "gemini-3.8-flash-medium": "gemini-3.8-flash",
+    "gemini-3.8-flash-low": "gemini-3.8-flash",
+    "gemini-3-pro": "gemini-3.0-pro",
+    "gemini-3.1-pro": "gemini-pro-agent",
+    "gemini-3.1-pro-high": "gemini-pro-agent",
+    "claude-opus-4-6": "claude-opus-4-6-thinking",
+    "claude-sonnet-4-6-thinking": "claude-sonnet-4-6",
+    "gpt-oss-120b": "gpt-oss-120b-medium",
+  },
 };
 
 // ── Provider display names ────────────────────────────────────────────

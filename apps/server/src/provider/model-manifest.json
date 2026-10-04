@@ -84,9 +84,7 @@
       "claude-sonnet-5"
     ],
     "antigravity": [
-      "gemini-3.8-flash-high",
-      "gemini-3.8-flash-medium",
-      "gemini-3.8-flash-low",
+      "gemini-3.8-flash",
       "claude-sonnet-4-6",
       "claude-opus-4-6-thinking",
       "gpt-oss-120b-medium"
@@ -790,39 +788,61 @@
     },
     "antigravity": {
       "defaults": {
-        "chat": "gemini-3.8-flash-high"
+        "chat": "gemini-3.8-flash"
       },
-      "profiles": {},
+      "profiles": {
+        "gemini-3.8-flash": {
+          "capabilities": {
+            "optionDescriptors": [
+              {
+                "id": "effort",
+                "label": "Reasoning Effort",
+                "type": "select",
+                "options": [
+                  {
+                    "id": "low",
+                    "label": "Low"
+                  },
+                  {
+                    "id": "medium",
+                    "label": "Medium"
+                  },
+                  {
+                    "id": "high",
+                    "label": "High",
+                    "isDefault": true
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      },
       "models": [
         {
-          "slug": "gemini-3.8-flash-high",
-          "name": "Gemini 3.8 Flash (High)",
-          "status": "current"
-        },
-        {
-          "slug": "gemini-3.8-flash-medium",
-          "name": "Gemini 3.8 Flash (Medium)",
-          "status": "current"
-        },
-        {
-          "slug": "gemini-3.8-flash-low",
-          "name": "Gemini 3.8 Flash (Low)",
+          "slug": "gemini-3.8-flash",
+          "name": "Gemini 3.8 Flash",
+          "profile": "gemini-3.8-flash",
+          "aliases": ["gemini-3.8-flash-high", "gemini-3.8-flash-medium", "gemini-3.8-flash-low"],
           "status": "current"
         },
         {
           "slug": "claude-sonnet-4-6",
           "name": "Claude Sonnet 4.6 (Thinking)",
-          "status": "current"
+          "status": "current",
+          "aliases": ["claude-sonnet-4-6-thinking"]
         },
         {
           "slug": "claude-opus-4-6-thinking",
           "name": "Claude Opus 4.6 (Thinking)",
-          "status": "current"
+          "status": "current",
+          "aliases": ["claude-opus-4-6"]
         },
         {
           "slug": "gpt-oss-120b-medium",
           "name": "GPT-OSS 120B (Medium)",
-          "status": "current"
+          "status": "current",
+          "aliases": ["gpt-oss-120b"]
         },
         {
           "slug": "claude-opus-4-5-thinking",
@@ -867,11 +887,18 @@
         {
           "slug": "gemini-pro-agent",
           "name": "Gemini 3.1 Pro (High)",
-          "status": "legacy"
+          "status": "legacy",
+          "aliases": ["gemini-3.1-pro-high", "gemini-3.1-pro"]
         },
         {
           "slug": "gemini-3.1-pro-low",
           "name": "Gemini 3.1 Pro (Low)",
+          "status": "legacy"
+        },
+        {
+          "slug": "gemini-3.0-pro",
+          "name": "Gemini 3.0 Pro",
+          "aliases": ["gemini-3-pro"],
           "status": "legacy"
         }
       ]

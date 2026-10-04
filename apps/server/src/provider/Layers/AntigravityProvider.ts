@@ -23,7 +23,7 @@ import type * as EffectAcpSchema from "effect-acp/schema";
 
 import type { AcpSessionRuntimeStartResult } from "../acp/AcpSessionRuntime.ts";
 import { isInternalAntigravityModel } from "../acp/AntigravityAcpSupport.ts";
-import { BUNDLED_MODEL_MANIFEST } from "../ModelManifest.ts";
+import { BUNDLED_MODEL_MANIFEST, resolveProviderCatalog } from "../ModelManifest.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
 import {
   makeManualOnlyProviderMaintenanceCapabilities,
@@ -35,6 +35,12 @@ import {
   type ServerProviderDraft,
 } from "../providerSnapshot.ts";
 
+const DRIVER = ProviderDriverKind.make("antigravity");
+
+export function getAntigravityFallbackModels(): ReadonlyArray<ServerProviderModel> {
+  const catalog = resolveProviderCatalog(BUNDLED_MODEL_MANIFEST, DRIVER);
+  return catalog?.models.map((entry) => entry.model) ?? [];
+}
 const EMPTY_MODEL_CAPABILITIES = createModelCapabilities({ optionDescriptors: [] });
 const MAX_WORKSPACE_SNAPSHOTS = 32;
 const HEALTH_CHECK_TIMEOUT = "90 seconds";
@@ -132,6 +138,9 @@ export function buildAntigravityModelsFromSession(
   );
   const currentValue =
     config?.type === "select" ? config.currentValue : setup.models?.currentModelId;
+  if (config?.type === "select" && config.options.length === 0) {
+    return [];
+  }
   const entries =
     config?.type === "select"
       ? config.options.flatMap((entry) => ("value" in entry ? [entry] : entry.options))
@@ -142,30 +151,104 @@ export function buildAntigravityModelsFromSession(
           })) ?? [])
         : [];
   const descriptors = extractAntigravityOptionDescriptors(setup.configOptions);
-  const capabilities =
+  const defaultCapabilities =
     descriptors.length > 0
       ? createModelCapabilities({ optionDescriptors: descriptors })
       : EMPTY_MODEL_CAPABILITIES;
+
   const seen = new Set<string>();
-  return entries.flatMap((entry): ServerProviderModel[] => {
+  const models: ServerProviderModel[] = [];
+
+  // Check if session exposes any Gemini 3.8 Flash variants or base model
+  const hasFlash38 = entries.some((entry) => {
+    const slug = entry.value.trim().toLowerCase();
+    return slug === "gemini-3.8-flash" || slug.startsWith("gemini-3.8-flash-");
+  });
+
+  if (hasFlash38) {
+    let currentEffort = "high";
+    if (typeof currentValue === "string") {
+      if (currentValue.endsWith("-low")) currentEffort = "low";
+      else if (currentValue.endsWith("-medium")) currentEffort = "medium";
+      else if (currentValue.endsWith("-high")) currentEffort = "high";
+    }
+
+    const effortDescriptor: ProviderOptionDescriptor = {
+      id: "effort",
+      label: "Reasoning Effort",
+      type: "select",
+      options: [
+        { id: "low", label: "Low" },
+        { id: "medium", label: "Medium" },
+        { id: "high", label: "High", isDefault: true },
+      ],
+      currentValue: currentEffort,
+    };
+
+    const flashCapabilities = createModelCapabilities({
+      optionDescriptors: [
+        effortDescriptor,
+        ...descriptors.filter(
+          (d) =>
+            d.id !== "effort" &&
+            d.id !== "thought_level" &&
+            d.id !== "reasoning" &&
+            d.id !== "reasoningEffort" &&
+            d.id !== "thinking",
+        ),
+      ],
+    });
+
+    const isDefault =
+      currentValue === undefined ||
+      currentValue === "gemini-3.8-flash" ||
+      (typeof currentValue === "string" && currentValue.startsWith("gemini-3.8-flash-"));
+
+    models.push({
+      slug: "gemini-3.8-flash",
+      name: "Gemini 3.8 Flash",
+      isCustom: false,
+      ...(isDefault
+        ? {
+            isDefault: true,
+            aliases: [
+              "gemini-3.8-flash-high",
+              "gemini-3.8-flash-medium",
+              "gemini-3.8-flash-low",
+              ANTIGRAVITY_DEFAULT_MODEL,
+            ],
+          }
+        : {
+            aliases: ["gemini-3.8-flash-high", "gemini-3.8-flash-medium", "gemini-3.8-flash-low"],
+          }),
+      capabilities: flashCapabilities,
+    });
+
+    seen.add("gemini-3.8-flash");
+    seen.add("gemini-3.8-flash-high");
+    seen.add("gemini-3.8-flash-medium");
+    seen.add("gemini-3.8-flash-low");
+  }
+
+  for (const entry of entries) {
     const slug = entry.value.trim();
-    if (!slug || seen.has(slug)) return [];
-    if (isInternalAntigravityModel(slug, entry.name)) return [];
-    if (/^internal-|_internal$|^internal$/i.test(slug)) return [];
-    if ((entry as { disabled?: boolean }).disabled === true) return [];
-    if ((entry as { unsupported?: boolean }).unsupported === true) return [];
+    if (!slug || seen.has(slug)) continue;
+    if (isInternalAntigravityModel(slug, entry.name)) continue;
+    if (/^internal-|_internal$|^internal$/i.test(slug)) continue;
+    if ((entry as { disabled?: boolean }).disabled === true) continue;
+    if ((entry as { unsupported?: boolean }).unsupported === true) continue;
     seen.add(slug);
     const resolvedName = resolveModelDisplayName(slug, entry.name);
-    return [
-      {
-        slug,
-        name: resolvedName,
-        isCustom: false,
-        ...(slug === currentValue ? { isDefault: true, aliases: [ANTIGRAVITY_DEFAULT_MODEL] } : {}),
-        capabilities,
-      },
-    ];
-  });
+    models.push({
+      slug,
+      name: resolvedName,
+      isCustom: false,
+      ...(slug === currentValue ? { isDefault: true, aliases: [ANTIGRAVITY_DEFAULT_MODEL] } : {}),
+      capabilities: defaultCapabilities,
+    });
+  }
+
+  return models;
 }
 
 function nativeCommands(

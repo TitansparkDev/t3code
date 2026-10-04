@@ -849,6 +849,7 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
               const model = yield* applyAntigravityAcpModelSelection({
                 runtime,
                 model: input.modelSelection?.model,
+                options: input.modelSelection?.options,
                 defaultModel: yield* options.defaultModel ?? Effect.undefined,
                 mapError: (cause) => cause,
               });
@@ -1036,16 +1037,22 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
         Effect.gen(function* () {
           yield* requireSession(input.threadId);
           const requestedModel = input.modelSelection?.model ?? context.session.model;
+          const requestedOptions = input.modelSelection?.options;
           const configOptions = yield* context.runtime.getConfigOptions;
-          const model = resolveAntigravityModel({
+          const resolvedModel = resolveAntigravityModel({
             configOptions,
             model: requestedModel,
+            options: requestedOptions,
             defaultModel: yield* options.defaultModel ?? Effect.undefined,
           });
           const availableModels = antigravityModelOptions(configOptions);
-          if (model && !availableModels.some((option) => option.value === model)) {
+          if (
+            resolvedModel &&
+            availableModels.length > 0 &&
+            !availableModels.some((option) => option.value === resolvedModel)
+          ) {
             return yield* EffectAcpErrors.AcpRequestError.invalidParams(
-              `Antigravity model '${model}' is unavailable for this Google account. Select an available model.`,
+              `Antigravity model '${requestedModel ?? resolvedModel}' is unavailable for this Google account. Select an available model.`,
             );
           }
           const turnId = context.activeTurnId ?? TurnId.make(yield* randomId);
@@ -1053,6 +1060,7 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
           const turn: TurnIntent = { turnId, generation: ++context.generation, settled: false };
           intent = turn;
           context.activeTurnId = turnId;
+          const modelToReport = requestedModel ?? resolvedModel;
           if (!steering) {
             yield* emit({
               type: "turn.started",
@@ -1060,7 +1068,7 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
               provider: PROVIDER,
               threadId: input.threadId,
               turnId,
-              payload: model ? { model } : {},
+              payload: modelToReport ? { model: modelToReport } : {},
             });
           }
           if (context.promptFiber) {
@@ -1069,9 +1077,11 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
             yield* Fiber.await(context.promptFiber);
             yield* finishSubagents(context, "cancelled");
           }
-          yield* applyAntigravityAcpModelSelection({
+          const appliedModel = yield* applyAntigravityAcpModelSelection({
             runtime: context.runtime,
-            model,
+            model: requestedModel,
+            options: requestedOptions,
+            defaultModel: yield* options.defaultModel ?? Effect.undefined,
             mapError: (cause) => cause,
           });
           yield* context.runtime.setMode(antigravityPermissionMode(context.session.runtimeMode));
@@ -1079,7 +1089,7 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
             ...context.session,
             status: "running",
             activeTurnId: turnId,
-            ...(model ? { model } : {}),
+            ...(appliedModel ? { model: appliedModel } : {}),
             updatedAt: yield* nowIso,
           };
           const dispatched = yield* Deferred.make<void>();
@@ -1090,7 +1100,7 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
                   ...prompt,
                   {
                     type: "text",
-                    text: buildRuntimeInstructions({ harness: "Antigravity", model }),
+                    text: buildRuntimeInstructions({ harness: "Antigravity", model: appliedModel }),
                   },
                 ],
               },

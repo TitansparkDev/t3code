@@ -61,6 +61,12 @@ const modelOptions = [
 
 const visibleModelOptions = modelOptions.filter((option) => !option.value.startsWith("internal-"));
 
+// Gemini 3.8 Flash's High/Medium/Low entries are published as one model with an effort picker.
+const publishedModelOptions = [
+  { value: "gemini-3.8-flash", name: "Gemini 3.8 Flash" },
+  ...visibleModelOptions.slice(3),
+];
+
 const modelConfig = {
   id: "model",
   name: "Model",
@@ -162,7 +168,7 @@ describe("Antigravity model catalog", () => {
   it("keeps the captured personal catalog's IDs, labels, order, and selected default", () => {
     const models = buildAntigravityModelsFromSession(sessionSetupResult);
     expect(models.map((model) => [model.slug, model.name])).toEqual(
-      visibleModelOptions.map((option) => [option.value, option.name]),
+      publishedModelOptions.map((option) => [option.value, option.name]),
     );
     expect(models.filter((model) => model.isDefault).map((model) => model.slug)).toEqual([
       "gemini-3.7-flash-high",
@@ -172,7 +178,18 @@ describe("Antigravity model catalog", () => {
         .filter((model) => model.aliases?.includes(ANTIGRAVITY_DEFAULT_MODEL))
         .map((model) => model.slug),
     ).toEqual(["gemini-3.7-flash-high"]);
-    expect(models.every((model) => model.capabilities?.optionDescriptors?.length === 0)).toBe(true);
+    expect(
+      models
+        .filter((model) => model.slug !== "gemini-3.8-flash")
+        .every((model) => model.capabilities?.optionDescriptors?.length === 0),
+    ).toBe(true);
+    expect(models.find((model) => model.slug === "gemini-3.8-flash")?.aliases).toEqual(
+      expect.arrayContaining([
+        "gemini-3.8-flash-high",
+        "gemini-3.8-flash-medium",
+        "gemini-3.8-flash-low",
+      ]),
+    );
     expect(models.every((model) => !model.isCustom)).toBe(true);
   });
 
@@ -199,11 +216,11 @@ describe("Antigravity model catalog", () => {
     });
 
     expect(models.map((m) => [m.slug, m.name])).toEqual([
+      ["gemini-3.8-flash", "Gemini 3.8 Flash"],
       ["claude-sonnet-4-6", "Claude Sonnet 4.6 (Thinking)"],
       ["claude-opus-4-6-thinking", "Claude Opus 4.6 (Thinking)"],
       ["gpt-oss-120b-medium", "GPT-OSS 120B (Medium)"],
       ["claude-opus-4-5-thinking", "Claude Opus 4.5 (Thinking)"],
-      ["gemini-3.8-flash-high", "Gemini 3.8 Flash (High)"],
     ]);
   });
 
@@ -300,7 +317,7 @@ describe("Antigravity model catalog", () => {
       configOptions: [{ ...modelConfig, options: mixedOptions }],
     });
     expect(models.map((m) => m.slug)).toEqual([
-      ...modelOptions.map((o) => o.value),
+      ...publishedModelOptions.map((o) => o.value),
       "claude-sonnet-4-6",
       "claude-opus-4-6-thinking",
       "gpt-oss-120b-medium",
@@ -489,7 +506,7 @@ it.layer(testLayer)("Antigravity provider snapshots", (it) => {
         yield* harness.provider.onSessionStarted(started);
         yield* harness.provider.onAvailableCommands(commands);
         const snapshot = yield* harness.provider.snapshot.getSnapshot;
-        expect(snapshot.models).toHaveLength(visibleModelOptions.length);
+        expect(snapshot.models).toHaveLength(publishedModelOptions.length);
         expect(snapshot.slashCommands).toEqual(commands);
         expect(snapshot.workspaceSnapshots).toEqual([]);
       }),
@@ -544,7 +561,7 @@ it.layer(testLayer)("Antigravity provider snapshots", (it) => {
         ];
         const nextSnapshot = yield* Stream.toPull(
           harness.provider.snapshot.streamChanges.pipe(
-            Stream.filter((snapshot) => snapshot.models.length === 3),
+            Stream.filter((snapshot) => snapshot.models.length === 1),
           ),
         );
         yield* harness.provider.onConfigOptionsUpdated(configOptions);
@@ -692,7 +709,7 @@ it.layer(testLayer)("Antigravity provider snapshots", (it) => {
             status: "error",
             auth: { status: "authenticated" },
           });
-          expect(snapshot.models).toHaveLength(installed ? visibleModelOptions.length : 0);
+          expect(snapshot.models).toHaveLength(installed ? publishedModelOptions.length : 0);
           expect(snapshot.slashCommands).toHaveLength(installed ? 2 : 0);
           expect(snapshot.workspaceSnapshots).toHaveLength(installed ? 1 : 0);
           expect(snapshot.supportsTextGeneration).toBe(installed);

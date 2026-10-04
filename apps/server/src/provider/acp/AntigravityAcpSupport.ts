@@ -3,6 +3,7 @@ import {
   type AntigravityAuthMethod,
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
+  type ProviderOptionSelection,
   type ProviderSendTurnInput,
   type RuntimeMode,
 } from "@t3tools/contracts";
@@ -124,6 +125,30 @@ export function antigravityModelOptions(
   return entries.filter((entry) => !isInternalAntigravityModel(entry.value, entry.name));
 }
 
+function extractOptionValue(
+  options: ReadonlyArray<ProviderOptionSelection> | Readonly<Record<string, unknown>> | undefined,
+  key: string,
+): string | boolean | undefined {
+  if (!options) return undefined;
+  if (Array.isArray(options)) {
+    const found = options.find((item) => item.id === key);
+    return found?.value;
+  }
+  return (options as Record<string, unknown>)[key] as string | boolean | undefined;
+}
+
+function extractEffort(
+  options: ReadonlyArray<ProviderOptionSelection> | Readonly<Record<string, unknown>> | undefined,
+): string | undefined {
+  const effort =
+    extractOptionValue(options, "effort") ??
+    extractOptionValue(options, "thought_level") ??
+    extractOptionValue(options, "reasoningEffort") ??
+    extractOptionValue(options, "reasoning") ??
+    extractOptionValue(options, "thinking");
+  return typeof effort === "string" ? effort.trim().toLowerCase() : undefined;
+}
+
 /**
  * Resolves the model a turn should run on. A saved selection is reapplied
  * as-is. The provider default alias resolves to `defaultModel` when the
@@ -133,15 +158,81 @@ export function antigravityModelOptions(
 export function resolveAntigravityModel(input: {
   readonly configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption>;
   readonly model: string | null | undefined;
+  readonly options?:
+    | ReadonlyArray<ProviderOptionSelection>
+    | Readonly<Record<string, unknown>>
+    | undefined;
   readonly defaultModel?: string | undefined;
 }): string | undefined {
   const modelConfig = input.configOptions.find((option) => option.id === "model");
   const current = modelConfig?.type === "select" ? modelConfig.currentValue : undefined;
-  if (input.model && input.model !== ANTIGRAVITY_DEFAULT_MODEL) return input.model;
-  const options = antigravityModelOptions(input.configOptions);
-  return input.defaultModel && options.some((option) => option.value === input.defaultModel)
-    ? input.defaultModel
-    : current;
+  const available = antigravityModelOptions(input.configOptions);
+
+  let candidate = input.model?.trim();
+  if (!candidate || candidate === ANTIGRAVITY_DEFAULT_MODEL) {
+    if (
+      input.defaultModel &&
+      (available.length === 0 || available.some((opt) => opt.value === input.defaultModel))
+    ) {
+      candidate = input.defaultModel;
+    } else if (current) {
+      return current;
+    } else {
+      candidate = "gemini-3.8-flash";
+    }
+  }
+
+  // Handle Gemini 3.8 Flash + effort mapping
+  if (
+    candidate === "gemini-3.8-flash" ||
+    candidate === "gemini-3.8-flash-high" ||
+    candidate === "gemini-3.8-flash-medium" ||
+    candidate === "gemini-3.8-flash-low"
+  ) {
+    let effort = extractEffort(input.options);
+    if (!effort) {
+      if (candidate === "gemini-3.8-flash-low") effort = "low";
+      else if (candidate === "gemini-3.8-flash-medium") effort = "medium";
+      else effort = "high";
+    }
+    const targetSlug = `gemini-3.8-flash-${effort}`;
+    if (available.some((opt) => opt.value === targetSlug)) {
+      return targetSlug;
+    }
+    if (available.some((opt) => opt.value === "gemini-3.8-flash")) {
+      return "gemini-3.8-flash";
+    }
+    const anyFlash38 = available.find((opt) => opt.value.startsWith("gemini-3.8-flash"));
+    if (anyFlash38) {
+      return anyFlash38.value;
+    }
+    return targetSlug;
+  }
+
+  if (available.some((opt) => opt.value === candidate)) {
+    return candidate;
+  }
+
+  const aliases: Record<string, string[]> = {
+    "claude-opus-4-6": ["claude-opus-4-6-thinking"],
+    "claude-opus-4-6-thinking": ["claude-opus-4-6"],
+    "claude-sonnet-4-6": ["claude-sonnet-4-6-thinking"],
+    "claude-sonnet-4-6-thinking": ["claude-sonnet-4-6"],
+    "gpt-oss-120b": ["gpt-oss-120b-medium"],
+    "gpt-oss-120b-medium": ["gpt-oss-120b"],
+    "gemini-3-pro": ["gemini-3.0-pro"],
+    "gemini-3.0-pro": ["gemini-3-pro"],
+    "gemini-3.1-pro": ["gemini-pro-agent", "gemini-3.1-pro-high"],
+    "gemini-pro-agent": ["gemini-3.1-pro", "gemini-3.1-pro-high"],
+  };
+  const candAliases = aliases[candidate] ?? [];
+  for (const alias of candAliases) {
+    if (available.some((opt) => opt.value === alias)) {
+      return alias;
+    }
+  }
+
+  return candidate;
 }
 
 /** Never replace a saved selection with the default returned by a cold resume. */
@@ -157,7 +248,10 @@ export const applyAntigravityAcpModelSelection = Effect.fn("applyAntigravityAcpM
       ) => Effect.Effect<unknown, EffectAcpErrors.AcpError>;
     };
     readonly model: string | null | undefined;
-    readonly options?: Readonly<Record<string, string | boolean>> | undefined;
+    readonly options?:
+      | ReadonlyArray<ProviderOptionSelection>
+      | Readonly<Record<string, unknown>>
+      | undefined;
     /** Model to select for the provider default alias. See `resolveAntigravityModel`. */
     readonly defaultModel?: string | undefined;
     readonly mapError: (cause: EffectAcpErrors.AcpError) => E;
@@ -168,6 +262,7 @@ export const applyAntigravityAcpModelSelection = Effect.fn("applyAntigravityAcpM
     const resolved = resolveAntigravityModel({
       configOptions,
       model: input.model,
+      options: input.options,
       defaultModel: input.defaultModel,
     });
     // The default alias never sends an internal ID. It selects the manifest
@@ -176,11 +271,11 @@ export const applyAntigravityAcpModelSelection = Effect.fn("applyAntigravityAcpM
     const explicit = Boolean(input.model) && input.model !== ANTIGRAVITY_DEFAULT_MODEL;
     if (resolved !== undefined && (explicit || resolved !== current)) {
       const options = antigravityModelOptions(configOptions);
-      if (!options.some((option) => option.value === resolved)) {
+      if (options.length > 0 && !options.some((option) => option.value === resolved)) {
         return yield* Effect.fail(
           input.mapError(
             EffectAcpErrors.AcpRequestError.invalidParams(
-              `Antigravity model '${resolved}' is unavailable for this Google account. Select an available model.`,
+              `Antigravity model '${input.model ?? resolved}' is unavailable for this Google account. Select an available model.`,
             ),
           ),
         );
@@ -189,7 +284,12 @@ export const applyAntigravityAcpModelSelection = Effect.fn("applyAntigravityAcpM
     }
 
     if (input.options && input.runtime.setConfigOption) {
-      for (const [key, val] of Object.entries(input.options)) {
+      const optionEntries: Array<[string, unknown]> = Array.isArray(input.options)
+        ? input.options.map((opt) => [opt.id, opt.value])
+        : Object.entries(input.options);
+
+      for (const [key, val] of optionEntries) {
+        if (typeof val !== "string" && typeof val !== "boolean") continue;
         const optionConfig = configOptions.find(
           (opt) =>
             opt.id === key ||
@@ -197,6 +297,7 @@ export const applyAntigravityAcpModelSelection = Effect.fn("applyAntigravityAcpM
             ((key === "effort" ||
               key === "thought_level" ||
               key === "reasoning" ||
+              key === "reasoningEffort" ||
               key === "thinking") &&
               (opt.id === "thought_level" ||
                 opt.category === "thought_level" ||
@@ -212,7 +313,9 @@ export const applyAntigravityAcpModelSelection = Effect.fn("applyAntigravityAcpM
       }
     }
 
-    return resolved ?? current;
+    return input.model && input.model !== ANTIGRAVITY_DEFAULT_MODEL
+      ? input.model
+      : (resolved ?? current);
   },
 );
 
