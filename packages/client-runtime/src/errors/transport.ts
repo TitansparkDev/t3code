@@ -1,10 +1,18 @@
+import { NETWORK_BLOCKING_HINT } from "./network.ts";
+
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 const TRANSPORT_ERROR_PATTERNS = [
   /\bSocketCloseError\b/i,
   /\bSocketOpenError\b/i,
   /\bSocket is not connected\b/i,
   /Unable to connect to the T3 server WebSocket\./i,
-  // The RPC session can append a network hint after these sentences.
-  /\b(?:is not connected|disconnected|could not establish a WebSocket connection)\.(?:\s|$)/i,
+  // The RPC session appends the network hint for relay connections. Any other
+  // trailing text means a different error that the user should still see.
+  new RegExp(
+    `\\b(?:is not connected|disconnected|could not establish a WebSocket connection)\\.(?: ${escapeRegExp(NETWORK_BLOCKING_HINT)})?$`,
+    "i",
+  ),
   /\bClientProtocolError\b/i,
   /\bRpcClientError\b/i,
   /\bping timeout\b/i,

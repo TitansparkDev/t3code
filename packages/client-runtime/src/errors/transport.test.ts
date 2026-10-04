@@ -38,7 +38,11 @@ describe("isTransportConnectionErrorMessage", () => {
     ]) {
       expect(isTransportConnectionErrorMessage(`${sentence} ${NETWORK_BLOCKING_HINT}`)).toBe(true);
     }
-    expect(isTransportConnectionErrorMessage("The deploy was disconnected.yaml")).toBe(false);
+    expect(
+      isTransportConnectionErrorMessage(
+        "Your ChatGPT connection expired or was disconnected. Sign in again.",
+      ),
+    ).toBe(false);
   });
 
   it("returns true for the T3 server WebSocket message", () => {
