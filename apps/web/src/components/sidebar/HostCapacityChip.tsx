@@ -51,7 +51,7 @@ export function HostCapacityChip() {
         render={
           <span
             className={cn(
-              "relative z-10 ml-2 hidden shrink-0 items-center gap-1.5 rounded-md px-1.5 py-0.5 text-[11px] tabular-nums md:inline-flex",
+              "relative z-10 ml-2 hidden shrink-0 items-center gap-1.5 rounded-md px-1.5 py-0.5 text-2xs tabular-nums md:inline-flex",
               capacity.slots <= 1 ? "text-warning-foreground" : "text-muted-foreground",
             )}
           >
