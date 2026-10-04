@@ -173,6 +173,12 @@ Full glossary with file links: `docs/internals/glossary.md`
 
 ## Recent request log
 
+- 2026-10-04 — v0.0.57: goals (agents that keep working until nothing is left) are set up from
+  the new-chat project picker with a Goal switch (web, desktop, mobile) and tracked on a Goals page;
+  usage-limited threads can resume on their own per provider/model (Settings → Auto-resume) and goal
+  agents always do; Gemini 3.8 Flash is one model with an effort picker; a header chip shows RAM,
+  agents and free slots; failed telemetry sends back off instead of writing 214 MB of log. The Chat
+  Agents provider is not built: it needs a conversation-id option in the W desktop worker.
 - 2026-10-02 — v0.0.56: scheduled tasks gain same-day repeats (e.g. 05:00 then every 5h),
   optional project (runs in "No project") and archive finished runs; projects can be re-linked
   after a folder move (Settings → Project → Folder, `t3 project move`); mobile shows why a turn
