@@ -1,20 +1,19 @@
 /**
- * Runs goals: keeps `lanes` chats working at once, starts the next as each
- * finishes, and stops when an agent says nothing is left.
+ * Runs goals: keeps up to `concurrency` chats working at once, starts the next
+ * as each finishes, and stops when an agent says nothing is left.
  *
- * A goal starts from an ordinary chat message beginning `!goal`. The chat the
- * person typed in becomes the first lane; the others are new ordinary threads
- * in the same project. Nothing here is a parallel code path: every chat is a
- * `thread.create` plus `thread.turn.start`, the same commands a person's
- * message produces, so provider routing, history and approvals all behave
- * normally.
+ * A goal is set up on the new-chat flow's goal page and created over RPC. Every
+ * chat is a new ordinary thread in the goal's project: a `thread.create` plus
+ * a `thread.turn.start`, the same commands a person's message produces, so
+ * provider routing, history and approvals all behave normally.
  *
- * Three rules keep unattended work from running away:
+ * Rules that keep unattended work from running away:
  *  - A chat that fails does not restart its lane, so a broken setup cannot
- *    loop through the whole chat budget.
- *  - A chat stopped by a provider usage limit waits for the limit to reset
- *    (Auto-resume or the person resumes it) instead of counting as a failure.
- *  - A goal never starts more than `maxChats` chats per start.
+ *    loop through the chat budget (or forever, when there is no cap).
+ *  - A chat stopped by a provider usage limit is not a failure. With auto
+ *    resume on, it is scheduled to continue when the limit resets and the goal
+ *    waits for it.
+ *  - A goal never starts more chats than its cap, per start.
  *
  * @module goals/GoalService
  */
@@ -23,23 +22,18 @@ import {
   MessageId,
   OrchestrationDispatchCommandError,
   ThreadId,
-  type ClientOrchestrationCommand,
   type OrchestrationThread,
-  type ProjectId,
 } from "@t3tools/contracts";
 import {
-  DEFAULT_GOAL_LANES,
-  DEFAULT_GOAL_MAX_CHATS,
-  GOAL_COMMAND,
   type Goal,
   type GoalChat,
   GoalId,
+  type GoalSettings,
   goalPrompt,
-  isGoalCommand,
-  parseGoalCommand,
+  goalSettingsProblem,
+  goalTitle,
   replyReportsGoalComplete,
 } from "@t3tools/contracts/goals";
-import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -52,24 +46,16 @@ import * as Stream from "effect/Stream";
 
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
-import * as ServerSettings from "../serverSettings.ts";
-import { TextGeneration } from "../textGeneration/TextGeneration.ts";
+import { nextUsageLimitRetryAt } from "../provider/usageLimits.ts";
 import { GoalStore } from "./GoalStore.ts";
-
-const TITLE_TIMEOUT = "30 seconds";
-const PROVISIONAL_TITLE_LENGTH = 60;
 
 export class GoalService extends Context.Service<
   GoalService,
   {
-    /**
-     * Start a goal when the message begins `!goal`, and return the command to
-     * dispatch: the same command with the goal's prompt as its message. Any
-     * other command comes back untouched.
-     */
-    readonly interceptTurnStart: (
-      command: ClientOrchestrationCommand,
-    ) => Effect.Effect<ClientOrchestrationCommand, OrchestrationDispatchCommandError>;
+    /** Create a goal and start its first chats. */
+    readonly create: (
+      settings: GoalSettings,
+    ) => Effect.Effect<ReadonlyArray<Goal>, OrchestrationDispatchCommandError>;
     readonly list: Effect.Effect<ReadonlyArray<Goal>>;
     readonly stop: (id: GoalId) => Effect.Effect<ReadonlyArray<Goal>>;
     readonly restart: (id: GoalId) => Effect.Effect<ReadonlyArray<Goal>>;
@@ -85,14 +71,26 @@ export function chatsSinceStart(goal: Goal): ReadonlyArray<GoalChat> {
   return goal.chats.filter((chat) => Date.parse(chat.startedAt) >= since);
 }
 
-/** How many more chats this goal may start right now. */
-export function chatsToStart(goal: Goal): number {
-  if (goal.status !== "running") return 0;
+/**
+ * Which agent the next chat should use, or undefined when none has room. The
+ * agent furthest below its own count goes first, so counts fill evenly.
+ */
+export function nextAgentIndex(goal: Goal): number | undefined {
+  if (goal.status !== "running") return undefined;
   const chats = chatsSinceStart(goal);
-  const running = chats.filter((chat) => chat.status === "running").length;
-  // A failed chat keeps its lane closed for the rest of this start.
+  const running = chats.filter((chat) => chat.status === "running");
   const failed = chats.filter((chat) => chat.status === "failed").length;
-  return Math.max(0, Math.min(goal.lanes - running - failed, goal.maxChats - chats.length));
+  // A failed chat keeps its lane closed for the rest of this start.
+  if (running.length + failed >= goal.concurrency) return undefined;
+  if (goal.maxChats !== null && chats.length >= goal.maxChats) return undefined;
+  let best: { index: number; load: number } | undefined;
+  goal.agents.forEach((agent, index) => {
+    const active = running.filter((chat) => chat.agentIndex === index).length;
+    if (active >= agent.count) return;
+    const load = active / agent.count;
+    if (!best || load < best.load) best = { index, load };
+  });
+  return best?.index;
 }
 
 const lastAssistantReply = (thread: OrchestrationThread | undefined) =>
@@ -102,8 +100,6 @@ export const make = Effect.gen(function* () {
   const engine = yield* OrchestrationEngineService;
   const snapshots = yield* ProjectionSnapshotQuery;
   const store = yield* GoalStore;
-  const textGeneration = yield* TextGeneration;
-  const settingsService = yield* ServerSettings.ServerSettingsService;
   const crypto = yield* Crypto.Crypto;
   const randomUUID = crypto.randomUUIDv4.pipe(Effect.orDie);
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
@@ -123,8 +119,8 @@ export const make = Effect.gen(function* () {
       Effect.catchCause(() => Effect.succeed(undefined)),
     );
 
-  const addChat = (goal: Goal, chat: GoalChat) =>
-    store.update(goal.id, (current) => ({
+  const addChat = (goalId: GoalId, chat: GoalChat) =>
+    store.update(goalId, (current) => ({
       ...current,
       chats: [...current.chats, chat],
       updatedAt: chat.startedAt,
@@ -151,23 +147,24 @@ export const make = Effect.gen(function* () {
         updatedAt: now,
         ...(status === "running"
           ? { restartedAt: now, completedAt: undefined, detail: undefined }
-          : { completedAt: now, ...(detail ? { detail } : { detail: undefined }) }),
+          : { completedAt: now, detail: detail ?? undefined }),
       }));
     });
 
-  /** Open one new chat for the goal. Returns whether it started. */
-  const startChat = Effect.fn("GoalService.startChat")(function* (goal: Goal) {
+  /** Open one new chat for the goal on `agentIndex`. Returns whether it started. */
+  const startChat = Effect.fn("GoalService.startChat")(function* (goal: Goal, agentIndex: number) {
+    const agent = goal.agents[agentIndex];
+    if (!agent) return false;
     const threadId = ThreadId.make(yield* randomUUID);
     const createdAt = yield* nowIso;
-    const number = goal.chats.length + 1;
-    const modelSelection = goal.modelSelection;
+    const modelSelection = agent.modelSelection;
     const created = yield* engine
       .dispatch({
         type: "thread.create",
         commandId: CommandId.make(`goal-create:${yield* randomUUID}`),
         threadId,
         projectId: goal.projectId,
-        title: `${goal.title} · ${number}`,
+        title: `${goalTitle(goal)} · ${goal.chats.length + 1}`,
         modelSelection,
         runtimeMode: goal.runtimeMode,
         interactionMode: "default",
@@ -184,7 +181,7 @@ export const make = Effect.gen(function* () {
     if (!created) return false;
     // Registered before the turn starts so a fast provider cannot finish unseen.
     watching.set(threadId, { goalId: goal.id, seenRunning: false });
-    yield* addChat(goal, { threadId, status: "running", startedAt: createdAt });
+    yield* addChat(goal.id, { threadId, agentIndex, status: "running", startedAt: createdAt });
     const started = yield* engine
       .dispatch({
         type: "thread.turn.start",
@@ -197,7 +194,7 @@ export const make = Effect.gen(function* () {
           attachments: [],
         },
         modelSelection,
-        titleSeed: goal.title,
+        titleSeed: goalTitle(goal),
         runtimeMode: goal.runtimeMode,
         interactionMode: "default",
         createdAt,
@@ -222,12 +219,13 @@ export const make = Effect.gen(function* () {
     return started;
   });
 
-  /** Start chats until the lanes are full, the budget is spent, or a start fails. */
+  /** Start chats until the lanes are full, the cap is reached, or a start fails. */
   const fillLanes = Effect.fn("GoalService.fillLanes")(function* (goalId: GoalId) {
     while (true) {
       const goal = (yield* store.list).find((candidate) => candidate.id === goalId);
-      if (!goal || chatsToStart(goal) === 0) break;
-      if (!(yield* startChat(goal))) break;
+      const agentIndex = goal ? nextAgentIndex(goal) : undefined;
+      if (!goal || agentIndex === undefined) break;
+      if (!(yield* startChat(goal, agentIndex))) break;
     }
     yield* settleIfIdle(goalId);
   });
@@ -237,12 +235,14 @@ export const make = Effect.gen(function* () {
     const goal = (yield* store.list).find((candidate) => candidate.id === goalId);
     if (!goal || goal.status !== "running") return;
     const chats = chatsSinceStart(goal);
-    if (chats.some((chat) => chat.status === "running") || chatsToStart(goal) > 0) return;
+    if (chats.some((chat) => chat.status === "running") || nextAgentIndex(goal) !== undefined) {
+      return;
+    }
     const failed = chats.filter((chat) => chat.status === "failed").length;
     yield* setStatus(
       goalId,
       "failed",
-      failed >= goal.lanes
+      failed >= goal.concurrency
         ? "Every chat failed, so the goal stopped. Open a failed chat to see why."
         : `Reached the limit of ${goal.maxChats} chats without a GOAL COMPLETE.`,
     );
@@ -256,24 +256,20 @@ export const make = Effect.gen(function* () {
     watching.delete(threadId);
     const thread = yield* readThread(threadId);
     const failed = thread?.latestTurn?.state !== "completed";
-    const completedAt = yield* nowIso;
     const goal = yield* updateChat(goalId, threadId, {
       status: failed ? "failed" : "completed",
-      completedAt,
+      completedAt: yield* nowIso,
       waitingForLimit: undefined,
     });
     if (!goal) return;
-    const chat = goal.chats.find((candidate) => candidate.threadId === threadId);
-    // The chat the person typed in is theirs to keep; the others tidy themselves away.
-    if (!chat?.origin) {
-      yield* engine
-        .dispatch({
-          type: "thread.archive",
-          commandId: CommandId.make(`goal-archive:${yield* randomUUID}`),
-          threadId,
-        })
-        .pipe(Effect.ignoreCause({ log: true }));
-    }
+    // Finished chats tidy themselves out of the thread list; the Goals page still links them.
+    yield* engine
+      .dispatch({
+        type: "thread.archive",
+        commandId: CommandId.make(`goal-archive:${yield* randomUUID}`),
+        threadId,
+      })
+      .pipe(Effect.ignoreCause({ log: true }));
     if (goal.status !== "running") return;
     if (!failed && replyReportsGoalComplete(lastAssistantReply(thread))) {
       yield* setStatus(goalId, "complete", "An agent reported there is nothing left to do.");
@@ -282,11 +278,40 @@ export const make = Effect.gen(function* () {
     yield* fillLanes(goalId);
   });
 
+  /**
+   * Continue a chat that hit a usage limit once the limit resets. The command
+   * id matches the Auto-resume setting's, so a chat covered by both is only
+   * scheduled once.
+   */
+  const scheduleResume = Effect.fn("GoalService.scheduleResume")(function* (
+    threadId: ThreadId,
+    session: { readonly updatedAt: string; readonly retryAt?: string | undefined },
+  ) {
+    const shell = yield* snapshots.getThreadShellById(threadId).pipe(
+      Effect.map(Option.getOrUndefined),
+      Effect.catchCause(() => Effect.succeed(undefined)),
+    );
+    if (!shell || shell.usageLimitResume != null) return;
+    const now = yield* nowIso;
+    yield* engine.dispatch({
+      type: "thread.usage-limit-resume.schedule",
+      commandId: CommandId.make(`server:usage-limit-auto-resume:${threadId}:${session.updatedAt}`),
+      threadId,
+      resumeAt: nextUsageLimitRetryAt({
+        now,
+        attempt: 0,
+        ...(session.retryAt !== undefined ? { providerRetryAt: session.retryAt } : {}),
+      }),
+    });
+  });
+
   const onSessionSet = (event: {
     readonly threadId: ThreadId;
     readonly session: {
       readonly activeTurnId: unknown;
       readonly status: string;
+      readonly updatedAt: string;
+      readonly retryAt?: string | undefined;
       readonly lastErrorClass?: string | undefined;
     };
   }) =>
@@ -304,7 +329,12 @@ export const make = Effect.gen(function* () {
         return;
       }
       if (session.lastErrorClass === "usage_limit") {
-        yield* updateChat(watch.goalId, event.threadId, { waitingForLimit: true });
+        const goal = yield* updateChat(watch.goalId, event.threadId, { waitingForLimit: true });
+        if (goal?.autoResume && goal.status === "running") {
+          yield* scheduleResume(event.threadId, session).pipe(
+            Effect.catchCause(logFailure("goals.resume-schedule-failed")),
+          );
+        }
         return;
       }
       // A quiet session before the turn ever ran is a leftover from before it.
@@ -325,8 +355,7 @@ export const make = Effect.gen(function* () {
             thread.session.status === "starting" ||
             thread.session.status === "running");
         if (thread && !busy && thread.latestTurn !== null) {
-          const limited = thread.session?.lastErrorClass === "usage_limit";
-          if (limited) {
+          if (thread.session?.lastErrorClass === "usage_limit") {
             watching.set(chat.threadId, { goalId: goal.id, seenRunning: true });
             yield* updateChat(goal.id, chat.threadId, { waitingForLimit: true });
           } else {
@@ -360,89 +389,36 @@ export const make = Effect.gen(function* () {
     { concurrency: "unbounded", discard: true },
   );
 
-  /** Replace the provisional title with one written by the text-generation model. */
-  const generateTitle = Effect.fn("GoalService.generateTitle")(function* (goal: Goal, cwd: string) {
-    const settings = yield* settingsService.getSettings;
-    const { textGenerationModelSelection: modelSelection } = resolveProjectSettings(
-      settings,
-      goal.projectId,
-    ).settings;
-    const generated = yield* textGeneration
-      .generateThreadTitle({ cwd, message: goal.prompt, modelSelection })
-      .pipe(Effect.timeout(TITLE_TIMEOUT));
-    const title = generated.title.trim();
-    if (title.length === 0) return;
-    yield* store.update(goal.id, (current) => ({ ...current, title }));
-  });
-
-  const interceptTurnStart: GoalService["Service"]["interceptTurnStart"] = Effect.fn(
-    "GoalService.interceptTurnStart",
-  )(function* (command) {
-    if (command.type !== "thread.turn.start" || !isGoalCommand(command.message.text)) {
-      return command;
-    }
-    const parsed = parseGoalCommand(command.message.text);
-    if (!parsed) {
-      return yield* new OrchestrationDispatchCommandError({
-        message: `Say what the goal is after ${GOAL_COMMAND}, for example: ${GOAL_COMMAND} finish everything in PLAN.md`,
-      });
-    }
-    const createThread = command.bootstrap?.createThread;
-    const existing = createThread
-      ? Option.none()
-      : yield* snapshots
-          .getThreadShellById(command.threadId)
-          .pipe(
-            Effect.mapError(
-              (cause) => new OrchestrationDispatchCommandError({ message: cause.message }),
-            ),
-          );
-    const projectId: ProjectId | undefined =
-      createThread?.projectId ?? Option.getOrUndefined(existing)?.projectId;
-    const modelSelection =
-      command.modelSelection ??
-      createThread?.modelSelection ??
-      Option.getOrUndefined(existing)?.modelSelection;
-    if (!projectId || !modelSelection) {
-      return yield* new OrchestrationDispatchCommandError({
-        message: "A goal needs a chat in a project, so it knows where to work.",
-      });
-    }
-    const project = yield* snapshots.getProjectShells([projectId]).pipe(
-      Effect.map((projects) => projects[0]),
-      Effect.mapError((cause) => new OrchestrationDispatchCommandError({ message: cause.message })),
-    );
-    const now = yield* nowIso;
-    const goal: Goal = {
-      id: GoalId.make(yield* randomUUID),
-      // Replaced by the model's title shortly; this keeps the list readable meanwhile.
-      title: parsed.description.slice(0, PROVISIONAL_TITLE_LENGTH),
-      description: parsed.description,
-      prompt: parsed.prompt,
-      projectId,
-      modelSelection,
-      runtimeMode: command.runtimeMode,
-      lanes: parsed.lanes ?? DEFAULT_GOAL_LANES,
-      maxChats: DEFAULT_GOAL_MAX_CHATS,
-      status: "running",
-      createdAt: now,
-      updatedAt: now,
-      chats: [{ threadId: command.threadId, status: "running", startedAt: now, origin: true }],
-    };
-    yield* store.add(goal);
-    watching.set(command.threadId, { goalId: goal.id, seenRunning: false });
-    yield* Effect.forkDetach(
-      Effect.gen(function* () {
-        yield* lock.withPermits(1)(fillLanes(goal.id));
-        if (project) yield* generateTitle(goal, project.workspaceRoot);
-      }).pipe(Effect.catchCause(logFailure("goals.start-failed"))),
-    );
-    return {
-      ...command,
-      message: { ...command.message, text: goalPrompt(goal) },
-      titleSeed: parsed.description,
-    };
-  });
+  const create: GoalService["Service"]["create"] = Effect.fn("GoalService.create")(
+    function* (settings) {
+      const problem = goalSettingsProblem(settings);
+      if (problem) return yield* new OrchestrationDispatchCommandError({ message: problem });
+      const projects = yield* snapshots
+        .getProjectShells([settings.projectId])
+        .pipe(
+          Effect.mapError(
+            (cause) => new OrchestrationDispatchCommandError({ message: cause.message }),
+          ),
+        );
+      if (projects.length === 0) {
+        return yield* new OrchestrationDispatchCommandError({
+          message: "That project no longer exists.",
+        });
+      }
+      const now = yield* nowIso;
+      const goal: Goal = {
+        ...settings,
+        id: GoalId.make(yield* randomUUID),
+        status: "running",
+        createdAt: now,
+        updatedAt: now,
+        chats: [],
+      };
+      yield* store.add(goal);
+      yield* lock.withPermits(1)(fillLanes(goal.id));
+      return yield* store.list;
+    },
+  );
 
   const stop = Effect.fn("GoalService.stop")(function* (id: GoalId) {
     yield* lock.withPermits(1)(
@@ -487,23 +463,16 @@ export const make = Effect.gen(function* () {
     return yield* store.list;
   });
 
-  return GoalService.of({
-    interceptTurnStart,
-    list: store.list,
-    stop,
-    restart,
-    remove,
-    loop,
-  });
+  return GoalService.of({ create, list: store.list, stop, restart, remove, loop });
 });
 
 export const layer = Layer.effect(GoalService, make);
 
-/** Service that starts nothing and passes every command through, for contexts with no goals. */
+/** Service that starts nothing, for contexts with no goals. */
 export const layerTest = Layer.succeed(
   GoalService,
   GoalService.of({
-    interceptTurnStart: (command) => Effect.succeed(command),
+    create: () => Effect.succeed([]),
     list: Effect.succeed([]),
     stop: () => Effect.succeed([]),
     restart: () => Effect.succeed([]),

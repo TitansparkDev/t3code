@@ -1,45 +1,53 @@
 # Goals
 
-A goal keeps several chats working on one job until nothing is left. Use it for work
+A goal keeps several agents working on one job until nothing is left. Use it for work
 that is bigger than one chat, such as "finish everything in PLAN.md", while you are
 away.
 
 ## Start a goal
 
-In any chat inside a project, send a message that starts with `!goal`:
+On the new-chat project picker (the **New thread in…** menu on desktop and web, the
+**Choose project** sheet on mobile), switch **Goal** on, then choose a project. Goal
+is off by default each time. You land on the goal setup page, where you choose:
 
-```
-!goal finish everything in PLAN.md
-Take a large chunk of the plan, claim it, and do high-quality work.
-```
+- **Goal** — what should be done. The same text is the goal's name and what every
+  agent receives. The first line is the title shown in lists.
+- **Agents at once** — how many chats work at the same time (up to 16).
+- **Most agents in total** — how many chats the goal may start, or **Until complete**
+  to keep going until an agent says nothing is left. With no limit, the goal uses your
+  plan's usage until it completes or you stop it.
+- **Models** — one or more provider accounts and models, each with its effort level
+  and how many of that model run at once. Chats are spread across the models by those
+  counts, and never exceed **Agents at once** in total.
+- **Other settings** — restart agents cut off by a usage limit (on by default),
+  the working rules (on by default), and the permission mode.
 
-The first line says what the goal is. Any lines after it are instructions for the
-agents. Add `x4` after `!goal` to run four chats at once; the default is three and the
-most is eight. The chat you typed in becomes the first chat. The others are new chats
-in the same project, using the same provider, model, and permission mode.
+The working rules tell each agent to claim one unfinished chunk so others skip it,
+work in its own git worktree, merge to the default branch and push when verified, then
+remove the worktree. Turn them off for goals that are not code in a shared repository.
+Every agent is also told to work alone, use best judgment instead of asking, and stop
+after one piece of work. Because agents run unattended, choose a permission mode that
+does not wait for approvals; any approval an agent asks for waits for you.
 
-The server adds standing rules to every chat's prompt: work alone and use best
-judgment instead of asking, claim one unfinished chunk so others skip it, work in your
-own git worktree, merge to the default branch and push when verified, remove the
-worktree, then stop. Because chats run unattended, choose a permission mode that does
-not wait for approvals.
+You can also start from **Goals → New goal** on desktop and web. Every goal chat is a
+new ordinary thread in the project, so mobile shows the working agents in the thread
+list.
 
 ## What happens next
 
-Each time a chat finishes, the next chat starts in its place, up to 50 chats per
-start. When an agent replies `GOAL COMPLETE` on its own line because nothing is left,
-the goal is complete and no more chats start; chats still working finish on their own.
-Finished chats other than the one you typed in are archived.
+Each time an agent finishes, the next one starts in its place. When an agent replies
+`GOAL COMPLETE` on its own line because nothing is left, the goal is complete and no
+more chats start; agents still working finish on their own. Finished chats are
+archived.
 
 - A chat that fails does not restart its lane, so a broken setup cannot burn through
-  the budget. If every lane fails, the goal stops early.
-- A chat that stops on a usage limit waits for the limit to reset. Switch it on under
-  **Settings → Auto-resume** so it continues without you.
-- A goal's title is written for you from what you typed.
+  usage. If every lane fails, the goal stops early.
+- A chat that stops on a usage limit is resumed when the limit resets, and the goal
+  waits for it. Without that setting, the chat waits for you to resume it.
 
 ## Check on goals
 
-Open **Goals** in the sidebar. Each goal shows its progress, a green tick once it is
-complete, and a link to each chat. **Stop** interrupts the chats that are running.
-**Start again** starts a stopped, finished, or failed goal with a fresh budget, and
-the delete button removes it from the list.
+Open **Goals** in the desktop or web sidebar. Each goal shows its progress, a green
+tick once it is complete, and a link to each chat. **Stop** interrupts the running
+chats. **Start again** starts a stopped, finished, or failed goal with a fresh budget,
+and the delete button removes it from the list.

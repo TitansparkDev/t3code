@@ -1,18 +1,14 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
-  CommandId,
-  DEFAULT_SERVER_SETTINGS,
   EventId,
-  MessageId,
   ProjectId,
   ProviderInstanceId,
-  ThreadId,
-  type ClientOrchestrationCommand,
   type OrchestrationCommand,
   type OrchestrationEvent,
   type OrchestrationThread,
 } from "@t3tools/contracts";
+import type { GoalSettings } from "@t3tools/contracts/goals";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -24,25 +20,24 @@ import * as Stream from "effect/Stream";
 import * as ServerConfig from "../config.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
-import { ServerSettingsService } from "../serverSettings.ts";
-import { TextGeneration } from "../textGeneration/TextGeneration.ts";
 import * as GoalService from "./GoalService.ts";
 import * as GoalStore from "./GoalStore.ts";
 
 const PROJECT = ProjectId.make("project-1");
-const MODEL = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6" };
+const CODEX = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6" };
+const CLAUDE = { instanceId: ProviderInstanceId.make("claudeAgent"), model: "opus" };
 
-const turnStart = (text: string): ClientOrchestrationCommand =>
-  ({
-    type: "thread.turn.start",
-    commandId: CommandId.make("c1"),
-    threadId: ThreadId.make("origin"),
-    message: { messageId: MessageId.make("m1"), role: "user", text, attachments: [] },
-    modelSelection: MODEL,
-    runtimeMode: "full-access",
-    interactionMode: "default",
-    createdAt: "2026-10-04T12:00:00.000Z",
-  }) as ClientOrchestrationCommand;
+const settings = (overrides: Partial<GoalSettings> = {}): GoalSettings => ({
+  name: "Finish PLAN.md",
+  projectId: PROJECT,
+  agents: [{ modelSelection: CODEX, count: 3 }],
+  concurrency: 2,
+  maxChats: 10,
+  runtimeMode: "full-access",
+  autoResume: true,
+  standardRules: true,
+  ...overrides,
+});
 
 const makeHarness = Effect.gen(function* () {
   const commands = yield* Queue.unbounded<OrchestrationCommand>();
@@ -52,6 +47,7 @@ const makeHarness = Effect.gen(function* () {
   const subscription = yield* PubSub.subscribe(events);
   let eventCount = 0;
   const threadState = yield* Ref.make({ reply: "Done.", turnState: "completed" });
+  const hasResume = yield* Ref.make(false);
 
   const thread = (state: { reply: string; turnState: string }) =>
     ({
@@ -69,27 +65,21 @@ const makeHarness = Effect.gen(function* () {
           streamDomainEvents: Stream.fromSubscription(subscription),
         }),
         Layer.mock(ProjectionSnapshotQuery)({
+          getProjectShells: (ids) =>
+            Effect.succeed(
+              (ids ?? []).includes(PROJECT)
+                ? [{ id: PROJECT, workspaceRoot: "/work" } as never]
+                : [],
+            ),
           getThreadShellById: () =>
-            Effect.succeed(Option.some({ projectId: PROJECT, modelSelection: MODEL } as never)),
-          getProjectShells: () =>
-            Effect.succeed([{ id: PROJECT, workspaceRoot: "/work/project" } as never]),
+            Ref.get(hasResume).pipe(
+              Effect.map((resume) =>
+                Option.some({ usageLimitResume: resume ? { nextAttemptAt: null } : null } as never),
+              ),
+            ),
           getThreadDetailById: () =>
             Ref.get(threadState).pipe(Effect.map((state) => Option.some(thread(state)))),
         }),
-        Layer.mock(TextGeneration)({
-          generateThreadTitle: () => Effect.succeed({ title: "Finish the plan" }),
-        }),
-        Layer.succeed(
-          ServerSettingsService,
-          ServerSettingsService.of({
-            start: Effect.void,
-            ready: Effect.void,
-            getSettings: Effect.succeed(DEFAULT_SERVER_SETTINGS),
-            updateSettings: () => Effect.succeed(DEFAULT_SERVER_SETTINGS),
-            streamChanges: Stream.empty,
-            subscribeChanges: Effect.succeed(Stream.empty),
-          }),
-        ),
         Layer.fresh(ServerConfig.layerTest(process.cwd(), { prefix: "t3code-goals-test-" })),
       ),
     ),
@@ -137,51 +127,52 @@ const makeHarness = Effect.gen(function* () {
     yield* sessionEvent(threadId, { status: "ready", activeTurnId: null });
   });
 
-  return { layer, waitFor, log, threadState, sessionEvent, runAndFinish };
+  return { layer, waitFor, log, threadState, hasResume, sessionEvent, runAndFinish };
 });
 
 const threadIdOf = (command: OrchestrationCommand | undefined) =>
   command?.type === "thread.create" ? command.threadId : "";
 
 it.layer(NodeServices.layer)("GoalService", (it) => {
-  it.effect("turns !goal into a goal, rewrites the message, and fills the other lanes", () =>
+  it.effect("starts one chat per lane, spread across the models by their counts", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness;
       yield* Effect.gen(function* () {
         const service = yield* GoalService.GoalService;
-        const intercepted = yield* service.interceptTurnStart(
-          turnStart("!goal x2 finish PLAN.md\nWork the plan."),
+        const [goal] = yield* service.create(
+          settings({
+            agents: [
+              { modelSelection: CODEX, count: 2 },
+              { modelSelection: CLAUDE, count: 1 },
+            ],
+            concurrency: 3,
+          }),
         );
-        expect(intercepted.type === "thread.turn.start" && intercepted.message.text).toContain(
-          "finish PLAN.md\n\nWork the plan.",
-        );
-        expect(intercepted.type === "thread.turn.start" && intercepted.message.text).toContain(
-          "Goal rules",
-        );
-
-        // Two lanes: the typed-in chat plus one new chat.
-        yield* harness.waitFor("thread.turn.start", 1);
-        const [goal] = yield* service.list;
-        expect(goal).toMatchObject({
-          lanes: 2,
-          status: "running",
-          description: "finish PLAN.md",
-          projectId: PROJECT,
-        });
-        expect(goal?.chats.map((chat) => chat.origin === true)).toEqual([true, false]);
+        const turns = yield* harness.waitFor("thread.turn.start", 3);
+        expect(
+          turns.map((turn) => (turn.type === "thread.turn.start" ? turn.modelSelection : null)),
+        ).toEqual([CODEX, CLAUDE, CODEX]);
+        expect(goal?.chats.map((chat) => chat.agentIndex)).toEqual([0, 1, 0]);
+        const text = turns[0]?.type === "thread.turn.start" ? turns[0].message.text : "";
+        expect(text).toContain("Finish PLAN.md");
+        expect(text).toContain("own git worktree");
       }).pipe(Effect.provide(harness.layer), Effect.scoped);
     }),
   );
 
-  it.effect("passes ordinary messages through and explains an empty goal", () =>
+  it.effect("refuses a setup the server would not accept", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness;
       yield* Effect.gen(function* () {
         const service = yield* GoalService.GoalService;
-        const ordinary = turnStart("just a message");
-        expect(yield* service.interceptTurnStart(ordinary)).toBe(ordinary);
-        const error = yield* service.interceptTurnStart(turnStart("!goal")).pipe(Effect.flip);
-        expect(error.message).toContain("Say what the goal is");
+        const tooFew = yield* service
+          .create(settings({ concurrency: 5, maxChats: 3 }))
+          .pipe(Effect.flip);
+        expect(tooFew.message).toContain("at least as many");
+        const noProject = yield* service
+          .create(settings({ projectId: ProjectId.make("gone") }))
+          .pipe(Effect.flip);
+        expect(noProject.message).toContain("no longer exists");
         expect(yield* service.list).toEqual([]);
       }).pipe(Effect.provide(harness.layer), Effect.scoped);
     }),
@@ -194,24 +185,50 @@ it.layer(NodeServices.layer)("GoalService", (it) => {
         const service = yield* GoalService.GoalService;
         yield* Effect.forkScoped(service.loop);
         yield* Effect.yieldNow;
-        yield* service.interceptTurnStart(turnStart("!goal x2 finish PLAN.md"));
-        const [lane2] = yield* harness.waitFor("thread.create", 1);
+        yield* service.create(settings());
+        const [first, second] = yield* harness.waitFor("thread.create", 2);
 
-        // The typed-in chat finishes normally, so its lane is refilled.
-        yield* harness.runAndFinish("origin");
-        const creates = yield* harness.waitFor("thread.create", 2);
-        expect(creates).toHaveLength(2);
+        yield* harness.runAndFinish(threadIdOf(first));
+        const creates = yield* harness.waitFor("thread.create", 3);
+        expect(creates).toHaveLength(3);
 
         // The next chat says nothing is left: the goal completes and nothing new starts.
         yield* Ref.set(harness.threadState, {
           reply: "Merged.\nGOAL COMPLETE",
           turnState: "completed",
         });
-        yield* harness.runAndFinish(threadIdOf(lane2));
-        yield* harness.waitFor("thread.archive", 1);
+        yield* harness.runAndFinish(threadIdOf(second));
+        yield* harness.waitFor("thread.archive", 2);
         const [goal] = yield* service.list;
         expect(goal?.status).toBe("complete");
+        expect(harness.log.filter((command) => command.type === "thread.create")).toHaveLength(3);
+      }).pipe(Effect.provide(harness.layer), Effect.scoped);
+    }),
+  );
+
+  it.effect("runs until complete when there is no cap, and stops at a cap otherwise", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      yield* Effect.gen(function* () {
+        const service = yield* GoalService.GoalService;
+        yield* Effect.forkScoped(service.loop);
+        yield* Effect.yieldNow;
+        yield* service.create(settings({ concurrency: 1, maxChats: 2 }));
+        const [first] = yield* harness.waitFor("thread.create", 1);
+        yield* harness.runAndFinish(threadIdOf(first));
+        const [, second] = yield* harness.waitFor("thread.create", 2);
+        yield* harness.runAndFinish(threadIdOf(second));
+        yield* harness.waitFor("thread.archive", 2);
+        const [capped] = yield* service.list;
+        expect(capped?.status).toBe("failed");
+        expect(capped?.detail).toContain("limit of 2 chats");
         expect(harness.log.filter((command) => command.type === "thread.create")).toHaveLength(2);
+
+        // With no cap, a chat that finished without GOAL COMPLETE is always followed by another.
+        yield* service.create(settings({ concurrency: 1, maxChats: null }));
+        const [, , third] = yield* harness.waitFor("thread.create", 3);
+        yield* harness.runAndFinish(threadIdOf(third));
+        yield* harness.waitFor("thread.create", 4);
       }).pipe(Effect.provide(harness.layer), Effect.scoped);
     }),
   );
@@ -224,60 +241,102 @@ it.layer(NodeServices.layer)("GoalService", (it) => {
         yield* Effect.forkScoped(service.loop);
         yield* Effect.yieldNow;
         yield* Ref.set(harness.threadState, { reply: "", turnState: "failed" });
-        yield* service.interceptTurnStart(turnStart("!goal x1 finish PLAN.md"));
-        yield* harness.runAndFinish("origin");
-        // Wait until the goal reaches a final state; no other chat is ever started.
+        yield* service.create(settings({ concurrency: 1 }));
+        const [only] = yield* harness.waitFor("thread.create", 1);
+        yield* harness.runAndFinish(threadIdOf(only));
         while ((yield* service.list)[0]?.status === "running") yield* Effect.yieldNow;
         const [goal] = yield* service.list;
         expect(goal?.status).toBe("failed");
         expect(goal?.chats.map((chat) => chat.status)).toEqual(["failed"]);
-        expect(harness.log.filter((command) => command.type === "thread.create")).toHaveLength(0);
+        expect(harness.log.filter((command) => command.type === "thread.create")).toHaveLength(1);
       }).pipe(Effect.provide(harness.layer), Effect.scoped);
     }),
   );
 
-  it.effect("waits out a usage limit instead of failing the chat", () =>
+  it.effect("resumes a chat cut off by a usage limit and keeps its lane while it waits", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness;
       yield* Effect.gen(function* () {
         const service = yield* GoalService.GoalService;
         yield* Effect.forkScoped(service.loop);
         yield* Effect.yieldNow;
-        yield* service.interceptTurnStart(turnStart("!goal x1 finish PLAN.md"));
-        yield* harness.sessionEvent("origin", { status: "running", activeTurnId: "turn-1" });
-        yield* harness.sessionEvent("origin", {
+        yield* service.create(settings({ concurrency: 1 }));
+        const [only] = yield* harness.waitFor("thread.create", 1);
+        const threadId = threadIdOf(only);
+        yield* harness.sessionEvent(threadId, { status: "running", activeTurnId: "turn-1" });
+        yield* harness.sessionEvent(threadId, {
+          status: "rate-limited",
+          activeTurnId: null,
+          lastErrorClass: "usage_limit",
+          retryAt: "2099-01-01T00:00:00.000Z",
+        });
+        const [resume] = yield* harness.waitFor("thread.usage-limit-resume.schedule", 1);
+        expect(resume).toMatchObject({ threadId, resumeAt: "2099-01-01T00:00:02.000Z" });
+        const [goal] = yield* service.list;
+        expect(goal?.status).toBe("running");
+        expect(goal?.chats[0]).toMatchObject({ status: "running", waitingForLimit: true });
+
+        // When the chat picks the work back up it is no longer waiting.
+        yield* harness.sessionEvent(threadId, { status: "running", activeTurnId: "turn-2" });
+        while ((yield* service.list)[0]?.chats[0]?.waitingForLimit) yield* Effect.yieldNow;
+      }).pipe(Effect.provide(harness.layer), Effect.scoped);
+    }),
+  );
+
+  it.effect("leaves a usage-limited chat for the person when auto resume is off", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      yield* Effect.gen(function* () {
+        const service = yield* GoalService.GoalService;
+        yield* Effect.forkScoped(service.loop);
+        yield* Effect.yieldNow;
+        yield* service.create(settings({ concurrency: 1, autoResume: false }));
+        const [only] = yield* harness.waitFor("thread.create", 1);
+        const threadId = threadIdOf(only);
+        yield* harness.sessionEvent(threadId, { status: "running", activeTurnId: "turn-1" });
+        yield* harness.sessionEvent(threadId, {
           status: "rate-limited",
           activeTurnId: null,
           lastErrorClass: "usage_limit",
         });
         while (!(yield* service.list)[0]?.chats[0]?.waitingForLimit) yield* Effect.yieldNow;
-        const [goal] = yield* service.list;
-        expect(goal?.status).toBe("running");
-        expect(goal?.chats[0]).toMatchObject({ status: "running", waitingForLimit: true });
+        expect(
+          harness.log.filter((command) => command.type === "thread.usage-limit-resume.schedule"),
+        ).toHaveLength(0);
       }).pipe(Effect.provide(harness.layer), Effect.scoped);
     }),
   );
 });
 
-it("starts no more chats than the lanes and the budget allow", () => {
-  const base = {
-    id: "g",
-    status: "running",
-    lanes: 3,
-    maxChats: 4,
-    createdAt: "2026-10-04T12:00:00.000Z",
-    chats: [] as Array<{ status: string; startedAt: string }>,
-  };
-  const chat = (status: string) => ({ status, startedAt: "2026-10-04T12:00:01.000Z" });
-  const goal = (chats: Array<{ status: string; startedAt: string }>, extra = {}) =>
-    ({ ...base, ...extra, chats }) as never;
+it("picks the model furthest below its own count, and nothing once lanes or the cap are used", () => {
+  const chat = (status: string, agentIndex: number) => ({
+    status,
+    agentIndex,
+    startedAt: "2026-10-04T12:00:01.000Z",
+  });
+  const goal = (chats: Array<ReturnType<typeof chat>>, extra = {}) =>
+    ({
+      status: "running",
+      concurrency: 3,
+      maxChats: null,
+      createdAt: "2026-10-04T12:00:00.000Z",
+      agents: [{ count: 2 }, { count: 1 }],
+      chats,
+      ...extra,
+    }) as never;
 
-  expect(GoalService.chatsToStart(goal([]))).toBe(3);
-  expect(GoalService.chatsToStart(goal([chat("running"), chat("completed")]))).toBe(2);
-  // A failed chat closes its lane; the budget of 4 caps the rest.
-  expect(GoalService.chatsToStart(goal([chat("failed"), chat("completed")]))).toBe(2);
+  expect(GoalService.nextAgentIndex(goal([]))).toBe(0);
+  expect(GoalService.nextAgentIndex(goal([chat("running", 0)]))).toBe(1);
+  // Every model is at its own count.
   expect(
-    GoalService.chatsToStart(goal([chat("completed"), chat("completed"), chat("completed")])),
-  ).toBe(1);
-  expect(GoalService.chatsToStart(goal([], { status: "stopped" }))).toBe(0);
+    GoalService.nextAgentIndex(goal([chat("running", 0), chat("running", 0), chat("running", 1)])),
+  ).toBeUndefined();
+  // A failed chat closes its lane: 2 running + 1 failed fills 3 lanes.
+  expect(
+    GoalService.nextAgentIndex(goal([chat("running", 0), chat("running", 1), chat("failed", 0)])),
+  ).toBeUndefined();
+  expect(
+    GoalService.nextAgentIndex(goal([chat("completed", 0), chat("completed", 0)], { maxChats: 2 })),
+  ).toBeUndefined();
+  expect(GoalService.nextAgentIndex(goal([], { status: "stopped" }))).toBeUndefined();
 });

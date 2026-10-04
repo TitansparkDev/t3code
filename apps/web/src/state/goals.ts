@@ -10,7 +10,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId } from "@t3tools/contracts";
-import type { Goal, GoalId } from "@t3tools/contracts/goals";
+import type { Goal, GoalId, GoalSettings } from "@t3tools/contracts/goals";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
 import { useCallback, useEffect, useMemo } from "react";
@@ -59,6 +59,18 @@ export function useGoals() {
       },
     [refresh],
   );
+  const create = useCallback(
+    async (environmentId: EnvironmentId, goal: GoalSettings) => {
+      await runAtomCommand(
+        appAtomRegistry,
+        serverEnvironment.createGoal,
+        { environmentId, input: { goal } },
+        { label: "start goal" },
+      );
+      refresh(environmentId);
+    },
+    [refresh],
+  );
   const stop = useMemo(() => command(serverEnvironment.stopGoal, "stop goal"), [command]);
   const restart = useMemo(() => command(serverEnvironment.restartGoal, "restart goal"), [command]);
   const remove = useMemo(() => command(serverEnvironment.deleteGoal, "delete goal"), [command]);
@@ -72,7 +84,7 @@ export function useGoals() {
   }, [environments, refresh]);
 
   return useMemo(
-    () => ({ environments, stop, restart, remove }),
-    [environments, stop, restart, remove],
+    () => ({ environments, create, stop, restart, remove }),
+    [environments, create, stop, restart, remove],
   );
 }

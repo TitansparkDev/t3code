@@ -19590,6 +19590,7 @@ apps/mobile/src/features/files/sourceHighlightingState.ts
 apps/mobile/src/features/files/thread-file-navigator-pane.tsx
 apps/mobile/src/features/files/useFileTreeEntries.ts
 apps/mobile/src/features/files/workspaceFileAssetUrl.ts
+apps/mobile/src/features/goals/GoalSetupRouteScreen.tsx
 apps/mobile/src/features/home/AndroidHomeFab.android.tsx
 apps/mobile/src/features/home/AndroidHomeFab.shared.tsx
 apps/mobile/src/features/home/AndroidHomeFab.tsx
@@ -21610,6 +21611,7 @@ apps/web/src/components/files/projectFilesQueryState.ts
 apps/web/src/components/files/useDirectoryEntries.ts
 apps/web/src/components/files/useFileSaveCoordinator.test.tsx
 apps/web/src/components/files/useFileSaveCoordinator.ts
+apps/web/src/components/goals/GoalSetupPage.tsx
 apps/web/src/components/goals/GoalsPage.tsx
 apps/web/src/components/goals/goalProgress.test.ts
 apps/web/src/components/goals/goalProgress.ts
@@ -22324,6 +22326,7 @@ apps/web/src/routes/_chat.pull-requests.tsx
 apps/web/src/routes/_chat.tsx
 apps/web/src/routes/connect.tsx
 apps/web/src/routes/goals.tsx
+apps/web/src/routes/new-goal.tsx
 apps/web/src/routes/pair.tsx
 apps/web/src/routes/projects.$projectKey.tsx
 apps/web/src/routes/settings.appearance.tsx
@@ -22862,6 +22865,8 @@ packages/client-runtime/src/errors/transport.test.ts
 packages/client-runtime/src/errors/transport.ts
 packages/client-runtime/src/filePreview.test.ts
 packages/client-runtime/src/filePreview.ts
+packages/client-runtime/src/goalSetup.test.ts
+packages/client-runtime/src/goalSetup.ts
 packages/client-runtime/src/load-balancing.ts
 packages/client-runtime/src/markdownImages.test.ts
 packages/client-runtime/src/markdownImages.ts

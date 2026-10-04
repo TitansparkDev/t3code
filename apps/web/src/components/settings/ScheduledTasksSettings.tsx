@@ -12,7 +12,11 @@
  *
  * @module ScheduledTasksSettings
  */
-import type { EnvironmentId, ProviderInstanceId } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  ProviderInstanceId,
+  ProviderOptionSelection,
+} from "@t3tools/contracts";
 import {
   nextScheduledRunAt,
   scheduledTimesOfDay,
@@ -666,14 +670,17 @@ function TargetPicker({
   );
 }
 
-function ProviderOptionsPicker({
+/** Effort and reasoning choices for one provider model. Shared with the goal setup page. */
+export function ProviderOptionsPicker<
+  T extends { model: string; options?: ReadonlyArray<ProviderOptionSelection> | undefined },
+>({
   instance,
   onChange,
   target,
 }: {
   instance: ReturnType<typeof deriveProviderInstanceEntries>[number];
-  onChange: (target: ScheduledTaskTarget) => void;
-  target: ScheduledTaskTarget;
+  onChange: (target: T) => void;
+  target: T;
 }) {
   const capabilities = getProviderModelCapabilities(
     instance.models,

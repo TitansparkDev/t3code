@@ -2167,10 +2167,7 @@ const makeWsRpcLayer = (
             ORCHESTRATION_WS_METHODS.dispatchCommand,
             Effect.gen(function* () {
               yield* ProjectCloneTracker.rejectCommandsDuringClone(projectCloneTracker, command);
-              // A message beginning !goal starts a goal and becomes its first chat's prompt.
-              const normalizedCommand = yield* goals
-                .interceptTurnStart(command)
-                .pipe(Effect.flatMap(normalizeDispatchCommand));
+              const normalizedCommand = yield* normalizeDispatchCommand(command);
               // Archive removes the thread from the client, so this transport
               // closes its session and terminals after the command lands.
               // Settlement cleanup is driven by thread.settled events in the
@@ -2993,6 +2990,12 @@ const makeWsRpcLayer = (
           observeRpcEffect(
             WS_METHODS.serverListGoals,
             goals.list.pipe(Effect.map((list) => ({ goals: list }))),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverCreateGoal]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverCreateGoal,
+            goals.create(input.goal).pipe(Effect.map((list) => ({ goals: list }))),
             { "rpc.aggregate": "server" },
           ),
         [WS_METHODS.serverStopGoal]: (input) =>

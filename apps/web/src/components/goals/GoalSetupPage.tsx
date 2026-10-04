@@ -1,0 +1,343 @@
+import type { EnvironmentId, ProjectId, RuntimeMode } from "@t3tools/contracts";
+import {
+  defaultGoalSetup,
+  goalSetupProblem,
+  goalSetupToSettings,
+  type GoalSetupAgent,
+  type GoalSetupForm,
+} from "@t3tools/client-runtime/goal-setup";
+import { MAX_GOAL_AGENT_COUNT, MAX_GOAL_CONCURRENCY } from "@t3tools/contracts/goals";
+import { useNavigate } from "@tanstack/react-router";
+import { PlusIcon, XIcon } from "lucide-react";
+import { useMemo, useState } from "react";
+
+import { isElectron } from "../../env";
+import { deriveProviderInstanceEntries } from "../../providerInstances";
+import { useProjects } from "../../state/entities";
+import { useEnvironments } from "../../state/environments";
+import { useGoals } from "../../state/goals";
+import { runtimeModeConfig, runtimeModeOptions } from "../chat/runtimeModeConfig";
+import { ProviderOptionsPicker } from "../settings/ScheduledTasksSettings";
+import { Button } from "../ui/button";
+import { Input } from "../ui/input";
+import { Switch } from "../ui/switch";
+import { Textarea } from "../ui/textarea";
+import { toastManager } from "../ui/toast";
+import { WorkspacePageContainer } from "../WorkspacePageContainer";
+import { WorkspacePageHeader } from "../WorkspacePageHeader";
+
+type ProviderInstances = ReturnType<typeof deriveProviderInstanceEntries>;
+
+function firstAgent(instances: ProviderInstances): Omit<GoalSetupAgent, "count"> | null {
+  const instance = instances.find((candidate) => candidate.enabled && candidate.models.length > 0);
+  const model = instance?.models.find((candidate) => candidate.isDefault) ?? instance?.models[0];
+  return instance && model ? { instanceId: instance.instanceId, model: model.slug } : null;
+}
+
+/**
+ * Where a goal is set up after choosing a project with the Goal switch on.
+ * The project fixes the environment, so models come from that environment's
+ * provider accounts.
+ */
+export function GoalSetupPage({
+  environmentId,
+  projectId,
+}: {
+  environmentId: EnvironmentId | undefined;
+  projectId: ProjectId | undefined;
+}) {
+  const navigate = useNavigate();
+  const { environments } = useEnvironments();
+  const projects = useProjects();
+  const { create } = useGoals();
+  const project = projects.find(
+    (candidate) => candidate.environmentId === environmentId && candidate.id === projectId,
+  );
+  const instances = useMemo(
+    () =>
+      deriveProviderInstanceEntries(
+        environments.find((candidate) => candidate.environmentId === environmentId)?.serverConfig
+          ?.providers ?? [],
+      ),
+    [environments, environmentId],
+  );
+  const [form, setForm] = useState<GoalSetupForm>(() =>
+    defaultGoalSetup({
+      projectId: projectId ?? null,
+      agent: firstAgent(instances),
+      runtimeMode: "full-access",
+    }),
+  );
+  // Provider accounts may load after the page opens; give the form a first model then.
+  const agents =
+    form.agents.length === 0 && firstAgent(instances)
+      ? [{ ...firstAgent(instances)!, count: form.concurrency }]
+      : form.agents;
+  const current: GoalSetupForm = { ...form, agents };
+  const problem = goalSetupProblem(current);
+  const [starting, setStarting] = useState(false);
+  const patch = (change: Partial<GoalSetupForm>) => setForm({ ...current, ...change });
+  const setAgent = (index: number, change: Partial<GoalSetupAgent>) =>
+    patch({
+      agents: agents.map((agent, position) =>
+        position === index ? { ...agent, ...change } : agent,
+      ),
+    });
+
+  const start = async () => {
+    const settings = goalSetupToSettings(current);
+    if (!settings || !environmentId) return;
+    setStarting(true);
+    try {
+      await create(environmentId, settings);
+      void navigate({ to: "/goals" });
+    } catch (error: unknown) {
+      toastManager.add({
+        type: "error",
+        title: "Could not start the goal",
+        description: error instanceof Error ? error.message : "Try again.",
+      });
+      setStarting(false);
+    }
+  };
+
+  const untilComplete = current.maxChats === null;
+
+  return (
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background">
+      <WorkspacePageHeader electron={isElectron} className="relative bg-background">
+        <h1 className="text-sm font-medium">New goal{project ? ` in ${project.title}` : ""}</h1>
+      </WorkspacePageHeader>
+      <div className="topbar-scroll-fade min-h-0 flex-1 overflow-y-auto">
+        <WorkspacePageContainer className="min-h-full gap-5">
+          {!project ? (
+            <p className="text-sm text-muted-foreground">
+              Choose a project from the new chat menu with Goal switched on.
+            </p>
+          ) : (
+            <>
+              <label className="block space-y-1">
+                <span className="text-xs text-muted-foreground">
+                  Goal — what should be done? Every agent receives this.
+                </span>
+                <Textarea
+                  autoFocus
+                  onChange={(event) => patch({ name: event.target.value })}
+                  placeholder="Finish everything in PLAN.md"
+                  rows={4}
+                  value={current.name}
+                />
+              </label>
+
+              <div className="flex flex-wrap items-end gap-4">
+                <label className="space-y-1">
+                  <span className="block text-xs text-muted-foreground">Agents at once</span>
+                  <Input
+                    className="w-24"
+                    inputMode="numeric"
+                    max={MAX_GOAL_CONCURRENCY}
+                    min={1}
+                    onChange={(event) => patch({ concurrency: Number(event.target.value) || 1 })}
+                    type="number"
+                    value={current.concurrency}
+                  />
+                </label>
+                <label className="space-y-1">
+                  <span className="block text-xs text-muted-foreground">Most agents in total</span>
+                  <Input
+                    className="w-28"
+                    disabled={untilComplete}
+                    inputMode="numeric"
+                    min={1}
+                    onChange={(event) => patch({ maxChats: Number(event.target.value) || 1 })}
+                    type="number"
+                    value={current.maxChats ?? ""}
+                  />
+                </label>
+                <label className="flex items-center gap-2 pb-2">
+                  <Switch
+                    checked={untilComplete}
+                    onCheckedChange={(checked) =>
+                      patch({ maxChats: checked ? null : Math.max(50, current.concurrency) })
+                    }
+                  />
+                  <span className="text-xs text-muted-foreground">Until complete (no limit)</span>
+                </label>
+              </div>
+              {untilComplete ? (
+                <p className="text-2xs text-muted-foreground">
+                  The goal keeps starting agents until one replies GOAL COMPLETE or you stop it.
+                  Each agent uses your plan&apos;s usage.
+                </p>
+              ) : null}
+
+              <section className="space-y-2">
+                <h2 className="text-xs font-medium text-muted-foreground">
+                  Models, effort, and how many of each run at once
+                </h2>
+                <ul className="space-y-2">
+                  {agents.map((agent, index) => {
+                    const instance = instances.find(
+                      (candidate) => candidate.instanceId === agent.instanceId,
+                    );
+                    return (
+                      <li
+                        className="space-y-2 rounded-md border border-border/60 p-3"
+                        key={`${agent.instanceId}:${index}`}
+                      >
+                        <div className="flex flex-wrap items-center gap-2">
+                          <select
+                            aria-label="Provider"
+                            className="rounded-md border border-border bg-background px-2 py-1 text-xs"
+                            onChange={(event) => {
+                              const next = instances.find(
+                                (candidate) => candidate.instanceId === event.target.value,
+                              );
+                              const model =
+                                next?.models.find((candidate) => candidate.isDefault) ??
+                                next?.models[0];
+                              if (next && model) {
+                                setAgent(index, {
+                                  instanceId: next.instanceId,
+                                  model: model.slug,
+                                  options: undefined,
+                                });
+                              }
+                            }}
+                            value={agent.instanceId}
+                          >
+                            {instances
+                              .filter((candidate) => candidate.enabled)
+                              .map((candidate) => (
+                                <option key={candidate.instanceId} value={candidate.instanceId}>
+                                  {candidate.displayName}
+                                </option>
+                              ))}
+                          </select>
+                          <select
+                            aria-label="Model"
+                            className="min-w-0 flex-1 rounded-md border border-border bg-background px-2 py-1 text-xs"
+                            onChange={(event) =>
+                              setAgent(index, { model: event.target.value, options: undefined })
+                            }
+                            value={agent.model}
+                          >
+                            {(instance?.models ?? []).map((model) => (
+                              <option key={model.slug} value={model.slug}>
+                                {model.name || model.slug}
+                              </option>
+                            ))}
+                          </select>
+                          <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                            At once
+                            <Input
+                              className="w-16"
+                              inputMode="numeric"
+                              max={MAX_GOAL_AGENT_COUNT}
+                              min={1}
+                              onChange={(event) =>
+                                setAgent(index, { count: Number(event.target.value) || 1 })
+                              }
+                              type="number"
+                              value={agent.count}
+                            />
+                          </label>
+                          {agents.length > 1 ? (
+                            <Button
+                              aria-label="Remove this model"
+                              onClick={() =>
+                                patch({
+                                  agents: agents.filter((_, position) => position !== index),
+                                })
+                              }
+                              size="sm"
+                              type="button"
+                              variant="ghost"
+                            >
+                              <XIcon className="size-3.5" />
+                            </Button>
+                          ) : null}
+                        </div>
+                        {instance ? (
+                          <ProviderOptionsPicker
+                            instance={instance}
+                            onChange={(next) => setAgent(index, { options: next.options })}
+                            target={agent}
+                          />
+                        ) : null}
+                      </li>
+                    );
+                  })}
+                </ul>
+                <Button
+                  disabled={firstAgent(instances) === null}
+                  onClick={() => {
+                    const next = firstAgent(instances);
+                    if (next) patch({ agents: [...agents, { ...next, count: 1 }] });
+                  }}
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                >
+                  <PlusIcon className="size-3.5" /> Add a model
+                </Button>
+              </section>
+
+              <section className="space-y-3">
+                <h2 className="text-xs font-medium text-muted-foreground">Other settings</h2>
+                <label className="flex items-center gap-2">
+                  <Switch
+                    checked={current.autoResume}
+                    onCheckedChange={(autoResume) => patch({ autoResume })}
+                  />
+                  <span className="text-xs">
+                    Restart agents cut off by a usage limit, when it resets
+                  </span>
+                </label>
+                <label className="flex items-center gap-2">
+                  <Switch
+                    checked={current.standardRules}
+                    onCheckedChange={(standardRules) => patch({ standardRules })}
+                  />
+                  <span className="text-xs">
+                    Working rules: claim a chunk, own worktree, merge, push, clean up
+                  </span>
+                </label>
+                <label className="block space-y-1">
+                  <span className="text-xs text-muted-foreground">Permissions</span>
+                  <select
+                    className="rounded-md border border-border bg-background px-2 py-1 text-xs"
+                    onChange={(event) => patch({ runtimeMode: event.target.value as RuntimeMode })}
+                    value={current.runtimeMode}
+                  >
+                    {runtimeModeOptions.map((mode) => (
+                      <option key={mode} value={mode}>
+                        {runtimeModeConfig[mode].label} — {runtimeModeConfig[mode].description}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {current.runtimeMode !== "full-access" ? (
+                  <p className="text-2xs text-muted-foreground">
+                    Agents work unattended. Any approval they ask for waits for you.
+                  </p>
+                ) : null}
+              </section>
+
+              <div className="flex items-center justify-end gap-3">
+                {problem ? <p className="text-2xs text-muted-foreground">{problem}</p> : null}
+                <Button
+                  disabled={problem !== undefined || starting}
+                  onClick={() => void start()}
+                  type="button"
+                >
+                  {starting ? "Starting…" : "Start goal"}
+                </Button>
+              </div>
+            </>
+          )}
+        </WorkspacePageContainer>
+      </div>
+    </div>
+  );
+}

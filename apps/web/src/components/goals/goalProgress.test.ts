@@ -9,18 +9,24 @@ describe("describeGoalProgress", () => {
   it("counts working, finished, failed, and waiting chats", () => {
     expect(
       describeGoalProgress({
-        lanes: 3,
+        concurrency: 3,
         maxChats: 50,
         chats: [chat("completed"), chat("running"), chat("running", true), chat("failed")],
       }),
     ).toBe(
-      "2 of 3 working · 1 finished · 1 failed · 1 waiting for a usage limit · 4 of up to 50 chats",
+      "2 of 3 working · 1 finished · 1 failed · 1 waiting for a usage limit · 4 of up to 50 started",
+    );
+  });
+
+  it("says when there is no cap", () => {
+    expect(describeGoalProgress({ concurrency: 2, maxChats: null, chats: [chat("running")] })).toBe(
+      "1 of 2 working · 0 finished · 1 started, until complete",
     );
   });
 
   it("leaves out failures and waits when there are none", () => {
-    expect(describeGoalProgress({ lanes: 1, maxChats: 5, chats: [chat("running")] })).toBe(
-      "1 of 1 working · 0 finished · 1 of up to 5 chats",
+    expect(describeGoalProgress({ concurrency: 1, maxChats: 5, chats: [chat("running")] })).toBe(
+      "1 of 1 working · 0 finished · 1 of up to 5 started",
     );
   });
 });

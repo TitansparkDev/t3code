@@ -158,6 +158,8 @@ export interface CommandPaletteSubmenuItem extends CommandPaletteItem {
   readonly addonIcon: ReactNode;
   readonly groups: ReadonlyArray<CommandPaletteGroup>;
   readonly initialQuery?: string;
+  /** Shows the Goal switch: with it on, choosing a project sets up a goal instead of a chat. */
+  readonly goalToggle?: boolean;
 }
 
 export interface CommandPaletteGroup {
@@ -170,6 +172,7 @@ export interface CommandPaletteView {
   readonly addonIcon: ReactNode;
   readonly groups: ReadonlyArray<CommandPaletteGroup>;
   readonly initialQuery?: string;
+  readonly goalToggle?: boolean;
 }
 
 export function enumerateCommandPaletteItems(

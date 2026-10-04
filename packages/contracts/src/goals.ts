@@ -1,10 +1,12 @@
 /**
  * Goals — work an environment keeps doing on its own until nothing is left.
  *
- * A person starts one by sending `!goal <what> ...` in any chat. The server
- * keeps several chats working on it at once, starts the next chat as each one
- * finishes, and stops when an agent replies GOAL COMPLETE, the cap is reached,
- * or the person stops it. Every chat is an ordinary thread.
+ * A person sets one up from the new-chat flow with the Goal switch on: what
+ * the goal is, how many agents run at once, which providers, models and effort
+ * levels to use and how many of each, and when to stop. The server keeps that
+ * many chats working, starts the next chat as each one finishes, and stops
+ * when an agent replies GOAL COMPLETE, the cap is reached, or the person
+ * stops it. Every chat is an ordinary thread.
  *
  * Fork-local, in its own file so it does not conflict with upstream edits.
  *
@@ -18,13 +20,13 @@ import { ModelSelection, RuntimeMode } from "./orchestration.ts";
 export const GoalId = Schema.String.pipe(Schema.brand("GoalId"));
 export type GoalId = typeof GoalId.Type;
 
-/** The message prefix that starts a goal. */
-export const GOAL_COMMAND = "!goal";
 /** What an agent replies, on its own line, when a goal has no work left. */
 export const GOAL_COMPLETE_MARKER = "GOAL COMPLETE";
-export const DEFAULT_GOAL_LANES = 3;
-export const MAX_GOAL_LANES = 8;
+export const DEFAULT_GOAL_CONCURRENCY = 3;
+export const MAX_GOAL_CONCURRENCY = 16;
+export const MAX_GOAL_AGENT_COUNT = 16;
 export const DEFAULT_GOAL_MAX_CHATS = 50;
+export const MAX_GOAL_MAX_CHATS = 10_000;
 
 export const GoalStatus = Schema.Literals(["running", "complete", "stopped", "failed"]);
 export type GoalStatus = typeof GoalStatus.Type;
@@ -32,33 +34,49 @@ export type GoalStatus = typeof GoalStatus.Type;
 export const GoalChatStatus = Schema.Literals(["running", "completed", "failed"]);
 export type GoalChatStatus = typeof GoalChatStatus.Type;
 
+const PositiveCount = (maximum: number) =>
+  Schema.Number.check(Schema.isInt(), Schema.isBetween({ minimum: 1, maximum }));
+
+/** One provider, model and effort level, and how many of its chats may run at once. */
+export const GoalAgent = Schema.Struct({
+  modelSelection: ModelSelection,
+  count: PositiveCount(MAX_GOAL_AGENT_COUNT),
+});
+export type GoalAgent = typeof GoalAgent.Type;
+
 export const GoalChat = Schema.Struct({
   threadId: ThreadId,
+  /** Index into the goal's `agents` that this chat runs on. */
+  agentIndex: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
   status: GoalChatStatus,
   startedAt: IsoDateTime,
   completedAt: Schema.optional(IsoDateTime),
-  /** The chat the goal was started from. It is never archived. */
-  origin: Schema.optional(Schema.Boolean),
   /** Set while the chat waits for a provider usage limit to reset. */
   waitingForLimit: Schema.optional(Schema.Boolean),
 });
 export type GoalChat = typeof GoalChat.Type;
 
-export const Goal = Schema.Struct({
-  id: GoalId,
-  /** Short name, written by the text-generation model from what the person typed. */
-  title: TrimmedNonEmptyString,
-  /** The person's own words after `!goal`: what should be true when it is done. */
-  description: TrimmedNonEmptyString,
-  /** The instructions every chat receives, before the standing goal rules. */
-  prompt: TrimmedNonEmptyString,
+/** Everything a person chooses on the setup page. */
+export const GoalSettings = Schema.Struct({
+  /** What the goal is. Also the instructions every chat receives. */
+  name: TrimmedNonEmptyString,
   projectId: ProjectId,
-  modelSelection: ModelSelection,
+  agents: Schema.Array(GoalAgent).check(Schema.isMinLength(1)),
+  /** Most chats working at the same time, across all agents. */
+  concurrency: PositiveCount(MAX_GOAL_CONCURRENCY),
+  /** Most chats to start in total. Null keeps going until an agent says it is complete. */
+  maxChats: Schema.NullOr(PositiveCount(MAX_GOAL_MAX_CHATS)),
   runtimeMode: RuntimeMode,
-  /** How many chats run at once. */
-  lanes: Schema.Number.check(Schema.isInt(), Schema.isBetween({ minimum: 1, maximum: 8 })),
-  /** Most chats the goal may start in total. */
-  maxChats: Schema.Number.check(Schema.isInt(), Schema.isBetween({ minimum: 1, maximum: 500 })),
+  /** Resume chats that stop on a usage limit when it resets, so the work gets finished. */
+  autoResume: Schema.Boolean,
+  /** Add the working rules: claim a chunk, own worktree, merge, push, clean up. */
+  standardRules: Schema.Boolean,
+});
+export type GoalSettings = typeof GoalSettings.Type;
+
+export const Goal = Schema.Struct({
+  ...GoalSettings.fields,
+  id: GoalId,
   status: GoalStatus,
   detail: Schema.optional(TrimmedNonEmptyString),
   createdAt: IsoDateTime,
@@ -73,41 +91,10 @@ export type Goal = typeof Goal.Type;
 export const GoalList = Schema.Struct({ goals: Schema.Array(Goal) });
 export type GoalList = typeof GoalList.Type;
 
-/** What `!goal` parses into. `lanes` is absent when the message gave none. */
-export interface ParsedGoalCommand {
-  readonly lanes: number | undefined;
-  /** The first line: what the goal is. */
-  readonly description: string;
-  /** The rest, or the first line again when there is no rest. */
-  readonly prompt: string;
-}
-
-const GOAL_COMMAND_PATTERN = /^\s*!goal(?:[ \t]+x(\d{1,2}))?(?=\s|$)([\s\S]*)$/iu;
-
-/**
- * `!goal [xN] <what>` then, optionally, more lines of instructions. Returns
- * undefined for anything that does not start with the command, or has nothing
- * after it.
- */
-export function parseGoalCommand(text: string): ParsedGoalCommand | undefined {
-  const match = GOAL_COMMAND_PATTERN.exec(text);
-  if (!match) return undefined;
-  const body = (match[2] ?? "").trim();
-  if (body.length === 0) return undefined;
-  const [firstLine = "", ...rest] = body.split("\n");
-  const description = firstLine.trim();
-  const instructions = rest.join("\n").trim();
-  const lanes = match[1] === undefined ? undefined : Number(match[1]);
-  return {
-    lanes: lanes === undefined ? undefined : Math.min(MAX_GOAL_LANES, Math.max(1, lanes)),
-    description,
-    prompt: instructions.length > 0 ? `${description}\n\n${instructions}` : description,
-  };
-}
-
-/** Whether a message is trying to start a goal, even if it is incomplete. */
-export function isGoalCommand(text: string): boolean {
-  return /^\s*!goal(?=\s|$)/iu.test(text);
+/** The first line of a goal's name, for lists and chat titles. */
+export function goalTitle(goal: Pick<Goal, "name">): string {
+  const firstLine = goal.name.split("\n", 1)[0]?.trim() ?? "";
+  return firstLine.length > 80 ? `${firstLine.slice(0, 79)}…` : firstLine;
 }
 
 const GOAL_COMPLETE_LINE = new RegExp(`^\\s*${GOAL_COMPLETE_MARKER}\\s*$`, "mu");
@@ -118,20 +105,39 @@ export function replyReportsGoalComplete(reply: string | undefined): boolean {
 }
 
 /**
- * The rules every goal chat receives after the person's instructions. The
- * chats run unattended and alongside each other, so this covers working alone,
- * not colliding, finishing cleanly, and how to say there is nothing left.
+ * The prompt every goal chat receives. Chats run unattended, so they are told
+ * to work alone and how to say there is nothing left. The working rules are
+ * optional because not every goal is code in a shared repository.
  */
-export function goalPrompt(goal: Pick<Goal, "prompt" | "lanes">): string {
+export function goalPrompt(goal: Pick<Goal, "name" | "concurrency" | "standardRules">): string {
   return [
-    goal.prompt,
+    goal.name,
     "",
     "--- Goal rules (added automatically) ---",
-    `You are one of up to ${goal.lanes} agents working on this goal at the same time, each in its own chat. Nobody is available to answer questions: use your best judgment, choose the safest reasonable option, and say what you chose.`,
-    "Find where the work is tracked (for example a plan file in the repository root) and claim one unfinished chunk by marking it with your branch name and committing and pushing that mark, so other agents skip it. If a chunk is already claimed, take another.",
-    "Work in your own git worktree on a new branch, never in the shared checkout. Do high-quality work and build and test it before you finish.",
-    "When it is verified, rebase on the latest default branch, merge into it, push, then remove your worktree and delete your branch. Leave nothing half-merged.",
-    "Then stop. A fresh chat takes the next chunk.",
+    `You are one of up to ${goal.concurrency} agents working on this goal at the same time, each in its own chat. Nobody is available to answer questions: use your best judgment, choose the safest reasonable option, and say what you chose.`,
+    ...(goal.standardRules
+      ? [
+          "Find where the work is tracked (for example a plan file in the repository root) and claim one unfinished chunk by marking it with your branch name and committing and pushing that mark, so other agents skip it. If a chunk is already claimed, take another.",
+          "Work in your own git worktree on a new branch, never in the shared checkout. Do high-quality work and build and test it before you finish.",
+          "When it is verified, rebase on the latest default branch, merge into it, push, then remove your worktree and delete your branch. Leave nothing half-merged.",
+        ]
+      : []),
+    "Finish one piece of work, then stop. A fresh chat takes the next piece.",
     `If there is no unfinished work left at all, reply with ${GOAL_COMPLETE_MARKER} on a line by itself.`,
   ].join("\n");
+}
+
+/**
+ * Why a setup is not ready to start, or undefined when it is. Shared by the
+ * setup pages so web and mobile accept the same input as the server.
+ */
+export function goalSettingsProblem(
+  settings: Pick<GoalSettings, "name" | "agents" | "concurrency" | "maxChats">,
+): string | undefined {
+  if (settings.name.trim().length === 0) return "Write what the goal is.";
+  if (settings.agents.length === 0) return "Choose at least one model.";
+  if (settings.maxChats !== null && settings.maxChats < settings.concurrency) {
+    return "The most chats to run must be at least as many as run at once, or choose until complete.";
+  }
+  return undefined;
 }

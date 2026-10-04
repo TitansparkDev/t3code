@@ -196,6 +196,7 @@ import { resolveShortcutCommand, threadJumpIndexFromCommand } from "../keybindin
 import { CommandDialog, CommandDialogPopup, CommandFooterAction } from "./ui/command";
 import { Button } from "./ui/button";
 import { Kbd, KbdGroup } from "./ui/kbd";
+import { Switch } from "./ui/switch";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { ComposerHandleContext, useComposerHandleContext } from "../composerHandleContext";
@@ -837,6 +838,15 @@ function OpenCommandPaletteDialog(props: {
   }, [environments, primaryEnvironmentId, providers]);
   const [viewStack, setViewStack] = useState<CommandPaletteView[]>([]);
   const currentView = viewStack.at(-1) ?? null;
+  // The Goal switch on the new-chat project picker. A ref too, because the picker's
+  // items are stored in the view stack and must see the switch as it is when chosen.
+  const [goalMode, setGoalMode] = useState(false);
+  const goalModeRef = useRef(false);
+  goalModeRef.current = goalMode;
+  const goalToggleVisible = currentView?.goalToggle === true;
+  useEffect(() => {
+    if (!goalToggleVisible) setGoalMode(false);
+  }, [goalToggleVisible]);
   const environmentIds = useMemo(
     () =>
       environments
@@ -1354,6 +1364,14 @@ function OpenCommandPaletteDialog(props: {
           },
           icon: projectFavicon,
           runProject: async (project) => {
+            // The items are kept in the view stack, so the switch is read when chosen, not here.
+            if (goalModeRef.current) {
+              await navigate({
+                to: "/new-goal",
+                search: { environmentId: project.environmentId, projectId: project.id },
+              });
+              return;
+            }
             const group = projectGroupByTargetKey.get(`${project.environmentId}:${project.id}`);
             const contextualRefBelongsToGroup =
               contextualProjectRef !== null &&
@@ -1379,13 +1397,24 @@ function OpenCommandPaletteDialog(props: {
                 title: "No project",
                 icon: <MessageSquareDashedIcon className={ITEM_ICON_CLASS} />,
                 shortcutCommand: "chat.newWithoutProject" as const,
-                run: () => startScratchThread(scratchTargetEnvironmentId),
+                run: async () => {
+                  if (goalModeRef.current) {
+                    toastManager.add({
+                      type: "warning",
+                      title: "A goal needs a project",
+                      description: "Choose a project, or switch Goal off to chat without one.",
+                    });
+                    return;
+                  }
+                  await startScratchThread(scratchTargetEnvironmentId);
+                },
               },
             ]),
       ]),
     [
       contextualProjectRef,
       handleNewThread,
+      navigate,
       pickerProjects,
       projectEnvironmentLocationById,
       projectGroupByTargetKey,
@@ -1475,6 +1504,7 @@ function OpenCommandPaletteDialog(props: {
           addonIcon: view.addonIcon,
           groups: view.groups,
           ...(view.initialQuery ? { initialQuery: view.initialQuery } : {}),
+          ...(view.goalToggle ? { goalToggle: true } : {}),
         },
       ]);
       setHighlightedItemValue(null);
@@ -1488,6 +1518,7 @@ function OpenCommandPaletteDialog(props: {
       addonIcon: item.addonIcon,
       groups: item.groups,
       ...(item.initialQuery ? { initialQuery: item.initialQuery } : {}),
+      ...(item.goalToggle ? { goalToggle: true } : {}),
     });
   }
 
@@ -1858,6 +1889,7 @@ function OpenCommandPaletteDialog(props: {
       : projectThreadItems;
     pushPaletteView({
       addonIcon: <SquarePenIcon className={ADDON_ICON_CLASS} />,
+      goalToggle: true,
       groups: [
         {
           value: "projects",
@@ -1913,6 +1945,7 @@ function OpenCommandPaletteDialog(props: {
       title: "New thread in...",
       icon: <SquarePenIcon className={ITEM_ICON_CLASS} />,
       addonIcon: <SquarePenIcon className={ADDON_ICON_CLASS} />,
+      goalToggle: true,
       groups: [{ value: "projects", label: "Projects", items: projectThreadItems }],
     });
   }
@@ -3368,6 +3401,14 @@ function OpenCommandPaletteDialog(props: {
       }
       footerActionLabel={footerActionLabel}
       footerTrailing={footerTrailing}
+      header={
+        goalToggleVisible ? (
+          <label className="flex w-fit cursor-pointer items-center gap-2 px-3 pt-2 text-xs text-muted-foreground">
+            <Switch checked={goalMode} onCheckedChange={setGoalMode} aria-label="Goal" />
+            <span className={goalMode ? "font-medium text-foreground" : undefined}>Goal</span>
+          </label>
+        ) : undefined
+      }
       inputAccessory={inputAccessory}
       inputProps={{
         // The submit button is absolutely positioned over the field, so the

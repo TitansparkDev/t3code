@@ -260,7 +260,7 @@ import {
   ResourceTelemetrySnapshot,
 } from "./resourceTelemetry.ts";
 import { QuotaSummary } from "./quota.ts";
-import { GoalId, GoalList } from "./goals.ts";
+import { GoalId, GoalList, GoalSettings } from "./goals.ts";
 import { ScheduledTaskDraft, ScheduledTaskId, ScheduledTaskList } from "./scheduledTasks.ts";
 import {
   UsageLimitSourceError,
@@ -415,6 +415,7 @@ export const WS_METHODS = {
   serverDeleteScheduledTask: "server.deleteScheduledTask",
   serverRunScheduledTask: "server.runScheduledTask",
   serverListGoals: "server.listGoals",
+  serverCreateGoal: "server.createGoal",
   serverStopGoal: "server.stopGoal",
   serverRestartGoal: "server.restartGoal",
   serverDeleteGoal: "server.deleteGoal",
@@ -740,6 +741,13 @@ export const WsServerListGoalsRpc = Rpc.make(WS_METHODS.serverListGoals, {
   payload: Schema.Struct({}),
   success: GoalList,
   error: EnvironmentAuthorizationError,
+});
+
+/** Start a goal from the setup page. The list comes back with the new goal first. */
+export const WsServerCreateGoalRpc = Rpc.make(WS_METHODS.serverCreateGoal, {
+  payload: Schema.Struct({ goal: GoalSettings }),
+  success: GoalList,
+  error: Schema.Union([OrchestrationDispatchCommandError, EnvironmentAuthorizationError]),
 });
 
 export const WsServerStopGoalRpc = Rpc.make(WS_METHODS.serverStopGoal, {
@@ -1582,6 +1590,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerDeleteScheduledTaskRpc,
   WsServerRunScheduledTaskRpc,
   WsServerListGoalsRpc,
+  WsServerCreateGoalRpc,
   WsServerStopGoalRpc,
   WsServerRestartGoalRpc,
   WsServerDeleteGoalRpc,

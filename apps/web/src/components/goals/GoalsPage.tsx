@@ -1,15 +1,17 @@
 import type { EnvironmentId } from "@t3tools/contracts";
-import type { Goal } from "@t3tools/contracts/goals";
+import { type Goal, goalTitle } from "@t3tools/contracts/goals";
 import { Link } from "@tanstack/react-router";
 import {
   CheckCircle2Icon,
   CircleAlertIcon,
   ExternalLinkIcon,
   PlayIcon,
+  PlusIcon,
   SquareIcon,
   Trash2Icon,
 } from "lucide-react";
 
+import { openCommandPalette } from "../../commandPaletteBus";
 import { isElectron } from "../../env";
 import { useEnvironments } from "../../state/environments";
 import { useGoals } from "../../state/goals";
@@ -53,8 +55,12 @@ function GoalCard({
       <div className="flex items-start gap-3">
         <GoalStatusIcon status={goal.status} />
         <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-medium">{goal.title}</p>
-          <p className="text-xs text-muted-foreground">{goal.description}</p>
+          <p className="truncate text-sm font-medium">{goalTitle(goal)}</p>
+          {goal.name.includes("\n") ? (
+            <p className="line-clamp-3 whitespace-pre-line text-xs text-muted-foreground">
+              {goal.name.slice(goal.name.indexOf("\n") + 1).trim()}
+            </p>
+          ) : null}
           <p className="pt-1 text-2xs text-muted-foreground/80">
             {STATUS_LABEL[goal.status]} · {describeGoalProgress(goal)}
           </p>
@@ -81,7 +87,7 @@ function GoalCard({
             </Button>
           )}
           <Button
-            aria-label={`Delete ${goal.title}`}
+            aria-label={`Delete ${goalTitle(goal)}`}
             onClick={() => onAction("remove", goal)}
             size="sm"
             type="button"
@@ -98,9 +104,8 @@ function GoalCard({
             key={chat.threadId}
           >
             <span>
-              Chat {goal.chats.length - index}
-              {chat.origin ? " (where you started it)" : ""} ·{" "}
-              {chat.waitingForLimit ? "waiting for a usage limit" : chat.status}
+              Agent {goal.chats.length - index} ·{" "}
+              {chat.waitingForLimit ? "waiting for a usage limit, will resume" : chat.status}
             </span>
             <Button
               render={

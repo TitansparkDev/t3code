@@ -68,6 +68,7 @@ import {
   NewTaskThreadSettingsRouteScreen,
 } from "./features/threads/ThreadSettingsSheet";
 import { NewTaskFlowProvider } from "./features/threads/new-task-flow-provider";
+import { GoalSetupRouteScreen } from "./features/goals/GoalSetupRouteScreen";
 import { NewTaskRouteScreen } from "./features/threads/NewTaskRouteScreen";
 import { SettingsAppearanceRouteScreen } from "./features/settings/SettingsAppearanceRouteScreen";
 import { SettingsClientStorageRouteScreen } from "./features/settings/SettingsClientStorageRouteScreen";
@@ -391,6 +392,14 @@ const NewTaskSheetStack = createNativeStackNavigator({
       linking: "",
       options: {
         title: "Choose project",
+      },
+    }),
+    GoalSetup: createNativeStackScreen({
+      screen: GoalSetupRouteScreen,
+      linking: "goal",
+      options: {
+        headerBackVisible: false,
+        title: "",
       },
     }),
     NewTaskDraft: createNativeStackScreen({

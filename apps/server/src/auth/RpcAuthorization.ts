@@ -72,6 +72,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.serverRunScheduledTask]: AuthOrchestrationOperateScope,
   [WS_METHODS.serverListGoals]: AuthOrchestrationReadScope,
   // Restarting a goal starts real agent turns; stopping or deleting one ends them.
+  [WS_METHODS.serverCreateGoal]: AuthOrchestrationOperateScope,
   [WS_METHODS.serverStopGoal]: AuthOrchestrationOperateScope,
   [WS_METHODS.serverRestartGoal]: AuthOrchestrationOperateScope,
   [WS_METHODS.serverDeleteGoal]: AuthOrchestrationOperateScope,

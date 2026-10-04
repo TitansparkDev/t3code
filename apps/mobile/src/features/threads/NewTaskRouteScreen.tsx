@@ -24,6 +24,7 @@ import { ProjectFavicon } from "../../components/ProjectFavicon";
 import { useProjects, useServerConfigs, waitForProject } from "../../state/entities";
 import { projectEnvironment } from "../../state/projects";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { ThemedSwitch } from "../../components/ThemedSwitch";
 import { useRemoteConnectionStatus } from "../../state/use-remote-environment-registry";
 import type { WorkspaceState } from "../../state/workspaceModel";
 import { useWorkspaceState } from "../../state/workspace";
@@ -135,6 +136,8 @@ function NewTaskHeader(props: {
 export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRouteParams | undefined>) {
   const projects = useProjects();
   const [searchText, setSearchText] = useState("");
+  // With Goal on, choosing a project sets up a goal instead of starting a chat.
+  const [goalMode, setGoalMode] = useState(false);
   const { projectScopes, selectedEnvironmentId, setProject } = useNewTaskFlow();
   const { state: catalogState } = useWorkspaceState();
   const navigation = useNavigation();
@@ -190,7 +193,9 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
     ) ??
     scratchEnvironments[0] ??
     null;
-  const canStartScratch = scratchEnvironment !== null && reservedDestinationProject === null;
+  // A goal needs a project to work in, so it has no "No project" row.
+  const canStartScratch =
+    scratchEnvironment !== null && reservedDestinationProject === null && !goalMode;
   const scratchStartInFlightRef = useRef(false);
 
   async function selectProject(project: EnvironmentProject): Promise<void> {
@@ -206,6 +211,16 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
         );
         return;
       }
+    }
+    if (goalMode) {
+      navigation.dispatch(
+        StackActions.push("GoalSetup", {
+          environmentId: project.environmentId,
+          projectId: project.id,
+          title: project.title,
+        }),
+      );
+      return;
     }
     const state = navigation.getState();
     const previousRoute = state?.routes[state.index - 1];
@@ -312,6 +327,15 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
               : {}),
           }}
         >
+          <View className="flex-row items-center justify-between gap-4 px-1">
+            <Text className="text-base font-t3-medium text-foreground">Goal</Text>
+            <ThemedSwitch
+              accessibilityHint="Set up agents that keep working until nothing is left"
+              accessibilityLabel="Goal"
+              onValueChange={setGoalMode}
+              value={goalMode}
+            />
+          </View>
           {canStartScratch && listScopes.length > 0 ? (
             Platform.OS === "android" ? (
               <View collapsable={false} className="overflow-hidden rounded-[28px] bg-card">
