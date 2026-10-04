@@ -155,7 +155,8 @@ export const make = Effect.gen(function* () {
     );
   });
 
-  const flush: AnalyticsService["Service"]["flush"] = Effect.gen(function* () {
+  /** Send everything buffered. Returns false when the send failed and the events were kept. */
+  const flushOnce = Effect.gen(function* () {
     while (true) {
       const batch = yield* Ref.modify(bufferRef, (current) => {
         if (current.length === 0) {
@@ -167,7 +168,7 @@ export const make = Effect.gen(function* () {
       });
 
       if (batch.length === 0) {
-        return;
+        return true;
       }
 
       yield* sendBatch(batch).pipe(
@@ -178,7 +179,13 @@ export const make = Effect.gen(function* () {
         ),
       );
     }
-  }).pipe(Effect.catch((cause) => Effect.logError("Failed to flush telemetry", { cause })));
+  }).pipe(Effect.catch(() => Effect.succeed(false)));
+
+  const flush: AnalyticsService["Service"]["flush"] = flushOnce.pipe(
+    Effect.flatMap((flushed) =>
+      flushed ? Effect.void : Effect.logWarning("Telemetry could not be sent; keeping events."),
+    ),
+  );
 
   const record: AnalyticsService["Service"]["record"] = Effect.fn("AnalyticsService.record")(
     function* (event, properties) {
@@ -194,9 +201,21 @@ export const make = Effect.gen(function* () {
     },
   );
 
-  yield* Effect.forever(Effect.sleep(1000).pipe(Effect.flatMap(() => flush)), {
-    disableYield: true,
-  }).pipe(Effect.forkScoped);
+  // A failing endpoint is retried with growing pauses (1 s up to 5 min) and logged once per
+  // streak. Retrying every second with a full error dump wrote hundreds of megabytes of log.
+  const consecutiveFailures = yield* Ref.make(0);
+  yield* Effect.forever(
+    Effect.gen(function* () {
+      const failures = yield* Ref.get(consecutiveFailures);
+      yield* Effect.sleep(Math.min(1000 * 2 ** failures, 300_000));
+      const flushed = yield* flushOnce;
+      if (!flushed && failures === 0) {
+        yield* Effect.logWarning("Telemetry could not be sent; retrying with growing pauses.");
+      }
+      yield* Ref.set(consecutiveFailures, flushed ? 0 : Math.min(failures + 1, 9));
+    }),
+    { disableYield: true },
+  ).pipe(Effect.forkScoped);
 
   yield* Effect.addFinalizer(() => flush);
 
