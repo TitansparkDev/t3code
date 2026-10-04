@@ -3,9 +3,8 @@ const TRANSPORT_ERROR_PATTERNS = [
   /\bSocketOpenError\b/i,
   /\bSocket is not connected\b/i,
   /Unable to connect to the T3 server WebSocket\./i,
-  /\bis not connected\.$/i,
-  /\bdisconnected\.$/i,
-  /\bcould not establish a WebSocket connection\.$/i,
+  // The RPC session can append a network hint after these sentences.
+  /\b(?:is not connected|disconnected|could not establish a WebSocket connection)\.(?:\s|$)/i,
   /\bClientProtocolError\b/i,
   /\bRpcClientError\b/i,
   /\bping timeout\b/i,
