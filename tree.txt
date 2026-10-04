@@ -20476,6 +20476,8 @@ apps/server/src/orchestration/ThreadSettlementPolicy.test.ts
 apps/server/src/orchestration/ThreadSettlementPolicy.ts
 apps/server/src/orchestration/ThreadSettlementReactor.test.ts
 apps/server/src/orchestration/ThreadSettlementReactor.ts
+apps/server/src/orchestration/UsageLimitAutoResumeReactor.test.ts
+apps/server/src/orchestration/UsageLimitAutoResumeReactor.ts
 apps/server/src/orchestration/commandInvariants.test.ts
 apps/server/src/orchestration/commandInvariants.ts
 apps/server/src/orchestration/decider.active-order.test.ts
@@ -21873,6 +21875,7 @@ apps/web/src/components/settings/ThemePreviewCircles.tsx
 apps/web/src/components/settings/ThemeSearchSection.tsx
 apps/web/src/components/settings/ThemeSettings.tsx
 apps/web/src/components/settings/ThemeWireframe.tsx
+apps/web/src/components/settings/UsageLimitAutoResumeSettings.tsx
 apps/web/src/components/settings/UsageProviderSettings.tsx
 apps/web/src/components/settings/browserImportWizard.logic.test.ts
 apps/web/src/components/settings/browserImportWizard.logic.ts
@@ -21908,6 +21911,8 @@ apps/web/src/components/settings/themeEditorStore.test.ts
 apps/web/src/components/settings/themeEditorStore.ts
 apps/web/src/components/settings/themeInspector.test.ts
 apps/web/src/components/settings/themeInspector.ts
+apps/web/src/components/settings/usageLimitAutoResume.logic.test.ts
+apps/web/src/components/settings/usageLimitAutoResume.logic.ts
 apps/web/src/components/settings/useAvailableSettingsSearchItems.ts
 apps/web/src/components/settings/useHostConnectionChecks.ts
 apps/web/src/components/settings/useProjectScriptSettings.ts
@@ -22313,6 +22318,7 @@ apps/web/src/routes/pair.tsx
 apps/web/src/routes/projects.$projectKey.tsx
 apps/web/src/routes/settings.appearance.tsx
 apps/web/src/routes/settings.archived.tsx
+apps/web/src/routes/settings.auto-resume.tsx
 apps/web/src/routes/settings.connections.tsx
 apps/web/src/routes/settings.diagnostics.tsx
 apps/web/src/routes/settings.general.tsx

@@ -1143,6 +1143,14 @@ export const StorageCleanupSettings = Schema.Struct({
 });
 export type StorageCleanupSettings = typeof StorageCleanupSettings.Type;
 
+export const USAGE_LIMIT_AUTO_RESUME_ANY_MODEL = "*";
+
+export const UsageLimitAutoResumeRule = Schema.Struct({
+  instanceId: ProviderInstanceId,
+  model: TrimmedNonEmptyString,
+});
+export type UsageLimitAutoResumeRule = typeof UsageLimitAutoResumeRule.Type;
+
 export const ServerSettings = Schema.Struct({
   worktreeCleanup: WorktreeCleanup.pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   storageCleanup: StorageCleanupSettings.pipe(
@@ -1227,6 +1235,14 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_AUTO_SETTLE_AFTER_DAYS)),
   ),
   sidebarAutoSettleOnMerge: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  /**
+   * Provider instance and model pairs whose usage-limited threads resume on
+   * their own when the limit resets. `model: "*"` covers every model on the
+   * instance. Empty means the user decides per thread.
+   */
+  usageLimitAutoResume: Schema.Array(UsageLimitAutoResumeRule).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
   backgroundActivity: BackgroundActivitySettings,
   // Legacy flat fields retained for old settings files and old clients. New
   // consumers should resolve `backgroundActivity` instead.
@@ -1573,6 +1589,7 @@ export const ServerSettingsPatch = Schema.Struct({
   deviceHosts: Schema.optionalKey(SshDeviceHostConfigs),
   sidebarAutoSettleAfterDays: Schema.optionalKey(Schema.NullOr(SidebarAutoSettleAfterDays)),
   sidebarAutoSettleOnMerge: Schema.optionalKey(Schema.Boolean),
+  usageLimitAutoResume: Schema.optionalKey(Schema.Array(UsageLimitAutoResumeRule)),
   backgroundActivity: Schema.optionalKey(
     Schema.Struct({
       schemaVersion: Schema.optionalKey(Schema.Literal(1)),
