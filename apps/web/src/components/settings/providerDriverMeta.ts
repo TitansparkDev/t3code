@@ -1,5 +1,6 @@
 import {
   AntigravitySettings,
+  ChatAgentsSettings,
   ClaudeSettings,
   ClineSettings,
   CodexSettings,
@@ -93,6 +94,14 @@ const PROVIDER_CLIENT_DEFINITIONS: readonly ProviderClientDefinition[] = [
     label: "Antigravity",
     icon: AntigravityIcon,
     settingsSchema: AntigravitySettings,
+  },
+  {
+    value: ProviderDriverKind.make("chatAgents"),
+    label: "Chat Agents",
+    icon: OpenAI,
+    badgeLabel: "Private",
+    settingsSchema: ChatAgentsSettings,
+    supportsCloudExecution: false,
   },
 ];
 

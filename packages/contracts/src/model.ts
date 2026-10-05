@@ -150,6 +150,9 @@ const GROK_DRIVER_KIND = ProviderDriverKind.make("grok");
 const OPENCODE_DRIVER_KIND = ProviderDriverKind.make("opencode");
 const ANTIGRAVITY_DRIVER_KIND = ProviderDriverKind.make("antigravity");
 export const CLINE_DRIVER_KIND = ProviderDriverKind.make("cline");
+export const CHAT_AGENTS_DRIVER_KIND = ProviderDriverKind.make("chatAgents");
+/** The one model Chat Agents offers: the ChatGPT desktop chat W drives. */
+export const CHAT_AGENTS_MODEL = "chatgpt-desktop";
 
 export const DEFAULT_MODEL = "gpt-6-astra";
 
@@ -176,6 +179,7 @@ export const DEFAULT_MODEL_BY_PROVIDER: Partial<Record<ProviderDriverKind, strin
   [GROK_DRIVER_KIND]: "grok-build",
   [OPENCODE_DRIVER_KIND]: "openai/gpt-5",
   [ProviderDriverKind.make("antigravity")]: ANTIGRAVITY_DEFAULT_MODEL,
+  [CHAT_AGENTS_DRIVER_KIND]: CHAT_AGENTS_MODEL,
 };
 
 /** Per-provider text generation model defaults. */
@@ -237,4 +241,5 @@ export const PROVIDER_DISPLAY_NAMES: Partial<Record<ProviderDriverKind, string>>
   [OPENCODE_DRIVER_KIND]: "OpenCode",
   [ANTIGRAVITY_DRIVER_KIND]: "Antigravity",
   [CLINE_DRIVER_KIND]: "Cline",
+  [CHAT_AGENTS_DRIVER_KIND]: "Chat Agents",
 };

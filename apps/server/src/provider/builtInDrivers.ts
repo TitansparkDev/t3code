@@ -21,6 +21,7 @@
  * @module provider/builtInDrivers
  */
 import { ClaudeDriver, type ClaudeDriverEnv } from "./Drivers/ClaudeDriver.ts";
+import { ChatAgentsDriver, type ChatAgentsDriverEnv } from "./Drivers/ChatAgentsDriver.ts";
 import { ClineDriver, type ClineDriverEnv } from "./Drivers/ClineDriver.ts";
 import { CodexDriver, type CodexDriverEnv } from "./Drivers/CodexDriver.ts";
 import { CursorDriver, type CursorDriverEnv } from "./Drivers/CursorDriver.ts";
@@ -35,6 +36,7 @@ import type { AnyProviderDriver } from "./ProviderDriver.ts";
  * layer must provide every service in this union.
  */
 export type BuiltInDriversEnv =
+  | ChatAgentsDriverEnv
   | ClineDriverEnv
   | ClaudeDriverEnv
   | AntigravityDriverEnv
@@ -58,4 +60,5 @@ export const BUILT_IN_DRIVERS: ReadonlyArray<AnyProviderDriver<BuiltInDriversEnv
   GrokDriver,
   OpenCodeDriver,
   AntigravityDriver,
+  ChatAgentsDriver,
 ];

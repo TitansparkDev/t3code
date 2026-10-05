@@ -274,6 +274,9 @@ const decodeServerSettingsJsonExit = Schema.decodeUnknownExit(ServerSettingsJson
 const PersistedOptionalProviderSettings = Schema.Struct({
   providers: Schema.optionalKey(
     Schema.Struct({
+      chatAgents: Schema.optionalKey(
+        Schema.Struct({ enabled: Schema.optionalKey(Schema.Boolean) }),
+      ),
       cline: Schema.optionalKey(Schema.Struct({ enabled: Schema.optionalKey(Schema.Boolean) })),
       cursor: Schema.optionalKey(Schema.Struct({ enabled: Schema.optionalKey(Schema.Boolean) })),
       grok: Schema.optionalKey(Schema.Struct({ enabled: Schema.optionalKey(Schema.Boolean) })),
@@ -303,7 +306,8 @@ function restoreUsedProviders(
     Object.entries(settings.providerInstances).map(([instanceId, instance]) => [
       instanceId,
       instance.enabled === undefined &&
-      (instance.driver === "cline" ||
+      (instance.driver === "chatAgents" ||
+        instance.driver === "cline" ||
         instance.driver === "cursor" ||
         instance.driver === "grok" ||
         instance.driver === "opencode") &&
@@ -317,6 +321,10 @@ function restoreUsedProviders(
     ...settings,
     providers: {
       ...settings.providers,
+      chatAgents: {
+        ...settings.providers.chatAgents,
+        enabled: persisted.providers?.chatAgents?.enabled ?? usedProviders.has("chatAgents"),
+      },
       cline: {
         ...settings.providers.cline,
         enabled: persisted.providers?.cline?.enabled ?? usedProviders.has("cline"),

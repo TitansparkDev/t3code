@@ -20698,6 +20698,7 @@ apps/server/src/provider/Drivers/AntigravityQuota.test.ts
 apps/server/src/provider/Drivers/AntigravityQuota.ts
 apps/server/src/provider/Drivers/AntigravitySkills.test.ts
 apps/server/src/provider/Drivers/AntigravitySkills.ts
+apps/server/src/provider/Drivers/ChatAgentsDriver.ts
 apps/server/src/provider/Drivers/ClaudeDriver.ts
 apps/server/src/provider/Drivers/ClaudeExecutable.test.ts
 apps/server/src/provider/Drivers/ClaudeExecutable.ts
@@ -20728,6 +20729,10 @@ apps/server/src/provider/Layers/AntigravityAdapter.test.ts
 apps/server/src/provider/Layers/AntigravityAdapter.ts
 apps/server/src/provider/Layers/AntigravityProvider.test.ts
 apps/server/src/provider/Layers/AntigravityProvider.ts
+apps/server/src/provider/Layers/ChatAgentsAdapter.test.ts
+apps/server/src/provider/Layers/ChatAgentsAdapter.ts
+apps/server/src/provider/Layers/ChatAgentsProvider.test.ts
+apps/server/src/provider/Layers/ChatAgentsProvider.ts
 apps/server/src/provider/Layers/ClaudeAdapter.test.ts
 apps/server/src/provider/Layers/ClaudeAdapter.ts
 apps/server/src/provider/Layers/ClaudeCapabilitiesProbe.test.ts
@@ -22560,6 +22565,7 @@ docs/user/open-source-licenses.md
 docs/user/permission-modes.md
 docs/user/project-settings.md
 docs/user/providers-antigravity.md
+docs/user/providers-chat-agents.md
 docs/user/providers-claude.md
 docs/user/providers-codex.md
 docs/user/providers-opencode.md

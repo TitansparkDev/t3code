@@ -2716,6 +2716,7 @@ it.layer(Layer.mergeAll(TestNodeServices, ServerSettingsModule.layerTest(), Test
 
               assert.deepStrictEqual(providers.map((provider) => provider.instanceId).toSorted(), [
                 "antigravity",
+                "chatAgents",
                 "claudeAgent",
                 "cline",
                 "codex",

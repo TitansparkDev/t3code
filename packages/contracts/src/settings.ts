@@ -737,6 +737,67 @@ export const ClineSettings = makeProviderSettingsSchema(
 );
 export type ClineSettings = typeof ClineSettings.Type;
 
+/**
+ * Chat Agents: ordinary ChatGPT desktop chats driven through W's desktop
+ * worker, the way W's Telegram service drives them. Every default points at
+ * the live W install on this machine, so enabling it is one switch.
+ */
+export const CHAT_AGENTS_DEFAULT_WORKER_PATH =
+  "/srv/chatagents-w/deploy/current/desktop/chatgpt_worker_w.py";
+export const CHAT_AGENTS_DEFAULT_PYTHON_PATH = "/srv/chatagents-w/desktop-venv/bin/python";
+export const CHAT_AGENTS_DEFAULT_RUNTIME_ROOT = "/srv/chatagents-w";
+
+export const ChatAgentsSettings = makeProviderSettingsSchema(
+  {
+    // Off by default like Cline: a turn drives the shared ChatGPT desktop app.
+    enabled: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(false)),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+    workerPath: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed(CHAT_AGENTS_DEFAULT_WORKER_PATH)),
+      Schema.annotateKey({
+        title: "W desktop worker",
+        description: "The script that drives the ChatGPT desktop app for W.",
+        providerSettingsForm: { placeholder: CHAT_AGENTS_DEFAULT_WORKER_PATH },
+      }),
+    ),
+    pythonPath: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed(CHAT_AGENTS_DEFAULT_PYTHON_PATH)),
+      Schema.annotateKey({
+        title: "Python for the worker",
+        description: "The Python that has Playwright installed for the worker.",
+        providerSettingsForm: { placeholder: CHAT_AGENTS_DEFAULT_PYTHON_PATH },
+      }),
+    ),
+    runtimeRoot: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed(CHAT_AGENTS_DEFAULT_RUNTIME_ROOT)),
+      Schema.annotateKey({
+        title: "W runtime folder",
+        description: "Where W keeps its logs and state.",
+        providerSettingsForm: { placeholder: CHAT_AGENTS_DEFAULT_RUNTIME_ROOT },
+      }),
+    ),
+    turnTimeoutMinutes: TrimmedString.check(Schema.isPattern(/^[1-9]\d{0,3}$/)).pipe(
+      Schema.withDecodingDefault(Effect.succeed("90")),
+      Schema.annotateKey({
+        title: "Most minutes per turn",
+        description: "A turn that ChatGPT has not finished by then is stopped.",
+        providerSettingsForm: { placeholder: "90" },
+      }),
+    ),
+    // Present only so the shared settings machinery type-checks: there is one model.
+    customModels: Schema.Array(CustomModelSetting).pipe(
+      Schema.withDecodingDefault(Effect.succeed([])),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+  },
+  {
+    order: ["workerPath", "pythonPath", "runtimeRoot", "turnTimeoutMinutes"],
+  },
+);
+export type ChatAgentsSettings = typeof ChatAgentsSettings.Type;
+
 export const CursorSettings = makeProviderSettingsSchema(
   {
     // Off by default like Grok and OpenCode. Users opt in from Settings.
@@ -1339,6 +1400,7 @@ export const ServerSettings = Schema.Struct({
     codex: CodexSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
     claudeAgent: ClaudeSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
     cline: ClineSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+    chatAgents: ChatAgentsSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
     cursor: CursorSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
     grok: GrokSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
     opencode: OpenCodeSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
@@ -1497,6 +1559,15 @@ const ClineSettingsPatch = Schema.Struct({
   customModels: Schema.optionalKey(Schema.Array(CustomModelSetting)),
 });
 
+const ChatAgentsSettingsPatch = Schema.Struct({
+  enabled: Schema.optionalKey(Schema.Boolean),
+  workerPath: Schema.optionalKey(TrimmedString),
+  pythonPath: Schema.optionalKey(TrimmedString),
+  runtimeRoot: Schema.optionalKey(TrimmedString),
+  turnTimeoutMinutes: Schema.optionalKey(TrimmedString.check(Schema.isPattern(/^[1-9]\d{0,3}$/))),
+  customModels: Schema.optionalKey(Schema.Array(CustomModelSetting)),
+});
+
 const CursorSettingsPatch = Schema.Struct({
   enabled: Schema.optionalKey(Schema.Boolean),
   binaryPath: Schema.optionalKey(TrimmedString),
@@ -1636,6 +1707,7 @@ export const ServerSettingsPatch = Schema.Struct({
       codex: Schema.optionalKey(CodexSettingsPatch),
       claudeAgent: Schema.optionalKey(ClaudeSettingsPatch),
       cline: Schema.optionalKey(ClineSettingsPatch),
+      chatAgents: Schema.optionalKey(ChatAgentsSettingsPatch),
       cursor: Schema.optionalKey(CursorSettingsPatch),
       grok: Schema.optionalKey(GrokSettingsPatch),
       opencode: Schema.optionalKey(OpenCodeSettingsPatch),

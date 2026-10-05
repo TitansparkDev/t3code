@@ -173,6 +173,12 @@ Full glossary with file links: `docs/internals/glossary.md`
 
 ## Recent request log
 
+- 2026-10-05 — v0.0.61: added the Chat Agents provider (Settings → Providers, off until switched
+  on). Each thread is one ChatGPT desktop chat driven through W's live desktop worker
+  (`/srv/chatagents-w/deploy/current/desktop/chatgpt_worker_w.py --role owner`, the Telegram
+  transport), continued by conversation id kept in the resume cursor. The `/home/ajay/ChatAgentsAutomation`
+  copy of the worker is stale and lacks `--conversation-id`; the deployed copy has it. Replies arrive
+  whole, one turn at a time (the worker's owner slot is single).
 - 2026-10-05 — v0.0.60: fixed the Android crash when opening a thread (reanimated 4.7 animated refs
   are objects, but keyboard-controller's Android scroll code called them as functions on the UI
   thread; patched in `patches/react-native-keyboard-controller@1.22.4.patch`), added a Goals list and
