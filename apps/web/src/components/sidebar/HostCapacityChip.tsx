@@ -4,7 +4,8 @@ import { agentFootprints, estimateAgentCapacity } from "../../lib/agentCapacity"
 import { cn } from "../../lib/utils";
 import { useResourceTelemetry } from "../../lib/resourceTelemetryState";
 import { useThreadShells } from "../../state/entities";
-import { usePrimaryEnvironment } from "../../state/environments";
+import { isElectron } from "../../env";
+import { useEnvironments, usePrimaryEnvironment } from "../../state/environments";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -14,12 +15,26 @@ const GIB = 1024 ** 3;
 const gb = (bytes: number) => (bytes / GIB).toFixed(bytes >= 10 * GIB ? 0 : 1);
 
 /**
+ * The desktop app's own server is often a machine nobody codes on (a Windows PC that only
+ * connects to a Linux box), so there the chip reports the first saved remote environment.
+ */
+function useCapacityEnvironment() {
+  const primary = usePrimaryEnvironment();
+  const { environments } = useEnvironments();
+  if (!isElectron) return primary;
+  return (
+    environments.find((environment) => environment.environmentId !== primary?.environmentId) ??
+    primary
+  );
+}
+
+/**
  * Memory in use on the machine running the server, how many agents it runs,
  * and how many more fit. Refreshes every 30 seconds while the window is visible,
  * and right away when an agent starts or finishes.
  */
 export function HostCapacityChip() {
-  const environment = usePrimaryEnvironment();
+  const environment = useCapacityEnvironment();
   const environmentId = environment?.environmentId ?? null;
   const host = useEnvironmentQuery(
     environmentId === null ? null : serverEnvironment.hostResources({ environmentId, input: {} }),
@@ -29,9 +44,10 @@ export function HostCapacityChip() {
   const refreshTelemetry = telemetry.refresh;
   const workingAgents = useThreadShells().filter(
     (thread) =>
-      thread.session?.activeTurnId != null ||
-      thread.session?.status === "starting" ||
-      thread.session?.status === "running",
+      thread.environmentId === environmentId &&
+      (thread.session?.activeTurnId != null ||
+        thread.session?.status === "starting" ||
+        thread.session?.status === "running"),
   ).length;
 
   // A start or finish changes memory soon after; the second read catches the process settling.
