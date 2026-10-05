@@ -173,6 +173,12 @@ Full glossary with file links: `docs/internals/glossary.md`
 
 ## Recent request log
 
+- 2026-10-05 — v0.0.60: fixed the Android crash when opening a thread (reanimated 4.7 animated refs
+  are objects, but keyboard-controller's Android scroll code called them as functions on the UI
+  thread; patched in `patches/react-native-keyboard-controller@1.22.4.patch`), added a Goals list and
+  edit screen to mobile (Settings → Goals), and made the RAM chip tooltip show when it was read.
+  Reproduced with the release APK on an Android 35 emulator: the same JS bundle compiled to Hermes
+  bytecode crashed, source did not, so check bytecode builds, not just dev builds.
 - 2026-10-05 — v0.0.59: goals take work from Beads (start an agent only per ready chunk, hand it
   the chunk, wait when everything is blocked, complete when Beads is empty), have a separate name
   and agent instructions, allow up to 100 agents, start chats 15 s apart, stop after repeated

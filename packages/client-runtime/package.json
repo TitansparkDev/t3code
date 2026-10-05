@@ -19,6 +19,10 @@
       "types": "./src/worktreeSetup.ts",
       "default": "./src/worktreeSetup.ts"
     },
+    "./goal-progress": {
+      "types": "./src/goalProgress.ts",
+      "default": "./src/goalProgress.ts"
+    },
     "./goal-setup": {
       "types": "./src/goalSetup.ts",
       "default": "./src/goalSetup.ts"

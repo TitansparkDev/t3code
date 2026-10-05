@@ -18,7 +18,7 @@ import { Button } from "../ui/button";
 import { toastManager } from "../ui/toast";
 import { WorkspacePageContainer } from "../WorkspacePageContainer";
 import { WorkspacePageHeader } from "../WorkspacePageHeader";
-import { describeGoalProgress, describeGoalQueue } from "./goalProgress";
+import { describeGoalProgress, describeGoalQueue } from "@t3tools/client-runtime/goal-progress";
 
 const STATUS_LABEL: Record<Goal["status"], string> = {
   running: "Running",

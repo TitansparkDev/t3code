@@ -19590,7 +19590,9 @@ apps/mobile/src/features/files/sourceHighlightingState.ts
 apps/mobile/src/features/files/thread-file-navigator-pane.tsx
 apps/mobile/src/features/files/useFileTreeEntries.ts
 apps/mobile/src/features/files/workspaceFileAssetUrl.ts
+apps/mobile/src/features/goals/GoalEditRouteScreen.tsx
 apps/mobile/src/features/goals/GoalSetupRouteScreen.tsx
+apps/mobile/src/features/goals/GoalsRouteScreen.tsx
 apps/mobile/src/features/home/AndroidHomeFab.android.tsx
 apps/mobile/src/features/home/AndroidHomeFab.shared.tsx
 apps/mobile/src/features/home/AndroidHomeFab.tsx
@@ -21614,8 +21616,6 @@ apps/web/src/components/files/useFileSaveCoordinator.test.tsx
 apps/web/src/components/files/useFileSaveCoordinator.ts
 apps/web/src/components/goals/GoalSetupPage.tsx
 apps/web/src/components/goals/GoalsPage.tsx
-apps/web/src/components/goals/goalProgress.test.ts
-apps/web/src/components/goals/goalProgress.ts
 apps/web/src/components/media/MediaActions.tsx
 apps/web/src/components/media/MediaVideoPlayer.tsx
 apps/web/src/components/media/OpenMediaLink.tsx
@@ -22867,6 +22867,8 @@ packages/client-runtime/src/errors/transport.test.ts
 packages/client-runtime/src/errors/transport.ts
 packages/client-runtime/src/filePreview.test.ts
 packages/client-runtime/src/filePreview.ts
+packages/client-runtime/src/goalProgress.test.ts
+packages/client-runtime/src/goalProgress.ts
 packages/client-runtime/src/goalSetup.test.ts
 packages/client-runtime/src/goalSetup.ts
 packages/client-runtime/src/load-balancing.ts

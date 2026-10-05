@@ -73,7 +73,7 @@ runs plain agents instead.
 
 ## Check on goals
 
-Open **Goals** in the desktop or web sidebar. Each goal shows how many agents are
+Open **Goals** in the desktop or web sidebar, or **Settings → Goals** on mobile. Each goal shows how many agents are
 running, completed, and need you, a green tick once it is complete, the Beads queue,
 and a link to any chat that failed or needs you. Working and finished agents are only
 counted.

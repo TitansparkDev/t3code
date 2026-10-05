@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { describeGoalProgress, describeGoalQueue } from "./goalProgress";
+import { describeGoalProgress, describeGoalQueue } from "./goalProgress.ts";
 
 const chat = (status: string, waitingForLimit?: boolean) =>
   ({ status, ...(waitingForLimit ? { waitingForLimit } : {}) }) as never;

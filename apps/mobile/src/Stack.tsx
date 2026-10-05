@@ -68,7 +68,9 @@ import {
   NewTaskThreadSettingsRouteScreen,
 } from "./features/threads/ThreadSettingsSheet";
 import { NewTaskFlowProvider } from "./features/threads/new-task-flow-provider";
+import { GoalEditRouteScreen } from "./features/goals/GoalEditRouteScreen";
 import { GoalSetupRouteScreen } from "./features/goals/GoalSetupRouteScreen";
+import { GoalsRouteScreen } from "./features/goals/GoalsRouteScreen";
 import { NewTaskRouteScreen } from "./features/threads/NewTaskRouteScreen";
 import { SettingsAppearanceRouteScreen } from "./features/settings/SettingsAppearanceRouteScreen";
 import { SettingsClientStorageRouteScreen } from "./features/settings/SettingsClientStorageRouteScreen";
@@ -323,6 +325,20 @@ const SettingsContentStack = createNativeStackNavigator({
       linking: "open-source-licenses/:entryKey",
       options: {
         title: "License notice",
+      },
+    }),
+    SettingsGoals: createNativeStackScreen({
+      screen: GoalsRouteScreen,
+      linking: "goals",
+      options: {
+        title: "Goals",
+      },
+    }),
+    SettingsGoalEdit: createNativeStackScreen({
+      screen: GoalEditRouteScreen,
+      options: {
+        headerBackVisible: false,
+        title: "",
       },
     }),
     SettingsUsage: createNativeStackScreen({

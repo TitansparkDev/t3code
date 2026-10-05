@@ -215,28 +215,30 @@ function AgentCard(props: {
 }
 
 /**
- * Goal setup, opened from the new-task project picker with Goal switched on.
- * The project fixes the environment, so the models come from that machine.
+ * The goal form, for starting a goal and for editing one that is running or
+ * finished. The environment fixes where the models come from.
  */
-export function GoalSetupRouteScreen({ route }: StaticScreenProps<GoalSetupParams>) {
+export function GoalForm(props: {
+  readonly environmentId: EnvironmentId;
+  readonly title: string;
+  readonly subtitle?: string;
+  readonly initial: GoalSetupForm;
+  readonly submitLabel: string;
+  readonly busyLabel: string;
+  /** Resolves true when the change was accepted and the screen can close. */
+  readonly onSubmit: (
+    settings: NonNullable<ReturnType<typeof goalSetupToSettings>>,
+  ) => Promise<boolean>;
+}) {
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
-  const environmentId = route.params.environmentId as EnvironmentId;
-  const projectId = route.params.projectId as ProjectId;
-  const config = useServerConfigs().get(environmentId);
+  const config = useServerConfigs().get(props.environmentId);
   const modelOptions = useMemo(
     () => buildModelOptions(config, null).filter((option) => !option.isUnavailable),
     [config],
   );
   const defaultOption = modelOptions.find((option) => option.isDefault) ?? modelOptions[0];
-  const createGoal = useAtomCommand(serverEnvironment.createGoal, { reportFailure: false });
-  const [form, setForm] = useState<GoalSetupForm>(() =>
-    defaultGoalSetup({
-      projectId,
-      agent: defaultOption ? agentFromOption(defaultOption, 1) : null,
-      runtimeMode: "full-access",
-    }),
-  );
+  const [form, setForm] = useState<GoalSetupForm>(props.initial);
   const [starting, setStarting] = useState(false);
   const agents =
     form.agents.length === 0 && defaultOption
@@ -251,20 +253,14 @@ export function GoalSetupRouteScreen({ route }: StaticScreenProps<GoalSetupParam
     const settings = goalSetupToSettings(current);
     if (!settings || starting) return;
     setStarting(true);
-    const result = await createGoal({ environmentId, input: { goal: settings } });
-    if (AsyncResult.isFailure(result)) {
-      setStarting(false);
-      Alert.alert("Could not start the goal", "Check the connection and try again.");
-      return;
-    }
-    (navigation.getParent() ?? navigation).goBack();
+    if (!(await props.onSubmit(settings))) setStarting(false);
   }
 
   return (
     <View collapsable={false} className="flex-1 bg-sheet">
       <ScreenHeader
-        title="New goal"
-        subtitle={route.params.title}
+        title={props.title}
+        subtitle={props.subtitle}
         sidebar={false}
         hideBottomBorder
         onBack={() => navigation.goBack()}
@@ -434,7 +430,7 @@ export function GoalSetupRouteScreen({ route }: StaticScreenProps<GoalSetupParam
           <MaterialButton
             disabled={problem !== undefined}
             fullWidth
-            label={starting ? "Starting…" : "Start goal"}
+            label={starting ? props.busyLabel : props.submitLabel}
             loading={starting}
             onPress={() => void start()}
             tone="primary"
@@ -442,5 +438,44 @@ export function GoalSetupRouteScreen({ route }: StaticScreenProps<GoalSetupParam
         </ScrollView>
       </MaterialScreenContent>
     </View>
+  );
+}
+
+/**
+ * Goal setup, opened from the new-task project picker with Goal switched on.
+ */
+export function GoalSetupRouteScreen({ route }: StaticScreenProps<GoalSetupParams>) {
+  const navigation = useNavigation();
+  const environmentId = route.params.environmentId as EnvironmentId;
+  const projectId = route.params.projectId as ProjectId;
+  const config = useServerConfigs().get(environmentId);
+  const defaultOption = useMemo(() => {
+    const options = buildModelOptions(config, null).filter((option) => !option.isUnavailable);
+    return options.find((option) => option.isDefault) ?? options[0];
+  }, [config]);
+  const createGoal = useAtomCommand(serverEnvironment.createGoal, { reportFailure: false });
+
+  return (
+    <GoalForm
+      busyLabel="Starting…"
+      environmentId={environmentId}
+      initial={defaultGoalSetup({
+        projectId,
+        agent: defaultOption ? agentFromOption(defaultOption, 1) : null,
+        runtimeMode: "full-access",
+      })}
+      onSubmit={async (settings) => {
+        const result = await createGoal({ environmentId, input: { goal: settings } });
+        if (AsyncResult.isFailure(result)) {
+          Alert.alert("Could not start the goal", "Check the connection and try again.");
+          return false;
+        }
+        (navigation.getParent() ?? navigation).goBack();
+        return true;
+      }}
+      submitLabel="Start goal"
+      subtitle={route.params.title}
+      title="New goal"
+    />
   );
 }

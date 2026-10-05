@@ -86,8 +86,12 @@ export function HostCapacityChip() {
         }
       />
       <TooltipPopup side="bottom">
-        {environment?.label}: {gb(capacity.usedBytes)} of {gb(capacity.totalBytes)} GB used.{" "}
-        {capacity.perAgentMeasured ? "Each agent averages" : "Assuming"}{" "}
+        {environment?.label}: {gb(capacity.usedBytes)} of {gb(capacity.totalBytes)} GB used, not
+        counting file cache
+        {host.dataUpdatedAt
+          ? ` (read at ${new Date(host.dataUpdatedAt).toLocaleTimeString()})`
+          : ""}
+        . {capacity.perAgentMeasured ? "Each agent averages" : "Assuming"}{" "}
         {gb(capacity.perAgentBytes)} GB, so about {capacity.slots} more fit with 10% kept free.
       </TooltipPopup>
     </Tooltip>
