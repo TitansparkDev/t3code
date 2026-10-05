@@ -69,6 +69,7 @@ import {
 } from "./features/threads/ThreadSettingsSheet";
 import { NewTaskFlowProvider } from "./features/threads/new-task-flow-provider";
 import { GoalEditRouteScreen } from "./features/goals/GoalEditRouteScreen";
+import { GoalNewRouteScreen, GoalProjectRouteScreen } from "./features/goals/GoalNewRouteScreens";
 import { GoalSetupRouteScreen } from "./features/goals/GoalSetupRouteScreen";
 import { GoalsRouteScreen } from "./features/goals/GoalsRouteScreen";
 import { NewTaskRouteScreen } from "./features/threads/NewTaskRouteScreen";
@@ -332,6 +333,19 @@ const SettingsContentStack = createNativeStackNavigator({
       linking: "goals",
       options: {
         title: "Goals",
+      },
+    }),
+    SettingsGoalProject: createNativeStackScreen({
+      screen: GoalProjectRouteScreen,
+      options: {
+        title: "New goal",
+      },
+    }),
+    SettingsGoalNew: createNativeStackScreen({
+      screen: GoalNewRouteScreen,
+      options: {
+        headerBackVisible: false,
+        title: "",
       },
     }),
     SettingsGoalEdit: createNativeStackScreen({

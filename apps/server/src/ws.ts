@@ -2995,13 +2995,17 @@ const makeWsRpcLayer = (
         [WS_METHODS.serverCreateGoal]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverCreateGoal,
-            goals.create(input.goal).pipe(Effect.map((list) => ({ goals: list }))),
+            goals
+              .create(input.goal, input.draft === undefined ? {} : { draft: input.draft })
+              .pipe(Effect.map((list) => ({ goals: list }))),
             { "rpc.aggregate": "server" },
           ),
         [WS_METHODS.serverUpdateGoal]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverUpdateGoal,
-            goals.update(input.id, input.goal).pipe(Effect.map((list) => ({ goals: list }))),
+            goals
+              .update(input.id, input.goal, input.draft === undefined ? {} : { draft: input.draft })
+              .pipe(Effect.map((list) => ({ goals: list }))),
             { "rpc.aggregate": "server" },
           ),
         [WS_METHODS.serverStopGoal]: (input) =>

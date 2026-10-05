@@ -2,15 +2,21 @@ import { useNavigation, type StaticScreenProps } from "@react-navigation/native"
 import {
   defaultGoalSetup,
   goalSetupProblem,
+  goalSetupToDraftSettings,
   goalSetupToSettings,
   type GoalSetupAgent,
   type GoalSetupForm,
 } from "@t3tools/client-runtime/goal-setup";
 import type { EnvironmentId, ProjectId, RuntimeMode } from "@t3tools/contracts";
-import { MAX_GOAL_AGENT_COUNT, MAX_GOAL_CONCURRENCY } from "@t3tools/contracts/goals";
+import type { GoalId } from "@t3tools/contracts/goals";
+import {
+  MAX_GOAL_AGENT_COUNT,
+  MAX_GOAL_CONCURRENCY,
+  type GoalSettings,
+} from "@t3tools/contracts/goals";
 import { getProviderOptionCurrentValue, getProviderOptionDescriptors } from "@t3tools/shared/model";
 import { AsyncResult } from "effect/unstable/reactivity";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Pressable, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -26,6 +32,8 @@ import { buildModelOptions, type ModelOption } from "../../lib/modelOptions";
 import { useServerConfigs } from "../../state/entities";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
+
+const DRAFT_SAVE_DELAY_MS = 1_500;
 
 type GoalSetupParams = {
   readonly environmentId: string;
@@ -226,9 +234,17 @@ export function GoalForm(props: {
   readonly submitLabel: string;
   readonly busyLabel: string;
   /** Resolves true when the change was accepted and the screen can close. */
-  readonly onSubmit: (
-    settings: NonNullable<ReturnType<typeof goalSetupToSettings>>,
-  ) => Promise<boolean>;
+  readonly onSubmit: (settings: GoalSettings) => Promise<boolean>;
+  /** A second way to finish, for example saving a stopped goal and starting it. */
+  readonly secondary?: {
+    readonly label: string;
+    readonly onSubmit: (settings: GoalSettings) => Promise<boolean>;
+  };
+  /**
+   * Keeps what has been typed as a draft. Called a moment after each change and
+   * when the screen closes; absent for goals that were already started.
+   */
+  readonly onDraft?: (settings: GoalSettings) => Promise<void>;
 }) {
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
@@ -246,14 +262,55 @@ export function GoalForm(props: {
       : form.agents;
   const current: GoalSetupForm = { ...form, agents };
   const problem = goalSetupProblem(current);
-  const patch = (change: Partial<GoalSetupForm>) => setForm({ ...current, ...change });
+  const dirty = useRef(false);
+  const finished = useRef(false);
+  const latest = useRef(current);
+  const saveQueue = useRef<Promise<void>>(Promise.resolve());
+  const onDraftRef = useRef(props.onDraft);
+  const [draftSaved, setDraftSaved] = useState(false);
+  const patch = (change: Partial<GoalSetupForm>) => {
+    dirty.current = true;
+    setForm({ ...current, ...change });
+  };
   const untilComplete = current.maxChats === null;
 
-  async function start(): Promise<void> {
+  const saveDraft = () => {
+    const onDraft = onDraftRef.current;
+    if (!onDraft || !dirty.current || finished.current) return;
+    const settings = goalSetupToDraftSettings(latest.current);
+    if (!settings) return;
+    dirty.current = false;
+    saveQueue.current = saveQueue.current
+      .then(() => onDraft(settings))
+      .then(() => setDraftSaved(true))
+      .catch(() => {
+        dirty.current = true;
+      });
+  };
+  const saveDraftRef = useRef(saveDraft);
+  useEffect(() => {
+    latest.current = current;
+    onDraftRef.current = props.onDraft;
+    saveDraftRef.current = saveDraft;
+  });
+  useEffect(() => {
+    if (!dirty.current) return;
+    const timer = setTimeout(() => saveDraftRef.current(), DRAFT_SAVE_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [form]);
+  // Leaving the screen saves what is still waiting for the timer.
+  useEffect(() => () => saveDraftRef.current(), []);
+
+  async function finish(submit: (settings: GoalSettings) => Promise<boolean>): Promise<void> {
     const settings = goalSetupToSettings(current);
     if (!settings || starting) return;
     setStarting(true);
-    if (!(await props.onSubmit(settings))) setStarting(false);
+    finished.current = true;
+    await saveQueue.current;
+    if (!(await submit(settings))) {
+      finished.current = false;
+      setStarting(false);
+    }
   }
 
   return (
@@ -426,15 +483,27 @@ export function GoalForm(props: {
             </View>
           </View>
 
-          {problem ? <Text className="text-sm text-foreground-muted">{problem}</Text> : null}
+          {problem ? (
+            <Text className="text-sm text-foreground-muted">{problem}</Text>
+          ) : draftSaved ? (
+            <Text className="text-sm text-foreground-muted">Draft saved.</Text>
+          ) : null}
           <MaterialButton
             disabled={problem !== undefined}
             fullWidth
             label={starting ? props.busyLabel : props.submitLabel}
             loading={starting}
-            onPress={() => void start()}
+            onPress={() => void finish(props.onSubmit)}
             tone="primary"
           />
+          {props.secondary ? (
+            <MaterialButton
+              disabled={problem !== undefined || starting}
+              fullWidth
+              label={props.secondary.label}
+              onPress={() => void finish(props.secondary!.onSubmit)}
+            />
+          ) : null}
         </ScrollView>
       </MaterialScreenContent>
     </View>
@@ -442,18 +511,26 @@ export function GoalForm(props: {
 }
 
 /**
- * Goal setup, opened from the new-task project picker with Goal switched on.
+ * A new goal in one project. What is typed is kept as a draft, so closing the
+ * screen half-way loses nothing; starting turns the draft into a running goal.
  */
-export function GoalSetupRouteScreen({ route }: StaticScreenProps<GoalSetupParams>) {
-  const navigation = useNavigation();
-  const environmentId = route.params.environmentId as EnvironmentId;
-  const projectId = route.params.projectId as ProjectId;
+export function CreateGoalScreen(props: {
+  readonly environmentId: EnvironmentId;
+  readonly projectId: ProjectId;
+  readonly title?: string | undefined;
+  /** Closes the screen after the goal was started. */
+  readonly close: () => void;
+}) {
+  const { environmentId, projectId } = props;
   const config = useServerConfigs().get(environmentId);
   const defaultOption = useMemo(() => {
     const options = buildModelOptions(config, null).filter((option) => !option.isUnavailable);
     return options.find((option) => option.isDefault) ?? options[0];
   }, [config]);
   const createGoal = useAtomCommand(serverEnvironment.createGoal, { reportFailure: false });
+  const updateGoal = useAtomCommand(serverEnvironment.updateGoal, { reportFailure: false });
+  const restartGoal = useAtomCommand(serverEnvironment.restartGoal, { reportFailure: false });
+  const draftId = useRef<GoalId | null>(null);
 
   return (
     <GoalForm
@@ -464,18 +541,56 @@ export function GoalSetupRouteScreen({ route }: StaticScreenProps<GoalSetupParam
         agent: defaultOption ? agentFromOption(defaultOption, 1) : null,
         runtimeMode: "full-access",
       })}
+      onDraft={async (settings) => {
+        if (draftId.current) {
+          const result = await updateGoal({
+            environmentId,
+            input: { id: draftId.current, goal: settings, draft: true },
+          });
+          if (AsyncResult.isFailure(result)) throw new Error("Could not save the draft.");
+          return;
+        }
+        const result = await createGoal({ environmentId, input: { goal: settings, draft: true } });
+        if (AsyncResult.isFailure(result)) throw new Error("Could not save the draft.");
+        draftId.current = result.value.goals[0]?.id ?? null;
+      }}
       onSubmit={async (settings) => {
-        const result = await createGoal({ environmentId, input: { goal: settings } });
+        const id = draftId.current;
+        const result = id
+          ? await updateGoal({ environmentId, input: { id, goal: settings } })
+          : await createGoal({ environmentId, input: { goal: settings } });
         if (AsyncResult.isFailure(result)) {
           Alert.alert("Could not start the goal", "Check the connection and try again.");
           return false;
         }
-        (navigation.getParent() ?? navigation).goBack();
+        if (id) {
+          const started = await restartGoal({ environmentId, input: { id } });
+          if (AsyncResult.isFailure(started)) {
+            Alert.alert("Could not start the goal", "It was saved as a draft. Try again.");
+            return false;
+          }
+        }
+        props.close();
         return true;
       }}
       submitLabel="Start goal"
-      subtitle={route.params.title}
+      subtitle={props.title}
       title="New goal"
+    />
+  );
+}
+
+/**
+ * Goal setup, opened from the new-task project picker with Goal switched on.
+ */
+export function GoalSetupRouteScreen({ route }: StaticScreenProps<GoalSetupParams>) {
+  const navigation = useNavigation();
+  return (
+    <CreateGoalScreen
+      close={() => (navigation.getParent() ?? navigation).goBack()}
+      environmentId={route.params.environmentId as EnvironmentId}
+      projectId={route.params.projectId as ProjectId}
+      title={route.params.title}
     />
   );
 }

@@ -6,7 +6,8 @@ away.
 
 ## Start a goal
 
-On the new-chat project picker (the **New thread in…** menu on desktop and web, the
+Choose **New goal** on the Goals page (web and desktop) or in **Settings → Goals** (mobile), then
+pick a project. Or, on the new-chat project picker (the **New thread in…** menu on desktop and web, the
 **Choose project** sheet on mobile), switch **Goal** on, then choose a project. Goal
 is off by default each time. You land on the goal setup page, where you choose:
 
@@ -56,9 +57,26 @@ approval or question.
   blocked work (3 unless you change it), the goal stops starting agents so a plan that
   cannot be finished does not spend your usage overnight. Agents already working are
   left to finish. Fix the problem, then **Start again**.
-- A chat that stops on a usage limit stays open and is resumed when the limit resets,
-  and the goal waits for it. It is archived only if the resumed work finishes
-  successfully. Without that setting, the chat waits for you to resume it.
+
+## Usage limits and unavailable providers
+
+A usage limit is not a problem with the work, so it never counts toward the safety stop.
+
+- **Providers that are out of usage are skipped.** The goal reads each provider's usage the
+  way the usage bars do. A provider whose session or weekly allowance is used up gets no new
+  agents until it resets, and the others carry on. A provider that is switched off, not
+  installed, or signed out is skipped the same way.
+- **A limit hit by an agent sets that provider aside** until the time the provider gives for
+  the reset, or for a few minutes to an hour when it gives none. An agent that hit the limit
+  before doing anything is dropped, and another provider takes its place. One that had
+  started is kept and resumed when the limit resets (with auto resume on), and does not hold
+  one of the **Agents at once** lanes while it waits.
+- **A provider whose agents fail** is set aside for 5 minutes, then longer if it keeps
+  failing, and the goal uses the others.
+- **When every provider is unavailable the goal waits** instead of ending, says so on its
+  card with the next time to check, and starts again by itself. **Start again** forgets all
+  of this and tries immediately.
+- An agent you stop yourself is not a failure either.
 
 ## Beads
 
@@ -71,6 +89,12 @@ unfinished chunks left. If nothing is ready or working but chunks remain, it sto
 and says it is stalled. Optionally limit it to one epic or plan. A project without Beads
 runs plain agents instead.
 
+## Drafts
+
+A new goal you start filling in is saved as a **draft** after a second, so leaving the page
+(or closing the app) loses nothing. Drafts show on the Goals page; open one with the pencil to
+carry on, then **Start goal**. **Start** on the card starts it as it is. Delete removes it.
+
 ## Check on goals
 
 Open **Goals** in the desktop or web sidebar, or **Settings → Goals** on mobile. Each goal shows how many agents are
@@ -81,5 +105,8 @@ counted.
 - **Edit** (the pencil) changes any setting, including the instructions, and applies it
   to agents started from then on. Agents already working keep what they were given.
 - **Stop** stops starting new agents. Agents already working are not interrupted.
-- **Start again** starts a stopped, finished, or failed goal with a fresh budget.
+- **Start again** starts a stopped, finished, or failed goal with a fresh budget. In the edit
+  form, **Save and start** does both at once.
+- A goal that cannot start anything yet says why on its card, and which providers are set aside
+  until when.
 - The delete button removes the goal from the list; its chats stay as ordinary threads.

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { describeGoalProgress, describeGoalQueue } from "./goalProgress.ts";
+import { describeGoalPauses, describeGoalProgress, describeGoalQueue } from "./goalProgress.ts";
 
 const chat = (status: string, waitingForLimit?: boolean) =>
   ({ status, ...(waitingForLimit ? { waitingForLimit } : {}) }) as never;
@@ -54,5 +54,33 @@ describe("describeGoalQueue", () => {
       "Beads: 3 ready · 14 in progress · 21 blocked · 26 done",
     );
     expect(describeGoalQueue({ useBeads: false, queue })).toBeUndefined();
+  });
+});
+
+describe("describeGoalPauses", () => {
+  it("lists providers still set aside, and drops the ones whose time has passed", () => {
+    const goal = {
+      pauses: [
+        { instanceId: "codex", until: "2026-10-09T00:00:00.000Z", reason: "usage-limit" },
+        {
+          instanceId: "gemini",
+          model: "flash",
+          until: "2026-10-09T01:00:00.000Z",
+          reason: "errors",
+        },
+        { instanceId: "old", until: "2026-10-01T00:00:00.000Z", reason: "usage-limit" },
+      ],
+    } as never;
+    expect(
+      describeGoalPauses(
+        goal,
+        Date.parse("2026-10-04T00:00:00.000Z"),
+        (id) => id.toUpperCase(),
+        (iso) => iso.slice(5, 10),
+      ),
+    ).toEqual([
+      "CODEX is set aside (usage limit) until 10-09",
+      "GEMINI flash is set aside (recent failures) until 10-09",
+    ]);
   });
 });

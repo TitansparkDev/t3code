@@ -19591,6 +19591,7 @@ apps/mobile/src/features/files/thread-file-navigator-pane.tsx
 apps/mobile/src/features/files/useFileTreeEntries.ts
 apps/mobile/src/features/files/workspaceFileAssetUrl.ts
 apps/mobile/src/features/goals/GoalEditRouteScreen.tsx
+apps/mobile/src/features/goals/GoalNewRouteScreens.tsx
 apps/mobile/src/features/goals/GoalSetupRouteScreen.tsx
 apps/mobile/src/features/goals/GoalsRouteScreen.tsx
 apps/mobile/src/features/home/AndroidHomeFab.android.tsx

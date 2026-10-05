@@ -50,6 +50,9 @@ export interface GoalSetupForm {
   readonly stopAfterProblems: number;
 }
 
+/** What a draft is called until it has a name. The setup form shows it as empty. */
+export const UNTITLED_GOAL_NAME = "Untitled goal";
+
 export function defaultGoalSetup(input: {
   readonly projectId: ProjectId | null;
   readonly agent: Omit<GoalSetupAgent, "count"> | null;
@@ -74,7 +77,7 @@ export function defaultGoalSetup(input: {
 /** The form for editing a goal that already exists. */
 export function goalToSetup(goal: Goal): GoalSetupForm {
   return {
-    name: goal.name,
+    name: goal.status === "draft" && goal.name === UNTITLED_GOAL_NAME ? "" : goal.name,
     prompt: goal.prompt ?? "",
     projectId: goal.projectId,
     agents: goal.agents.map((agent) => ({
@@ -151,5 +154,37 @@ export function goalSetupToSettings(form: GoalSetupForm): GoalSettings | undefin
     useBeads: form.useBeads,
     beadsScope: form.beadsScope.trim(),
     stopAfterProblems: whole(form.stopAfterProblems),
+  };
+}
+
+const clamp = (value: number, maximum: number) =>
+  Math.min(Math.max(Math.round(Number.isFinite(value) ? value : 1), 1), maximum);
+
+/**
+ * What to save for a draft: whatever has been typed so far, with numbers pulled
+ * into range so the server accepts it. Undefined until there is a project and a model.
+ */
+export function goalSetupToDraftSettings(form: GoalSetupForm): GoalSettings | undefined {
+  if (form.projectId === null || form.agents.length === 0) return undefined;
+  return {
+    name: form.name.trim() || UNTITLED_GOAL_NAME,
+    prompt: form.prompt.trim(),
+    projectId: form.projectId,
+    agents: form.agents.map((agent) => ({
+      modelSelection: {
+        instanceId: agent.instanceId,
+        model: agent.model,
+        ...(agent.options && agent.options.length > 0 ? { options: agent.options } : {}),
+      },
+      count: clamp(agent.count, MAX_GOAL_AGENT_COUNT),
+    })),
+    concurrency: clamp(form.concurrency, MAX_GOAL_CONCURRENCY),
+    maxChats: form.maxChats === null ? null : clamp(form.maxChats, MAX_GOAL_MAX_CHATS),
+    runtimeMode: form.runtimeMode,
+    autoResume: form.autoResume,
+    standardRules: form.standardRules,
+    useBeads: form.useBeads,
+    beadsScope: form.beadsScope.trim(),
+    stopAfterProblems: clamp(form.stopAfterProblems, MAX_GOAL_STOP_AFTER_PROBLEMS),
   };
 }

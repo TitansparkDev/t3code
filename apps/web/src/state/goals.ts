@@ -11,6 +11,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId } from "@t3tools/contracts";
 import type { Goal, GoalId, GoalSettings } from "@t3tools/contracts/goals";
+import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
 import { useCallback, useEffect, useMemo } from "react";
@@ -54,32 +55,43 @@ export function useGoals() {
       label: string,
     ) =>
       async (environmentId: EnvironmentId, id: GoalId) => {
-        await runAtomCommand(appAtomRegistry, atom, { environmentId, input: { id } }, { label });
+        const result = await runAtomCommand(
+          appAtomRegistry,
+          atom,
+          { environmentId, input: { id } },
+          { label },
+        );
         refresh(environmentId);
+        // Surfaced so the page can tell the person instead of looking like nothing happened.
+        if (result._tag === "Failure") throw Cause.squash(result.cause);
       },
     [refresh],
   );
+  /** `draft` saves the setup without starting it. Returns the new goal. */
   const create = useCallback(
-    async (environmentId: EnvironmentId, goal: GoalSettings) => {
-      await runAtomCommand(
+    async (environmentId: EnvironmentId, goal: GoalSettings, draft = false) => {
+      const result = await runAtomCommand(
         appAtomRegistry,
         serverEnvironment.createGoal,
-        { environmentId, input: { goal } },
-        { label: "start goal" },
+        { environmentId, input: { goal, ...(draft ? { draft } : {}) } },
+        { label: draft ? "save goal draft" : "start goal" },
       );
       refresh(environmentId);
+      if (result._tag === "Failure") throw Cause.squash(result.cause);
+      return result.value.goals[0];
     },
     [refresh],
   );
   const update = useCallback(
-    async (environmentId: EnvironmentId, id: GoalId, goal: GoalSettings) => {
-      await runAtomCommand(
+    async (environmentId: EnvironmentId, id: GoalId, goal: GoalSettings, draft = false) => {
+      const result = await runAtomCommand(
         appAtomRegistry,
         serverEnvironment.updateGoal,
-        { environmentId, input: { id, goal } },
-        { label: "update goal" },
+        { environmentId, input: { id, goal, ...(draft ? { draft } : {}) } },
+        { label: draft ? "save goal draft" : "update goal" },
       );
       refresh(environmentId);
+      if (result._tag === "Failure") throw Cause.squash(result.cause);
     },
     [refresh],
   );

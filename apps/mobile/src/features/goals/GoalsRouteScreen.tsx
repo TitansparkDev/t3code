@@ -1,7 +1,12 @@
 import { useNavigation } from "@react-navigation/native";
-import { describeGoalProgress, describeGoalQueue } from "@t3tools/client-runtime/goal-progress";
+import {
+  describeGoalPauses,
+  describeGoalProgress,
+  describeGoalQueue,
+} from "@t3tools/client-runtime/goal-progress";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { goalTitle, type Goal } from "@t3tools/contracts/goals";
+import { AsyncResult } from "effect/unstable/reactivity";
 import { useEffect } from "react";
 import { Alert, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -10,6 +15,7 @@ import { AppText as Text } from "../../components/AppText";
 import { MaterialButton } from "../../components/MaterialButton";
 import { ScreenScrollView as ScrollView } from "../../components/ScreenScrollView";
 import { useEnvironments } from "../../state/environments";
+import { useServerConfigs } from "../../state/entities";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -17,7 +23,11 @@ import { SettingsScreen } from "../settings/components/SettingsScreen";
 
 const REFRESH_MS = 5_000;
 
+const formatTime = (iso: string) =>
+  new Date(iso).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" });
+
 const STATUS_LABEL: Record<Goal["status"], string> = {
+  draft: "Draft",
   running: "Running",
   complete: "Complete",
   stopped: "Stopped",
@@ -27,6 +37,7 @@ const STATUS_LABEL: Record<Goal["status"], string> = {
 function GoalCard(props: {
   readonly environmentId: EnvironmentId;
   readonly goal: Goal;
+  readonly nameOf: (instanceId: string) => string;
   readonly onChanged: () => void;
 }) {
   const navigation = useNavigation();
@@ -41,9 +52,16 @@ function GoalCard(props: {
   ).length;
 
   const run = async (action: typeof stopGoal) => {
-    await action({ environmentId, input: { id: goal.id } });
+    const result = await action({ environmentId, input: { id: goal.id } });
+    if (AsyncResult.isFailure(result)) {
+      Alert.alert("Could not update the goal", "Check the connection and try again.");
+    }
     props.onChanged();
   };
+  const pauses =
+    running || goal.status === "stopped"
+      ? describeGoalPauses(goal, Date.now(), props.nameOf, formatTime)
+      : [];
 
   return (
     <View className="gap-3 rounded-[24px] bg-card p-4">
@@ -52,10 +70,21 @@ function GoalCard(props: {
           {goalTitle(goal)}
         </Text>
         <Text className="text-sm text-foreground-muted">
-          {STATUS_LABEL[goal.status]} · {describeGoalProgress(goal)}
+          {STATUS_LABEL[goal.status]}
+          {goal.status === "draft" ? " · not started" : ` · ${describeGoalProgress(goal)}`}
         </Text>
         {queue ? <Text className="text-sm text-foreground-muted">{queue}</Text> : null}
         {goal.detail ? <Text className="text-sm text-foreground-muted">{goal.detail}</Text> : null}
+        {goal.waitingUntil ? (
+          <Text className="text-sm text-foreground-muted">
+            Next check for a provider that is back: {formatTime(goal.waitingUntil)}
+          </Text>
+        ) : null}
+        {pauses.map((line) => (
+          <Text className="text-sm text-foreground-muted" key={line}>
+            {line}
+          </Text>
+        ))}
         {needAttention > 0 ? (
           <Text className="text-sm text-danger-foreground">
             {needAttention} agent{needAttention === 1 ? "" : "s"} failed or need you. Open them from
@@ -67,7 +96,10 @@ function GoalCard(props: {
         {running ? (
           <MaterialButton label="Stop" onPress={() => void run(stopGoal)} />
         ) : (
-          <MaterialButton label="Start again" onPress={() => void run(restartGoal)} />
+          <MaterialButton
+            label={goal.status === "draft" ? "Start" : "Start again"}
+            onPress={() => void run(restartGoal)}
+          />
         )}
         <MaterialButton
           label="Edit"
@@ -98,6 +130,10 @@ function EnvironmentGoals(props: {
   readonly label: string;
 }) {
   const { environmentId } = props;
+  const config = useServerConfigs().get(environmentId);
+  const nameOf = (instanceId: string) =>
+    config?.providers.find((provider) => provider.instanceId === instanceId)?.displayName ??
+    instanceId;
   const goals = useEnvironmentQuery(serverEnvironment.goals({ environmentId, input: {} }));
   const refresh = goals.refresh;
   useEffect(() => {
@@ -110,7 +146,13 @@ function EnvironmentGoals(props: {
     <View className="gap-3">
       <Text className="text-sm text-foreground-muted">{props.label}</Text>
       {goals.data.goals.map((goal) => (
-        <GoalCard environmentId={environmentId} goal={goal} key={goal.id} onChanged={refresh} />
+        <GoalCard
+          environmentId={environmentId}
+          goal={goal}
+          key={goal.id}
+          nameOf={nameOf}
+          onChanged={refresh}
+        />
       ))}
     </View>
   );
@@ -119,6 +161,7 @@ function EnvironmentGoals(props: {
 /** Goals on every connected machine: counts only, with stop, restart, edit and delete. */
 export function GoalsRouteScreen() {
   const insets = useSafeAreaInsets();
+  const navigation = useNavigation();
   const { environments } = useEnvironments();
   return (
     <SettingsScreen title="Goals">
@@ -130,9 +173,19 @@ export function GoalsRouteScreen() {
         contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
       >
         <Text className="text-sm text-foreground-muted">
-          Start a goal from New thread with the Goal switch on. It keeps agents working until
-          nothing is left.
+          Start a goal here or from New thread with the Goal switch on. It keeps agents working
+          until nothing is left. A goal you set up but did not start is kept as a draft.
         </Text>
+        <MaterialButton
+          label="New goal"
+          onPress={() =>
+            navigation.navigate("SettingsSheet", {
+              screen: "SettingsContent",
+              params: { screen: "SettingsGoalProject" },
+            })
+          }
+          tone="primary"
+        />
         {environments.map((environment) => (
           <EnvironmentGoals
             environmentId={environment.environmentId}

@@ -21,6 +21,14 @@
  *  - A goal stops starting chats once `stopAfterProblems` finished chats in a
  *    row failed, needed the person, or found only blocked work, so a plan that
  *    cannot be finished does not spend usage all night.
+ *  - A provider that is out of usage (reported by the provider registry, or hit
+ *    by one of the goal's own chats) gets no new chats until its limit resets, and
+ *    a usage limit is never counted against the goal. When every provider the goal
+ *    uses is out, the goal waits and carries on by itself.
+ *  - A provider whose chats fail is backed off for a while, so a broken account is
+ *    not retried every few seconds.
+ *  - A chat the person stopped, or one that hit a usage limit before doing any work,
+ *    is not a problem: its lane is freed and the goal goes on.
  *  - Stopping a goal never interrupts chats already working; they finish and
  *    are recorded like any other.
  *  - With Beads, a chat starts only when a chunk is ready and is handed that
@@ -35,10 +43,12 @@ import {
   ThreadId,
   type OrchestrationThread,
 } from "@t3tools/contracts";
+import type { ServerProvider } from "@t3tools/contracts";
 import {
   type Goal,
   type GoalChat,
   GoalId,
+  type GoalProviderPause,
   type GoalSettings,
   goalPrompt,
   goalSettingsProblem,
@@ -61,7 +71,8 @@ import * as Stream from "effect/Stream";
 
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
-import { nextUsageLimitRetryAt } from "../provider/usageLimits.ts";
+import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
+import { nextUsageLimitRetryAt, providerUsageLimitFromError } from "../provider/usageLimits.ts";
 import { type Bead, type BeadsSnapshot, GoalBeads } from "./GoalBeads.ts";
 import { GoalStore } from "./GoalStore.ts";
 
@@ -81,15 +92,18 @@ export class GoalService extends Context.Service<
     /** Create a goal and start its first chats. */
     readonly create: (
       settings: GoalSettings,
+      options?: { readonly draft?: boolean },
     ) => Effect.Effect<ReadonlyArray<Goal>, OrchestrationDispatchCommandError>;
     readonly list: Effect.Effect<ReadonlyArray<Goal>>;
     /** Change any setting. Chats already working keep the instructions they started with. */
     readonly update: (
       id: GoalId,
       settings: GoalSettings,
+      options?: { readonly draft?: boolean },
     ) => Effect.Effect<ReadonlyArray<Goal>, OrchestrationDispatchCommandError>;
     /** Stop starting chats. Chats already working are left to finish. */
     readonly stop: (id: GoalId) => Effect.Effect<ReadonlyArray<Goal>>;
+    /** Start a draft, or start a stopped, stopped-early or finished goal again. */
     readonly restart: (id: GoalId) => Effect.Effect<ReadonlyArray<Goal>>;
     readonly remove: (id: GoalId) => Effect.Effect<ReadonlyArray<Goal>>;
     /** Recovers goals after a restart, then reacts to chats finishing. Fork it. */
@@ -97,20 +111,30 @@ export class GoalService extends Context.Service<
   }
 >()("t3/goals/GoalService") {}
 
-/** Chats that count against this start: a restart gets a fresh budget. */
+/**
+ * Chats that count against this start: a restart gets a fresh budget. A chat
+ * still working always counts, whenever it began.
+ */
 export function chatsSinceStart(goal: Goal): ReadonlyArray<GoalChat> {
   const since = Date.parse(goal.restartedAt ?? goal.createdAt);
-  return goal.chats.filter((chat) => Date.parse(chat.startedAt) >= since);
+  return goal.chats.filter(
+    (chat) => chat.status === "running" || Date.parse(chat.startedAt) >= since,
+  );
 }
 
 /**
  * Which agent the next chat should use, or undefined when none has room. The
- * agent furthest below its own count goes first, so counts fill evenly.
+ * agent furthest below its own count goes first, so counts fill evenly. Agents
+ * in `unavailable` (by index) are skipped, and chats waiting for a usage limit
+ * to reset do not hold a lane: they continue by themselves later.
  */
-export function nextAgentIndex(goal: Goal): number | undefined {
+export function nextAgentIndex(
+  goal: Goal,
+  unavailable: ReadonlySet<number> = new Set(),
+): number | undefined {
   if (goal.status !== "running" || goal.holdStarts) return undefined;
   const chats = chatsSinceStart(goal);
-  const running = chats.filter((chat) => chat.status === "running");
+  const running = chats.filter((chat) => chat.status === "running" && !chat.waitingForLimit);
   const blocked = chats.filter(
     (chat) => chat.status === "failed" || chat.status === "attention",
   ).length;
@@ -119,6 +143,7 @@ export function nextAgentIndex(goal: Goal): number | undefined {
   if (goal.maxChats !== null && chats.length >= goal.maxChats) return undefined;
   let best: { index: number; load: number } | undefined;
   goal.agents.forEach((agent, index) => {
+    if (unavailable.has(index)) return;
     const active = running.filter((chat) => chat.agentIndex === index).length;
     if (active >= agent.count) return;
     const load = active / agent.count;
@@ -127,8 +152,110 @@ export function nextAgentIndex(goal: Goal): number | undefined {
   return best?.index;
 }
 
+/** Words in a usage window's name that say nothing about which models it covers. */
+const GENERIC_WINDOW_WORDS = new Set([
+  "weekly",
+  "daily",
+  "monthly",
+  "session",
+  "hour",
+  "hours",
+  "day",
+  "days",
+  "week",
+  "month",
+  "limit",
+  "limits",
+  "usage",
+  "quota",
+  "five",
+  "seven",
+  "thirty",
+  "primary",
+  "secondary",
+  "window",
+  "rolling",
+  "spend",
+  "credits",
+]);
+
+/**
+ * Whether a usage window covers `model`. A window named for a model family
+ * (Claude's `seven_day_opus`, Antigravity's "Gemini 3 Flash") covers only models
+ * that carry all of those words; a plain session or weekly window covers every model.
+ */
+export function windowCoversModel(
+  window: { readonly id: string; readonly label: string },
+  model: string,
+): boolean {
+  const words = `${window.id} ${window.label}`
+    .toLowerCase()
+    .split(/[^a-z0-9]+/u)
+    .filter((word) => word.length >= 3 && !/^\d+$/u.test(word) && !GENERIC_WINDOW_WORDS.has(word));
+  const slug = model.toLowerCase();
+  return words.every((word) => slug.includes(word));
+}
+
+/** A usage window counts as used up from this percentage. */
+const WINDOW_FULL_PERCENT = 99.5;
+
+/**
+ * Why a provider cannot take new chats for `model` right now, or undefined. Looks
+ * at the provider's own report: not installed, switched off, signed out, or a
+ * usage window used up that has not reset yet.
+ */
+export function providerBlock(
+  provider: ServerProvider | undefined,
+  model: string,
+  nowMs: number,
+): { readonly until?: number; readonly reason: string } | undefined {
+  if (!provider) return { reason: "is not set up" };
+  if (!provider.enabled) return { reason: "is switched off" };
+  if (provider.availability === "unavailable" || !provider.installed) {
+    return { reason: "is not installed" };
+  }
+  if (provider.auth.status === "unauthenticated") return { reason: "is signed out" };
+  let until: number | undefined;
+  for (const window of provider.usageLimits?.windows ?? []) {
+    if (window.usedPercent < WINDOW_FULL_PERCENT || window.resetsAt === undefined) continue;
+    const resetsAt = Date.parse(window.resetsAt);
+    if (!(resetsAt > nowMs) || !windowCoversModel(window, model)) continue;
+    until = Math.max(until ?? 0, resetsAt);
+  }
+  return until === undefined ? undefined : { until, reason: "is out of usage" };
+}
+
+/** Minutes a provider is left alone after failures in a row, growing to an hour. */
+const ERROR_BACKOFF_MINUTES = [5, 15, 30, 60] as const;
+
+/** Whether a pause applies to this agent. Antigravity limits are per model; others cover the account. */
+const pauseCovers = (pause: GoalProviderPause, instanceId: string, model: string) =>
+  pause.instanceId === instanceId && (pause.model === undefined || pause.model === model);
+
 const lastAssistantReply = (thread: OrchestrationThread | undefined) =>
   thread?.messages.findLast((message) => message.role === "assistant")?.text;
+
+/** A chat that has said or done nothing yet loses nothing if it is dropped. */
+const madeProgress = (thread: OrchestrationThread | undefined) =>
+  thread !== undefined &&
+  (thread.messages.some((message) => message.role === "assistant") || thread.activities.length > 0);
+
+interface UsageLimitHit {
+  readonly retryAt?: string | undefined;
+}
+
+/** The usage limit a thread's session stopped on, however the provider worded it. */
+function usageLimitOf(thread: OrchestrationThread | undefined): UsageLimitHit | undefined {
+  const session = thread?.session;
+  if (!session) return undefined;
+  if (session.lastErrorClass === "usage_limit") return { retryAt: session.retryAt };
+  if (session.lastError === null) return undefined;
+  const limit = providerUsageLimitFromError({
+    message: session.lastError,
+    ...(session.retryAt !== undefined ? { retryAt: session.retryAt } : {}),
+  });
+  return limit === null ? undefined : { retryAt: limit.retryAt };
+}
 
 export const make = Effect.gen(function* () {
   const engine = yield* OrchestrationEngineService;
@@ -142,6 +269,7 @@ export const make = Effect.gen(function* () {
   /** Serializes everything that changes a goal's chats, so lanes are never over-filled. */
   const lock = yield* Semaphore.make(1);
   const beads = yield* GoalBeads;
+  const registry = yield* ProviderRegistry;
   const spacing = yield* StartSpacingMillis;
   const nowMillis = Effect.map(DateTime.now, DateTime.toEpochMillis);
   /** When each goal last started a chat, for spacing starts apart. */
@@ -165,6 +293,9 @@ export const make = Effect.gen(function* () {
       ...current,
       chats: [...current.chats, chat],
       updatedAt: chat.startedAt,
+      // A running goal's detail only ever says it is waiting; it is not waiting now.
+      waitingUntil: undefined,
+      detail: current.status === "running" ? undefined : current.detail,
     }));
 
   const updateChat = (goalId: GoalId, threadId: ThreadId, change: Partial<GoalChat>) =>
@@ -249,6 +380,129 @@ export const make = Effect.gen(function* () {
   const usesBeads = (settings: GoalSettings, workspaceRoot: string) =>
     settings.useBeads === true ? beads.available(workspaceRoot) : Effect.succeed(false);
 
+  /**
+   * The goal's agents (by index) that cannot take a new chat right now, with when
+   * they come back (undefined when that is not known) and what is wrong.
+   */
+  const unavailableAgents = Effect.fn("GoalService.unavailableAgents")(function* (goal: Goal) {
+    const now = yield* nowMillis;
+    const providers = yield* registry.getProviders.pipe(
+      Effect.catchCause(() => Effect.succeed([] as ReadonlyArray<ServerProvider>)),
+    );
+    const unavailable = new Map<number, { until?: number; reason: string; name: string }>();
+    goal.agents.forEach((agent, index) => {
+      const { instanceId, model } = agent.modelSelection;
+      const provider = providers.find((candidate) => candidate.instanceId === instanceId);
+      const name = provider?.displayName ?? String(instanceId);
+      const paused = (goal.pauses ?? []).find(
+        (pause) => Date.parse(pause.until) > now && pauseCovers(pause, instanceId, model),
+      );
+      const block = providerBlock(provider, model, now);
+      const until = Math.max(paused ? Date.parse(paused.until) : 0, block?.until ?? 0);
+      if (!paused && !block) return;
+      unavailable.set(index, {
+        ...(until > 0 && (block === undefined || block.until !== undefined || paused)
+          ? { until }
+          : {}),
+        reason: paused
+          ? paused.reason === "usage-limit"
+            ? "hit its usage limit"
+            : "keeps failing"
+          : (block?.reason ?? ""),
+        name,
+      });
+    });
+    return unavailable;
+  });
+
+  /** Set one provider aside for a while after a usage limit, or after chats on it failed. */
+  const pauseAgent = Effect.fn("GoalService.pauseAgent")(function* (
+    goalId: GoalId,
+    agent: Goal["agents"][number],
+    reason: GoalProviderPause["reason"],
+    retryAt?: string,
+  ) {
+    const now = yield* nowMillis;
+    const nowText = yield* nowIso;
+    const { instanceId, model } = agent.modelSelection;
+    const providers = yield* registry.getProviders.pipe(
+      Effect.catchCause(() => Effect.succeed([] as ReadonlyArray<ServerProvider>)),
+    );
+    // Antigravity limits belong to a model group; every other provider's cover the account.
+    const perModel =
+      reason === "usage-limit" &&
+      providers.find((provider) => provider.instanceId === instanceId)?.driver === "antigravity";
+    yield* store.update(goalId, (goal) => {
+      const existing = (goal.pauses ?? []).find((pause) =>
+        pauseCovers(pause, instanceId, perModel ? model : ""),
+      );
+      const stillPaused = existing !== undefined && Date.parse(existing.until) > now;
+      const strikes = (existing?.strikes ?? 0) + (stillPaused ? 0 : 1);
+      const until =
+        reason === "usage-limit"
+          ? nextUsageLimitRetryAt({
+              now: nowText as never,
+              attempt: Math.max(strikes - 1, 0),
+              ...(retryAt !== undefined ? { providerRetryAt: retryAt as never } : {}),
+            })
+          : (DateTime.formatIso(
+              DateTime.makeUnsafe(now + ERROR_BACKOFF_MINUTES[Math.min(strikes - 1, 3)]! * 60_000),
+            ) as never);
+      const kept = (goal.pauses ?? []).filter(
+        (pause) =>
+          !(pause.instanceId === instanceId && pause.model === (perModel ? model : undefined)),
+      );
+      const pause: GoalProviderPause = {
+        instanceId,
+        ...(perModel ? { model } : {}),
+        until:
+          stillPaused && Date.parse(existing.until) > Date.parse(until) ? existing.until : until,
+        reason: stillPaused && existing.reason === "usage-limit" ? "usage-limit" : reason,
+        strikes,
+      };
+      return { ...goal, pauses: [...kept, pause] };
+    });
+  });
+
+  /** A chat on this agent finished its work: forget earlier failures of that provider. */
+  const clearPauses = (goalId: GoalId, agent: Goal["agents"][number]) =>
+    store.update(goalId, (goal) => {
+      const { instanceId, model } = agent.modelSelection;
+      const pauses = (goal.pauses ?? []).filter((pause) => !pauseCovers(pause, instanceId, model));
+      return pauses.length === (goal.pauses ?? []).length
+        ? goal
+        : { ...goal, pauses: pauses.length > 0 ? pauses : undefined };
+    });
+
+  /** Say, on the goal, that it is running but waiting for a provider to come back. */
+  const markWaiting = (
+    goalId: GoalId,
+    unavailable: ReadonlyMap<number, { until?: number; reason: string; name: string }>,
+  ) =>
+    store.update(goalId, (goal) => {
+      const entries = [...unavailable.values()];
+      const times = entries.map((entry) => entry.until);
+      const known = times.every((time) => time !== undefined);
+      const waitingUntil = known
+        ? (DateTime.formatIso(DateTime.makeUnsafe(Math.min(...(times as number[])))) as never)
+        : undefined;
+      const names = [...new Set(entries.map((entry) => `${entry.name} ${entry.reason}`))].join(
+        "; ",
+      );
+      const detail = `Waiting: ${names}. The goal carries on by itself when one is back.`;
+      return goal.waitingUntil === waitingUntil && goal.detail === detail
+        ? goal
+        : { ...goal, waitingUntil, detail: detail as never };
+    });
+
+  /** The goal is no longer waiting on a provider. */
+  const clearWaiting = (goalId: GoalId) =>
+    store.update(goalId, (goal) =>
+      goal.waitingUntil === undefined && goal.detail === undefined
+        ? goal
+        : { ...goal, waitingUntil: undefined, detail: undefined },
+    );
+
   /** Open one new chat for the goal on `agentIndex`. Returns whether it started. */
   const startChat = Effect.fn("GoalService.startChat")(function* (
     goal: Goal,
@@ -280,7 +534,11 @@ export const make = Effect.gen(function* () {
           logFailure("goals.chat-create-failed")(cause).pipe(Effect.as(false)),
         ),
       );
-    if (!created) return false;
+    if (!created) {
+      // Back off, so a broken project or provider is not retried on every tick.
+      yield* pauseAgent(goal.id, agent, "errors");
+      return false;
+    }
     // Registered before the turn starts so a fast provider cannot finish unseen.
     watching.set(threadId, { goalId: goal.id, seenRunning: false });
     yield* addChat(goal.id, {
@@ -315,6 +573,7 @@ export const make = Effect.gen(function* () {
       );
     if (!started) {
       watching.delete(threadId);
+      yield* pauseAgent(goal.id, agent, "errors");
       yield* updateChat(goal.id, threadId, { status: "failed", completedAt: yield* nowIso });
       yield* engine
         .dispatch({
@@ -349,7 +608,8 @@ export const make = Effect.gen(function* () {
     }
     while (true) {
       const goal = yield* currentGoal(goalId);
-      const agentIndex = goal ? nextAgentIndex(goal) : undefined;
+      const unavailable = goal ? yield* unavailableAgents(goal) : undefined;
+      const agentIndex = goal ? nextAgentIndex(goal, new Set(unavailable?.keys())) : undefined;
       if (!goal || agentIndex === undefined) break;
       const now = yield* nowMillis;
       const last = lastStart.get(goalId);
@@ -368,7 +628,11 @@ export const make = Effect.gen(function* () {
     if (!goal || goal.status !== "running") return;
     const chats = chatsSinceStart(goal);
     if (chats.some((chat) => chat.status === "running")) return;
-    const next = nextAgentIndex(goal);
+    const unavailable = yield* unavailableAgents(goal);
+    const next = nextAgentIndex(goal, new Set(unavailable.keys()));
+    // Would start something if every provider were back: wait for them, never give up.
+    const waitsForProviders = next === undefined && nextAgentIndex(goal) !== undefined;
+    if (!waitsForProviders && goal.waitingUntil !== undefined) yield* clearWaiting(goalId);
     if (goal.useBeads) {
       const queue = beadsCache.get(goalId)?.snapshot;
       if (!queue) return;
@@ -377,6 +641,10 @@ export const make = Effect.gen(function* () {
         return;
       }
       if (next !== undefined && queue.ready.length > 0) return;
+      if (waitsForProviders && queue.ready.length > 0) {
+        yield* markWaiting(goalId, unavailable);
+        return;
+      }
       if (queue.ready.length === 0) {
         const holding = chats.filter((chat) => chat.status === "attention").length;
         // Chunks claimed by someone else may still finish and unblock more.
@@ -391,6 +659,9 @@ export const make = Effect.gen(function* () {
         return;
       }
     } else if (next !== undefined) {
+      return;
+    } else if (waitsForProviders) {
+      yield* markWaiting(goalId, unavailable);
       return;
     }
     const blocked = chats.filter(
@@ -411,6 +682,7 @@ export const make = Effect.gen(function* () {
   const finishChat = Effect.fn("GoalService.finishChat")(function* (
     goalId: GoalId,
     threadId: ThreadId,
+    knownLimit?: UsageLimitHit,
   ) {
     watching.delete(threadId);
     const thread = yield* readThread(threadId);
@@ -418,11 +690,21 @@ export const make = Effect.gen(function* () {
     const chat = before?.chats.find((candidate) => candidate.threadId === threadId);
     if (!before || !chat) return;
     const root = chat.beadId ? yield* workspaceRootOf(before.projectId) : undefined;
-    const failed = thread?.latestTurn?.state !== "completed";
+    const interrupted = thread?.latestTurn?.state === "interrupted";
+    const failed = knownLimit !== undefined || thread?.latestTurn?.state !== "completed";
+    // A usage limit or the person stopping the chat says nothing about the work or the goal.
+    const hit = knownLimit ?? (failed && !interrupted ? usageLimitOf(thread) : undefined);
+    const stopped = hit !== undefined || interrupted;
     const reply = lastAssistantReply(thread);
     const needsAttention = !failed && replyNeedsAttention(reply);
     const blockedWork = !failed && !needsAttention && replyReportsBlockedWork(reply);
-    let status: GoalChat["status"] = failed ? "failed" : needsAttention ? "attention" : "completed";
+    let status: GoalChat["status"] = stopped
+      ? "stopped"
+      : failed
+        ? "failed"
+        : needsAttention
+          ? "attention"
+          : "completed";
     if (chat.beadId && root) {
       if (failed) {
         yield* beads.release(root, chat.beadId);
@@ -433,12 +715,28 @@ export const make = Effect.gen(function* () {
       }
     }
     beadsCache.delete(goalId);
+    const agent = before.agents[chat.agentIndex];
+    if (agent) {
+      if (hit) yield* pauseAgent(goalId, agent, "usage-limit", hit.retryAt);
+      else if (status === "failed") yield* pauseAgent(goalId, agent, "errors");
+      else if (status === "completed") yield* clearPauses(goalId, agent);
+    }
     yield* updateChat(goalId, threadId, {
       status,
       completedAt: yield* nowIso,
       waitingForLimit: undefined,
       ...(blockedWork ? { blockedWork: true } : {}),
     });
+    if (hit && !madeProgress(thread)) {
+      // Nothing was done, so nothing is lost: drop the empty chat and let another provider take over.
+      yield* engine
+        .dispatch({
+          type: "thread.delete",
+          commandId: CommandId.make(`goal-cleanup:${yield* randomUUID}`),
+          threadId,
+        })
+        .pipe(Effect.ignoreCause({ log: true }));
+    }
     // Only successful work tidies itself out of the thread list (the Goals page still links it).
     // A chat with a problem or a question stays visible until the person has seen it.
     if (status === "completed") {
@@ -530,12 +828,26 @@ export const make = Effect.gen(function* () {
         return;
       }
       if (session.lastErrorClass === "usage_limit") {
-        const goal = yield* updateChat(watch.goalId, event.threadId, { waitingForLimit: true });
-        if (goal?.autoResume) {
-          yield* scheduleResume(event.threadId, session).pipe(
-            Effect.catchCause(logFailure("goals.resume-schedule-failed")),
-          );
+        const limit = { retryAt: session.retryAt };
+        const goal = yield* currentGoal(watch.goalId);
+        const thread = yield* readThread(event.threadId);
+        if (!goal?.autoResume || !madeProgress(thread)) {
+          // Not resuming, or nothing worth resuming: record it and free the lane.
+          yield* finishChat(watch.goalId, event.threadId, limit);
+          return;
         }
+        // Work was under way: keep the chat and continue it when the limit resets.
+        yield* updateChat(watch.goalId, event.threadId, { waitingForLimit: true });
+        const agent =
+          goal.agents[
+            goal.chats.find((chat) => chat.threadId === event.threadId)?.agentIndex ?? -1
+          ];
+        if (agent) yield* pauseAgent(goal.id, agent, "usage-limit", session.retryAt);
+        yield* scheduleResume(event.threadId, session).pipe(
+          Effect.catchCause(logFailure("goals.resume-schedule-failed")),
+        );
+        // Other providers may take the lane while this one waits.
+        yield* fillLanes(watch.goalId);
         return;
       }
       // A quiet session before the turn ever ran is a leftover from before it.
@@ -603,8 +915,15 @@ export const make = Effect.gen(function* () {
   );
 
   /** Why a setup cannot be saved, or the folder of its project. */
-  const checkSettings = Effect.fn("GoalService.checkSettings")(function* (settings: GoalSettings) {
-    const problem = goalSettingsProblem(settings);
+  const checkSettings = Effect.fn("GoalService.checkSettings")(function* (
+    given: GoalSettings,
+    draft: boolean,
+  ) {
+    // A draft keeps whatever has been typed so far, so it is saved as it is.
+    const settings = draft
+      ? { ...given, name: given.name.trim() || ("Untitled goal" as GoalSettings["name"]) }
+      : given;
+    const problem = draft ? undefined : goalSettingsProblem(settings);
     if (problem) return yield* new OrchestrationDispatchCommandError({ message: problem });
     const projects = yield* snapshots
       .getProjectShells([settings.projectId])
@@ -621,31 +940,32 @@ export const make = Effect.gen(function* () {
     }
     return {
       ...settings,
-      useBeads: yield* usesBeads(settings, project.workspaceRoot),
+      useBeads: draft ? settings.useBeads : yield* usesBeads(settings, project.workspaceRoot),
     };
   });
 
   const create: GoalService["Service"]["create"] = Effect.fn("GoalService.create")(
-    function* (input) {
-      const settings = yield* checkSettings(input);
+    function* (input, options) {
+      const draft = options?.draft === true;
+      const settings = yield* checkSettings(input, draft);
       const now = yield* nowIso;
       const goal: Goal = {
         ...settings,
         id: GoalId.make(yield* randomUUID),
-        status: "running",
+        status: draft ? "draft" : "running",
         createdAt: now,
         updatedAt: now,
         chats: [],
       };
       yield* store.add(goal);
-      yield* lock.withPermits(1)(fillLanes(goal.id));
+      if (!draft) yield* lock.withPermits(1)(fillLanes(goal.id));
       return yield* store.list;
     },
   );
 
   const update: GoalService["Service"]["update"] = Effect.fn("GoalService.update")(
-    function* (id, input) {
-      const settings = yield* checkSettings(input);
+    function* (id, input, options) {
+      const settings = yield* checkSettings(input, options?.draft === true);
       yield* lock.withPermits(1)(
         Effect.gen(function* () {
           const now = yield* nowIso;
@@ -680,7 +1000,13 @@ export const make = Effect.gen(function* () {
         const goal = yield* currentGoal(id);
         if (!goal || goal.status === "running") return;
         yield* setStatus(id, "running");
-        yield* store.update(id, (current) => ({ ...current, holdStarts: undefined }));
+        // Starting by hand is the person saying "try again": forget old pauses and waiting.
+        yield* store.update(id, (current) => ({
+          ...current,
+          holdStarts: undefined,
+          pauses: undefined,
+          waitingUntil: undefined,
+        }));
         yield* fillLanes(id);
       }),
     );

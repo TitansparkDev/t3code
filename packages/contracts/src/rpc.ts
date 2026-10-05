@@ -746,14 +746,19 @@ export const WsServerListGoalsRpc = Rpc.make(WS_METHODS.serverListGoals, {
 
 /** Start a goal from the setup page. The list comes back with the new goal first. */
 export const WsServerCreateGoalRpc = Rpc.make(WS_METHODS.serverCreateGoal, {
-  payload: Schema.Struct({ goal: GoalSettings }),
+  payload: Schema.Struct({ goal: GoalSettings, draft: Schema.optional(Schema.Boolean) }),
   success: GoalList,
   error: Schema.Union([OrchestrationDispatchCommandError, EnvironmentAuthorizationError]),
 });
 
 /** Change a goal's settings. The project cannot change; running chats keep their instructions. */
 export const WsServerUpdateGoalRpc = Rpc.make(WS_METHODS.serverUpdateGoal, {
-  payload: Schema.Struct({ id: GoalId, goal: GoalSettings }),
+  payload: Schema.Struct({
+    id: GoalId,
+    goal: GoalSettings,
+    /** Save without starting or validating fully: the goal stays a draft. */
+    draft: Schema.optional(Schema.Boolean),
+  }),
   success: GoalList,
   error: Schema.Union([OrchestrationDispatchCommandError, EnvironmentAuthorizationError]),
 });

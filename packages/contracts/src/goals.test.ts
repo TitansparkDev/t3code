@@ -123,4 +123,10 @@ describe("problemStreak", () => {
     expect(problemStreak([chat("failed", 1), chat("completed", 2), chat("failed", 3)])).toBe(1);
     expect(problemStreak([{ status: "running" } as never, chat("completed", 1)])).toBe(0);
   });
+
+  it("does not count chats stopped by a usage limit or the person, in either direction", () => {
+    expect(problemStreak([chat("failed", 1), chat("stopped", 2), chat("failed", 3)])).toBe(2);
+    expect(problemStreak([chat("completed", 1), chat("stopped", 2), chat("failed", 3)])).toBe(1);
+    expect(problemStreak([chat("stopped", 1), chat("stopped", 2)])).toBe(0);
+  });
 });

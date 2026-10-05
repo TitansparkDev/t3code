@@ -16,6 +16,7 @@ import * as Schema from "effect/Schema";
 
 import { IsoDateTime, ProjectId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { ModelSelection, RuntimeMode } from "./orchestration.ts";
+import { ProviderInstanceId } from "./providerInstance.ts";
 
 export const GoalId = Schema.String.pipe(Schema.brand("GoalId"));
 export type GoalId = typeof GoalId.Type;
@@ -38,10 +39,22 @@ export const MAX_GOAL_STOP_AFTER_PROBLEMS = 50;
 export const DEFAULT_GOAL_MAX_CHATS = 50;
 export const MAX_GOAL_MAX_CHATS = 10_000;
 
-export const GoalStatus = Schema.Literals(["running", "complete", "stopped", "failed"]);
+/** `draft` is a setup that was saved but not started: it runs nothing until started. */
+export const GoalStatus = Schema.Literals(["draft", "running", "complete", "stopped", "failed"]);
 export type GoalStatus = typeof GoalStatus.Type;
 
-export const GoalChatStatus = Schema.Literals(["running", "completed", "failed", "attention"]);
+/**
+ * `stopped` is a chat that ended without finishing for a reason that is not a
+ * problem with the work: a usage limit it was not resumed from, or the person
+ * stopped it. It does not close a lane and does not count toward stopping the goal.
+ */
+export const GoalChatStatus = Schema.Literals([
+  "running",
+  "completed",
+  "failed",
+  "attention",
+  "stopped",
+]);
 export type GoalChatStatus = typeof GoalChatStatus.Type;
 
 const PositiveCount = (maximum: number) =>
@@ -70,6 +83,22 @@ export const GoalChat = Schema.Struct({
   blockedWork: Schema.optional(Schema.Boolean),
 });
 export type GoalChat = typeof GoalChat.Type;
+
+/**
+ * A provider the goal is not using for now, and until when. `usage-limit` waits
+ * for the provider's limit to reset; `errors` backs off after chats on it
+ * failed, so a broken account is not retried over and over.
+ */
+export const GoalProviderPause = Schema.Struct({
+  instanceId: ProviderInstanceId,
+  /** Only this model. Missing means every model on the account. */
+  model: Schema.optional(Schema.String),
+  until: IsoDateTime,
+  reason: Schema.Literals(["usage-limit", "errors"]),
+  /** Failures in a row, for lengthening the back-off. */
+  strikes: Schema.optional(Schema.Number),
+});
+export type GoalProviderPause = typeof GoalProviderPause.Type;
 
 /** Everything a person chooses on the setup page. */
 export const GoalSettings = Schema.Struct({
@@ -126,6 +155,13 @@ export const Goal = Schema.Struct({
   queue: Schema.optional(GoalQueue),
   /** A chat found only blocked work: start nothing new until another chat finishes. */
   holdStarts: Schema.optional(Schema.Boolean),
+  /** Providers set aside for now. A paused provider gets no new chats until `until`. */
+  pauses: Schema.optional(Schema.Array(GoalProviderPause)),
+  /**
+   * Set while the goal is running but cannot start anything because every
+   * provider it uses is paused or unavailable: when the first one comes back.
+   */
+  waitingUntil: Schema.optional(IsoDateTime),
 });
 export type Goal = typeof Goal.Type;
 
@@ -165,12 +201,17 @@ function isProblemChat(chat: Pick<GoalChat, "status" | "blockedWork">): boolean 
 
 /**
  * How many of the most recently finished chats in a row did not finish their
- * work (failed, need the person, or found only blocked work). A goal that keeps
+ * work (failed, need the person, or found only blocked work). Chats that were
+ * stopped by a usage limit or by the person are skipped: they are not evidence
+ * either way. A goal that keeps
  * hitting this is not going to get anywhere, so it stops instead of spending usage.
  */
 export function problemStreak(chats: ReadonlyArray<GoalChat>): number {
   const finished = chats
-    .filter((chat) => chat.status !== "running" && chat.completedAt !== undefined)
+    .filter(
+      (chat) =>
+        chat.status !== "running" && chat.status !== "stopped" && chat.completedAt !== undefined,
+    )
     .sort((a, b) => Date.parse(b.completedAt ?? "") - Date.parse(a.completedAt ?? ""));
   const firstGood = finished.findIndex((chat) => !isProblemChat(chat));
   return firstGood === -1 ? finished.length : firstGood;

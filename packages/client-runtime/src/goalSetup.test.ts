@@ -4,6 +4,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   defaultGoalSetup,
   goalSetupProblem,
+  goalSetupToDraftSettings,
   goalSetupToSettings,
   goalToSetup,
 } from "./goalSetup.ts";
@@ -83,5 +84,39 @@ describe("goal setup", () => {
       "Each model",
     );
     expect(goalSetupToSettings({ ...ready, name: "" })).toBeUndefined();
+  });
+});
+
+describe("goal drafts", () => {
+  it("saves a half-filled form, naming it and pulling numbers into range", () => {
+    const draft = goalSetupToDraftSettings({
+      ...ready,
+      name: "  ",
+      concurrency: 0,
+      maxChats: 99_999,
+      agents: [{ ...agent, count: 500 }],
+    });
+    expect(draft).toMatchObject({
+      name: "Untitled goal",
+      concurrency: 1,
+      maxChats: 10_000,
+      agents: [{ count: 100 }],
+    });
+  });
+
+  it("waits for a project and a model, and shows an unnamed draft with an empty name", () => {
+    expect(goalSetupToDraftSettings({ ...ready, projectId: null })).toBeUndefined();
+    expect(goalSetupToDraftSettings({ ...ready, agents: [] })).toBeUndefined();
+    const settings = goalSetupToDraftSettings({ ...ready, name: "" })!;
+    expect(
+      goalToSetup({
+        ...settings,
+        id: "g" as never,
+        status: "draft",
+        createdAt: "2026-10-04T12:00:00.000Z" as never,
+        updatedAt: "2026-10-04T12:00:00.000Z" as never,
+        chats: [],
+      }).name,
+    ).toBe("");
   });
 });

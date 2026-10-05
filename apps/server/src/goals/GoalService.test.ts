@@ -7,6 +7,7 @@ import {
   type OrchestrationCommand,
   type OrchestrationEvent,
   type OrchestrationThread,
+  type ServerProvider,
 } from "@t3tools/contracts";
 import type { GoalSettings } from "@t3tools/contracts/goals";
 import * as Effect from "effect/Effect";
@@ -20,6 +21,7 @@ import { TestClock } from "effect/testing";
 
 import * as ServerConfig from "../config.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
+import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { type BeadsSnapshot, GoalBeads, GoalBeadsError, summarizeBeads } from "./GoalBeads.ts";
 import * as GoalService from "./GoalService.ts";
@@ -41,6 +43,27 @@ const settings = (overrides: Partial<GoalSettings> = {}): GoalSettings => ({
   ...overrides,
 });
 
+/** A provider the way the registry reports it; `usedPercent` fills one usage window. */
+const providerSnapshot = (
+  instanceId: string,
+  overrides: Record<string, unknown> = {},
+): ServerProvider =>
+  ({
+    instanceId,
+    driver: instanceId,
+    displayName: instanceId,
+    enabled: true,
+    installed: true,
+    version: null,
+    status: "ready",
+    auth: { status: "authenticated" },
+    checkedAt: "2026-10-04T12:00:00.000Z",
+    models: [],
+    slashCommands: [],
+    skills: [],
+    ...overrides,
+  }) as unknown as ServerProvider;
+
 const makeHarnessWith = (spacing: number) =>
   Effect.gen(function* () {
     const commands = yield* Queue.unbounded<OrchestrationCommand>();
@@ -55,11 +78,16 @@ const makeHarnessWith = (spacing: number) =>
     const queue = yield* Ref.make<BeadsSnapshot | undefined>(undefined);
     const chunkStatus = yield* Ref.make("closed");
     const released: string[] = [];
+    /** What the provider registry reports; every test provider starts out healthy. */
+    const providers = yield* Ref.make<ReadonlyArray<ServerProvider>>([
+      providerSnapshot("codex"),
+      providerSnapshot("claudeAgent"),
+    ]);
 
     const thread = (state: { reply: string; turnState: string }) =>
       ({
         latestTurn: { state: state.turnState },
-        messages: [{ role: "assistant", text: state.reply }],
+        messages: state.reply === "" ? [] : [{ role: "assistant", text: state.reply }],
         activities: [],
       }) as unknown as OrchestrationThread;
 
@@ -90,6 +118,7 @@ const makeHarnessWith = (spacing: number) =>
             dispatch: (command) => Queue.offer(commands, command).pipe(Effect.as({ sequence: 1 })),
             streamDomainEvents: Stream.fromSubscription(subscription),
           }),
+          Layer.mock(ProviderRegistry)({ getProviders: Ref.get(providers) }),
           Layer.mock(ProjectionSnapshotQuery)({
             getProjectShells: (ids) =>
               Effect.succeed(
@@ -169,6 +198,7 @@ const makeHarnessWith = (spacing: number) =>
       queue,
       chunkStatus,
       released,
+      providers,
       threadState,
       hasResume,
       sessionEvent,
@@ -400,29 +430,228 @@ it.layer(NodeServices.layer)("GoalService", (it) => {
     }),
   );
 
-  it.effect("leaves a usage-limited chat for the person when auto resume is off", () =>
+  it.effect(
+    "frees the lane of a usage-limited chat when auto resume is off, without a problem",
+    () =>
+      Effect.gen(function* () {
+        const harness = yield* makeHarness;
+        yield* Effect.gen(function* () {
+          const service = yield* GoalService.GoalService;
+          yield* Effect.forkScoped(service.loop);
+          yield* Effect.yieldNow;
+          yield* service.create(settings({ concurrency: 1, autoResume: false }));
+          const [only] = yield* harness.waitFor("thread.create", 1);
+          const threadId = threadIdOf(only);
+          yield* harness.sessionEvent(threadId, { status: "running", activeTurnId: "turn-1" });
+          yield* harness.sessionEvent(threadId, {
+            status: "rate-limited",
+            activeTurnId: null,
+            lastErrorClass: "usage_limit",
+          });
+          while ((yield* service.list)[0]?.chats[0]?.status !== "stopped") yield* Effect.yieldNow;
+          expect(
+            harness.log.filter((command) => command.type === "thread.usage-limit-resume.schedule"),
+          ).toHaveLength(0);
+          // Not a failure: the goal keeps running. Its only provider is set aside until the limit resets.
+          const [goal] = yield* service.list;
+          expect(goal?.status).toBe("running");
+          expect(goal?.pauses?.[0]).toMatchObject({ instanceId: "codex", reason: "usage-limit" });
+        }).pipe(Effect.provide(harness.layer), Effect.scoped);
+      }),
+  );
+
+  it.effect("skips a provider whose usage is used up and uses the others", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness;
+      yield* Ref.set(harness.providers, [
+        providerSnapshot("codex", {
+          usageLimits: {
+            checkedAt: "2026-10-04T12:00:00.000Z",
+            windows: [
+              {
+                id: "weekly",
+                kind: "weekly",
+                label: "Weekly",
+                usedPercent: 100,
+                resetsAt: "2099-01-01T00:00:00.000Z",
+              },
+            ],
+          },
+        }),
+        providerSnapshot("claudeAgent"),
+      ]);
+      yield* Effect.gen(function* () {
+        const service = yield* GoalService.GoalService;
+        yield* service.create(
+          settings({
+            concurrency: 2,
+            agents: [
+              { modelSelection: CODEX, count: 2 },
+              { modelSelection: CLAUDE, count: 2 },
+            ],
+          }),
+        );
+        const turns = yield* harness.waitFor("thread.turn.start", 2);
+        expect(
+          turns.map((turn) =>
+            turn.type === "thread.turn.start" ? turn.modelSelection?.instanceId : null,
+          ),
+        ).toEqual(["claudeAgent", "claudeAgent"]);
+      }).pipe(Effect.provide(harness.layer), Effect.scoped);
+    }),
+  );
+
+  it.effect("waits instead of ending when every provider is out of usage, then carries on", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const used = providerSnapshot("codex", {
+        displayName: "Codex",
+        usageLimits: {
+          checkedAt: "2026-10-04T12:00:00.000Z",
+          windows: [
+            {
+              id: "weekly",
+              kind: "weekly",
+              label: "Weekly",
+              usedPercent: 100,
+              resetsAt: "2099-01-01T00:00:00.000Z",
+            },
+          ],
+        },
+      });
+      yield* Ref.set(harness.providers, [used]);
       yield* Effect.gen(function* () {
         const service = yield* GoalService.GoalService;
         yield* Effect.forkScoped(service.loop);
         yield* Effect.yieldNow;
-        yield* service.create(settings({ concurrency: 1, autoResume: false }));
-        const [only] = yield* harness.waitFor("thread.create", 1);
-        const threadId = threadIdOf(only);
-        yield* harness.sessionEvent(threadId, { status: "running", activeTurnId: "turn-1" });
-        yield* harness.sessionEvent(threadId, {
-          status: "rate-limited",
-          activeTurnId: null,
-          lastErrorClass: "usage_limit",
-        });
-        while (!(yield* service.list)[0]?.chats[0]?.waitingForLimit) yield* Effect.yieldNow;
-        expect(
-          harness.log.filter((command) => command.type === "thread.usage-limit-resume.schedule"),
-        ).toHaveLength(0);
+        const [goal] = yield* service.create(settings({ concurrency: 1 }));
+        expect(goal?.status).toBe("running");
+        expect(goal?.chats).toEqual([]);
+        expect(goal?.waitingUntil).toBe("2099-01-01T00:00:00.000Z");
+        expect(goal?.detail).toContain("Codex is out of usage");
+        // The limit resets; the next look starts a chat and clears the note.
+        yield* Ref.set(harness.providers, [providerSnapshot("codex")]);
+        yield* TestClock.adjust("6 seconds");
+        yield* harness.waitFor("thread.create", 1);
+        const [after] = yield* service.list;
+        expect(after?.status).toBe("running");
+        expect(after?.waitingUntil).toBeUndefined();
       }).pipe(Effect.provide(harness.layer), Effect.scoped);
     }),
   );
+
+  it.effect(
+    "a chat that hits a usage limit before doing anything is dropped and not a problem",
+    () =>
+      Effect.gen(function* () {
+        const harness = yield* makeHarness;
+        yield* Ref.set(harness.threadState, { reply: "", turnState: "error" });
+        yield* Effect.gen(function* () {
+          const service = yield* GoalService.GoalService;
+          yield* Effect.forkScoped(service.loop);
+          yield* Effect.yieldNow;
+          yield* service.create(
+            settings({
+              concurrency: 1,
+              stopAfterProblems: 1,
+              agents: [
+                { modelSelection: CODEX, count: 1 },
+                { modelSelection: CLAUDE, count: 1 },
+              ],
+            }),
+          );
+          const [first] = yield* harness.waitFor("thread.create", 1);
+          const threadId = threadIdOf(first);
+          yield* harness.sessionEvent(threadId, {
+            status: "rate-limited",
+            activeTurnId: null,
+            lastErrorClass: "usage_limit",
+            retryAt: "2099-01-01T00:00:00.000Z",
+          });
+          yield* harness.waitFor("thread.delete", 1);
+          // The goal goes on with the other provider, and the first one is set aside.
+          const turns = yield* harness.waitFor("thread.turn.start", 2);
+          expect(
+            turns[1]?.type === "thread.turn.start" ? turns[1].modelSelection?.instanceId : "",
+          ).toBe("claudeAgent");
+          const [goal] = yield* service.list;
+          expect(goal?.status).toBe("running");
+          expect(goal?.chats[0]?.status).toBe("stopped");
+          expect(goal?.pauses?.[0]).toMatchObject({
+            instanceId: "codex",
+            reason: "usage-limit",
+            until: "2099-01-01T00:00:02.000Z",
+          });
+        }).pipe(Effect.provide(harness.layer), Effect.scoped);
+      }),
+  );
+
+  it.effect("sets a provider aside for a while after its chat fails", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      yield* Ref.set(harness.threadState, { reply: "boom", turnState: "error" });
+      yield* Effect.gen(function* () {
+        const service = yield* GoalService.GoalService;
+        yield* Effect.forkScoped(service.loop);
+        yield* Effect.yieldNow;
+        yield* service.create(settings({ concurrency: 2, stopAfterProblems: 5 }));
+        const [first] = yield* harness.waitFor("thread.create", 1);
+        yield* harness.runAndFinish(threadIdOf(first));
+        while ((yield* service.list)[0]?.chats[0]?.status !== "failed") yield* Effect.yieldNow;
+        const [goal] = yield* service.list;
+        expect(goal?.pauses?.[0]).toMatchObject({ instanceId: "codex", reason: "errors" });
+        expect(goal?.status).toBe("running");
+      }).pipe(Effect.provide(harness.layer), Effect.scoped);
+    }),
+  );
+
+  it.effect("keeps a draft without starting it, and starts it on request", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      yield* Effect.gen(function* () {
+        const service = yield* GoalService.GoalService;
+        const [draft] = yield* service.create(settings({ name: "  ", maxChats: 1 }), {
+          draft: true,
+        });
+        expect(draft).toMatchObject({ status: "draft", name: "Untitled goal" });
+        yield* service.update(draft!.id, settings({ name: "Finish it" }), { draft: true });
+        expect((yield* harness.drain).filter((c) => c.type === "thread.create")).toHaveLength(0);
+        expect((yield* service.list)[0]).toMatchObject({ status: "draft", name: "Finish it" });
+        // A full update is checked like any other and still does not start it.
+        const refused = yield* Effect.exit(
+          service.update(draft!.id, settings({ name: "", concurrency: 2 })),
+        );
+        expect(refused._tag).toBe("Failure");
+        yield* service.restart(draft!.id);
+        yield* harness.waitFor("thread.create", 1);
+        expect((yield* service.list)[0]?.status).toBe("running");
+      }).pipe(Effect.provide(harness.layer), Effect.scoped);
+    }),
+  );
+
+  it.effect("starting a goal again forgets old pauses and starts at once", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      yield* Ref.set(harness.threadState, { reply: "boom", turnState: "error" });
+      yield* Effect.gen(function* () {
+        const service = yield* GoalService.GoalService;
+        yield* Effect.forkScoped(service.loop);
+        yield* Effect.yieldNow;
+        const [goal] = yield* service.create(settings({ concurrency: 1, stopAfterProblems: 1 }));
+        const [first] = yield* harness.waitFor("thread.create", 1);
+        yield* harness.runAndFinish(threadIdOf(first));
+        while ((yield* service.list)[0]?.status !== "failed") yield* Effect.yieldNow;
+        expect((yield* service.list)[0]?.pauses).toHaveLength(1);
+        yield* TestClock.adjust("1 second");
+        yield* service.restart(goal!.id);
+        const [again] = yield* service.list;
+        expect(again?.pauses).toBeUndefined();
+        expect(again?.status).toBe("running");
+        yield* harness.waitFor("thread.create", 2);
+      }).pipe(Effect.provide(harness.layer), Effect.scoped);
+    }),
+  );
+
   it.effect("starts one agent per ready chunk and hands each its chunk", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness;
@@ -735,4 +964,44 @@ it("counts chunks from Beads, leaving epics out and treating the rest as blocked
     done: 1,
   });
   expect(summarizeBeads("not json", "")).toEqual({ ready: [], working: 0, blocked: 0, done: 0 });
+});
+
+it("reads a provider's own usage report", () => {
+  const now = Date.parse("2026-10-04T12:00:00.000Z");
+  const full = (id: string, label: string) => ({
+    id,
+    kind: "weekly",
+    label,
+    usedPercent: 100,
+    resetsAt: "2026-10-09T00:00:00.000Z",
+  });
+  const withWindows = (...windows: ReturnType<typeof full>[]) =>
+    providerSnapshot("codex", { usageLimits: { checkedAt: "x", windows } });
+  expect(GoalService.providerBlock(withWindows(full("primary", "Weekly")), "gpt-6", now)).toEqual({
+    until: Date.parse("2026-10-09T00:00:00.000Z"),
+    reason: "is out of usage",
+  });
+  // A window for one model family does not stop the others.
+  expect(
+    GoalService.providerBlock(withWindows(full("seven_day_opus", "Opus weekly")), "sonnet", now),
+  ).toBeUndefined();
+  expect(
+    GoalService.providerBlock(withWindows(full("seven_day_opus", "Opus weekly")), "opus-4", now),
+  ).toBeDefined();
+  // A window that has already reset, or is not full, is ignored.
+  expect(
+    GoalService.providerBlock(
+      withWindows({ ...full("primary", "Weekly"), resetsAt: "2026-10-01T00:00:00.000Z" }),
+      "gpt-6",
+      now,
+    ),
+  ).toBeUndefined();
+  expect(GoalService.providerBlock(undefined, "gpt-6", now)?.reason).toBe("is not set up");
+  expect(
+    GoalService.providerBlock(
+      providerSnapshot("codex", { auth: { status: "unauthenticated" } }),
+      "gpt-6",
+      now,
+    )?.reason,
+  ).toBe("is signed out");
 });

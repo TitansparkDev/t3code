@@ -3,19 +3,21 @@ import {
   defaultGoalSetup,
   goalSetupProblem,
   goalToSetup,
+  goalSetupToDraftSettings,
   goalSetupToSettings,
   type GoalSetupAgent,
   type GoalSetupForm,
 } from "@t3tools/client-runtime/goal-setup";
 import {
   type Goal,
+  type GoalId,
   MAX_GOAL_AGENT_COUNT,
   MAX_GOAL_CONCURRENCY,
   MAX_GOAL_STOP_AFTER_PROBLEMS,
 } from "@t3tools/contracts/goals";
 import { useNavigate } from "@tanstack/react-router";
 import { PlusIcon, XIcon } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { isElectron } from "../../env";
 import { deriveProviderInstanceEntries } from "../../providerInstances";
@@ -45,6 +47,47 @@ function firstAgent(instances: ProviderInstances): Omit<GoalSetupAgent, "count">
  * where every setting of an existing goal is edited. The project fixes the
  * environment, so models come from that environment's provider accounts.
  */
+const DRAFT_SAVE_DELAY_MS = 1_000;
+
+/** Pick where the goal runs when the page was opened without a project. */
+function ProjectPicker() {
+  const navigate = useNavigate();
+  const projects = useProjects();
+  const { environments } = useEnvironments();
+  if (projects.length === 0) {
+    return (
+      <p className="text-sm text-muted-foreground">Add a project first, then set up a goal.</p>
+    );
+  }
+  return (
+    <section className="space-y-2">
+      <h2 className="text-xs font-medium text-muted-foreground">Which project is the goal for?</h2>
+      <ul className="space-y-1">
+        {projects.map((candidate) => (
+          <li key={`${candidate.environmentId}:${candidate.id}`}>
+            <Button
+              onClick={() =>
+                void navigate({
+                  to: "/new-goal",
+                  search: { environmentId: candidate.environmentId, projectId: candidate.id },
+                })
+              }
+              size="sm"
+              type="button"
+              variant="outline"
+            >
+              {candidate.title}
+              {environments.length > 1
+                ? ` · ${environments.find((entry) => entry.environmentId === candidate.environmentId)?.label ?? ""}`
+                : ""}
+            </Button>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 export function GoalSetupPage({
   environmentId,
   projectId,
@@ -58,7 +101,7 @@ export function GoalSetupPage({
   const navigate = useNavigate();
   const { environments } = useEnvironments();
   const projects = useProjects();
-  const { create, update } = useGoals();
+  const { create, update, restart } = useGoals();
   const project = projects.find(
     (candidate) => candidate.environmentId === environmentId && candidate.id === projectId,
   );
@@ -87,7 +130,11 @@ export function GoalSetupPage({
   const current: GoalSetupForm = { ...form, agents };
   const problem = goalSetupProblem(current);
   const [starting, setStarting] = useState(false);
-  const patch = (change: Partial<GoalSetupForm>) => setForm({ ...current, ...change });
+  const dirty = useRef(false);
+  const patch = (change: Partial<GoalSetupForm>) => {
+    dirty.current = true;
+    setForm({ ...current, ...change });
+  };
   const setAgent = (index: number, change: Partial<GoalSetupAgent>) =>
     patch({
       agents: agents.map((agent, position) =>
@@ -95,18 +142,67 @@ export function GoalSetupPage({
       ),
     });
 
-  const start = async () => {
+  // A new goal, or one saved as a draft, is kept as a draft while it is being filled in,
+  // so leaving the page half-way loses nothing.
+  const keepsDraft = !goal || goal.status === "draft";
+  const draftId = useRef<GoalId | null>(goal?.status === "draft" ? goal.id : null);
+  const saveQueue = useRef<Promise<void>>(Promise.resolve());
+  const latest = useRef(current);
+  useEffect(() => {
+    latest.current = current;
+  });
+  const finished = useRef(false);
+  const [draftSavedAt, setDraftSavedAt] = useState<string | null>(null);
+
+  const saveDraft = useCallback(() => {
+    if (!keepsDraft || !environmentId || !dirty.current || finished.current) return;
+    const settings = goalSetupToDraftSettings(latest.current);
+    if (!settings) return;
+    dirty.current = false;
+    saveQueue.current = saveQueue.current
+      .then(async () => {
+        if (draftId.current) await update(environmentId, draftId.current, settings, true);
+        else draftId.current = (await create(environmentId, settings, true))?.id ?? null;
+        setDraftSavedAt(new Date().toLocaleTimeString());
+      })
+      .catch(() => {
+        // Try again with the next change.
+        dirty.current = true;
+      });
+  }, [keepsDraft, environmentId, create, update]);
+
+  useEffect(() => {
+    if (!dirty.current) return;
+    const timer = window.setTimeout(saveDraft, DRAFT_SAVE_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [form, saveDraft]);
+  // Leaving the page saves what is waiting for the timer.
+  const saveOnLeave = useRef(saveDraft);
+  useEffect(() => {
+    saveOnLeave.current = saveDraft;
+  });
+  useEffect(() => () => saveOnLeave.current(), []);
+
+  const start = async (andStart: boolean) => {
     const settings = goalSetupToSettings(current);
     if (!settings || !environmentId) return;
     setStarting(true);
+    finished.current = true;
     try {
-      if (goal) await update(environmentId, goal.id, settings);
-      else await create(environmentId, settings);
+      await saveQueue.current;
+      if (goal || draftId.current) {
+        const id = (goal?.id ?? draftId.current)!;
+        await update(environmentId, id, settings);
+        if (andStart && goal?.status !== "running") await restart(environmentId, id);
+      } else {
+        await create(environmentId, settings);
+      }
       void navigate({ to: "/goals" });
     } catch (error: unknown) {
+      finished.current = false;
       toastManager.add({
         type: "error",
-        title: goal ? "Could not save the goal" : "Could not start the goal",
+        title: andStart ? "Could not start the goal" : "Could not save the goal",
         description: error instanceof Error ? error.message : "Try again.",
       });
       setStarting(false);
@@ -119,16 +215,14 @@ export function GoalSetupPage({
     <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background">
       <WorkspacePageHeader electron={isElectron} className="relative bg-background">
         <h1 className="text-sm font-medium">
-          {goal ? "Edit goal" : "New goal"}
+          {goal && goal.status !== "draft" ? "Edit goal" : goal ? "Draft goal" : "New goal"}
           {project ? ` in ${project.title}` : ""}
         </h1>
       </WorkspacePageHeader>
       <div className="topbar-scroll-fade min-h-0 flex-1 overflow-y-auto">
         <WorkspacePageContainer className="min-h-full gap-5">
           {!project ? (
-            <p className="text-sm text-muted-foreground">
-              Choose a project from the new chat menu with Goal switched on.
-            </p>
+            <ProjectPicker />
           ) : (
             <>
               <label className="block space-y-1">
@@ -405,27 +499,47 @@ export function GoalSetupPage({
                 ) : null}
               </section>
 
-              {goal ? (
+              {goal && goal.status !== "draft" ? (
                 <p className="text-2xs text-muted-foreground">
                   Changes apply to agents started from now on. Agents already working keep what they
                   were given.
                 </p>
               ) : null}
               <div className="flex items-center justify-end gap-3">
-                {problem ? <p className="text-2xs text-muted-foreground">{problem}</p> : null}
-                <Button
-                  disabled={problem !== undefined || starting}
-                  onClick={() => void start()}
-                  type="button"
-                >
-                  {goal
-                    ? starting
-                      ? "Saving…"
-                      : "Save changes"
-                    : starting
-                      ? "Starting…"
-                      : "Start goal"}
-                </Button>
+                {problem ? (
+                  <p className="text-2xs text-muted-foreground">{problem}</p>
+                ) : keepsDraft && draftSavedAt ? (
+                  <p className="text-2xs text-muted-foreground">Draft saved {draftSavedAt}</p>
+                ) : null}
+                {goal && goal.status !== "draft" ? (
+                  <>
+                    <Button
+                      disabled={problem !== undefined || starting}
+                      onClick={() => void start(false)}
+                      type="button"
+                      variant={goal.status === "running" ? "default" : "outline"}
+                    >
+                      {starting ? "Saving…" : "Save changes"}
+                    </Button>
+                    {goal.status !== "running" ? (
+                      <Button
+                        disabled={problem !== undefined || starting}
+                        onClick={() => void start(true)}
+                        type="button"
+                      >
+                        Save and start
+                      </Button>
+                    ) : null}
+                  </>
+                ) : (
+                  <Button
+                    disabled={problem !== undefined || starting}
+                    onClick={() => void start(true)}
+                    type="button"
+                  >
+                    {starting ? "Starting…" : "Start goal"}
+                  </Button>
+                )}
               </div>
             </>
           )}
