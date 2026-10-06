@@ -59,10 +59,12 @@ thread list; the Goals page shows how each one ended.
   cannot be finished does not spend your usage overnight. Agents already working are
   left to finish. Fix the problem, then **Start again**.
 - **Overseer.** Before the goal gives up (the safety stop above, or every Beads chunk
-  blocked with nothing working), an overseer chat reads a briefing: the queue, what is
-  blocked or claimed, and how the failed chats ended. It answers **continue**, with a
-  note every new agent reads and any claimed chunks to hand back to the queue, or
-  **stop**, saying what you must do. It runs on Chat Agents when that provider is on,
+  blocked with nothing working), an overseer reads a briefing: the repository's
+  instruction, spec and plan documents, the Beads queue, what is blocked or claimed, and
+  how each stuck chat ended. Its answer is the prompt: it is sent to each stuck chat to
+  continue it (a decision made, a fix to apply, extra work to do first) and is read first
+  by every new agent. It stops the goal and asks you only when nothing an agent can do
+  will help, such as a missing login. It runs on Chat Agents when that provider is on,
   otherwise on one of the goal's own models, and is asked at most twice per start. Turn
   it off under **Other settings**.
 

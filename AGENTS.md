@@ -174,7 +174,7 @@ Full glossary with file links: `docs/internals/glossary.md`
 ## Recent request log
 
 - 2026-10-06 — Goals gain an overseer (asked, up to twice per start, before a stuck goal gives up;
-  runs on Chat Agents when ready, answers CONTINUE/STOP with a note and chunks to release), worker
+  reads AGENTS/SPEC/PLAN docs and the queue, runs on Chat Agents when ready; its answer is sent as the prompt to each stuck chat and to new workers, STOP only when a person is needed), worker
   chats are titled "Goal worker #N" and never archived, and new goals are prefilled with "Complete
   the plan" and the Beads plan-worker instructions. Not released yet.
 - 2026-10-06 — Goals made persistent: usage-limited or unavailable providers are skipped (provider

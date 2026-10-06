@@ -244,37 +244,51 @@ export interface OverseerDecision {
   readonly verdict: "continue" | "stop" | undefined;
   /** Chunks the overseer wants given back to the queue. */
   readonly release: ReadonlyArray<string>;
-  /** A note for the workers that start next. */
+  /** The prompt for every worker that starts next. */
   readonly guidance: string | undefined;
+  /** The prompt for each stuck chat the briefing numbered, by that number. */
+  readonly chats: ReadonlyMap<number, string>;
 }
 
-const OVERSEER_VERDICT_LINE = /^\s*OVERSEER:\s*(CONTINUE|STOP)\s*$/imu;
-const OVERSEER_RELEASE_LINE = /^\s*RELEASE:\s*(.+)$/imu;
-const OVERSEER_GUIDANCE_LINE = /^\s*GUIDANCE:[ \t]*/imu;
-const MAX_GUIDANCE_LENGTH = 2000;
+const OVERSEER_DIRECTIVE = /^\s*(OVERSEER|RELEASE|GUIDANCE|CHAT\s+\d+)\s*:[ \t]*(.*)$/iu;
+const MAX_OVERSEER_TEXT = 6000;
 
 /**
- * Reads an overseer's reply: an `OVERSEER: CONTINUE` or `OVERSEER: STOP` line,
- * an optional `RELEASE: id, id` line, and everything after a `GUIDANCE:` line.
+ * Reads an overseer's reply, a list of sections that each start on a line of their
+ * own: `OVERSEER: CONTINUE|STOP`, `RELEASE: id, id`, `GUIDANCE:` (the prompt for new
+ * workers) and `CHAT n:` (the prompt that continues stuck chat n). A section runs
+ * until the next one starts, so prompts may span several lines.
  */
 export function parseOverseerReply(reply: string | undefined): OverseerDecision {
-  const text = reply ?? "";
-  const verdictWord = OVERSEER_VERDICT_LINE.exec(text)?.[1]?.toUpperCase();
-  const release = (OVERSEER_RELEASE_LINE.exec(text)?.[1] ?? "")
-    .split(/[\s,]+/u)
-    .map((id) => id.trim())
-    .filter((id) => /^[A-Za-z0-9._-]+$/u.test(id));
-  const marker = OVERSEER_GUIDANCE_LINE.exec(text);
-  const guidance = marker
-    ? text
-        .slice(marker.index + marker[0].length)
-        .trim()
-        .slice(0, MAX_GUIDANCE_LENGTH)
-    : undefined;
+  const sections: Array<{ key: string; lines: Array<string> }> = [];
+  for (const line of (reply ?? "").split("\n")) {
+    const match = OVERSEER_DIRECTIVE.exec(line);
+    if (match)
+      sections.push({ key: match[1]!.toUpperCase().replace(/\s+/gu, " "), lines: [match[2]!] });
+    else sections.at(-1)?.lines.push(line);
+  }
+  const text = (section: { lines: ReadonlyArray<string> }) =>
+    section.lines.join("\n").trim().slice(0, MAX_OVERSEER_TEXT);
+  const first = (key: string) => sections.find((section) => section.key === key);
+  const verdictWord = /^(CONTINUE|STOP)\b/iu.exec(text(first("OVERSEER") ?? { lines: [] }))?.[1];
+  const chats = new Map<number, string>();
+  for (const section of sections) {
+    const number = /^CHAT (\d+)$/u.exec(section.key)?.[1];
+    if (number !== undefined && text(section)) chats.set(Number(number), text(section));
+  }
+  const guidanceSection = first("GUIDANCE");
   return {
-    verdict: verdictWord === "CONTINUE" ? "continue" : verdictWord === "STOP" ? "stop" : undefined,
-    release,
-    guidance: guidance || undefined,
+    verdict:
+      verdictWord?.toUpperCase() === "CONTINUE"
+        ? "continue"
+        : verdictWord?.toUpperCase() === "STOP"
+          ? "stop"
+          : undefined,
+    release: (first("RELEASE") ? text(first("RELEASE")!) : "")
+      .split(/[\s,]+/u)
+      .filter((id) => /^[A-Za-z0-9._-]+$/u.test(id)),
+    guidance: guidanceSection ? text(guidanceSection) || undefined : undefined,
+    chats,
   };
 }
 

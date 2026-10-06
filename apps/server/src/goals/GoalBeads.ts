@@ -57,6 +57,8 @@ export class GoalBeads extends Context.Service<
       readonly blocked: ReadonlyArray<BeadDetail>;
       readonly claimed: ReadonlyArray<BeadDetail>;
     }>;
+    /** The start of the repository's instruction, plan and spec documents, and its top-level files. */
+    readonly repoContext: (workspaceRoot: string) => Effect.Effect<string>;
     /** The chunk's status, or undefined when it cannot be read. */
     readonly statusOf: (workspaceRoot: string, beadId: string) => Effect.Effect<string | undefined>;
     /** Give a claimed chunk back so another agent can take it. */
@@ -131,6 +133,9 @@ export function describeBeads(blockedJson: string, claimedJson: string) {
   };
 }
 
+const CONTEXT_FILES = ["AGENTS.md", "CLAUDE.md", "SPEC.md", "PLAN.md", "README.md"] as const;
+const CONTEXT_FILE_CHARS = 4000;
+
 const BD_TIMEOUT = "20 seconds";
 
 export const layer = Layer.effect(
@@ -172,6 +177,26 @@ export const layer = Layer.effect(
           Effect.orElseSucceed(() => ({ blocked: [], claimed: [] })),
         );
       },
+      repoContext: (workspaceRoot) =>
+        Effect.gen(function* () {
+          const parts: Array<string> = [];
+          for (const name of CONTEXT_FILES) {
+            const text = yield* fs
+              .readFileString(path.join(workspaceRoot, name))
+              .pipe(Effect.orElseSucceed(() => ""));
+            if (text.trim()) parts.push(`### ${name}\n${text.trim().slice(0, CONTEXT_FILE_CHARS)}`);
+          }
+          const entries = yield* fs
+            .readDirectory(workspaceRoot)
+            .pipe(Effect.orElseSucceed(() => [] as Array<string>));
+          parts.push(
+            `### Top-level files\n${entries
+              .filter((e) => !e.startsWith(".git"))
+              .slice(0, 60)
+              .join(", ")}`,
+          );
+          return parts.join("\n\n");
+        }),
       statusOf: (workspaceRoot, beadId) =>
         bd(workspaceRoot, ["show", beadId, "--json"]).pipe(
           Effect.map((json) => {
@@ -198,6 +223,7 @@ export const layerNone = Layer.succeed(
     available: () => Effect.succeed(false),
     snapshot: () => Effect.fail(new GoalBeadsError({ message: "Beads is not available." })),
     describe: () => Effect.succeed({ blocked: [], claimed: [] }),
+    repoContext: () => Effect.succeed(""),
     statusOf: () => Effect.succeed(undefined),
     release: () => Effect.void,
   }),

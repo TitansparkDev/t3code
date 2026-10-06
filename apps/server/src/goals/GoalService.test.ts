@@ -109,6 +109,7 @@ const makeHarnessWith = (spacing: number) =>
                     : Effect.fail(new GoalBeadsError({ message: "no beads" })),
                 ),
               ),
+            repoContext: () => Effect.succeed("### PLAN.md\nShip the widget."),
             describe: () => Effect.succeed({ blocked: [], claimed: [] }),
             statusOf: () => Ref.get(chunkStatus),
             release: (_root, id) => Effect.sync(() => void released.push(id)),
@@ -668,7 +669,7 @@ it.layer(NodeServices.layer)("GoalService", (it) => {
     }),
   );
 
-  it.effect("asks an overseer when the goal is stuck, and carries on with its note", () =>
+  it.effect("asks an overseer when the goal is stuck, and its note reaches the stuck chat", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness;
       yield* Ref.set(harness.threadState, { reply: "boom", turnState: "error" });
@@ -685,22 +686,53 @@ it.layer(NodeServices.layer)("GoalService", (it) => {
         const briefing = textOf((yield* harness.waitFor("thread.turn.start", 2))[1]);
         expect(briefing).toContain("OVERSEER: CONTINUE");
         expect(briefing).toContain("boom");
+        expect(briefing).toContain("CHAT 1:");
+        expect(briefing).toContain("Ship the widget.");
 
         yield* Ref.set(harness.threadState, {
           reply: "OVERSEER: CONTINUE\nGUIDANCE: Run the install step first.",
           turnState: "completed",
         });
         yield* harness.runAndFinish(threadIdOf(overseer));
-        // The failing provider is still backed off for a few minutes; then the goal carries on.
-        yield* TestClock.adjust("6 minutes");
-        const creates = yield* harness.waitFor("thread.create", 3);
-        expect(creates[2]?.type === "thread.create" ? creates[2].title : "").toBe("Goal worker #2");
+        // With no message for the stuck chat in particular, it gets the note meant for everyone.
+        const resumed = (yield* harness.waitFor("thread.turn.start", 3))[2];
+        expect(resumed?.type === "thread.turn.start" ? resumed.threadId : "").toBe(
+          threadIdOf(worker),
+        );
+        expect(textOf(resumed)).toContain("Run the install step first.");
         const [goal] = yield* service.list;
         expect(goal?.status).toBe("running");
         expect(goal?.guidance).toBe("Run the install step first.");
-        expect(textOf((yield* harness.waitFor("thread.turn.start", 3))[2])).toContain(
-          "Run the install step first.",
+      }).pipe(Effect.provide(harness.layer), Effect.scoped);
+    }),
+  );
+
+  it.effect("sends the overseer's answer to the stuck chat so it continues", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      yield* Ref.set(harness.threadState, { reply: "boom", turnState: "error" });
+      yield* Effect.gen(function* () {
+        const service = yield* GoalService.GoalService;
+        yield* Effect.forkScoped(service.loop);
+        yield* Effect.yieldNow;
+        yield* service.create(settings({ concurrency: 1, stopAfterProblems: 1, overseer: true }));
+        const [worker] = yield* harness.waitFor("thread.create", 1);
+        yield* harness.runAndFinish(threadIdOf(worker));
+        const [, overseer] = yield* harness.waitFor("thread.create", 2);
+        yield* Ref.set(harness.threadState, {
+          reply: "OVERSEER: CONTINUE\nCHAT 1: Use option A, then merge.",
+          turnState: "completed",
+        });
+        yield* harness.runAndFinish(threadIdOf(overseer));
+        const turns = yield* harness.waitFor("thread.turn.start", 3);
+        const resumed = turns[2];
+        expect(resumed?.type === "thread.turn.start" ? resumed.threadId : "").toBe(
+          threadIdOf(worker),
         );
+        expect(textOf(resumed)).toContain("Use option A, then merge.");
+        const [goal] = yield* service.list;
+        expect(goal?.status).toBe("running");
+        expect(goal?.chats[0]?.status).toBe("running");
       }).pipe(Effect.provide(harness.layer), Effect.scoped);
     }),
   );

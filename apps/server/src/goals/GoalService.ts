@@ -652,6 +652,16 @@ export const make = Effect.gen(function* () {
       : undefined;
   });
 
+  /** The stuck chats an overseer is shown, numbered from 1 in this order, and may reply to. */
+  const problemChatsOf = (goal: Goal) =>
+    chatsSinceStart(goal)
+      .filter(
+        (chat) =>
+          !chat.overseer &&
+          (chat.status === "failed" || chat.status === "attention" || chat.blockedWork === true),
+      )
+      .slice(-6);
+
   /** What the overseer is shown: the goal, why it is stuck, the queue, and how the problem chats ended. */
   const overseerBriefing = Effect.fn("GoalService.overseerBriefing")(function* (
     goal: Goal,
@@ -661,29 +671,29 @@ export const make = Effect.gen(function* () {
     const detail = root
       ? yield* beads.describe(root, goal.beadsScope)
       : { blocked: [], claimed: [] };
+    const repoRoot = root ?? (yield* workspaceRootOf(goal.projectId));
+    const repo = repoRoot ? yield* beads.repoContext(repoRoot) : "";
     const list = (items: ReadonlyArray<{ id: string; title: string; note: string }>) =>
       items.length === 0
         ? ["  (none)"]
         : items.slice(0, 25).map((item) => `  - ${item.id}: ${item.title} (${item.note})`);
-    const problems = chatsSinceStart(goal)
-      .filter(
-        (chat) =>
-          chat.status === "failed" || chat.status === "attention" || chat.blockedWork === true,
-      )
-      .slice(-6);
+    const problems = problemChatsOf(goal);
     const ended: Array<string> = [];
-    for (const chat of problems) {
+    for (const [position, chat] of problems.entries()) {
       const reply = lastAssistantReply(yield* readThread(chat.threadId))?.trim() ?? "";
       ended.push(
-        `  - ${chat.beadId ? `${chat.beadId} ` : ""}${chat.status}${chat.blockedWork ? " (found only blocked work)" : ""}: ${reply ? reply.slice(-1200) : "no reply"}`,
+        `  - CHAT ${position + 1}: ${chat.beadId ? `${chat.beadId} ` : ""}${chat.status}${chat.blockedWork ? " (found only blocked work)" : ""}: ${reply ? reply.slice(-1200) : "no reply"}`,
       );
     }
     return [
-      "You are the overseer of an unattended goal. Agents work on it in separate chats; it is now stuck and nobody is available to answer questions. Decide how it goes on. You may not have access to the repository, so use only this briefing.",
+      "You are the overseer of an unattended goal. Agents work on it in separate chats and it is now stuck. Nobody is available to answer questions, so a person is the very last resort: your job is to get the agents moving again. Make the decisions they could not, correct what went wrong, and widen the work if something else must be fixed first so everyone can continue. Use the repository documents below to ground every decision. You may not have access to the repository yourself, so use only this briefing.",
       "",
       `Goal instructions:\n${goalInstructions(goal)}`,
       "",
       `Why it is stuck: ${reason}`,
+      ...(repo
+        ? ["", "About the repository (start of its instruction, spec and plan documents):", repo]
+        : []),
       ...(goal.useBeads
         ? [
             "",
@@ -699,11 +709,11 @@ export const make = Effect.gen(function* () {
       ...(ended.length > 0 ? ended : ["  (none)"]),
       ...(goal.guidance ? ["", `Your earlier note to the workers: ${goal.guidance}`] : []),
       "",
-      "Reply with these lines, and nothing that must be run:",
-      "OVERSEER: CONTINUE   (the goal can make progress: new workers should start) or",
-      "OVERSEER: STOP   (it cannot go on without a person; say what the person must do)",
+      "Your reply is sent to the agents as their instructions, so write it as instructions to them. Use these sections, each starting on its own line:",
+      "OVERSEER: CONTINUE   (almost always) or OVERSEER: STOP (only when nothing an agent can do will help, such as a missing login or secret, or an irreversible choice only the person can make; then say exactly what the person must do)",
+      "CHAT n: <the message that continues stuck chat n, for example the decision it was waiting for, the fix to apply, or extra work it must do first. Write one for every chat you can unstick.>",
+      "GUIDANCE: <the instructions every new worker will read first, for example a fix everyone needs, a decision made, or what to avoid>",
       "RELEASE: id, id   (optional: claimed chunks whose agent is gone, to hand back to the queue)",
-      "GUIDANCE:   (optional, last: a short note every new worker will read, for example what went wrong and how to avoid it)",
     ].join("\n");
   });
 
@@ -746,6 +756,49 @@ export const make = Effect.gen(function* () {
     yield* setStatus(goalId, "failed", reason);
   });
 
+  /** Send a stuck chat a new message and mark it working again. Returns whether it was sent. */
+  const continueChat = Effect.fn("GoalService.continueChat")(function* (
+    goal: Goal,
+    chat: GoalChat,
+    text: string,
+  ) {
+    const agent = goal.agents[chat.agentIndex];
+    if (!agent) return false;
+    watching.set(chat.threadId, { goalId: goal.id, seenRunning: false });
+    const sent = yield* engine
+      .dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make(`goal-continue:${yield* randomUUID}`),
+        threadId: chat.threadId,
+        message: {
+          messageId: MessageId.make(yield* randomUUID),
+          role: "user",
+          text,
+          attachments: [],
+        },
+        modelSelection: agent.modelSelection,
+        runtimeMode: goal.runtimeMode,
+        interactionMode: "default",
+        createdAt: yield* nowIso,
+      })
+      .pipe(
+        Effect.as(true),
+        Effect.catchCause((cause) =>
+          logFailure("goals.chat-continue-failed")(cause).pipe(Effect.as(false)),
+        ),
+      );
+    if (!sent) {
+      watching.delete(chat.threadId);
+      return false;
+    }
+    yield* updateChat(goal.id, chat.threadId, {
+      status: "running",
+      completedAt: undefined,
+      blockedWork: undefined,
+    });
+    return true;
+  });
+
   /** The overseer's answer: carry on with its note and released chunks, or stop for the person. */
   const finishOverseer = Effect.fn("GoalService.finishOverseer")(function* (
     goal: Goal,
@@ -779,6 +832,21 @@ export const make = Effect.gen(function* () {
     if (root) {
       for (const id of decision.release.slice(0, 20)) yield* beads.release(root, id);
     }
+    // The overseer's words are the prompt: continue each stuck chat it answered, or all of
+    // them with the note for new workers when it wrote no message for a chat in particular.
+    if (decision.guidance) {
+      yield* store.update(goal.id, (current) => ({ ...current, guidance: decision.guidance }));
+    }
+    const targets = problemChatsOf(goal);
+    for (const [position, target] of targets.entries()) {
+      const message = decision.chats.get(position + 1) ?? decision.guidance;
+      if (!message || target.status === "stopped") continue;
+      const reclaim =
+        target.status === "failed" && target.beadId
+          ? `Your claim on ${target.beadId} was handed back to the queue; claim it again with \`agent-work resume ${target.beadId}\` first.\n\n`
+          : "";
+      yield* continueChat(goal, target, `${reclaim}${message}`);
+    }
     beadsCache.delete(goal.id);
     const now = yield* nowIso;
     // A fresh budget and streak: what went wrong has been looked at.
@@ -786,6 +854,7 @@ export const make = Effect.gen(function* () {
       ...current,
       guidance: decision.guidance ?? current.guidance,
       holdStarts: undefined,
+      // Chats just continued are working again, so they stay in the count; the rest are looked at.
       reviewedChats: current.chats.length,
       updatedAt: now,
     }));

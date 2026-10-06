@@ -142,6 +142,7 @@ describe("overseer reply", () => {
       verdict: "continue",
       release: ["bd-1", "bd-2"],
       guidance: "Install first.\nThen test.",
+      chats: new Map(),
     });
   });
 
@@ -150,8 +151,18 @@ describe("overseer reply", () => {
       verdict: undefined,
       release: [],
       guidance: undefined,
+      chats: new Map(),
     });
     expect(parseOverseerReply("OVERSEER: STOP").verdict).toBe("stop");
+  });
+
+  it("reads the prompt for each stuck chat, which may span lines", () => {
+    const decision = parseOverseerReply(
+      "OVERSEER: CONTINUE\nCHAT 2: Pick option A.\nThen merge.\nCHAT 1: Retry the push.\nGUIDANCE: All: pull first.",
+    );
+    expect(decision.chats.get(2)).toBe("Pick option A.\nThen merge.");
+    expect(decision.chats.get(1)).toBe("Retry the push.");
+    expect(decision.guidance).toBe("All: pull first.");
   });
 
   it("puts the overseer's note into worker prompts", () => {
