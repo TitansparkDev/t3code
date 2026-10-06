@@ -83,6 +83,8 @@ export const GoalChat = Schema.Struct({
   beadTitle: Schema.optional(Schema.String),
   /** The agent found only blocked work, so it did nothing and no replacement should start yet. */
   blockedWork: Schema.optional(Schema.Boolean),
+  /** The chat was already asked once to try again on its own after saying it was stuck. */
+  nudged: Schema.optional(Schema.Boolean),
   /** This chat is the overseer, not a worker: it decides how a stuck goal goes on. */
   overseer: Schema.optional(Schema.Boolean),
 });
@@ -231,6 +233,17 @@ export function problemStreak(chats: ReadonlyArray<GoalChat>): number {
   const firstGood = finished.findIndex((chat) => !isProblemChat(chat));
   return firstGood === -1 ? finished.length : firstGood;
 }
+
+/**
+ * What a worker is told the first time it says it is blocked or needs attention:
+ * try again on its own, with wider authority, before the person or an overseer is asked.
+ */
+export const GOAL_NUDGE_PROMPT = [
+  "You said you are stuck or blocked. Before giving up: are you able to figure this out on your own and complete the chunk?",
+  "You are allowed to go beyond the bounds and restrictions of the chunk to get it done: fix a broken build or test even if it is not yours, resolve a merge conflict, unblock or re-claim a stale dependency or claim, install what is missing, or make the small decision yourself and say what you chose. You have full authority to do what the work needs.",
+  "Stay safe: do not delete data you did not create, force-push over other people's work, disable security or safety checks, or spend money.",
+  `If it truly needs a person (a login, a secret, a decision that cannot be undone), reply ${GOAL_NEEDS_ATTENTION_MARKER} again on a line by itself and say exactly what is needed. If everything left waits on unfinished tasks you cannot unblock, reply ${GOAL_BLOCKED_MARKER}. Otherwise finish the work and end as usual.`,
+].join("\n");
 
 /** A worker chat's plain title: "Goal worker #3". */
 export function goalWorkerTitle(number: number): string {

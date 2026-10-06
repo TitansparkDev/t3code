@@ -173,6 +173,11 @@ Full glossary with file links: `docs/internals/glossary.md`
 
 ## Recent request log
 
+- 2026-10-06 — v0.0.62: goal agents that say NEEDS ATTENTION or BLOCKED TASKS are first asked once
+  to try again with wider authority (then the overseer, then the person); a "+3 agents" button on
+  the Goals page (web, mobile; RPC `server.addGoalAgents`); overseer, plain "Goal worker #N" chat
+  titles (never archived), prefilled "Complete the plan" goals, usage-limit-aware provider choice,
+  drafts, and the desktop RAM chip showing the saved remote server.
 - 2026-10-06 — Goals gain an overseer (asked, up to twice per start, before a stuck goal gives up;
   reads AGENTS/SPEC/PLAN docs and the queue, runs on Chat Agents when ready; its answer is sent as the prompt to each stuck chat and to new workers, STOP only when a person is needed), worker
   chats are titled "Goal worker #N" and never archived, and new goals are prefilled with "Complete

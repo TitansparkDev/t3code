@@ -194,8 +194,25 @@ const makeHarnessWith = (spacing: number) =>
       yield* sessionEvent(threadId, { status: "ready", activeTurnId: null });
     });
 
+    /** A chat that says it is stuck is asked once to try again; it says so again and stays stuck. */
+    const finishStuck = Effect.fn("finishStuck")(function* (threadId: string) {
+      yield* runAndFinish(threadId);
+      while (
+        !log.some(
+          (command) =>
+            command.type === "thread.turn.start" &&
+            command.threadId === threadId &&
+            command.message.text.includes("full authority"),
+        )
+      ) {
+        log.push(yield* Queue.take(commands));
+      }
+      yield* runAndFinish(threadId);
+    });
+
     return {
       layer,
+      finishStuck,
       waitFor,
       drain,
       log,
@@ -371,7 +388,7 @@ it.layer(NodeServices.layer)("GoalService", (it) => {
         });
         yield* service.create(settings({ concurrency: 2, maxChats: null }));
         const [first] = yield* harness.waitFor("thread.create", 2);
-        yield* harness.runAndFinish(threadIdOf(first));
+        yield* harness.finishStuck(threadIdOf(first));
         while ((yield* service.list)[0]?.chats[0]?.status === "running") yield* Effect.yieldNow;
         const [goal] = yield* service.list;
         expect(goal?.status).toBe("running");
@@ -737,6 +754,55 @@ it.layer(NodeServices.layer)("GoalService", (it) => {
     }),
   );
 
+  it.effect("asks a worker once to try again on its own before it counts as stuck", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      yield* Ref.set(harness.threadState, {
+        reply: "Cannot merge.\nNEEDS ATTENTION",
+        turnState: "completed",
+      });
+      yield* Effect.gen(function* () {
+        const service = yield* GoalService.GoalService;
+        yield* Effect.forkScoped(service.loop);
+        yield* Effect.yieldNow;
+        yield* service.create(settings({ concurrency: 1, stopAfterProblems: 5 }));
+        const [worker] = yield* harness.waitFor("thread.create", 1);
+        yield* harness.runAndFinish(threadIdOf(worker));
+        const nudge = (yield* harness.waitFor("thread.turn.start", 2))[1];
+        expect(nudge?.type === "thread.turn.start" ? nudge.threadId : "").toBe(threadIdOf(worker));
+        expect(textOf(nudge)).toContain("full authority");
+        expect((yield* service.list)[0]?.chats[0]?.status).toBe("running");
+        // Stuck again: now it is a real problem and keeps its lane closed.
+        yield* harness.runAndFinish(threadIdOf(worker));
+        while ((yield* service.list)[0]?.chats[0]?.status === "running") yield* Effect.yieldNow;
+        expect((yield* service.list)[0]?.chats[0]?.status).toBe("attention");
+        expect(harness.log.filter((command) => command.type === "thread.turn.start")).toHaveLength(
+          2,
+        );
+      }).pipe(Effect.provide(harness.layer), Effect.scoped);
+    }),
+  );
+
+  it.effect("adds agents to a goal and starts it when it was not running", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      yield* Effect.gen(function* () {
+        const service = yield* GoalService.GoalService;
+        const [goal] = yield* service.create(
+          settings({ concurrency: 1, maxChats: 4, agents: [{ modelSelection: CODEX, count: 1 }] }),
+        );
+        yield* harness.waitFor("thread.create", 1);
+        yield* service.stop(goal!.id);
+        const [after] = yield* service.addAgents(goal!.id, 3);
+        expect(after?.status).toBe("running");
+        expect(after?.concurrency).toBe(4);
+        expect(after?.agents[0]?.count).toBe(4);
+        expect(after?.maxChats).toBe(7);
+        yield* harness.waitFor("thread.create", 4);
+      }).pipe(Effect.provide(harness.layer), Effect.scoped);
+    }),
+  );
+
   it.effect("ends the goal when the overseer says to stop, and when asked too often", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness;
@@ -909,8 +975,8 @@ it.layer(NodeServices.layer)("GoalService", (it) => {
             }),
           );
           const creates = yield* harness.waitFor("thread.create", 5);
-          yield* harness.runAndFinish(threadIdOf(creates[0]));
-          yield* harness.runAndFinish(threadIdOf(creates[1]));
+          yield* harness.finishStuck(threadIdOf(creates[0]));
+          yield* harness.finishStuck(threadIdOf(creates[1]));
           while ((yield* service.list)[0]?.status === "running") yield* Effect.yieldNow;
           const [goal] = yield* service.list;
           expect(goal?.detail).toContain("protect your usage");
@@ -935,7 +1001,7 @@ it.layer(NodeServices.layer)("GoalService", (it) => {
         });
         yield* service.create(settings({ concurrency: 2, maxChats: null }));
         const [first, second] = yield* harness.waitFor("thread.create", 2);
-        yield* harness.runAndFinish(threadIdOf(first));
+        yield* harness.finishStuck(threadIdOf(first));
         while (!(yield* service.list)[0]?.holdStarts) yield* Effect.yieldNow;
         for (let turn = 0; turn < 20; turn++) yield* Effect.yieldNow;
         const [held] = yield* service.list;

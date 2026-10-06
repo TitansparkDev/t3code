@@ -95,6 +95,20 @@ export function useGoals() {
     },
     [refresh],
   );
+  /** Raise the goal's agent counts and start it if it is not running. */
+  const addAgents = useCallback(
+    async (environmentId: EnvironmentId, id: GoalId, count: number) => {
+      const result = await runAtomCommand(
+        appAtomRegistry,
+        serverEnvironment.addGoalAgents,
+        { environmentId, input: { id, count } },
+        { label: "add goal agents" },
+      );
+      refresh(environmentId);
+      if (result._tag === "Failure") throw Cause.squash(result.cause);
+    },
+    [refresh],
+  );
   const stop = useMemo(() => command(serverEnvironment.stopGoal, "stop goal"), [command]);
   const restart = useMemo(() => command(serverEnvironment.restartGoal, "restart goal"), [command]);
   const remove = useMemo(() => command(serverEnvironment.deleteGoal, "delete goal"), [command]);
@@ -108,7 +122,7 @@ export function useGoals() {
   }, [environments, refresh]);
 
   return useMemo(
-    () => ({ environments, create, update, stop, restart, remove }),
-    [environments, create, update, stop, restart, remove],
+    () => ({ environments, create, update, stop, restart, addAgents, remove }),
+    [environments, create, update, stop, restart, addAgents, remove],
   );
 }

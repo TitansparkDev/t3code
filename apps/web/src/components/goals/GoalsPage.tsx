@@ -61,7 +61,7 @@ function GoalCard({
   environmentId: EnvironmentId;
   goal: Goal;
   nameOf: (instanceId: string) => string;
-  onAction: (action: "stop" | "restart" | "remove", goal: Goal) => void;
+  onAction: (action: "stop" | "restart" | "addAgents" | "remove", goal: Goal) => void;
 }) {
   // Working and finished agents are only counted; the ones that need a look are listed.
   const attentionChats = goal.chats.filter(
@@ -124,6 +124,17 @@ function GoalCard({
               <PlayIcon className="size-3.5" /> {goal.status === "draft" ? "Start" : "Start again"}
             </Button>
           )}
+          {goal.status !== "draft" ? (
+            <Button
+              onClick={() => onAction("addAgents", goal)}
+              size="sm"
+              title={`Start ${ADD_AGENTS_COUNT} more agents on this goal`}
+              type="button"
+              variant="outline"
+            >
+              <PlusIcon className="size-3.5" /> {ADD_AGENTS_COUNT} agents
+            </Button>
+          ) : null}
           <Button
             aria-label={`Edit ${goalTitle(goal)}`}
             render={<Link search={{ environmentId, goalId: goal.id }} to="/edit-goal" />}
@@ -173,9 +184,12 @@ function GoalCard({
   );
 }
 
+/** How many agents the "more agents" button adds. */
+const ADD_AGENTS_COUNT = 3;
+
 export function GoalsPage() {
   const { environments: presentations } = useEnvironments();
-  const { environments, stop, restart, remove } = useGoals();
+  const { environments, stop, restart, addAgents, remove } = useGoals();
   const nameFor = (environmentId: EnvironmentId) => (instanceId: string) =>
     presentations
       .find((candidate) => candidate.environmentId === environmentId)
@@ -187,8 +201,16 @@ export function GoalsPage() {
   const total = environments.reduce((count, environment) => count + environment.goals.length, 0);
 
   const onAction =
-    (environmentId: EnvironmentId) => (action: "stop" | "restart" | "remove", goal: Goal) => {
-      const run = action === "stop" ? stop : action === "restart" ? restart : remove;
+    (environmentId: EnvironmentId) =>
+    (action: "stop" | "restart" | "addAgents" | "remove", goal: Goal) => {
+      const run =
+        action === "stop"
+          ? stop
+          : action === "restart"
+            ? restart
+            : action === "addAgents"
+              ? (id: EnvironmentId, goalId: Goal["id"]) => addAgents(id, goalId, ADD_AGENTS_COUNT)
+              : remove;
       void run(environmentId, goal.id).catch((error: unknown) =>
         toastManager.add({
           type: "error",

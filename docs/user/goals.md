@@ -58,6 +58,12 @@ thread list; the Goals page shows how each one ended.
   blocked work (3 unless you change it), the goal stops starting agents so a plan that
   cannot be finished does not spend your usage overnight. Agents already working are
   left to finish. Fix the problem, then **Start again**.
+- **One more try.** The first time an agent replies `NEEDS ATTENTION` or `BLOCKED TASKS`, it
+  is asked to figure it out on its own and finish, with permission to go past the chunk's
+  edges (fix a broken build, resolve a conflict, re-claim a stale chunk). It is told to
+  stay safe (no deleting others' data, no force-pushes, no disabling checks) and to say
+  the line again only if a person really is needed. Only if it says so again does it count
+  as stuck.
 - **Overseer.** Before the goal gives up (the safety stop above, or every Beads chunk
   blocked with nothing working), an overseer reads a briefing: the repository's
   instruction, spec and plan documents, the Beads queue, what is blocked or claimed, and
@@ -67,6 +73,11 @@ thread list; the Goals page shows how each one ended.
   will help, such as a missing login. It runs on Chat Agents when that provider is on,
   otherwise on one of the goal's own models, and is asked at most twice per start. Turn
   it off under **Other settings**.
+
+## Adding agents
+
+**+3 agents** on a goal (Goals page, web and mobile) raises its agents-at-once and most-agents
+counts by three, spread over its models, and starts the goal if it was stopped or finished.
 
 ## Usage limits and unavailable providers
 

@@ -55,7 +55,11 @@ import {
   GoalId,
   type GoalProviderPause,
   type GoalSettings,
+  GOAL_NUDGE_PROMPT,
   GOAL_OVERSEER_TITLE,
+  MAX_GOAL_AGENT_COUNT,
+  MAX_GOAL_CONCURRENCY,
+  MAX_GOAL_MAX_CHATS,
   goalInstructions,
   goalPrompt,
   goalSettingsProblem,
@@ -114,6 +118,8 @@ export class GoalService extends Context.Service<
     readonly stop: (id: GoalId) => Effect.Effect<ReadonlyArray<Goal>>;
     /** Start a draft, or start a stopped, stopped-early or finished goal again. */
     readonly restart: (id: GoalId) => Effect.Effect<ReadonlyArray<Goal>>;
+    /** Raise the agent counts by `count` and start the goal if it is not running. */
+    readonly addAgents: (id: GoalId, count: number) => Effect.Effect<ReadonlyArray<Goal>>;
     readonly remove: (id: GoalId) => Effect.Effect<ReadonlyArray<Goal>>;
     /** Recovers goals after a restart, then reacts to chats finishing. Fork it. */
     readonly loop: Effect.Effect<void>;
@@ -983,6 +989,16 @@ export const make = Effect.gen(function* () {
     const reply = lastAssistantReply(thread);
     const needsAttention = !failed && replyNeedsAttention(reply);
     const blockedWork = !failed && !needsAttention && replyReportsBlockedWork(reply);
+    // The first time a worker gives up, push it to try again on its own before anyone else is asked.
+    if (
+      (needsAttention || blockedWork) &&
+      !chat.nudged &&
+      before.status === "running" &&
+      (yield* continueChat(before, chat, GOAL_NUDGE_PROMPT))
+    ) {
+      yield* updateChat(goalId, threadId, { nudged: true });
+      return;
+    }
     let status: GoalChat["status"] = stopped
       ? "stopped"
       : failed
@@ -1267,22 +1283,50 @@ export const make = Effect.gen(function* () {
     return yield* store.list;
   });
 
+  /** Start a goal that is not running: forget old pauses and waiting, then fill the lanes. */
+  const startLocked = Effect.fn("GoalService.startLocked")(function* (id: GoalId) {
+    const goal = yield* currentGoal(id);
+    if (!goal || goal.status === "running") return;
+    yield* setStatus(id, "running");
+    // Starting by hand is the person saying "try again": forget old pauses and waiting.
+    yield* store.update(id, (current) => ({
+      ...current,
+      holdStarts: undefined,
+      pauses: undefined,
+      waitingUntil: undefined,
+      overseerRuns: undefined,
+      reviewedChats: current.chats.length,
+    }));
+    yield* fillLanes(id);
+  });
+
   const restart = Effect.fn("GoalService.restart")(function* (id: GoalId) {
+    yield* lock.withPermits(1)(startLocked(id));
+    return yield* store.list;
+  });
+
+  const addAgents = Effect.fn("GoalService.addAgents")(function* (id: GoalId, count: number) {
     yield* lock.withPermits(1)(
       Effect.gen(function* () {
         const goal = yield* currentGoal(id);
-        if (!goal || goal.status === "running") return;
-        yield* setStatus(id, "running");
-        // Starting by hand is the person saying "try again": forget old pauses and waiting.
+        if (!goal || goal.status === "draft") return;
+        const agents = goal.agents.map((agent) => ({ ...agent }));
+        // Spread the new agents over the models, so they do not all land on one account.
+        for (let added = 0; added < count; added += 1) {
+          const agent = agents[added % agents.length]!;
+          agent.count = Math.min(agent.count + 1, MAX_GOAL_AGENT_COUNT);
+        }
         yield* store.update(id, (current) => ({
           ...current,
-          holdStarts: undefined,
-          pauses: undefined,
-          waitingUntil: undefined,
-          overseerRuns: undefined,
-          reviewedChats: current.chats.length,
+          agents,
+          concurrency: Math.min(current.concurrency + count, MAX_GOAL_CONCURRENCY),
+          maxChats:
+            current.maxChats === null
+              ? null
+              : Math.min(current.maxChats + count, MAX_GOAL_MAX_CHATS),
         }));
-        yield* fillLanes(id);
+        if (goal.status === "running") yield* fillLanes(id);
+        else yield* startLocked(id);
       }),
     );
     return yield* store.list;
@@ -1303,7 +1347,16 @@ export const make = Effect.gen(function* () {
     return yield* store.list;
   });
 
-  return GoalService.of({ create, update, list: store.list, stop, restart, remove, loop });
+  return GoalService.of({
+    create,
+    update,
+    list: store.list,
+    stop,
+    restart,
+    addAgents,
+    remove,
+    loop,
+  });
 });
 
 export const layer = Layer.effect(GoalService, make);
@@ -1317,6 +1370,7 @@ export const layerTest = Layer.succeed(
     update: () => Effect.succeed([]),
     stop: () => Effect.succeed([]),
     restart: () => Effect.succeed([]),
+    addAgents: () => Effect.succeed([]),
     remove: () => Effect.succeed([]),
     loop: Effect.void,
   }),

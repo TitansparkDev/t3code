@@ -44,6 +44,7 @@ function GoalCard(props: {
   const stopGoal = useAtomCommand(serverEnvironment.stopGoal);
   const restartGoal = useAtomCommand(serverEnvironment.restartGoal);
   const deleteGoal = useAtomCommand(serverEnvironment.deleteGoal);
+  const addGoalAgents = useAtomCommand(serverEnvironment.addGoalAgents);
   const { goal, environmentId } = props;
   const running = goal.status === "running";
   const queue = describeGoalQueue(goal);
@@ -101,6 +102,23 @@ function GoalCard(props: {
             onPress={() => void run(restartGoal)}
           />
         )}
+        {goal.status !== "draft" ? (
+          <MaterialButton
+            label="+3 agents"
+            onPress={() =>
+              void (async () => {
+                const result = await addGoalAgents({
+                  environmentId,
+                  input: { id: goal.id, count: 3 },
+                });
+                if (AsyncResult.isFailure(result)) {
+                  Alert.alert("Could not add agents", "Check the connection and try again.");
+                }
+                props.onChanged();
+              })()
+            }
+          />
+        ) : null}
         <MaterialButton
           label="Edit"
           onPress={() =>

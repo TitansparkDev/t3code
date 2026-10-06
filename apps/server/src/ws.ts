@@ -3020,6 +3020,12 @@ const makeWsRpcLayer = (
             goals.restart(input.id).pipe(Effect.map((list) => ({ goals: list }))),
             { "rpc.aggregate": "server" },
           ),
+        [WS_METHODS.serverAddGoalAgents]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverAddGoalAgents,
+            goals.addAgents(input.id, input.count).pipe(Effect.map((list) => ({ goals: list }))),
+            { "rpc.aggregate": "server" },
+          ),
         [WS_METHODS.serverDeleteGoal]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverDeleteGoal,

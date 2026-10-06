@@ -76,6 +76,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.serverUpdateGoal]: AuthOrchestrationOperateScope,
   [WS_METHODS.serverStopGoal]: AuthOrchestrationOperateScope,
   [WS_METHODS.serverRestartGoal]: AuthOrchestrationOperateScope,
+  [WS_METHODS.serverAddGoalAgents]: AuthOrchestrationOperateScope,
   [WS_METHODS.serverDeleteGoal]: AuthOrchestrationOperateScope,
   [WS_METHODS.serverRefreshUsageRates]: AuthOrchestrationReadScope,
   [WS_METHODS.serverSignalProcess]: AuthOrchestrationOperateScope,

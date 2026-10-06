@@ -419,6 +419,7 @@ export const WS_METHODS = {
   serverUpdateGoal: "server.updateGoal",
   serverStopGoal: "server.stopGoal",
   serverRestartGoal: "server.restartGoal",
+  serverAddGoalAgents: "server.addGoalAgents",
   serverDeleteGoal: "server.deleteGoal",
   serverRefreshUsageRates: "server.refreshUsageRates",
 
@@ -772,6 +773,16 @@ export const WsServerStopGoalRpc = Rpc.make(WS_METHODS.serverStopGoal, {
 /** Start a stopped, failed, or finished goal again. */
 export const WsServerRestartGoalRpc = Rpc.make(WS_METHODS.serverRestartGoal, {
   payload: Schema.Struct({ id: GoalId }),
+  success: GoalList,
+  error: EnvironmentAuthorizationError,
+});
+
+/** Raise a goal's agent counts by `count` and start it if it is not running. */
+export const WsServerAddGoalAgentsRpc = Rpc.make(WS_METHODS.serverAddGoalAgents, {
+  payload: Schema.Struct({
+    id: GoalId,
+    count: Schema.Number.check(Schema.isInt(), Schema.isBetween({ minimum: 1, maximum: 100 })),
+  }),
   success: GoalList,
   error: EnvironmentAuthorizationError,
 });
@@ -1607,6 +1618,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerUpdateGoalRpc,
   WsServerStopGoalRpc,
   WsServerRestartGoalRpc,
+  WsServerAddGoalAgentsRpc,
   WsServerDeleteGoalRpc,
   WsServerRefreshUsageRatesRpc,
   WsServerSignalProcessRpc,
