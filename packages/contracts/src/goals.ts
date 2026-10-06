@@ -36,6 +36,8 @@ export const MAX_GOAL_AGENT_COUNT = 100;
 /** Agents in a row that may fail to finish before the goal stops itself. */
 export const DEFAULT_GOAL_STOP_AFTER_PROBLEMS = 3;
 export const MAX_GOAL_STOP_AFTER_PROBLEMS = 50;
+/** Times per start an overseer may be asked to get a stuck goal moving before the goal gives up. */
+export const MAX_GOAL_OVERSEER_RUNS = 2;
 export const DEFAULT_GOAL_MAX_CHATS = 50;
 export const MAX_GOAL_MAX_CHATS = 10_000;
 
@@ -81,6 +83,8 @@ export const GoalChat = Schema.Struct({
   beadTitle: Schema.optional(Schema.String),
   /** The agent found only blocked work, so it did nothing and no replacement should start yet. */
   blockedWork: Schema.optional(Schema.Boolean),
+  /** This chat is the overseer, not a worker: it decides how a stuck goal goes on. */
+  overseer: Schema.optional(Schema.Boolean),
 });
 export type GoalChat = typeof GoalChat.Type;
 
@@ -126,6 +130,11 @@ export const GoalSettings = Schema.Struct({
   beadsScope: Schema.optional(Schema.String),
   /** Stop starting agents after this many in a row fail to finish. Missing means the default. */
   stopAfterProblems: Schema.optional(PositiveCount(MAX_GOAL_STOP_AFTER_PROBLEMS)),
+  /**
+   * When the goal gets stuck (agents keep failing, or every chunk is blocked), ask an
+   * overseer agent what to do before giving up. Missing means on.
+   */
+  overseer: Schema.optional(Schema.Boolean),
 });
 export type GoalSettings = typeof GoalSettings.Type;
 
@@ -162,6 +171,12 @@ export const Goal = Schema.Struct({
    * provider it uses is paused or unavailable: when the first one comes back.
    */
   waitingUntil: Schema.optional(IsoDateTime),
+  /** The overseer's latest note, passed to every worker started after it. */
+  guidance: Schema.optional(Schema.String),
+  /** Chats before this position were looked at by the overseer or a restart: they no longer count. */
+  reviewedChats: Schema.optional(Schema.Number),
+  /** Overseers asked for since the goal was last started by hand. */
+  overseerRuns: Schema.optional(Schema.Number),
 });
 export type Goal = typeof Goal.Type;
 
@@ -217,6 +232,52 @@ export function problemStreak(chats: ReadonlyArray<GoalChat>): number {
   return firstGood === -1 ? finished.length : firstGood;
 }
 
+/** A worker chat's plain title: "Goal worker #3". */
+export function goalWorkerTitle(number: number): string {
+  return `Goal worker #${number}`;
+}
+
+export const GOAL_OVERSEER_TITLE = "Goal overseer";
+
+export interface OverseerDecision {
+  /** `undefined` when the reply did not say: treated as giving up. */
+  readonly verdict: "continue" | "stop" | undefined;
+  /** Chunks the overseer wants given back to the queue. */
+  readonly release: ReadonlyArray<string>;
+  /** A note for the workers that start next. */
+  readonly guidance: string | undefined;
+}
+
+const OVERSEER_VERDICT_LINE = /^\s*OVERSEER:\s*(CONTINUE|STOP)\s*$/imu;
+const OVERSEER_RELEASE_LINE = /^\s*RELEASE:\s*(.+)$/imu;
+const OVERSEER_GUIDANCE_LINE = /^\s*GUIDANCE:[ \t]*/imu;
+const MAX_GUIDANCE_LENGTH = 2000;
+
+/**
+ * Reads an overseer's reply: an `OVERSEER: CONTINUE` or `OVERSEER: STOP` line,
+ * an optional `RELEASE: id, id` line, and everything after a `GUIDANCE:` line.
+ */
+export function parseOverseerReply(reply: string | undefined): OverseerDecision {
+  const text = reply ?? "";
+  const verdictWord = OVERSEER_VERDICT_LINE.exec(text)?.[1]?.toUpperCase();
+  const release = (OVERSEER_RELEASE_LINE.exec(text)?.[1] ?? "")
+    .split(/[\s,]+/u)
+    .map((id) => id.trim())
+    .filter((id) => /^[A-Za-z0-9._-]+$/u.test(id));
+  const marker = OVERSEER_GUIDANCE_LINE.exec(text);
+  const guidance = marker
+    ? text
+        .slice(marker.index + marker[0].length)
+        .trim()
+        .slice(0, MAX_GUIDANCE_LENGTH)
+    : undefined;
+  return {
+    verdict: verdictWord === "CONTINUE" ? "continue" : verdictWord === "STOP" ? "stop" : undefined,
+    release,
+    guidance: guidance || undefined,
+  };
+}
+
 /** The instructions every agent in the goal receives, before the rules added to them. */
 export function goalInstructions(goal: Pick<Goal, "name" | "prompt">): string {
   return goal.prompt?.trim() || goal.name;
@@ -229,7 +290,8 @@ export function goalInstructions(goal: Pick<Goal, "name" | "prompt">): string {
  * repository. When the goal schedules from Beads, the chat is handed one chunk.
  */
 export function goalPrompt(
-  goal: Pick<Goal, "name" | "prompt" | "concurrency" | "standardRules">,
+  goal: Pick<Goal, "name" | "prompt" | "concurrency" | "standardRules"> &
+    Partial<Pick<Goal, "guidance">>,
   bead?: { readonly id: string; readonly title: string },
 ): string {
   return [
@@ -249,6 +311,9 @@ export function goalPrompt(
             "When it is verified, rebase on the latest default branch, merge into it, push, then remove your worktree and delete your branch. Leave nothing half-merged.",
           ]
         : []),
+    ...(goal.guidance?.trim()
+      ? ["--- Note from the goal's overseer ---", goal.guidance.trim()]
+      : []),
     "Finish one piece of work, then stop. A fresh chat takes the next piece.",
     "Do not spend time exploring: if you cannot quickly find unfinished work you can start, do not build, test, or read the whole repository to look harder. End right away with the matching line below.",
     "End your last message with exactly one of these on a line by itself, when it applies:",

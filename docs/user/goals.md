@@ -11,9 +11,11 @@ pick a project. Or, on the new-chat project picker (the **New thread in…** men
 **Choose project** sheet on mobile), switch **Goal** on, then choose a project. Goal
 is off by default each time. You land on the goal setup page, where you choose:
 
-- **Goal name** — what you are trying to get done. It is the name shown in lists.
+- **Goal name** — what you are trying to get done. It is the name shown in lists. A new
+  goal starts as **Complete the plan**.
 - **Instructions for each agent** — what every agent is told. Leave it empty to send
-  the goal name.
+  the goal name. A new goal starts with instructions to claim one ready chunk of the
+  active plan through Beads and complete it; edit them freely.
 - **Agents at once** — how many chats work at the same time (up to 100). New chats start 15 seconds
   apart.
 - **Most agents in total** — how many chats the goal may start, or **Until complete**
@@ -49,14 +51,20 @@ message with one of these lines:
   a decision, a merge it could not finish). The chat stays open and is marked **needs
   you**, and its lane stays closed.
 
-A chat is archived (tidied out of your thread list) only when it finished its work
-successfully. A chat that fails or is stopped stays open, and so does one waiting on an
-approval or question.
+Chats are never archived. Each is titled plainly (**Goal worker #3**) and stays in your
+thread list; the Goals page shows how each one ended.
 
 - **Safety stop.** If this many finished agents in a row fail, need you, or find only
   blocked work (3 unless you change it), the goal stops starting agents so a plan that
   cannot be finished does not spend your usage overnight. Agents already working are
   left to finish. Fix the problem, then **Start again**.
+- **Overseer.** Before the goal gives up (the safety stop above, or every Beads chunk
+  blocked with nothing working), an overseer chat reads a briefing: the queue, what is
+  blocked or claimed, and how the failed chats ended. It answers **continue**, with a
+  note every new agent reads and any claimed chunks to hand back to the queue, or
+  **stop**, saying what you must do. It runs on Chat Agents when that provider is on,
+  otherwise on one of the goal's own models, and is asked at most twice per start. Turn
+  it off under **Other settings**.
 
 ## Usage limits and unavailable providers
 

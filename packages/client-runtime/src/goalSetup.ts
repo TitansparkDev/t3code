@@ -48,7 +48,19 @@ export interface GoalSetupForm {
   /** A Beads epic or plan id, or empty for the whole queue. */
   readonly beadsScope: string;
   readonly stopAfterProblems: number;
+  /** Ask an overseer agent what to do when the goal gets stuck, before giving up. */
+  readonly overseer: boolean;
 }
+
+/** What a new goal's name and instructions start as, so the plan-completion workflow is one tap away. */
+export const DEFAULT_GOAL_NAME = "Complete the plan";
+export const DEFAULT_GOAL_PROMPT = `Find the active fix-up plan for this repository and immediately claim one ready chunk through the configured parallel-plan/Beads workflow. Do not manually choose blocked work, duplicate another worker's claim, or modify another chunk's worktree. Execute it as a parallel worker. ONLY If no ready work is available stop and report that no claimable chunk is currently available.
+
+Do not quit easily. I want you to complete this task. If it has extra things you must do that aren't explicitly listed in the plan, do those things to complete the task successfully. You have full authority to do whatever you need to do to complete the chunk.
+
+Complete the claimed chunk fully and to high end production quality, following the sealed plan, original spec, repository instructions, acceptance criteria, scope boundaries, and assigned validation level. Do not unnecessarily redesign the plan or expand into unrelated work.
+
+Use the configured dedicated worktree and preserve resumable checkpoints/handoff state during substantial work. When the chunk is genuinely complete and its required verification passes, safely land/merge it according to the configured workflow, close the Bead, and prune your tree.`;
 
 /** What a draft is called until it has a name. The setup form shows it as empty. */
 export const UNTITLED_GOAL_NAME = "Untitled goal";
@@ -59,8 +71,8 @@ export function defaultGoalSetup(input: {
   readonly runtimeMode: RuntimeMode;
 }): GoalSetupForm {
   return {
-    name: "",
-    prompt: "",
+    name: DEFAULT_GOAL_NAME,
+    prompt: DEFAULT_GOAL_PROMPT,
     projectId: input.projectId,
     agents: input.agent ? [{ ...input.agent, count: DEFAULT_GOAL_CONCURRENCY }] : [],
     concurrency: DEFAULT_GOAL_CONCURRENCY,
@@ -71,6 +83,7 @@ export function defaultGoalSetup(input: {
     useBeads: true,
     beadsScope: "",
     stopAfterProblems: DEFAULT_GOAL_STOP_AFTER_PROBLEMS,
+    overseer: true,
   };
 }
 
@@ -94,6 +107,7 @@ export function goalToSetup(goal: Goal): GoalSetupForm {
     useBeads: goal.useBeads ?? false,
     beadsScope: goal.beadsScope ?? "",
     stopAfterProblems: goal.stopAfterProblems ?? DEFAULT_GOAL_STOP_AFTER_PROBLEMS,
+    overseer: goal.overseer !== false,
   };
 }
 
@@ -154,6 +168,7 @@ export function goalSetupToSettings(form: GoalSetupForm): GoalSettings | undefin
     useBeads: form.useBeads,
     beadsScope: form.beadsScope.trim(),
     stopAfterProblems: whole(form.stopAfterProblems),
+    overseer: form.overseer,
   };
 }
 
@@ -186,5 +201,6 @@ export function goalSetupToDraftSettings(form: GoalSetupForm): GoalSettings | un
     useBeads: form.useBeads,
     beadsScope: form.beadsScope.trim(),
     stopAfterProblems: clamp(form.stopAfterProblems, MAX_GOAL_STOP_AFTER_PROBLEMS),
+    overseer: form.overseer,
   };
 }

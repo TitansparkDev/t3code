@@ -11,8 +11,13 @@
  *  - A chat that fails, or says NEEDS ATTENTION, does not restart its lane, so a
  *    broken setup cannot loop through the chat budget (or forever, when there
  *    is no cap).
- *  - Only a chat that finished its work successfully is archived. One that
- *    failed, was stopped, or needs the person stays in the thread list.
+ *  - Chats are never archived: they keep a plain "Goal worker #N" title and stay in
+ *    the thread list, and the Goals page records how each one ended.
+ *  - When a goal gets stuck (agents keep failing, or every chunk is blocked) an
+ *    overseer chat is asked once or twice what to do before the goal gives up. It
+ *    reads a briefing and answers CONTINUE (with a note for the next workers and
+ *    chunks to hand back to the queue) or STOP. It runs on Chat Agents when that
+ *    provider is ready, otherwise on one of the goal's own providers.
  *  - A chat stopped by a provider usage limit is not a failure. With auto
  *    resume on, it is scheduled to continue when the limit resets and the goal
  *    waits for it.
@@ -50,10 +55,14 @@ import {
   GoalId,
   type GoalProviderPause,
   type GoalSettings,
+  GOAL_OVERSEER_TITLE,
+  goalInstructions,
   goalPrompt,
   goalSettingsProblem,
+  goalWorkerTitle,
+  MAX_GOAL_OVERSEER_RUNS,
+  parseOverseerReply,
   DEFAULT_GOAL_STOP_AFTER_PROBLEMS,
-  goalTitle,
   problemStreak,
   replyNeedsAttention,
   replyReportsBlockedWork,
@@ -117,8 +126,12 @@ export class GoalService extends Context.Service<
  */
 export function chatsSinceStart(goal: Goal): ReadonlyArray<GoalChat> {
   const since = Date.parse(goal.restartedAt ?? goal.createdAt);
+  // A finished overseer is not a worker: it never counts toward the budget or the problem streak.
+  const reviewed = goal.reviewedChats ?? 0;
   return goal.chats.filter(
-    (chat) => chat.status === "running" || Date.parse(chat.startedAt) >= since,
+    (chat, position) =>
+      chat.status === "running" ||
+      (!chat.overseer && position >= reviewed && Date.parse(chat.startedAt) >= since),
   );
 }
 
@@ -134,7 +147,9 @@ export function nextAgentIndex(
 ): number | undefined {
   if (goal.status !== "running" || goal.holdStarts) return undefined;
   const chats = chatsSinceStart(goal);
-  const running = chats.filter((chat) => chat.status === "running" && !chat.waitingForLimit);
+  const running = chats.filter(
+    (chat) => chat.status === "running" && !chat.waitingForLimit && !chat.overseer,
+  );
   const blocked = chats.filter(
     (chat) => chat.status === "failed" || chat.status === "attention",
   ).length;
@@ -274,6 +289,8 @@ export const make = Effect.gen(function* () {
   const nowMillis = Effect.map(DateTime.now, DateTime.toEpochMillis);
   /** When each goal last started a chat, for spacing starts apart. */
   const lastStart = new Map<GoalId, number>();
+  /** Why each goal was stuck when its overseer was asked, for the failure message. */
+  const stuckReasons = new Map<GoalId, string>();
   /** The latest Beads answer per goal, and when it was read. */
   const beadsCache = new Map<GoalId, { readonly at: number; readonly snapshot: BeadsSnapshot }>();
 
@@ -503,24 +520,33 @@ export const make = Effect.gen(function* () {
         : { ...goal, waitingUntil: undefined, detail: undefined },
     );
 
-  /** Open one new chat for the goal on `agentIndex`. Returns whether it started. */
-  const startChat = Effect.fn("GoalService.startChat")(function* (
+  /**
+   * Open one new chat for the goal and send its first message. Returns whether it
+   * started. A worker's provider is backed off when it cannot start; an overseer's is not.
+   */
+  const openChat = Effect.fn("GoalService.openChat")(function* (
     goal: Goal,
-    agentIndex: number,
-    bead?: Bead,
+    chat: {
+      readonly title: string;
+      readonly text: string;
+      readonly agentIndex: number;
+      readonly modelSelection: Goal["agents"][number]["modelSelection"];
+      readonly bead?: Bead | undefined;
+      readonly overseer?: boolean | undefined;
+    },
   ) {
-    const agent = goal.agents[agentIndex];
-    if (!agent) return false;
+    const agent = goal.agents[chat.agentIndex];
     const threadId = ThreadId.make(yield* randomUUID);
     const createdAt = yield* nowIso;
-    const modelSelection = agent.modelSelection;
+    const modelSelection = chat.modelSelection;
+    const backOff = agent && !chat.overseer ? pauseAgent(goal.id, agent, "errors") : Effect.void;
     const created = yield* engine
       .dispatch({
         type: "thread.create",
         commandId: CommandId.make(`goal-create:${yield* randomUUID}`),
         threadId,
         projectId: goal.projectId,
-        title: `${goalTitle(goal)} · ${bead ? bead.id : goal.chats.length + 1}`,
+        title: chat.title,
         modelSelection,
         runtimeMode: goal.runtimeMode,
         interactionMode: "default",
@@ -536,18 +562,20 @@ export const make = Effect.gen(function* () {
       );
     if (!created) {
       // Back off, so a broken project or provider is not retried on every tick.
-      yield* pauseAgent(goal.id, agent, "errors");
+      yield* backOff;
       return false;
     }
     // Registered before the turn starts so a fast provider cannot finish unseen.
     watching.set(threadId, { goalId: goal.id, seenRunning: false });
     yield* addChat(goal.id, {
       threadId,
-      agentIndex,
+      agentIndex: chat.agentIndex,
       status: "running",
       startedAt: createdAt,
-      ...(bead ? { beadId: bead.id, beadTitle: bead.title } : {}),
+      ...(chat.bead ? { beadId: chat.bead.id, beadTitle: chat.bead.title } : {}),
+      ...(chat.overseer ? { overseer: true } : {}),
     });
+    // No title seed: the plain title is kept instead of being replaced by a generated one.
     const started = yield* engine
       .dispatch({
         type: "thread.turn.start",
@@ -556,11 +584,10 @@ export const make = Effect.gen(function* () {
         message: {
           messageId: MessageId.make(yield* randomUUID),
           role: "user",
-          text: goalPrompt(goal, bead),
+          text: chat.text,
           attachments: [],
         },
         modelSelection,
-        titleSeed: goalTitle(goal),
         runtimeMode: goal.runtimeMode,
         interactionMode: "default",
         createdAt,
@@ -573,7 +600,7 @@ export const make = Effect.gen(function* () {
       );
     if (!started) {
       watching.delete(threadId);
-      yield* pauseAgent(goal.id, agent, "errors");
+      yield* backOff;
       yield* updateChat(goal.id, threadId, { status: "failed", completedAt: yield* nowIso });
       yield* engine
         .dispatch({
@@ -586,6 +613,185 @@ export const make = Effect.gen(function* () {
     return started;
   });
 
+  /** Open a worker chat for the goal on `agentIndex`, titled "Goal worker #N". */
+  const startChat = (goal: Goal, agentIndex: number, bead?: Bead) => {
+    const agent = goal.agents[agentIndex];
+    if (!agent) return Effect.succeed(false);
+    return openChat(goal, {
+      title: goalWorkerTitle(goal.chats.filter((chat) => !chat.overseer).length + 1),
+      text: goalPrompt(goal, bead),
+      agentIndex,
+      modelSelection: agent.modelSelection,
+      bead,
+    });
+  };
+
+  /**
+   * Who should oversee: Chat Agents when that provider is ready (it is not tied to
+   * the goal's own usage), otherwise the goal's first agent that can start a chat now.
+   */
+  const overseerAgent = Effect.fn("GoalService.overseerAgent")(function* (goal: Goal) {
+    const now = yield* nowMillis;
+    const providers = yield* registry.getProviders.pipe(
+      Effect.catchCause(() => Effect.succeed([] as ReadonlyArray<ServerProvider>)),
+    );
+    for (const provider of providers) {
+      const model = provider.models[0]?.slug;
+      if (provider.driver !== "chatAgents" || !model) continue;
+      if (providerBlock(provider, model, now)) continue;
+      return {
+        agentIndex: 0,
+        modelSelection: { instanceId: provider.instanceId, model },
+      } as const;
+    }
+    const unavailable = yield* unavailableAgents(goal);
+    const index = goal.agents.findIndex((_, candidate) => !unavailable.has(candidate));
+    const agent = goal.agents[index === -1 ? 0 : index];
+    return agent
+      ? ({ agentIndex: Math.max(index, 0), modelSelection: agent.modelSelection } as const)
+      : undefined;
+  });
+
+  /** What the overseer is shown: the goal, why it is stuck, the queue, and how the problem chats ended. */
+  const overseerBriefing = Effect.fn("GoalService.overseerBriefing")(function* (
+    goal: Goal,
+    reason: string,
+  ) {
+    const root = goal.useBeads ? yield* workspaceRootOf(goal.projectId) : undefined;
+    const detail = root
+      ? yield* beads.describe(root, goal.beadsScope)
+      : { blocked: [], claimed: [] };
+    const list = (items: ReadonlyArray<{ id: string; title: string; note: string }>) =>
+      items.length === 0
+        ? ["  (none)"]
+        : items.slice(0, 25).map((item) => `  - ${item.id}: ${item.title} (${item.note})`);
+    const problems = chatsSinceStart(goal)
+      .filter(
+        (chat) =>
+          chat.status === "failed" || chat.status === "attention" || chat.blockedWork === true,
+      )
+      .slice(-6);
+    const ended: Array<string> = [];
+    for (const chat of problems) {
+      const reply = lastAssistantReply(yield* readThread(chat.threadId))?.trim() ?? "";
+      ended.push(
+        `  - ${chat.beadId ? `${chat.beadId} ` : ""}${chat.status}${chat.blockedWork ? " (found only blocked work)" : ""}: ${reply ? reply.slice(-1200) : "no reply"}`,
+      );
+    }
+    return [
+      "You are the overseer of an unattended goal. Agents work on it in separate chats; it is now stuck and nobody is available to answer questions. Decide how it goes on. You may not have access to the repository, so use only this briefing.",
+      "",
+      `Goal instructions:\n${goalInstructions(goal)}`,
+      "",
+      `Why it is stuck: ${reason}`,
+      ...(goal.useBeads
+        ? [
+            "",
+            `Beads queue: ${goal.queue?.ready ?? 0} ready, ${goal.queue?.working ?? 0} claimed, ${goal.queue?.blocked ?? 0} blocked, ${goal.queue?.done ?? 0} done.`,
+            "Blocked chunks:",
+            ...list(detail.blocked),
+            "Claimed chunks:",
+            ...list(detail.claimed),
+          ]
+        : []),
+      "",
+      "How the latest problem chats ended (their last message):",
+      ...(ended.length > 0 ? ended : ["  (none)"]),
+      ...(goal.guidance ? ["", `Your earlier note to the workers: ${goal.guidance}`] : []),
+      "",
+      "Reply with these lines, and nothing that must be run:",
+      "OVERSEER: CONTINUE   (the goal can make progress: new workers should start) or",
+      "OVERSEER: STOP   (it cannot go on without a person; say what the person must do)",
+      "RELEASE: id, id   (optional: claimed chunks whose agent is gone, to hand back to the queue)",
+      "GUIDANCE:   (optional, last: a short note every new worker will read, for example what went wrong and how to avoid it)",
+    ].join("\n");
+  });
+
+  /** Ask an overseer to get a stuck goal moving. Returns whether one was started. */
+  const startOverseer = Effect.fn("GoalService.startOverseer")(function* (
+    goal: Goal,
+    reason: string,
+  ) {
+    const agent = yield* overseerAgent(goal);
+    if (!agent) return false;
+    const text = yield* overseerBriefing(goal, reason);
+    const started = yield* openChat(goal, {
+      title: GOAL_OVERSEER_TITLE,
+      text,
+      overseer: true,
+      ...agent,
+    });
+    if (started) {
+      stuckReasons.set(goal.id, reason);
+      yield* store.update(goal.id, (current) => ({
+        ...current,
+        overseerRuns: (current.overseerRuns ?? 0) + 1,
+        detail: undefined,
+      }));
+    }
+    return started;
+  });
+
+  /**
+   * The goal cannot go on by itself: ask the overseer first (a limited number of
+   * times per start), and give up with `reason` only when that is not possible.
+   */
+  const escalate = Effect.fn("GoalService.escalate")(function* (goalId: GoalId, reason: string) {
+    const goal = yield* currentGoal(goalId);
+    if (!goal || goal.status !== "running") return;
+    const asked = goal.overseerRuns ?? 0;
+    if (goal.overseer !== false && asked < MAX_GOAL_OVERSEER_RUNS) {
+      if (yield* startOverseer(goal, reason)) return;
+    }
+    yield* setStatus(goalId, "failed", reason);
+  });
+
+  /** The overseer's answer: carry on with its note and released chunks, or stop for the person. */
+  const finishOverseer = Effect.fn("GoalService.finishOverseer")(function* (
+    goal: Goal,
+    thread: OrchestrationThread | undefined,
+    threadId: ThreadId,
+  ) {
+    const failed = thread?.latestTurn?.state !== "completed";
+    yield* updateChat(goal.id, threadId, {
+      status: failed ? "failed" : "completed",
+      completedAt: yield* nowIso,
+      waitingForLimit: undefined,
+    });
+    if (goal.status !== "running") return;
+    const reason = stuckReasons.get(goal.id) ?? "The goal got stuck.";
+    stuckReasons.delete(goal.id);
+    const reply = lastAssistantReply(thread);
+    const decision = parseOverseerReply(failed ? undefined : reply);
+    if (decision.verdict !== "continue") {
+      const said = failed
+        ? "The overseer could not answer."
+        : decision.verdict === "stop"
+          ? `The overseer advised stopping: ${(reply ?? "")
+              .replace(/^\s*OVERSEER:.*$/gimu, "")
+              .trim()
+              .slice(0, 600)}`
+          : "The overseer gave no clear answer.";
+      yield* setStatus(goal.id, "failed", `${reason} ${said}`.slice(0, 1500));
+      return;
+    }
+    const root = yield* workspaceRootOf(goal.projectId);
+    if (root) {
+      for (const id of decision.release.slice(0, 20)) yield* beads.release(root, id);
+    }
+    beadsCache.delete(goal.id);
+    const now = yield* nowIso;
+    // A fresh budget and streak: what went wrong has been looked at.
+    yield* store.update(goal.id, (current) => ({
+      ...current,
+      guidance: decision.guidance ?? current.guidance,
+      holdStarts: undefined,
+      reviewedChats: current.chats.length,
+      updatedAt: now,
+    }));
+    yield* fillLanes(goal.id);
+  });
+
   /**
    * Start chats until the lanes are full, the cap is reached, or a start fails;
    * at most one per START_SPACING. With Beads, only as many as there are ready
@@ -594,6 +800,8 @@ export const make = Effect.gen(function* () {
   const fillLanes = Effect.fn("GoalService.fillLanes")(function* (goalId: GoalId) {
     const first = yield* currentGoal(goalId);
     if (!first || first.status !== "running") return;
+    // The overseer is deciding how to go on: start nothing until it answers.
+    if (first.chats.some((chat) => chat.overseer && chat.status === "running")) return;
     let candidates: Array<Bead> | undefined;
     if (first.useBeads) {
       const queue = yield* queueOf(first, false);
@@ -649,9 +857,8 @@ export const make = Effect.gen(function* () {
         const holding = chats.filter((chat) => chat.status === "attention").length;
         // Chunks claimed by someone else may still finish and unblock more.
         if (queue.working > holding) return;
-        yield* setStatus(
+        yield* escalate(
           goalId,
-          "failed",
           holding > 0
             ? `Waiting on you: ${holding} agent${holding === 1 ? "" : "s"} need${holding === 1 ? "s" : ""} attention, and the other ${queue.blocked} unfinished chunks are blocked behind ${holding === 1 ? "it" : "them"}.`
             : `Stalled: ${queue.blocked} unfinished chunks are blocked and none is ready or being worked on. Check their dependencies.`,
@@ -667,14 +874,19 @@ export const make = Effect.gen(function* () {
     const blocked = chats.filter(
       (chat) => chat.status === "failed" || chat.status === "attention",
     ).length;
+    if (goal.holdStarts || blocked >= goal.concurrency) {
+      yield* escalate(
+        goalId,
+        goal.holdStarts
+          ? "Stalled: the remaining tasks are blocked and no agent is working to unblock them."
+          : "Every chat failed or needs you, so the goal stopped. Open them to see why.",
+      );
+      return;
+    }
     yield* setStatus(
       goalId,
       "failed",
-      goal.holdStarts
-        ? "Stalled: the remaining tasks are blocked and no agent is working to unblock them."
-        : blocked >= goal.concurrency
-          ? "Every chat failed or needs you, so the goal stopped. Open them to see why."
-          : `Reached the limit of ${goal.maxChats} chats without a GOAL COMPLETE.`,
+      `Reached the limit of ${goal.maxChats} chats without a GOAL COMPLETE.`,
     );
   });
 
@@ -689,6 +901,10 @@ export const make = Effect.gen(function* () {
     const before = yield* currentGoal(goalId);
     const chat = before?.chats.find((candidate) => candidate.threadId === threadId);
     if (!before || !chat) return;
+    if (chat.overseer) {
+      yield* finishOverseer(before, thread, threadId);
+      return;
+    }
     const root = chat.beadId ? yield* workspaceRootOf(before.projectId) : undefined;
     const interrupted = thread?.latestTurn?.state === "interrupted";
     const failed = knownLimit !== undefined || thread?.latestTurn?.state !== "completed";
@@ -737,17 +953,6 @@ export const make = Effect.gen(function* () {
         })
         .pipe(Effect.ignoreCause({ log: true }));
     }
-    // Only successful work tidies itself out of the thread list (the Goals page still links it).
-    // A chat with a problem or a question stays visible until the person has seen it.
-    if (status === "completed") {
-      yield* engine
-        .dispatch({
-          type: "thread.archive",
-          commandId: CommandId.make(`goal-archive:${yield* randomUUID}`),
-          threadId,
-        })
-        .pipe(Effect.ignoreCause({ log: true }));
-    }
     if (before.status !== "running") return;
     // Real progress frees blocked work to start again; a blocked chat means wait for the others.
     if (status === "completed" && !blockedWork && before.holdStarts) {
@@ -767,9 +972,8 @@ export const make = Effect.gen(function* () {
     const after = yield* currentGoal(goalId);
     const limit = before.stopAfterProblems ?? DEFAULT_GOAL_STOP_AFTER_PROBLEMS;
     if (after && problemStreak(chatsSinceStart(after)) >= limit) {
-      yield* setStatus(
+      yield* escalate(
         goalId,
-        "failed",
         `Stopped to protect your usage: the last ${limit} agents in a row could not finish (failed, needed you, or found only blocked work). Agents already working are left to finish.`,
       );
       return;
@@ -1006,6 +1210,8 @@ export const make = Effect.gen(function* () {
           holdStarts: undefined,
           pauses: undefined,
           waitingUntil: undefined,
+          overseerRuns: undefined,
+          reviewedChats: current.chats.length,
         }));
         yield* fillLanes(id);
       }),

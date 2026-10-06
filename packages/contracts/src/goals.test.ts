@@ -7,6 +7,7 @@ import {
   replyReportsBlockedWork,
   goalSettingsProblem,
   goalTitle,
+  parseOverseerReply,
   replyNeedsAttention,
   replyReportsGoalComplete,
 } from "./goals.ts";
@@ -128,5 +129,38 @@ describe("problemStreak", () => {
     expect(problemStreak([chat("failed", 1), chat("stopped", 2), chat("failed", 3)])).toBe(2);
     expect(problemStreak([chat("completed", 1), chat("stopped", 2), chat("failed", 3)])).toBe(1);
     expect(problemStreak([chat("stopped", 1), chat("stopped", 2)])).toBe(0);
+  });
+});
+
+describe("overseer reply", () => {
+  it("reads the verdict, released chunks and the note after GUIDANCE", () => {
+    expect(
+      parseOverseerReply(
+        "Looked at it.\nOVERSEER: continue\nRELEASE: bd-1, bd-2\nGUIDANCE: Install first.\nThen test.",
+      ),
+    ).toEqual({
+      verdict: "continue",
+      release: ["bd-1", "bd-2"],
+      guidance: "Install first.\nThen test.",
+    });
+  });
+
+  it("treats a reply with no verdict as no answer", () => {
+    expect(parseOverseerReply("I think maybe continue?")).toEqual({
+      verdict: undefined,
+      release: [],
+      guidance: undefined,
+    });
+    expect(parseOverseerReply("OVERSEER: STOP").verdict).toBe("stop");
+  });
+
+  it("puts the overseer's note into worker prompts", () => {
+    const prompt = goalPrompt({
+      name: "x",
+      concurrency: 1,
+      standardRules: false,
+      guidance: "Run install first.",
+    });
+    expect(prompt).toContain("Run install first.");
   });
 });

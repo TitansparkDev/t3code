@@ -454,6 +454,15 @@ export function GoalSetupPage({
                   </label>
                 ) : null}
                 <label className="flex items-center gap-2">
+                  <Switch
+                    checked={current.overseer}
+                    onCheckedChange={(overseer) => patch({ overseer })}
+                  />
+                  <span className="text-xs">
+                    When the goal gets stuck, ask an overseer agent what to do before stopping
+                  </span>
+                </label>
+                <label className="flex items-center gap-2">
                   <Input
                     className="w-16"
                     inputMode="numeric"

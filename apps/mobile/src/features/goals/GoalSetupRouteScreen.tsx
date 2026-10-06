@@ -435,6 +435,11 @@ export function GoalForm(props: {
                 />
               </Field>
             ) : null}
+            <SwitchRow
+              label="When the goal gets stuck, ask an overseer agent what to do before stopping"
+              onChange={(overseer) => patch({ overseer })}
+              value={current.overseer}
+            />
             <Field label="Stop the goal after this many agents in a row cannot finish">
               <NumberInput
                 accessibilityLabel="Stop after agents that cannot finish"

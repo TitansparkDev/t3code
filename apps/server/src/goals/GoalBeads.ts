@@ -22,6 +22,14 @@ export interface Bead {
   readonly title: string;
 }
 
+/** An unfinished chunk and what holds it up or who holds it, for an overseer to read. */
+export interface BeadDetail {
+  readonly id: string;
+  readonly title: string;
+  /** Chunks it waits on (blocked) or who has claimed it (claimed). */
+  readonly note: string;
+}
+
 export interface BeadsSnapshot {
   /** Chunks nobody has claimed whose blockers are all finished, best first. */
   readonly ready: ReadonlyArray<Bead>;
@@ -41,6 +49,14 @@ export class GoalBeads extends Context.Service<
       workspaceRoot: string,
       scope: string | undefined,
     ) => Effect.Effect<BeadsSnapshot, GoalBeadsError>;
+    /** Blocked chunks (with what blocks them) and claimed chunks (with who), for the overseer. */
+    readonly describe: (
+      workspaceRoot: string,
+      scope: string | undefined,
+    ) => Effect.Effect<{
+      readonly blocked: ReadonlyArray<BeadDetail>;
+      readonly claimed: ReadonlyArray<BeadDetail>;
+    }>;
     /** The chunk's status, or undefined when it cannot be read. */
     readonly statusOf: (workspaceRoot: string, beadId: string) => Effect.Effect<string | undefined>;
     /** Give a claimed chunk back so another agent can take it. */
@@ -53,6 +69,8 @@ interface Row {
   readonly title?: unknown;
   readonly status?: unknown;
   readonly issue_type?: unknown;
+  readonly assignee?: unknown;
+  readonly blocked_by?: unknown;
 }
 
 const rows = (json: string): ReadonlyArray<Row> => {
@@ -81,6 +99,36 @@ export function summarizeBeads(allJson: string, readyJson: string): BeadsSnapsho
   const done = chunks.filter((row) => row.status === "closed").length;
   const unfinished = chunks.length - done;
   return { ready, working, done, blocked: Math.max(0, unfinished - working - ready.length) };
+}
+
+const detail = (row: Row, note: string): BeadDetail | undefined =>
+  typeof row.id === "string" && typeof row.title === "string"
+    ? { id: row.id, title: row.title, note }
+    : undefined;
+
+/** Blocked and claimed chunks from `bd blocked` and `bd list --status in_progress`. */
+export function describeBeads(blockedJson: string, claimedJson: string) {
+  const keep = (row: Row) => row.issue_type !== "epic";
+  return {
+    blocked: rows(blockedJson)
+      .filter(keep)
+      .flatMap(
+        (row) =>
+          detail(
+            row,
+            Array.isArray(row.blocked_by) ? `waits on ${row.blocked_by.join(", ")}` : "blocked",
+          ) ?? [],
+      ),
+    claimed: rows(claimedJson)
+      .filter(keep)
+      .flatMap(
+        (row) =>
+          detail(
+            row,
+            typeof row.assignee === "string" ? `claimed by ${row.assignee}` : "claimed",
+          ) ?? [],
+      ),
+  };
 }
 
 const BD_TIMEOUT = "20 seconds";
@@ -114,6 +162,16 @@ export const layer = Layer.effect(
           ),
         );
       },
+      describe: (workspaceRoot, scope) => {
+        const parent = scope?.trim() ? ["--parent", scope.trim()] : [];
+        return Effect.all([
+          bd(workspaceRoot, ["blocked", "--json", ...parent]),
+          bd(workspaceRoot, ["list", "--json", "-n", "0", "--status", "in_progress", ...parent]),
+        ]).pipe(
+          Effect.map(([blocked, claimed]) => describeBeads(blocked, claimed)),
+          Effect.orElseSucceed(() => ({ blocked: [], claimed: [] })),
+        );
+      },
       statusOf: (workspaceRoot, beadId) =>
         bd(workspaceRoot, ["show", beadId, "--json"]).pipe(
           Effect.map((json) => {
@@ -139,6 +197,7 @@ export const layerNone = Layer.succeed(
   GoalBeads.of({
     available: () => Effect.succeed(false),
     snapshot: () => Effect.fail(new GoalBeadsError({ message: "Beads is not available." })),
+    describe: () => Effect.succeed({ blocked: [], claimed: [] }),
     statusOf: () => Effect.succeed(undefined),
     release: () => Effect.void,
   }),
