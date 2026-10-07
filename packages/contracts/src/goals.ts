@@ -23,10 +23,7 @@ export type GoalId = typeof GoalId.Type;
 
 /** What an agent replies, on its own line, when a goal has no work left. */
 export const GOAL_COMPLETE_MARKER = "GOAL COMPLETE";
-/**
- * What an agent replies, on its own line, when unfinished work remains but all
- * of it waits on tasks that are not done yet, so another agent would only wait too.
- */
+/** What an agent replies at the start of a line when no plan chunk is ready. */
 export const GOAL_BLOCKED_MARKER = "BLOCKED TASKS";
 /** What an agent replies, on its own line, when it is stuck or needs the person. */
 export const GOAL_NEEDS_ATTENTION_MARKER = "NEEDS ATTENTION";
@@ -78,7 +75,7 @@ export const GoalChat = Schema.Struct({
   completedAt: Schema.optional(IsoDateTime),
   /** Set while the chat waits for a provider usage limit to reset. */
   waitingForLimit: Schema.optional(Schema.Boolean),
-  /** The Beads chunk this chat was handed, when the goal schedules from Beads. */
+  /** Historical Beads fields retained when reading older Goal records. */
   beadId: Schema.optional(Schema.String),
   beadTitle: Schema.optional(Schema.String),
   /** The agent found only blocked work, so it did nothing and no replacement should start yet. */
@@ -121,14 +118,11 @@ export const GoalSettings = Schema.Struct({
   runtimeMode: RuntimeMode,
   /** Resume chats that stop on a usage limit when it resets, so the work gets finished. */
   autoResume: Schema.Boolean,
-  /** Add the working rules: claim a chunk, own worktree, merge, push, clean up. */
+  /** Add the standard coding workflow and safety rules to worker prompts. */
   standardRules: Schema.Boolean,
-  /**
-   * Take work from the project's Beads queue: start an agent only when a chunk is
-   * ready, and hand it that chunk. Falls back to plain agents when the project has no Beads.
-   */
+  /** Historical field retained when reading older Goal records; new Goals use PLAN.md. */
   useBeads: Schema.optional(Schema.Boolean),
-  /** Only chunks under this Beads epic or plan id. Empty means the whole queue. */
+  /** Historical Beads filter retained when reading older Goal records. */
   beadsScope: Schema.optional(Schema.String),
   /** Stop starting agents after this many in a row fail to finish. Missing means the default. */
   stopAfterProblems: Schema.optional(PositiveCount(MAX_GOAL_STOP_AFTER_PROBLEMS)),
@@ -140,7 +134,7 @@ export const GoalSettings = Schema.Struct({
 });
 export type GoalSettings = typeof GoalSettings.Type;
 
-/** What the Beads queue looked like at the last check. */
+/** Historical Beads queue snapshot retained when reading older Goal records. */
 export const GoalQueue = Schema.Struct({
   ready: Schema.Number,
   /** Claimed and being worked on. */
@@ -204,7 +198,10 @@ export function replyNeedsAttention(reply: string | undefined): boolean {
   return reply !== undefined && GOAL_NEEDS_ATTENTION_LINE.test(reply);
 }
 
-const GOAL_BLOCKED_LINE = new RegExp(`^\\s*${GOAL_BLOCKED_MARKER}\\s*$`, "mu");
+const GOAL_BLOCKED_LINE = new RegExp(
+  `^[ \\t]*${GOAL_BLOCKED_MARKER}(?:[ \\t]*[-–—:][^\\r\\n]*)?[ \\t]*$`,
+  "mu",
+);
 
 /** Whether an agent's reply says the remaining work is all waiting on unfinished tasks. */
 export function replyReportsBlockedWork(reply: string | undefined): boolean {
@@ -240,9 +237,10 @@ export function problemStreak(chats: ReadonlyArray<GoalChat>): number {
  */
 export const GOAL_NUDGE_PROMPT = [
   "You said you are stuck or blocked. Before giving up: are you able to figure this out on your own and complete the chunk?",
-  "You are allowed to go beyond the bounds and restrictions of the chunk to get it done: fix a broken build or test even if it is not yours, resolve a merge conflict, unblock or re-claim a stale dependency or claim, install what is missing, or make the small decision yourself and say what you chose. You have full authority to do what the work needs.",
+  "You may fix a broken build or test, resolve your own merge conflict, install what is missing, or make a small reversible decision and say what you chose. Keep your work inside your selected plan chunk unless a needed fix is clearly related and safe.",
+  "Preserve partial work. Never take over, overwrite, clean, or merge another worker's branch or worktree while its process or session is alive. Resume abandoned work only after confirming that the exact prior worker is no longer running.",
   "Stay safe: do not delete data you did not create, force-push over other people's work, disable security or safety checks, or spend money.",
-  `If it truly needs a person (a login, a secret, a decision that cannot be undone), reply ${GOAL_NEEDS_ATTENTION_MARKER} again on a line by itself and say exactly what is needed. If everything left waits on unfinished tasks you cannot unblock, reply ${GOAL_BLOCKED_MARKER}. Otherwise finish the work and end as usual.`,
+  `If it truly needs a person (a login, a secret, a decision that cannot be undone), reply ${GOAL_NEEDS_ATTENTION_MARKER} again on a line by itself and say exactly what is needed. If no plan chunk is ready, reply ${GOAL_BLOCKED_MARKER} and briefly explain what blocks it. Otherwise finish the work and end as usual.`,
 ].join("\n");
 
 /** A worker chat's plain title: "Goal worker #3". */
@@ -314,30 +312,24 @@ export function goalInstructions(goal: Pick<Goal, "name" | "prompt">): string {
  * The prompt every goal chat receives. Chats run unattended, so they are told
  * to work alone and which line to end on when the work cannot go on. The
  * working rules are optional because not every goal is code in a shared
- * repository. When the goal schedules from Beads, the chat is handed one chunk.
+ * repository. Coding workers select work from the active plan with plan-work.
  */
 export function goalPrompt(
   goal: Pick<Goal, "name" | "prompt" | "concurrency" | "standardRules"> &
     Partial<Pick<Goal, "guidance">>,
-  bead?: { readonly id: string; readonly title: string },
 ): string {
   return [
     goalInstructions(goal),
     "",
     "--- Goal rules (added automatically) ---",
     `You are one of up to ${goal.concurrency} agents working on this goal at the same time, each in its own chat. Nobody is available to answer questions: use your best judgment, choose the safest reasonable option, and say what you chose.`,
-    ...(bead
+    ...(goal.standardRules
       ? [
-          `Your chunk is ${bead.id}: ${bead.title}. Do this chunk only. Claim it first with \`agent-work resume ${bead.id}\` (or \`bd update ${bead.id} --claim\` if agent-work is not available); if it cannot be claimed, stop and reply ${GOAL_BLOCKED_MARKER} on a line by itself.`,
-          "Work in the worktree your claim creates, build and test your work, then finish it the project's usual way (for example `agent-work finish`, or merge and `bd close`). Close the chunk only when it is merged.",
+          "Read the active PLAN.md (or the plan named by AGENTS.md) and select exactly one eligible chunk with `plan-work select --plan PLAN.md`. Keep its OWNER_TOKEN and work only in the stable branch and worktree it reports. If no chunk is eligible, do not choose one manually; report BLOCKED TASKS with the reason.",
+          "Preserve useful partial work and checkpoints. Before resuming an existing branch, confirm the exact previous worker process and session are no longer alive. Never overwrite or clean another worker's worktree.",
+          "Run the chunk's stated checks. Land it with `plan-work land --owner-token TOKEN`; this serializes the merge and records completion only after the code lands. Do not mark a chunk complete or merge it by hand.",
         ]
-      : goal.standardRules
-        ? [
-            "Find where the work is tracked (for example a plan file in the repository root) and claim one unfinished chunk by marking it with your branch name and committing and pushing that mark, so other agents skip it. If a chunk is already claimed, take another.",
-            "Work in your own git worktree on a new branch, never in the shared checkout. Do high-quality work and build and test it before you finish.",
-            "When it is verified, rebase on the latest default branch, merge into it, push, then remove your worktree and delete your branch. Leave nothing half-merged.",
-          ]
-        : []),
+      : []),
     ...(goal.guidance?.trim()
       ? ["--- Note from the goal's overseer ---", goal.guidance.trim()]
       : []),
@@ -345,7 +337,7 @@ export function goalPrompt(
     "Do not spend time exploring: if you cannot quickly find unfinished work you can start, do not build, test, or read the whole repository to look harder. End right away with the matching line below.",
     "End your last message with exactly one of these on a line by itself, when it applies:",
     `${GOAL_COMPLETE_MARKER} — there is no unfinished work left at all.`,
-    `${GOAL_BLOCKED_MARKER} — unfinished work remains, but every piece waits on tasks that are not done yet or is already taken by another agent.`,
+    `${GOAL_BLOCKED_MARKER} — unfinished work remains, but no plan chunk is currently eligible; briefly state why.`,
     `${GOAL_NEEDS_ATTENTION_MARKER} — you hit a problem you cannot fix (for example it cannot be merged even after one rebase), or something only a person can do (a login, a decision, a missing secret). Explain it; that chat is kept open for the person to read.`,
   ].join("\n");
 }

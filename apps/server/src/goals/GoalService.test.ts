@@ -23,7 +23,7 @@ import * as ServerConfig from "../config.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
-import { type BeadsSnapshot, GoalBeads, GoalBeadsError, summarizeBeads } from "./GoalBeads.ts";
+import { GoalBeads, GoalBeadsError, summarizeBeads } from "./GoalBeads.ts";
 import * as GoalService from "./GoalService.ts";
 import * as GoalStore from "./GoalStore.ts";
 
@@ -76,10 +76,7 @@ const makeHarnessWith = (spacing: number) =>
     let eventCount = 0;
     const threadState = yield* Ref.make({ reply: "Done.", turnState: "completed" });
     const hasResume = yield* Ref.make(false);
-    /** What the fake Beads answers; undefined means the project has no Beads. */
-    const queue = yield* Ref.make<BeadsSnapshot | undefined>(undefined);
-    const chunkStatus = yield* Ref.make("closed");
-    const released: string[] = [];
+    const beadAccesses: string[] = [];
     /** What the provider registry reports; every test provider starts out healthy. */
     const providers = yield* Ref.make<ReadonlyArray<ServerProvider>>([
       providerSnapshot("codex"),
@@ -100,19 +97,28 @@ const makeHarnessWith = (spacing: number) =>
         Layer.succeed(
           GoalBeads,
           GoalBeads.of({
-            available: () => Ref.get(queue).pipe(Effect.map((value) => value !== undefined)),
+            available: () =>
+              Effect.sync(() => {
+                beadAccesses.push("available");
+                return false;
+              }),
             snapshot: () =>
-              Ref.get(queue).pipe(
-                Effect.flatMap((value) =>
-                  value
-                    ? Effect.succeed(value)
-                    : Effect.fail(new GoalBeadsError({ message: "no beads" })),
-                ),
-              ),
+              Effect.suspend(() => {
+                beadAccesses.push("snapshot");
+                return Effect.fail(new GoalBeadsError({ message: "historical only" }));
+              }),
             repoContext: () => Effect.succeed("### PLAN.md\nShip the widget."),
-            describe: () => Effect.succeed({ blocked: [], claimed: [] }),
-            statusOf: () => Ref.get(chunkStatus),
-            release: (_root, id) => Effect.sync(() => void released.push(id)),
+            describe: () =>
+              Effect.sync(() => {
+                beadAccesses.push("describe");
+                return { blocked: [], claimed: [] };
+              }),
+            statusOf: () =>
+              Effect.sync(() => {
+                beadAccesses.push("status");
+                return "closed";
+              }),
+            release: () => Effect.sync(() => void beadAccesses.push("release")),
           }),
         ),
       ),
@@ -202,7 +208,7 @@ const makeHarnessWith = (spacing: number) =>
           (command) =>
             command.type === "thread.turn.start" &&
             command.threadId === threadId &&
-            command.message.text.includes("full authority"),
+            command.message.text.includes("You said you are stuck or blocked"),
         )
       ) {
         log.push(yield* Queue.take(commands));
@@ -216,9 +222,7 @@ const makeHarnessWith = (spacing: number) =>
       waitFor,
       drain,
       log,
-      queue,
-      chunkStatus,
-      released,
+      beadAccesses,
       providers,
       threadState,
       hasResume,
@@ -228,13 +232,6 @@ const makeHarnessWith = (spacing: number) =>
   });
 
 const makeHarness = makeHarnessWith(0);
-
-const beadQueue = (ready: string[], working = 0, blocked = 0, done = 0): BeadsSnapshot => ({
-  ready: ready.map((id) => ({ id, title: `Chunk ${id}` })),
-  working,
-  blocked,
-  done,
-});
 
 const textOf = (command: OrchestrationCommand | undefined) =>
   command?.type === "thread.turn.start" ? command.message.text : "";
@@ -264,7 +261,7 @@ it.layer(NodeServices.layer)("GoalService", (it) => {
         expect(goal?.chats.map((chat) => chat.agentIndex)).toEqual([0, 1, 0]);
         const text = turns[0]?.type === "thread.turn.start" ? turns[0].message.text : "";
         expect(text).toContain("Finish PLAN.md");
-        expect(text).toContain("own git worktree");
+        expect(text).toContain("plan-work select --plan PLAN.md");
       }).pipe(Effect.provide(harness.layer), Effect.scoped);
     }),
   );
@@ -770,7 +767,7 @@ it.layer(NodeServices.layer)("GoalService", (it) => {
         yield* harness.runAndFinish(threadIdOf(worker));
         const nudge = (yield* harness.waitFor("thread.turn.start", 2))[1];
         expect(nudge?.type === "thread.turn.start" ? nudge.threadId : "").toBe(threadIdOf(worker));
-        expect(textOf(nudge)).toContain("full authority");
+        expect(textOf(nudge)).toContain("Preserve partial work");
         expect((yield* service.list)[0]?.chats[0]?.status).toBe("running");
         // Stuck again: now it is a real problem and keeps its lane closed.
         yield* harness.runAndFinish(threadIdOf(worker));
@@ -832,123 +829,21 @@ it.layer(NodeServices.layer)("GoalService", (it) => {
     }),
   );
 
-  it.effect("starts one agent per ready chunk and hands each its chunk", () =>
+  it.effect("ignores historical Beads settings and gives workers the plan-work flow", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness;
       yield* Effect.gen(function* () {
         const service = yield* GoalService.GoalService;
-        yield* Ref.set(harness.queue, beadQueue(["bd-1", "bd-2"], 0, 3));
         const [goal] = yield* service.create(
-          settings({
-            useBeads: true,
-            concurrency: 5,
-            agents: [{ modelSelection: CODEX, count: 5 }],
-            maxChats: null,
-          }),
+          settings({ useBeads: true, concurrency: 1, maxChats: null }),
         );
-        const turns = yield* harness.waitFor("thread.turn.start", 2);
-        expect(textOf(turns[0])).toContain("bd-1");
-        expect(textOf(turns[1])).toContain("bd-2");
-        expect(goal?.queue).toMatchObject({ ready: 2, blocked: 3 });
-        yield* harness.drain;
-        // Five lanes were free, but only two chunks were ready.
-        expect(harness.log.filter((command) => command.type === "thread.create")).toHaveLength(2);
-      }).pipe(Effect.provide(harness.layer), Effect.scoped);
-    }),
-  );
-
-  it.effect("runs plain agents when the project has no Beads", () =>
-    Effect.gen(function* () {
-      const harness = yield* makeHarness;
-      yield* Effect.gen(function* () {
-        const service = yield* GoalService.GoalService;
-        const [goal] = yield* service.create(settings({ useBeads: true, concurrency: 2 }));
         expect(goal?.useBeads).toBe(false);
-        yield* harness.waitFor("thread.create", 2);
-      }).pipe(Effect.provide(harness.layer), Effect.scoped);
-    }),
-  );
-
-  it.effect("completes a Beads goal when nothing unfinished is left", () =>
-    Effect.gen(function* () {
-      const harness = yield* makeHarness;
-      yield* Effect.gen(function* () {
-        const service = yield* GoalService.GoalService;
-        yield* Effect.forkScoped(service.loop);
-        yield* Effect.yieldNow;
-        yield* Ref.set(harness.queue, beadQueue(["bd-1"]));
-        yield* service.create(settings({ useBeads: true, concurrency: 1, maxChats: null }));
-        const [only] = yield* harness.waitFor("thread.create", 1);
-        yield* Ref.set(harness.queue, beadQueue([], 0, 0, 1));
-        yield* harness.runAndFinish(threadIdOf(only));
-        while ((yield* service.list)[0]?.status === "running") yield* Effect.yieldNow;
-        expect((yield* service.list)[0]?.status).toBe("complete");
-      }).pipe(Effect.provide(harness.layer), Effect.scoped);
-    }),
-  );
-
-  it.effect(
-    "keeps a chat open when its chunk was left unfinished, and stalls when nothing can run",
-    () =>
-      Effect.gen(function* () {
-        const harness = yield* makeHarness;
-        yield* Effect.gen(function* () {
-          const service = yield* GoalService.GoalService;
-          yield* Effect.forkScoped(service.loop);
-          yield* Effect.yieldNow;
-          yield* Ref.set(harness.queue, beadQueue(["bd-1"], 0, 2));
-          yield* Ref.set(harness.chunkStatus, "in_progress");
-          yield* service.create(settings({ useBeads: true, concurrency: 1, maxChats: null }));
-          const [only] = yield* harness.waitFor("thread.create", 1);
-          yield* Ref.set(harness.queue, beadQueue([], 1, 2));
-          yield* harness.runAndFinish(threadIdOf(only));
-          while ((yield* service.list)[0]?.chats[0]?.status === "running") yield* Effect.yieldNow;
-          const [goal] = yield* service.list;
-          expect(goal?.chats[0]?.status).toBe("attention");
-          // Its claim is still held and nothing else is ready: the goal says it needs the person.
-          while ((yield* service.list)[0]?.status === "running") yield* Effect.yieldNow;
-          expect((yield* service.list)[0]?.detail).toContain("Waiting on you");
-          expect(
-            (yield* harness.drain).filter((command) => command.type === "thread.archive"),
-          ).toEqual([]);
-        }).pipe(Effect.provide(harness.layer), Effect.scoped);
-      }),
-  );
-
-  it.effect("waits while other agents hold the chunks that block the rest", () =>
-    Effect.gen(function* () {
-      const harness = yield* makeHarness;
-      yield* Effect.gen(function* () {
-        const service = yield* GoalService.GoalService;
-        yield* Effect.forkScoped(service.loop);
-        yield* Effect.yieldNow;
-        yield* Ref.set(harness.queue, beadQueue(["bd-1"], 0, 2));
-        yield* service.create(settings({ useBeads: true, concurrency: 1, maxChats: null }));
-        const [only] = yield* harness.waitFor("thread.create", 1);
-        yield* Ref.set(harness.queue, beadQueue([], 1, 2, 1));
-        yield* harness.runAndFinish(threadIdOf(only));
-        while ((yield* service.list)[0]?.queue?.working !== 1) yield* Effect.yieldNow;
-        for (let turn = 0; turn < 20; turn++) yield* Effect.yieldNow;
-        expect((yield* service.list)[0]?.status).toBe("running");
-        expect(harness.log.filter((command) => command.type === "thread.create")).toHaveLength(1);
-      }).pipe(Effect.provide(harness.layer), Effect.scoped);
-    }),
-  );
-
-  it.effect("gives a failed chat's chunk back and keeps the chat open", () =>
-    Effect.gen(function* () {
-      const harness = yield* makeHarness;
-      yield* Effect.gen(function* () {
-        const service = yield* GoalService.GoalService;
-        yield* Effect.forkScoped(service.loop);
-        yield* Effect.yieldNow;
-        yield* Ref.set(harness.queue, beadQueue(["bd-1"]));
-        yield* Ref.set(harness.threadState, { reply: "", turnState: "failed" });
-        yield* service.create(settings({ useBeads: true, concurrency: 1, maxChats: null }));
-        const [only] = yield* harness.waitFor("thread.create", 1);
-        yield* harness.runAndFinish(threadIdOf(only));
-        while ((yield* service.list)[0]?.chats[0]?.status === "running") yield* Effect.yieldNow;
-        expect(harness.released).toEqual(["bd-1"]);
+        const [turn] = yield* harness.waitFor("thread.turn.start", 1);
+        expect(textOf(turn)).toContain("plan-work select --plan PLAN.md");
+        expect(textOf(turn)).toContain("plan-work land --owner-token TOKEN");
+        expect(textOf(turn)).not.toContain("bd ");
+        expect(textOf(turn)).not.toContain("agent-work");
+        expect(harness.beadAccesses).toEqual([]);
       }).pipe(Effect.provide(harness.layer), Effect.scoped);
     }),
   );
@@ -996,7 +891,8 @@ it.layer(NodeServices.layer)("GoalService", (it) => {
         yield* Effect.forkScoped(service.loop);
         yield* Effect.yieldNow;
         yield* Ref.set(harness.threadState, {
-          reply: "All waiting.\nBLOCKED TASKS",
+          reply:
+            "All waiting.\nBLOCKED TASKS — unfinished work remains, but every piece waits on work that is not done yet.",
           turnState: "completed",
         });
         yield* service.create(settings({ concurrency: 2, maxChats: null }));
@@ -1014,6 +910,35 @@ it.layer(NodeServices.layer)("GoalService", (it) => {
         yield* harness.runAndFinish(threadIdOf(second));
         yield* harness.waitFor("thread.create", 3);
         expect((yield* service.list)[0]?.holdStarts).toBeUndefined();
+      }).pipe(Effect.provide(harness.layer), Effect.scoped);
+    }),
+  );
+
+  it.effect("asks the Overseer to diagnose a real no-ready-work stall", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      yield* Ref.set(harness.threadState, {
+        reply:
+          "BLOCKED TASKS — unfinished work remains, but every piece waits on a prerequisite that is not done yet.",
+        turnState: "completed",
+      });
+      yield* Effect.gen(function* () {
+        const service = yield* GoalService.GoalService;
+        yield* Effect.forkScoped(service.loop);
+        yield* Effect.yieldNow;
+        yield* service.create(settings({ concurrency: 1, maxChats: null, overseer: true }));
+        const [worker] = yield* harness.waitFor("thread.create", 1);
+        yield* harness.finishStuck(threadIdOf(worker));
+        const creates = yield* harness.waitFor("thread.create", 2);
+        expect(creates).toHaveLength(2);
+        expect(creates[1]?.type === "thread.create" ? creates[1].title : "").toBe("Goal overseer");
+        const turns = yield* harness.waitFor("thread.turn.start", 3);
+        const briefing = textOf(turns[2]);
+        expect(briefing).toContain("Stalled: the remaining tasks are blocked");
+        expect(briefing).toContain("plan-work recovery");
+        expect(briefing).toContain("never take ownership away");
+        expect(briefing).not.toContain("RELEASE:");
+        expect(harness.log.filter((command) => command.type === "thread.create")).toHaveLength(2);
       }).pipe(Effect.provide(harness.layer), Effect.scoped);
     }),
   );

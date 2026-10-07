@@ -42,8 +42,9 @@ describe("goalPrompt", () => {
 
   it("adds the working rules only when asked", () => {
     const prompt = goalPrompt({ name: "Finish PLAN.md.", concurrency: 2, standardRules: true });
-    expect(prompt).toContain("own git worktree");
-    expect(prompt).toContain("claim one unfinished chunk");
+    expect(prompt).toContain("plan-work select --plan PLAN.md");
+    expect(prompt).toContain("stable branch and worktree");
+    expect(prompt).toContain("plan-work land --owner-token TOKEN");
   });
 });
 
@@ -86,17 +87,25 @@ describe("goal instructions", () => {
     expect(goalPrompt({ ...goal, prompt: "Work PLAN.md" }).startsWith("Work PLAN.md")).toBe(true);
   });
 
-  it("hands a Beads chunk to the agent", () => {
-    const prompt = goalPrompt(
-      { name: "Ship v2", concurrency: 2, standardRules: true },
-      { id: "bd-7", title: "Add login" },
-    );
-    expect(prompt).toContain("Your chunk is bd-7: Add login");
-    expect(prompt).not.toContain("claim one unfinished chunk");
+  it("gives coding workers the plan-work lifecycle", () => {
+    const prompt = goalPrompt({ name: "Ship v2", concurrency: 2, standardRules: true });
+    expect(prompt).toContain("plan-work select --plan PLAN.md");
+    expect(prompt).toContain("OWNER_TOKEN");
+    expect(prompt).toContain("plan-work land --owner-token TOKEN");
+    expect(prompt).not.toContain("bd ");
+    expect(prompt).not.toContain("agent-work");
   });
 
   it("recognises blocked work on its own line", () => {
     expect(replyReportsBlockedWork("Waiting.\nBLOCKED TASKS")).toBe(true);
+    expect(
+      replyReportsBlockedWork(
+        "All waiting.\nBLOCKED TASKS — unfinished work remains, but every piece waits on work that is not done yet.",
+      ),
+    ).toBe(true);
+    expect(replyReportsBlockedWork("BLOCKED TASKS: dependency FX4.5 is still incomplete")).toBe(
+      true,
+    );
     expect(replyReportsBlockedWork("some BLOCKED TASKS here")).toBe(false);
   });
 });

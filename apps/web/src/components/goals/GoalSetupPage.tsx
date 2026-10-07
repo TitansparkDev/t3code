@@ -433,28 +433,6 @@ export function GoalSetupPage({
                 </label>
                 <label className="flex items-center gap-2">
                   <Switch
-                    checked={current.useBeads}
-                    onCheckedChange={(useBeads) => patch({ useBeads })}
-                  />
-                  <span className="text-xs">
-                    Take work from Beads: start an agent only when a chunk is ready
-                  </span>
-                </label>
-                {current.useBeads ? (
-                  <label className="block space-y-1">
-                    <span className="text-xs text-muted-foreground">
-                      Only this Beads epic or plan (id, optional). Ignored if the project has no
-                      Beads.
-                    </span>
-                    <Input
-                      className="w-64"
-                      onChange={(event) => patch({ beadsScope: event.target.value })}
-                      value={current.beadsScope}
-                    />
-                  </label>
-                ) : null}
-                <label className="flex items-center gap-2">
-                  <Switch
                     checked={current.overseer}
                     onCheckedChange={(overseer) => patch({ overseer })}
                   />
