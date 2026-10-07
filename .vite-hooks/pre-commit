@@ -1,5 +1,13 @@
 #!/usr/bin/env sh
 set -e
-git ls-files > tree.txt
-git add tree.txt
+branch=$(git symbolic-ref --quiet --short HEAD || true)
+case "$branch" in
+  agent-plan/*)
+    # The landing hook refreshes shared generated output on the base branch.
+    ;;
+  *)
+    git ls-files > tree.txt
+    git add tree.txt
+    ;;
+esac
 vp staged
