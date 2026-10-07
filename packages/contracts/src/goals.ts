@@ -325,7 +325,7 @@ export function goalPrompt(
     `You are one of up to ${goal.concurrency} agents working on this goal at the same time, each in its own chat. Nobody is available to answer questions: use your best judgment, choose the safest reasonable option, and say what you chose.`,
     ...(goal.standardRules
       ? [
-          "Read the active PLAN.md (or the plan named by AGENTS.md) and select exactly one eligible chunk with `plan-work select --plan PLAN.md`. Keep its OWNER_TOKEN and work only in the stable branch and worktree it reports. If no chunk is eligible, do not choose one manually; report BLOCKED TASKS with the reason.",
+          "Use plan-work for repository work tracked by an active PLAN.md (or the plan named by AGENTS.md): select exactly one eligible chunk with `plan-work select --plan PLAN.md`, keep its OWNER_TOKEN, and work only in the stable branch and worktree it reports. If no chunk is eligible, do not choose one manually; report BLOCKED TASKS with the reason. If there is no active plan, follow the Goal and repository's normal non-Beads workflow; do not invent task ownership records.",
           "Preserve useful partial work and checkpoints. Before resuming an existing branch, confirm the exact previous worker process and session are no longer alive. Never overwrite or clean another worker's worktree.",
           "Run the chunk's stated checks. Land it with `plan-work land --owner-token TOKEN`; this serializes the merge and records completion only after the code lands. Do not mark a chunk complete or merge it by hand.",
         ]

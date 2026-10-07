@@ -92,6 +92,7 @@ describe("goal instructions", () => {
     expect(prompt).toContain("plan-work select --plan PLAN.md");
     expect(prompt).toContain("OWNER_TOKEN");
     expect(prompt).toContain("plan-work land --owner-token TOKEN");
+    expect(prompt).toContain("normal non-Beads workflow");
     expect(prompt).not.toContain("bd ");
     expect(prompt).not.toContain("agent-work");
   });
