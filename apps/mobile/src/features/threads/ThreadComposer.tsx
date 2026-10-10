@@ -441,7 +441,8 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     props.sendBlockedReason ??
     (pendingPastedTextAttachmentCount > 0 ? "Attaching pasted text" : null) ??
     attachmentBlockReason ??
-    providerCapabilitySendBlockReason?.reason;
+    providerCapabilitySendBlockReason?.reason ??
+    null;
   const canSend =
     hasContent &&
     !contextImports[composerOwnerKey] &&
