@@ -241,6 +241,7 @@ export function ComposerActionButton(props: {
       accessibilityState={{ disabled: props.disabled }}
       className="size-[44px] shrink-0 items-center justify-center active:opacity-70"
       disabled={props.disabled}
+      hitSlop={8}
       onPress={props.onPress}
     >
       <View

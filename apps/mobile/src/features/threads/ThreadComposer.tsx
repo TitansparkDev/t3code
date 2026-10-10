@@ -414,7 +414,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   );
   const isVoiceInputPresented = voicePresentation.statusLabel !== null;
   // An open draft stays visible; only a collapsed composer becomes a voice strip.
-  const isExpanded = isFocused || settingsSheetPresentation.keepsComposerExpanded;
+  const isExpanded = isFocused || settingsSheetPresentation.keepsComposerExpanded || hasContent;
   const showsCompactDictation = isVoiceInputPresented && !isExpanded;
   const isToolbarVisible = isExpanded || isVoiceInputPresented;
   const attachmentBlockReason = composerAttachmentUploadBlockReason({
@@ -971,6 +971,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                     bottom: 2,
                     left: 0,
                     right: 0,
+                    display: isToolbarVisible ? "flex" : "none",
                   }
             }
           >

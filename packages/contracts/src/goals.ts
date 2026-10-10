@@ -84,6 +84,10 @@ export const GoalChat = Schema.Struct({
   nudged: Schema.optional(Schema.Boolean),
   /** This chat is the overseer, not a worker: it decides how a stuck goal goes on. */
   overseer: Schema.optional(Schema.Boolean),
+  /** AgentQueue fields for worktree-aware task execution */
+  taskId: Schema.optional(Schema.String),
+  worktreePath: Schema.optional(Schema.String),
+  branch: Schema.optional(Schema.String),
 });
 export type GoalChat = typeof GoalChat.Type;
 
@@ -131,6 +135,11 @@ export const GoalSettings = Schema.Struct({
    * overseer agent what to do before giving up. Missing means on.
    */
   overseer: Schema.optional(Schema.Boolean),
+  /** AgentQueue integration */
+  useAgentQueue: Schema.optional(Schema.Boolean),
+  queueMode: Schema.optional(Schema.Literals(["standard", "agentqueue"])),
+  planId: Schema.optional(Schema.String),
+  runGeneration: Schema.optional(Schema.Number),
 });
 export type GoalSettings = typeof GoalSettings.Type;
 
@@ -316,20 +325,26 @@ export function goalInstructions(goal: Pick<Goal, "name" | "prompt">): string {
  */
 export function goalPrompt(
   goal: Pick<Goal, "name" | "prompt" | "concurrency" | "standardRules"> &
-    Partial<Pick<Goal, "guidance">>,
+    Partial<Pick<Goal, "guidance" | "useAgentQueue" | "planId">>,
 ): string {
   return [
     goalInstructions(goal),
     "",
     "--- Goal rules (added automatically) ---",
     `You are one of up to ${goal.concurrency} agents working on this goal at the same time, each in its own chat. Nobody is available to answer questions: use your best judgment, choose the safest reasonable option, and say what you chose.`,
-    ...(goal.standardRules
+    ...(goal.useAgentQueue
       ? [
-          "Use plan-work for repository work tracked by an active PLAN.md (or the plan named by AGENTS.md): select exactly one eligible chunk with `plan-work select --plan PLAN.md`, keep its OWNER_TOKEN, and work only in the stable branch and worktree it reports. If no chunk is eligible, do not choose one manually; report BLOCKED TASKS with the reason. If there is no active plan, follow the Goal and repository's normal non-Beads workflow; do not invent task ownership records.",
-          "Preserve useful partial work and checkpoints. Before resuming an existing branch, confirm the exact previous worker process and session are no longer alive. Never overwrite or clean another worker's worktree.",
-          "Run the chunk's stated checks. Land it with `plan-work land --owner-token TOKEN`; this serializes the merge and records completion only after the code lands. Do not mark a chunk complete or merge it by hand.",
+          "Use agentqueue for repository work tracked by AgentQueue: claim an eligible task with `agentqueue task claim --json`, work strictly in the isolated worktree and branch it specifies, renew your lease periodically with `agentqueue task heartbeat --token TOKEN`, and run the task's stated verification checks.",
+          "When checks pass, land the task via `agentqueue task release --token TOKEN --status completed` or the AgentQueue landing workflow. If blocked or unable to proceed, report with `agentqueue task block <id> --reason <reason>`.",
+          "Preserve partial work and do not overwrite or delete other workers' worktrees.",
         ]
-      : []),
+      : goal.standardRules
+        ? [
+            "Use plan-work for repository work tracked by an active PLAN.md (or the plan named by AGENTS.md): select exactly one eligible chunk with `plan-work select --plan PLAN.md`, keep its OWNER_TOKEN, and work only in the stable branch and worktree it reports. If no chunk is eligible, do not choose one manually; report BLOCKED TASKS with the reason. If there is no active plan, follow the Goal and repository's normal non-Beads workflow; do not invent task ownership records.",
+            "Preserve useful partial work and checkpoints. Before resuming an existing branch, confirm the exact previous worker process and session are no longer alive. Never overwrite or clean another worker's worktree.",
+            "Run the chunk's stated checks. Land it with `plan-work land --owner-token TOKEN`; this serializes the merge and records completion only after the code lands. Do not mark a chunk complete or merge it by hand.",
+          ]
+        : []),
     ...(goal.guidance?.trim()
       ? ["--- Note from the goal's overseer ---", goal.guidance.trim()]
       : []),

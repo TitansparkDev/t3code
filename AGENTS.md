@@ -173,6 +173,9 @@ Full glossary with file links: `docs/internals/glossary.md`
 
 ## Recent request log
 
+- 2026-10-10 — v0.0.63: native AgentQueue integration across T3 Code (`@t3tools/agent-queue-core`,
+  `@t3tools/agent-queue-cli`, goal orchestration lifecycle, multi-agent dependency coordination,
+  worktree dual-lock isolation, CAS claims, verification receipts, and cross-platform release).
 - 2026-10-06 — v0.0.62: goal agents that say NEEDS ATTENTION or BLOCKED TASKS are first asked once
   to try again with wider authority (then the overseer, then the person); a "+3 agents" button on
   the Goals page (web, mobile; RPC `server.addGoalAgents`); overseer, plain "Goal worker #N" chat

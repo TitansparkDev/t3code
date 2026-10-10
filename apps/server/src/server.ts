@@ -168,6 +168,7 @@ import * as QuotaService from "./quota/QuotaService.ts";
 import * as GoalService from "./goals/GoalService.ts";
 import * as GoalBeads from "./goals/GoalBeads.ts";
 import * as GoalStore from "./goals/GoalStore.ts";
+import { AgentQueueServiceLive } from "./queue/AgentQueueService.ts";
 import * as ScheduledTaskRunner from "./scheduledTasks/ScheduledTaskRunner.ts";
 import * as ScheduledTaskStore from "./scheduledTasks/ScheduledTaskStore.ts";
 import { OrchestrationLayerLive } from "./orchestration/runtimeLayer.ts";
@@ -249,6 +250,7 @@ const ScheduledTaskLayerLive = ScheduledTaskRunner.layer.pipe(
 const GoalLayerLive = GoalService.layer.pipe(
   Layer.provideMerge(GoalStore.layer),
   Layer.provideMerge(GoalBeads.layer),
+  Layer.provideMerge(AgentQueueServiceLive),
 );
 
 const ResourceDiagnosticsLayerLive = Layer.mergeAll(

@@ -1,3 +1,5 @@
+// @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off preferSchemaOverJson:off globalConsole:off
+import { AgentQueueService, resolveGitContext } from "../queue/AgentQueueService.ts";
 /**
  * Runs goals: keeps up to `concurrency` chats working at once, starts the next
  * as each finishes, and stops when an agent says nothing is left.
@@ -285,8 +287,22 @@ export const make = Effect.gen(function* () {
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
   /** Chats still working, and whether their turn has been seen running yet. */
   const watching = new Map<ThreadId, { goalId: GoalId; seenRunning: boolean }>();
+  const queueAssignments = new Map<
+    ThreadId,
+    {
+      readonly gitCommonDir: string;
+      readonly repoRoot: string;
+      readonly taskId: string;
+      readonly claimToken: string;
+      readonly worktreePath: string;
+      readonly branch: string;
+      readonly verificationCommand: string;
+      readonly baseBranch: string;
+    }
+  >();
   /** Serializes everything that changes a goal's chats, so lanes are never over-filled. */
   const lock = yield* Semaphore.make(1);
+  const queueServiceOpt = yield* Effect.serviceOption(AgentQueueService);
   const repositoryContext = yield* GoalBeads;
   const registry = yield* ProviderRegistry;
   const spacing = yield* StartSpacingMillis;
@@ -486,6 +502,9 @@ export const make = Effect.gen(function* () {
       readonly agentIndex: number;
       readonly modelSelection: Goal["agents"][number]["modelSelection"];
       readonly overseer?: boolean | undefined;
+      readonly worktreePath?: string | null | undefined;
+      readonly branch?: string | null | undefined;
+      readonly taskId?: string | undefined;
     },
   ) {
     const agent = goal.agents[chat.agentIndex];
@@ -503,8 +522,8 @@ export const make = Effect.gen(function* () {
         modelSelection,
         runtimeMode: goal.runtimeMode,
         interactionMode: "default",
-        branch: null,
-        worktreePath: null,
+        branch: chat.branch ?? null,
+        worktreePath: chat.worktreePath ?? null,
         createdAt,
       })
       .pipe(
@@ -516,7 +535,7 @@ export const make = Effect.gen(function* () {
     if (!created) {
       // Back off, so a broken project or provider is not retried on every tick.
       yield* backOff;
-      return false;
+      return null;
     }
     // Registered before the turn starts so a fast provider cannot finish unseen.
     watching.set(threadId, { goalId: goal.id, seenRunning: false });
@@ -526,6 +545,9 @@ export const make = Effect.gen(function* () {
       status: "running",
       startedAt: createdAt,
       ...(chat.overseer ? { overseer: true } : {}),
+      ...(chat.taskId ? { taskId: chat.taskId } : {}),
+      ...(chat.worktreePath ? { worktreePath: chat.worktreePath } : {}),
+      ...(chat.branch ? { branch: chat.branch } : {}),
     });
     // No title seed: the plain title is kept instead of being replaced by a generated one.
     const started = yield* engine
@@ -562,20 +584,110 @@ export const make = Effect.gen(function* () {
         })
         .pipe(Effect.ignoreCause({ log: true }));
     }
-    return started;
+    return started ? threadId : null;
   });
 
   /** Open a worker chat for the goal on `agentIndex`, titled "Goal worker #N". */
-  const startChat = (goal: Goal, agentIndex: number) => {
+  const startChat = Effect.fn("GoalService.startChat")(function* (goal: Goal, agentIndex: number) {
     const agent = goal.agents[agentIndex];
-    if (!agent) return Effect.succeed(false);
-    return openChat(goal, {
-      title: goalWorkerTitle(goal.chats.filter((chat) => !chat.overseer).length + 1),
-      text: goalPrompt(goal),
+    if (!agent) return false;
+
+    let worktreePath: string | null = null;
+    let branch: string | null = null;
+    let taskId: string | undefined = undefined;
+    let queueAssignment:
+      | {
+          readonly gitCommonDir: string;
+          readonly repoRoot: string;
+          readonly taskId: string;
+          readonly claimToken: string;
+          readonly worktreePath: string;
+          readonly branch: string;
+          readonly verificationCommand: string;
+          readonly baseBranch: string;
+        }
+      | undefined;
+    let promptText = goalPrompt(goal);
+    let chatTitle = goalWorkerTitle(goal.chats.filter((chat) => !chat.overseer).length + 1);
+
+    if ((goal.useAgentQueue || goal.queueMode === "agentqueue") && Option.isSome(queueServiceOpt)) {
+      const queueSvc = queueServiceOpt.value;
+      const workspaceRoot = (yield* workspaceRootOf(goal.projectId)) ?? "";
+      if (!workspaceRoot) return false;
+      const { gitCommonDir, baseBranch } = resolveGitContext(workspaceRoot);
+      const workerId = `goal-${goal.id}-agent-${agentIndex}-${yield* randomUUID}`;
+      const assignment = yield* queueSvc
+        .reserveNext(gitCommonDir, workspaceRoot, workerId, baseBranch, goal.planId)
+        .pipe(Effect.catchCause(() => Effect.succeed(null)));
+
+      if (!assignment) {
+        return false;
+      }
+
+      taskId = assignment.taskId;
+      worktreePath = assignment.worktreePath;
+      branch = assignment.branch;
+      queueAssignment = {
+        gitCommonDir,
+        repoRoot: workspaceRoot,
+        taskId: assignment.taskId,
+        claimToken: assignment.claimToken,
+        worktreePath: assignment.worktreePath,
+        branch: assignment.branch,
+        verificationCommand: assignment.verificationCommand ?? "",
+        baseBranch: assignment.baseBranch,
+      };
+      chatTitle = `Goal worker (${assignment.taskId}): ${assignment.title}`;
+      promptText = [
+        `You are an automated coding agent assigned to task **${assignment.taskId}**: "${assignment.title}".`,
+        `Your worktree is at: \`${assignment.worktreePath}\``,
+        `Your branch is: \`${assignment.branch}\``,
+        assignment.prompt ? `\nTask details:\n${assignment.prompt}` : "",
+        "",
+        "### Instructions:",
+        "1. Inspect the task requirements and implement the changes in your isolated worktree.",
+        "2. Test and verify your changes thoroughly using project test suites.",
+        "3. Commit your changes to your assigned branch with a clear commit message.",
+        assignment.verificationCommand
+          ? `4. Check that your changes pass: \`${assignment.verificationCommand}\``
+          : "4. Verify all tests pass before completing.",
+        "5. Report that the task is ready for server verification and merge. Do not mark the queue task complete yourself.",
+      ].join("\n");
+    }
+
+    const threadId = yield* openChat(goal, {
+      title: chatTitle,
+      text: promptText,
       agentIndex,
       modelSelection: agent.modelSelection,
+      worktreePath,
+      branch,
+      taskId,
     });
-  };
+    if (queueAssignment && threadId) queueAssignments.set(threadId, queueAssignment);
+    if (queueAssignment && !threadId) {
+      const queueSvc = Option.isSome(queueServiceOpt) ? queueServiceOpt.value : undefined;
+      if (queueSvc) {
+        yield* queueSvc
+          .release(
+            queueAssignment.gitCommonDir,
+            queueAssignment.claimToken,
+            "failed",
+            "Goal worker did not start",
+          )
+          .pipe(Effect.catchCause(() => Effect.void));
+        yield* queueSvc
+          .teardown(
+            queueAssignment.repoRoot,
+            queueAssignment.worktreePath,
+            queueAssignment.branch,
+            false,
+          )
+          .pipe(Effect.catchCause(() => Effect.void));
+      }
+    }
+    return threadId !== null;
+  });
 
   /**
    * Who should oversee: Chat Agents when that provider is ready (it is not tied to
@@ -791,6 +903,26 @@ export const make = Effect.gen(function* () {
   const fillLanes = Effect.fn("GoalService.fillLanes")(function* (goalId: GoalId) {
     const first = yield* currentGoal(goalId);
     if (!first || first.status !== "running") return;
+    if (
+      (first.useAgentQueue || first.queueMode === "agentqueue") &&
+      Option.isSome(queueServiceOpt)
+    ) {
+      for (const chat of first.chats) {
+        if (chat.status !== "running") continue;
+        const assignment = queueAssignments.get(chat.threadId);
+        if (!assignment) continue;
+        const renewed = yield* queueServiceOpt.value
+          .heartbeat(assignment.gitCommonDir, assignment.claimToken)
+          .pipe(Effect.catchCause(() => Effect.succeed(false)));
+        if (!renewed) {
+          yield* Effect.logWarning("goals.agentqueue-lease-lost", {
+            goalId,
+            taskId: assignment.taskId,
+            threadId: chat.threadId,
+          });
+        }
+      }
+    }
     // Older stored Goal records may still contain this field. Keep their history,
     // but never schedule new work from a Beads queue.
     if (first.useBeads) {
@@ -819,6 +951,27 @@ export const make = Effect.gen(function* () {
     if (!goal || goal.status !== "running") return;
     const chats = chatsSinceStart(goal);
     if (chats.some((chat) => chat.status === "running")) return;
+
+    if (goal.useAgentQueue || goal.queueMode === "agentqueue") {
+      if (Option.isSome(queueServiceOpt)) {
+        const queueSvc = queueServiceOpt.value;
+        const workspaceRoot = (yield* workspaceRootOf(goal.projectId)) ?? "";
+        const { gitCommonDir } = resolveGitContext(workspaceRoot);
+        const snapshot = yield* queueSvc
+          .getSnapshot(gitCommonDir, goal.planId)
+          .pipe(Effect.catchCause(() => Effect.succeed(undefined)));
+
+        if (
+          snapshot &&
+          snapshot.counts.total > 0 &&
+          snapshot.counts.completed === snapshot.counts.total
+        ) {
+          yield* setStatus(goalId, "complete", "All tasks in queue completed and verified.");
+          return;
+        }
+      }
+    }
+
     const unavailable = yield* unavailableAgents(goal);
     const next = nextAgentIndex(goal, new Set(unavailable.keys()));
     // Would start something if every provider were back: wait for them, never give up.
@@ -859,7 +1012,9 @@ export const make = Effect.gen(function* () {
     const thread = yield* readThread(threadId);
     const before = yield* currentGoal(goalId);
     const chat = before?.chats.find((candidate) => candidate.threadId === threadId);
-    if (!before || !chat) return;
+    if (!before || !chat) {
+      return;
+    }
     if (chat.overseer) {
       yield* finishOverseer(before, thread, threadId);
       return;
@@ -911,14 +1066,89 @@ export const make = Effect.gen(function* () {
         })
         .pipe(Effect.ignoreCause({ log: true }));
     }
-    if (before.status !== "running") return;
     // Real progress frees blocked work to start again; a blocked chat means wait for the others.
     if (status === "completed" && !blockedWork && before.holdStarts) {
       yield* store.update(goalId, (goal) => ({ ...goal, holdStarts: undefined }));
     } else if (blockedWork) {
       yield* store.update(goalId, (goal) => ({ ...goal, holdStarts: true }));
     }
-    if (status === "completed" && !blockedWork && replyReportsGoalComplete(reply)) {
+    const queueMode = before.useAgentQueue || before.queueMode === "agentqueue";
+    const queueAssignment = queueAssignments.get(threadId);
+    let queueTaskIntegrated = false;
+    if (queueMode && chat.taskId) {
+      if (status === "completed" && queueAssignment && Option.isSome(queueServiceOpt)) {
+        const result = queueAssignment.verificationCommand.trim()
+          ? yield* queueServiceOpt.value
+              .verifyAndLand(
+                queueAssignment.gitCommonDir,
+                queueAssignment.repoRoot,
+                queueAssignment.taskId,
+                queueAssignment.claimToken,
+                queueAssignment.worktreePath,
+                queueAssignment.branch,
+                queueAssignment.baseBranch,
+                queueAssignment.verificationCommand,
+              )
+              .pipe(
+                Effect.catchCause((cause) =>
+                  Effect.succeed({ success: false as const, error: String(cause) }),
+                ),
+              )
+          : { success: false as const, error: "No verification command is configured" };
+        queueTaskIntegrated = result.success;
+        if (queueTaskIntegrated) {
+          yield* queueServiceOpt.value
+            .release(queueAssignment.gitCommonDir, queueAssignment.claimToken, "completed")
+            .pipe(Effect.catchCause(() => Effect.succeed(false)));
+          yield* queueServiceOpt.value
+            .teardown(
+              queueAssignment.repoRoot,
+              queueAssignment.worktreePath,
+              queueAssignment.branch,
+              true,
+            )
+            .pipe(Effect.catchCause(logFailure("goals.agentqueue-worktree-cleanup-failed")));
+        } else {
+          status = "failed";
+        }
+      } else if (status === "completed") {
+        // After a server restart, a completed chat may outlive its in-memory claim token.
+        // Leave the queue task for lease recovery instead of claiming it was integrated.
+        status = "failed";
+      }
+
+      if (!queueTaskIntegrated && queueAssignment && Option.isSome(queueServiceOpt)) {
+        const finalQueueStatus = status === "stopped" ? "pending" : "failed";
+        yield* queueServiceOpt.value
+          .release(
+            queueAssignment.gitCommonDir,
+            queueAssignment.claimToken,
+            finalQueueStatus,
+            status === "stopped" ? undefined : "Goal worker did not verify and land the task",
+          )
+          .pipe(Effect.catchCause(() => Effect.void));
+        yield* queueServiceOpt.value
+          .teardown(
+            queueAssignment.repoRoot,
+            queueAssignment.worktreePath,
+            queueAssignment.branch,
+            false,
+          )
+          .pipe(Effect.catchCause(logFailure("goals.agentqueue-worktree-preserve-failed")));
+      }
+      queueAssignments.delete(threadId);
+    }
+
+    yield* updateChat(goalId, threadId, {
+      status,
+      completedAt: yield* nowIso,
+      waitingForLimit: undefined,
+      ...(blockedWork ? { blockedWork: true } : {}),
+    });
+
+    if (before.status !== "running") return;
+
+    if (!queueMode && status === "completed" && !blockedWork && replyReportsGoalComplete(reply)) {
       yield* setStatus(goalId, "complete", "An agent reported there is nothing left to do.");
       return;
     }

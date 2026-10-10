@@ -45,7 +45,10 @@ import { buildThreadFeed } from "../lib/threadActivity";
 import { acknowledgedThreadMessagesAtom } from "./acknowledged-thread-messages";
 import { appendPendingThreadMessages } from "../features/threads/pending-thread-feed";
 import { appAtomRegistry } from "../state/atom-registry";
-import { pendingThreadCreationMessage } from "./pending-thread-creation";
+import {
+  blocksFollowUpForPendingCreation,
+  pendingThreadCreationMessage,
+} from "./pending-thread-creation";
 import {
   appendComposerDraftAttachments,
   captureComposerDraftInsertion,
@@ -332,7 +335,15 @@ export function useThreadComposerState() {
     // its id would strand the message: if the creation is rejected the thread
     // never appears and the drain drops the orphan. The composer disables its
     // send button too; this guard also covers the editor's submit key.
-    if (selectedThreadCreation !== null) {
+    if (
+      blocksFollowUpForPendingCreation({
+        creation: selectedThreadCreation,
+        hasLatestTurn:
+          selectedThreadDetail?.latestTurn !== null &&
+          selectedThreadDetail?.latestTurn !== undefined,
+        messageCount: selectedThreadDetail?.messages.length ?? 0,
+      })
+    ) {
       return null;
     }
 

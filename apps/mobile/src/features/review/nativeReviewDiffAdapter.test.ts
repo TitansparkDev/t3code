@@ -260,11 +260,11 @@ describe("createNativeReviewDiffTheme", () => {
     ["#000000", "#000000"],
     ["rgba(0, 0, 0, 0.5)", "#808080"],
     ["rgb(0, 0, 0)", "#000000"],
-  ])("flattens %s over the screen color", (sheet, expected) => {
+  ])("flattens %s over the code surface", (codeBackground, expected) => {
     const theme = createNativeReviewDiffTheme("light", "material-you", {
       ...appTheme("t3-code", "light"),
       "--color-screen": "#FFFFFFFF",
-      "--color-sheet": sheet,
+      "--color-md-code-bg": codeBackground,
     });
 
     expect(theme.background).toBe(expected);
@@ -274,7 +274,7 @@ describe("createNativeReviewDiffTheme", () => {
     const theme = createNativeReviewDiffTheme(appearance, "material-you", {
       ...appTheme("t3-code", appearance),
       "--color-screen": "#FFFFFFFF",
-      "--color-sheet": "#00000080",
+      "--color-md-code-bg": "#00000080",
     });
 
     expect(theme.background).toBe("#7f7f7f");

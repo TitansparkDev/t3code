@@ -902,7 +902,9 @@ it.layer(NodeServices.layer)("GoalService", (it) => {
         for (let turn = 0; turn < 20; turn++) yield* Effect.yieldNow;
         const [held] = yield* service.list;
         expect(held?.holdStarts).toBe(true);
-        expect(held?.chats[0]?.blockedWork).toBe(true);
+        expect(held?.chats.find((chat) => chat.threadId === threadIdOf(first))?.blockedWork).toBe(
+          true,
+        );
         expect(harness.log.filter((command) => command.type === "thread.create")).toHaveLength(2);
 
         // Another agent finishing real work frees the blocked tasks: starting resumes.

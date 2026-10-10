@@ -10,6 +10,7 @@ import {
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  blocksFollowUpForPendingCreation,
   isPendingThreadCreationVisible,
   pendingThreadCreationMessage,
   pendingThreadCreationShell,
@@ -191,6 +192,42 @@ describe("pendingThreadCreationShell", () => {
   it("returns null for a follow-up message or a creation without a model", () => {
     expect(pendingThreadCreationShell({ ...creation, creation: undefined })).toBeNull();
     expect(pendingThreadCreationShell({ ...creation, modelSelection: undefined })).toBeNull();
+  });
+});
+
+describe("blocksFollowUpForPendingCreation", () => {
+  it("blocks a follow-up only while thread creation has not been delivered", () => {
+    expect(
+      blocksFollowUpForPendingCreation({
+        creation: { message: creation, outcome: null },
+        hasLatestTurn: false,
+        messageCount: 0,
+      }),
+    ).toBe(true);
+    expect(
+      blocksFollowUpForPendingCreation({
+        creation: { message: creation, outcome: { kind: "delivered", message: creation } },
+        hasLatestTurn: false,
+        messageCount: 0,
+      }),
+    ).toBe(false);
+  });
+
+  it("allows follow-ups once the real thread detail has arrived", () => {
+    expect(
+      blocksFollowUpForPendingCreation({
+        creation: { message: creation, outcome: null },
+        hasLatestTurn: true,
+        messageCount: 0,
+      }),
+    ).toBe(false);
+    expect(
+      blocksFollowUpForPendingCreation({
+        creation: { message: creation, outcome: null },
+        hasLatestTurn: false,
+        messageCount: 1,
+      }),
+    ).toBe(false);
   });
 });
 

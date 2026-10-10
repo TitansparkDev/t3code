@@ -25,6 +25,20 @@ export type PendingThreadCreation = {
   readonly outcome: PendingThreadCreationOutcome | null;
 };
 
+/** A queued creation only blocks follow-ups until delivery or real thread content arrives. */
+export function blocksFollowUpForPendingCreation(input: {
+  readonly creation: PendingThreadCreation | null;
+  readonly hasLatestTurn: boolean;
+  readonly messageCount: number;
+}): boolean {
+  return (
+    input.creation !== null &&
+    input.creation.outcome?.kind !== "delivered" &&
+    !input.hasLatestTurn &&
+    input.messageCount === 0
+  );
+}
+
 /** Keep the screen's creation state until its detail can take over the pill. */
 export function resolvePendingThreadCreation(input: {
   readonly threadKey: string | null;
