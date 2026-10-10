@@ -1,6 +1,6 @@
 {
   "name": "@t3tools/agent-queue-cli",
-  "version": "0.0.63",
+  "version": "0.0.64",
   "private": true,
   "bin": {
     "agentqueue": "./bin/agentqueue.mjs"
