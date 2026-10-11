@@ -8,7 +8,7 @@ import {
 import * as Schema from "effect/Schema";
 import * as Rpc from "effect/unstable/rpc/Rpc";
 import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
-import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { NonNegativeInt, ProjectId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import {
   CodexAuthCallbackInput,
   CodexAuthCallbackState,
@@ -260,7 +260,7 @@ import {
   ResourceTelemetrySnapshot,
 } from "./resourceTelemetry.ts";
 import { QuotaSummary } from "./quota.ts";
-import { GoalId, GoalList, GoalSettings } from "./goals.ts";
+import { GoalId, GoalList, GoalPlanPreview, GoalSettings } from "./goals.ts";
 import { ScheduledTaskDraft, ScheduledTaskId, ScheduledTaskList } from "./scheduledTasks.ts";
 import {
   UsageLimitSourceError,
@@ -416,6 +416,7 @@ export const WS_METHODS = {
   serverRunScheduledTask: "server.runScheduledTask",
   serverListGoals: "server.listGoals",
   serverCreateGoal: "server.createGoal",
+  serverPreviewGoalPlan: "server.previewGoalPlan",
   serverUpdateGoal: "server.updateGoal",
   serverStopGoal: "server.stopGoal",
   serverRestartGoal: "server.restartGoal",
@@ -749,6 +750,17 @@ export const WsServerListGoalsRpc = Rpc.make(WS_METHODS.serverListGoals, {
 export const WsServerCreateGoalRpc = Rpc.make(WS_METHODS.serverCreateGoal, {
   payload: Schema.Struct({ goal: GoalSettings, draft: Schema.optional(Schema.Boolean) }),
   success: GoalList,
+  error: Schema.Union([OrchestrationDispatchCommandError, EnvironmentAuthorizationError]),
+});
+
+/** Look at a project's repository and plan the way a goal would, without changing anything. */
+export const WsServerPreviewGoalPlanRpc = Rpc.make(WS_METHODS.serverPreviewGoalPlan, {
+  payload: Schema.Struct({
+    projectId: ProjectId,
+    queueMode: Schema.Literals(["auto", "standard", "agentqueue"]),
+    planPath: Schema.optional(Schema.String),
+  }),
+  success: GoalPlanPreview,
   error: Schema.Union([OrchestrationDispatchCommandError, EnvironmentAuthorizationError]),
 });
 
@@ -1615,6 +1627,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerRunScheduledTaskRpc,
   WsServerListGoalsRpc,
   WsServerCreateGoalRpc,
+  WsServerPreviewGoalPlanRpc,
   WsServerUpdateGoalRpc,
   WsServerStopGoalRpc,
   WsServerRestartGoalRpc,

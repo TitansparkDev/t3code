@@ -4,6 +4,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import { recordEvent } from "./eventStream.ts";
+import { acquireLandingLock } from "./integration.ts";
 import { rebaseOntoBase } from "./worktreeManager.ts";
 import type { VerificationExecutionResult } from "./verifier.ts";
 
@@ -69,6 +70,14 @@ export function updateBaseBranch(repoRoot: string, baseBranch: string, targetCom
  * Returns a lock release handle.
  */
 export async function acquireLegacyLandingLock(
+  gitCommonDir: string,
+  timeoutMs = 60_000,
+): Promise<() => void> {
+  return acquireLandingLock(gitCommonDir, timeoutMs);
+}
+
+/** @deprecated Exclusive-create variant that cannot share the lock with plan-work. */
+export async function acquireExclusiveFileLock(
   gitCommonDir: string,
   timeoutMs = 15_000,
   pollIntervalMs = 100,

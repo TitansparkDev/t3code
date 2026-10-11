@@ -10,6 +10,8 @@ export interface ClaimRequest {
   readonly worktreePath: string;
   readonly branch: string;
   readonly leaseSeconds?: number;
+  /** Claim a submitted candidate that needs a merge repair, not an unstarted task. */
+  readonly repair?: boolean;
 }
 
 export interface TaskClaim {
@@ -49,6 +51,7 @@ export function claimTask(db: NodeSqlite.DatabaseSync, req: ClaimRequest): Claim
           version: number;
           dependencies: string;
           scope_patterns: string;
+          integration_state: string | null;
         }
       | undefined;
 
@@ -57,14 +60,22 @@ export function claimTask(db: NodeSqlite.DatabaseSync, req: ClaimRequest): Claim
       return { success: false, reason: "TASK_NOT_FOUND" };
     }
 
-    if (task.status !== "pending") {
+    const repairing = req.repair === true;
+    if (
+      repairing
+        ? !(task.status === "verifying" && task.integration_state === "conflict")
+        : task.status !== "pending"
+    ) {
       db.exec("ROLLBACK;");
-      return { success: false, reason: `TASK_NOT_PENDING (status=${task.status})` };
+      return {
+        success: false,
+        reason: `${repairing ? "TASK_NOT_REPAIRABLE" : "TASK_NOT_PENDING"} (status=${task.status}${task.integration_state ? `, integration=${task.integration_state}` : ""})`,
+      };
     }
 
     // Check dependencies
     const deps: string[] = JSON.parse(task.dependencies || "[]");
-    if (deps.length > 0) {
+    if (deps.length > 0 && !repairing) {
       const placeholders = deps.map(() => "?").join(",");
       const incomplete = db
         .prepare(
@@ -106,10 +117,11 @@ export function claimTask(db: NodeSqlite.DatabaseSync, req: ClaimRequest): Claim
     const updateResult = db
       .prepare(`
         UPDATE tasks
-        SET status = 'claimed', version = ?, updated_at = ?
+        SET status = 'claimed', version = ?, updated_at = ?,
+            integration_state = CASE WHEN ? = 1 THEN 'repairing' ELSE integration_state END
         WHERE id = ? AND version = ?
       `)
-      .run(nextVersion, now, task.id, task.version);
+      .run(nextVersion, now, repairing ? 1 : 0, task.id, task.version);
 
     if (updateResult.changes !== 1) {
       db.exec("ROLLBACK;");
@@ -217,16 +229,23 @@ export function releaseClaim(
     db.prepare("UPDATE task_claims SET released_at = ? WHERE id = ?").run(now, claim.id);
 
     // Update task
-    const task = db.prepare("SELECT version FROM tasks WHERE id = ?").get(claim.task_id) as {
-      version: number;
-    };
+    const task = db
+      .prepare("SELECT version, integration_state FROM tasks WHERE id = ?")
+      .get(claim.task_id) as { version: number; integration_state: string | null };
     const nextVersion = (task?.version ?? 0) + 1;
 
-    db.prepare(`
-      UPDATE tasks
-      SET status = ?, version = ?, failure_reason = ?, updated_at = ?
-      WHERE id = ?
-    `).run(options.finalStatus, nextVersion, options.failureReason ?? null, now, claim.task_id);
+    if (task?.integration_state === "repairing" && options.finalStatus === "pending") {
+      // A repair worker that stopped hands the candidate back to be repaired again.
+      db.prepare(
+        "UPDATE tasks SET status = 'verifying', integration_state = 'conflict', version = ?, updated_at = ? WHERE id = ?",
+      ).run(nextVersion, now, claim.task_id);
+    } else {
+      db.prepare(`
+        UPDATE tasks
+        SET status = ?, version = ?, failure_reason = ?, updated_at = ?
+        WHERE id = ?
+      `).run(options.finalStatus, nextVersion, options.failureReason ?? null, now, claim.task_id);
+    }
 
     // Emit event
     const eventType =
@@ -246,5 +265,90 @@ export function releaseClaim(
   } catch (err) {
     db.exec("ROLLBACK;");
     throw err;
+  }
+}
+
+/**
+ * Ends a claim whose work did not land. The task goes back to `pending` for another
+ * attempt until its retry budget is spent, then becomes `failed` for the overseer.
+ * Commits on the task's branch are untouched, so the next attempt resumes from them.
+ */
+export function releaseClaimForRetry(
+  db: NodeSqlite.DatabaseSync,
+  ownerToken: string,
+  reason: string,
+): { readonly released: boolean; readonly exhausted: boolean } {
+  const now = new Date().toISOString();
+  db.exec("BEGIN IMMEDIATE;");
+  try {
+    const claim = db
+      .prepare("SELECT id, task_id FROM task_claims WHERE owner_token = ? AND released_at IS NULL")
+      .get(ownerToken) as { id: number; task_id: string } | undefined;
+    if (!claim) {
+      db.exec("ROLLBACK;");
+      return { released: false, exhausted: false };
+    }
+    const task = db
+      .prepare(
+        "SELECT version, retry_count, max_retries, integration_state, integration_attempts FROM tasks WHERE id = ?",
+      )
+      .get(claim.task_id) as {
+      version: number;
+      retry_count: number;
+      max_retries: number;
+      integration_state: string | null;
+      integration_attempts: number;
+    };
+    db.prepare("UPDATE task_claims SET released_at = ? WHERE id = ?").run(now, claim.id);
+    if (task.integration_state === "repairing") {
+      // A failed repair attempt: try again, or ask the overseer once the budget is spent.
+      const attempts = task.integration_attempts + 1;
+      const exhausted = attempts > task.max_retries;
+      db.prepare(
+        "UPDATE tasks SET status = 'verifying', integration_state = ?, integration_attempts = ?, integration_error = ?, version = ?, updated_at = ? WHERE id = ?",
+      ).run(
+        exhausted ? "repair_needed" : "conflict",
+        attempts,
+        reason,
+        task.version + 1,
+        now,
+        claim.task_id,
+      );
+      db.prepare(
+        "INSERT INTO task_events (task_id, event_type, payload_json, created_at) VALUES (?, ?, ?, ?)",
+      ).run(
+        claim.task_id,
+        exhausted ? "task_repair_needed" : "task_repair_failed",
+        JSON.stringify({ ownerToken, reason: reason.slice(0, 500), attempts }),
+        now,
+      );
+      db.exec("COMMIT;");
+      return { released: true, exhausted };
+    }
+    const retryCount = task.retry_count + 1;
+    const exhausted = retryCount > task.max_retries;
+    db.prepare(
+      "UPDATE tasks SET status = ?, retry_count = ?, version = ?, failure_reason = ?, updated_at = ? WHERE id = ?",
+    ).run(
+      exhausted ? "failed" : "pending",
+      retryCount,
+      task.version + 1,
+      reason,
+      now,
+      claim.task_id,
+    );
+    db.prepare(
+      "INSERT INTO task_events (task_id, event_type, payload_json, created_at) VALUES (?, ?, ?, ?)",
+    ).run(
+      claim.task_id,
+      exhausted ? "task_failed" : "task_requeued",
+      JSON.stringify({ ownerToken, reason: reason.slice(0, 500), retryCount }),
+      now,
+    );
+    db.exec("COMMIT;");
+    return { released: true, exhausted };
+  } catch (error) {
+    db.exec("ROLLBACK;");
+    throw error;
   }
 }

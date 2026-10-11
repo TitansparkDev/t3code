@@ -22803,6 +22803,7 @@ packages/agent-queue-core/src/claimService.ts
 packages/agent-queue-core/src/db.ts
 packages/agent-queue-core/src/eventStream.ts
 packages/agent-queue-core/src/index.ts
+packages/agent-queue-core/src/integration.ts
 packages/agent-queue-core/src/landingQueue.ts
 packages/agent-queue-core/src/leaseRecovery.ts
 packages/agent-queue-core/src/migrations.ts
@@ -22823,6 +22824,7 @@ packages/agent-queue-core/test/eventStream.test.ts
 packages/agent-queue-core/test/fullStressHarness.test.ts
 packages/agent-queue-core/test/harness/gitHarness.test.ts
 packages/agent-queue-core/test/harness/gitHarness.ts
+packages/agent-queue-core/test/integration.test.ts
 packages/agent-queue-core/test/leaseRecovery.test.ts
 packages/agent-queue-core/test/overseerRepairs.test.ts
 packages/agent-queue-core/test/planExportImport.test.ts

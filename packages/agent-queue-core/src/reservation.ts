@@ -17,6 +17,8 @@ export interface ReservedTask {
   readonly baseBranch: string;
   readonly retryCount: number;
   readonly lastFailure: string | null;
+  /** Set when the worker must repair a submitted candidate instead of implementing the task. */
+  readonly repair: { readonly reason: string; readonly candidateCommit: string | null } | null;
 }
 
 export type ReserveOutcome =
@@ -89,6 +91,79 @@ export async function reserveNextTask(
   );
 
   const skipped: Array<{ taskId: string; reason: string }> = [];
+
+  // Submitted work that failed to merge is repaired before any new task starts.
+  const repairs = db
+    .prepare(
+      `SELECT id, title, description, verification_command, retry_count, integration_error, candidate_commit
+       FROM tasks WHERE plan_id = ? AND status = 'verifying' AND integration_state = 'conflict'
+       ORDER BY integration_updated_at, rowid`,
+    )
+    .all(options.planId) as Array<{
+    id: string;
+    title: string;
+    description: string | null;
+    verification_command: string | null;
+    retry_count: number;
+    integration_error: string | null;
+    candidate_commit: string | null;
+  }>;
+  for (const repair of repairs) {
+    const planned = planWorktree(options.repoRoot, repair.id, repair.title);
+    const claim = claimTask(db, {
+      taskId: repair.id,
+      workerPid: options.workerPid ?? process.pid,
+      workerSessionId: options.workerSessionId,
+      worktreePath: planned.worktreePath,
+      branch: planned.branch,
+      leaseSeconds: options.leaseSeconds ?? 300,
+      repair: true,
+    });
+    if (!claim.success) {
+      skipped.push({ taskId: repair.id, reason: claim.reason });
+      continue;
+    }
+    try {
+      const provisioned = await provisionWorktree(
+        options.repoRoot,
+        repair.id,
+        options.baseBranch,
+        repair.title,
+      );
+      db.prepare("UPDATE task_claims SET worktree_path = ?, branch = ? WHERE owner_token = ?").run(
+        provisioned.worktreePath,
+        provisioned.branch,
+        claim.claim.ownerToken,
+      );
+      return {
+        kind: "reserved",
+        task: {
+          taskId: repair.id,
+          title: repair.title,
+          description: repair.description,
+          verificationCommand: repair.verification_command,
+          claimToken: claim.claim.ownerToken,
+          worktreePath: provisioned.worktreePath,
+          branch: provisioned.branch,
+          baseBranch: options.baseBranch,
+          retryCount: repair.retry_count,
+          lastFailure: repair.integration_error,
+          repair: {
+            reason: repair.integration_error ?? "The candidate could not be merged.",
+            candidateCommit: repair.candidate_commit,
+          },
+        },
+      };
+    } catch (error) {
+      releaseClaim(db, {
+        ownerToken: claim.claim.ownerToken,
+        finalStatus: "pending",
+        failureReason: error instanceof Error ? error.message : String(error),
+      });
+      throw new WorktreeProvisionError(repair.id, error);
+    }
+  }
+
   for (const taskId of readyIds) {
     const row = rows.find((candidate) => candidate.id === taskId)!;
     const planned = planWorktree(options.repoRoot, taskId, row.title);
@@ -132,6 +207,7 @@ export async function reserveNextTask(
           baseBranch: options.baseBranch,
           retryCount: row.retry_count,
           lastFailure: row.failure_reason,
+          repair: null,
         },
       };
     } catch (error) {

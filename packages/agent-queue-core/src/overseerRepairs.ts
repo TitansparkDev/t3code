@@ -253,27 +253,29 @@ export function generateOverseerBriefing(
   db: NodeSqlite.DatabaseSync,
   repoRoot: string,
   reason: string,
+  planId?: string,
 ): string {
   // 1. Reconcile any dead workers
   reconcileExpiredLeases(db);
 
   // 2. Queue snapshot & deadlock report
-  const snapshot = getQueueSnapshot(db);
-  const deadlock = evaluateDeadlock(db);
+  const snapshot = getQueueSnapshot(db, planId);
+  const deadlock = evaluateDeadlock(db, planId);
 
   // 3. Problem tasks
   const problemTasks = db
     .prepare(`
-      SELECT id, title, status, retry_count, dependencies
+      SELECT id, title, status, retry_count, dependencies, failure_reason
       FROM tasks
-      WHERE status IN ('failed', 'blocked')
+      WHERE status IN ('failed', 'blocked') ${planId === undefined ? "" : "AND plan_id = ?"}
     `)
-    .all() as Array<{
+    .all(...(planId === undefined ? [] : [planId])) as Array<{
     id: string;
     title: string;
     status: string;
     retry_count: number;
     dependencies: string | null;
+    failure_reason: string | null;
   }>;
 
   const lines: string[] = [
@@ -289,7 +291,7 @@ export function generateOverseerBriefing(
     for (const t of problemTasks) {
       const deps = t.dependencies ? JSON.parse(t.dependencies) : [];
       lines.push(
-        `- \`${t.id}\` ("${t.title}"): status=${t.status}, retries=${t.retry_count}, dependencies=[${deps.join(", ")}]`,
+        `- \`${t.id}\` ("${t.title}"): status=${t.status}, retries=${t.retry_count}, dependencies=[${deps.join(", ")}], reason=${t.failure_reason ?? "unknown"}`,
       );
     }
   }

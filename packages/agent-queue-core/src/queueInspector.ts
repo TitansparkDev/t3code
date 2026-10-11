@@ -10,6 +10,10 @@ export interface QueueStatusCounts {
   readonly failed: number;
   readonly blocked: number;
   readonly total: number;
+  /** Submitted work waiting to be merged or repaired (a subset of `verifying`). */
+  readonly awaitingIntegration?: number;
+  /** Submitted work whose automatic repair ran out; needs the overseer or a person. */
+  readonly repairNeeded?: number;
 }
 
 export interface QueueActiveLease {
@@ -95,8 +99,19 @@ export function getQueueSnapshot(
     expiresAt: r.expires_at,
   }));
 
+  const integrationRows = db
+    .prepare(
+      `SELECT integration_state AS state, count(*) AS cnt FROM tasks
+       WHERE integration_state IS NOT NULL ${planId === undefined ? "" : "AND plan_id = ?"} GROUP BY integration_state`,
+    )
+    .all(...(planId === undefined ? [] : [planId])) as Array<{ state: string; cnt: number }>;
+  const repairNeeded = integrationRows.find((row) => row.state === "repair_needed")?.cnt ?? 0;
+  const awaitingIntegration = integrationRows.reduce((sum, row) => sum + row.cnt, 0) - repairNeeded;
+
   return {
     counts: {
+      awaitingIntegration,
+      repairNeeded,
       pending: counts.pending ?? 0,
       claimed: counts.claimed ?? 0,
       running: counts.running ?? 0,
@@ -116,10 +131,14 @@ export function getQueueSnapshot(
  * A deadlock occurs when tasks remain uncompleted, 0 workers are actively running,
  * and no pending task is eligible to run due to failed/missing/blocked dependencies.
  */
-export function evaluateDeadlock(db: NodeSqlite.DatabaseSync): DeadlockEvaluation {
-  const snapshot = getQueueSnapshot(db);
+export function evaluateDeadlock(db: NodeSqlite.DatabaseSync, planId?: string): DeadlockEvaluation {
+  const snapshot = getQueueSnapshot(db, planId);
+  // Candidates waiting to merge are progressing; ones past automatic repair are not.
   const activeWorkerCount =
-    snapshot.counts.claimed + snapshot.counts.running + snapshot.counts.verifying;
+    snapshot.counts.claimed +
+    snapshot.counts.running +
+    snapshot.counts.verifying -
+    (snapshot.counts.repairNeeded ?? 0);
 
   // If workers are currently actively working, the queue is not deadlocked
   if (activeWorkerCount > 0) {
@@ -127,11 +146,19 @@ export function evaluateDeadlock(db: NodeSqlite.DatabaseSync): DeadlockEvaluatio
   }
 
   // If no tasks are pending or blocked, there are no uncompleted tasks waiting
-  if (snapshot.counts.pending === 0 && snapshot.counts.blocked === 0) {
+  if (
+    snapshot.counts.pending === 0 &&
+    snapshot.counts.blocked === 0 &&
+    (snapshot.counts.repairNeeded ?? 0) === 0
+  ) {
     return { isDeadlocked: false, blockedTaskIds: [] };
   }
 
-  const tasks = db.prepare("SELECT id, status, dependencies FROM tasks").all() as Array<{
+  const tasks = db
+    .prepare(
+      `SELECT id, status, dependencies FROM tasks ${planId === undefined ? "" : "WHERE plan_id = ?"}`,
+    )
+    .all(...(planId === undefined ? [] : [planId])) as Array<{
     id: string;
     status: string;
     dependencies: string;

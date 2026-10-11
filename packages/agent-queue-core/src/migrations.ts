@@ -90,6 +90,26 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
       `);
     },
   },
+  {
+    version: 2,
+    name: "candidate_integration_state",
+    up: (db) => {
+      // A worker's finished work is a candidate that waits for integration on its own
+      // (status stays 'verifying'); it is never confused with unimplemented work.
+      // integration_state: pending | conflict | repairing | repair_needed.
+      db.exec(`
+        ALTER TABLE tasks ADD COLUMN integration_state TEXT;
+        ALTER TABLE tasks ADD COLUMN candidate_commit TEXT;
+        ALTER TABLE tasks ADD COLUMN candidate_branch TEXT;
+        ALTER TABLE tasks ADD COLUMN candidate_worktree TEXT;
+        ALTER TABLE tasks ADD COLUMN integration_attempts INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE tasks ADD COLUMN integration_error TEXT;
+        ALTER TABLE tasks ADD COLUMN receipt_json TEXT;
+        ALTER TABLE tasks ADD COLUMN integration_updated_at TEXT;
+        CREATE INDEX IF NOT EXISTS idx_tasks_integration ON tasks(integration_state) WHERE integration_state IS NOT NULL;
+      `);
+    },
+  },
 ];
 
 /**

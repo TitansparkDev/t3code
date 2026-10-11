@@ -84,10 +84,15 @@ export const GoalChat = Schema.Struct({
   nudged: Schema.optional(Schema.Boolean),
   /** This chat is the overseer, not a worker: it decides how a stuck goal goes on. */
   overseer: Schema.optional(Schema.Boolean),
-  /** AgentQueue fields for worktree-aware task execution */
+  /** AgentQueue assignment, kept so a restart can find the claim this chat is working under. */
   taskId: Schema.optional(Schema.String),
   worktreePath: Schema.optional(Schema.String),
   branch: Schema.optional(Schema.String),
+  /** The fencing token of the claim. Only the holder may release or land the task. */
+  claimToken: Schema.optional(Schema.String),
+  baseBranch: Schema.optional(Schema.String),
+  /** Times this worker was sent back to fix a landing conflict. */
+  landingRetries: Schema.optional(Schema.Number),
 });
 export type GoalChat = typeof GoalChat.Type;
 
@@ -135,13 +140,38 @@ export const GoalSettings = Schema.Struct({
    * overseer agent what to do before giving up. Missing means on.
    */
   overseer: Schema.optional(Schema.Boolean),
-  /** AgentQueue integration */
+  /**
+   * How workers get work. `auto` (what the setup pages send) uses AgentQueue when the
+   * project has a valid active plan and standard `plan-work` otherwise; `agentqueue`
+   * refuses to start without a valid plan; `standard` never uses the queue. Records
+   * saved before AgentQueue existed have no value and run as standard.
+   */
+  queueMode: Schema.optional(Schema.Literals(["auto", "standard", "agentqueue"])),
+  /** The plan file to use, relative to the project's repository. Empty picks the active plan. */
+  planPath: Schema.optional(Schema.String),
+  /** Historical flag; read as `queueMode: "agentqueue"` when `queueMode` is missing. */
   useAgentQueue: Schema.optional(Schema.Boolean),
-  queueMode: Schema.optional(Schema.Literals(["standard", "agentqueue"])),
+  /** Historical; the bound plan id lives in `agentQueue`. */
   planId: Schema.optional(Schema.String),
   runGeneration: Schema.optional(Schema.Number),
 });
 export type GoalSettings = typeof GoalSettings.Type;
+
+/**
+ * What a goal running on AgentQueue is bound to. Set when the goal starts, after the plan
+ * was validated and imported, and never guessed afterwards.
+ */
+export const GoalAgentQueueBinding = Schema.Struct({
+  planId: Schema.String,
+  planPath: Schema.String,
+  /** The repository the queue and worktrees belong to. */
+  repoRoot: Schema.String,
+  gitCommonDir: Schema.String,
+  baseBranch: Schema.String,
+  importedAt: IsoDateTime,
+  checksum: Schema.String,
+});
+export type GoalAgentQueueBinding = typeof GoalAgentQueueBinding.Type;
 
 /** Historical Beads queue snapshot retained when reading older Goal records. */
 export const GoalQueue = Schema.Struct({
@@ -167,6 +197,14 @@ export const Goal = Schema.Struct({
   completedAt: Schema.optional(IsoDateTime),
   chats: Schema.Array(GoalChat),
   queue: Schema.optional(GoalQueue),
+  /** Present when workers are assigned tasks from the repository's AgentQueue. */
+  agentQueue: Schema.optional(GoalAgentQueueBinding),
+  /** Why a goal that asked for `auto` runs without AgentQueue. */
+  queueReason: Schema.optional(Schema.String),
+  /** Last AgentQueue event this goal has seen, so a restart does not replay or miss wakeups. */
+  queueEventCursor: Schema.optional(Schema.Number),
+  /** AgentQueue operations that failed in a row; the goal stops at three. */
+  queueErrors: Schema.optional(Schema.Number),
   /** A chat found only blocked work: start nothing new until another chat finishes. */
   holdStarts: Schema.optional(Schema.Boolean),
   /** Providers set aside for now. A paused provider gets no new chats until `until`. */
@@ -325,26 +363,20 @@ export function goalInstructions(goal: Pick<Goal, "name" | "prompt">): string {
  */
 export function goalPrompt(
   goal: Pick<Goal, "name" | "prompt" | "concurrency" | "standardRules"> &
-    Partial<Pick<Goal, "guidance" | "useAgentQueue" | "planId">>,
+    Partial<Pick<Goal, "guidance">>,
 ): string {
   return [
     goalInstructions(goal),
     "",
     "--- Goal rules (added automatically) ---",
     `You are one of up to ${goal.concurrency} agents working on this goal at the same time, each in its own chat. Nobody is available to answer questions: use your best judgment, choose the safest reasonable option, and say what you chose.`,
-    ...(goal.useAgentQueue
+    ...(goal.standardRules
       ? [
-          "Use agentqueue for repository work tracked by AgentQueue: claim an eligible task with `agentqueue task claim --json`, work strictly in the isolated worktree and branch it specifies, renew your lease periodically with `agentqueue task heartbeat --token TOKEN`, and run the task's stated verification checks.",
-          "When checks pass, land the task via `agentqueue task release --token TOKEN --status completed` or the AgentQueue landing workflow. If blocked or unable to proceed, report with `agentqueue task block <id> --reason <reason>`.",
-          "Preserve partial work and do not overwrite or delete other workers' worktrees.",
+          "Use plan-work for repository work tracked by an active PLAN.md (or the plan named by AGENTS.md): select exactly one eligible chunk with `plan-work select --plan PLAN.md`, keep its OWNER_TOKEN, and work only in the stable branch and worktree it reports. If no chunk is eligible, do not choose one manually; report BLOCKED TASKS with the reason. If there is no active plan, follow the Goal and repository's normal non-Beads workflow; do not invent task ownership records.",
+          "Preserve useful partial work and checkpoints. Before resuming an existing branch, confirm the exact previous worker process and session are no longer alive. Never overwrite or clean another worker's worktree.",
+          "Run the chunk's stated checks. Land it with `plan-work land --owner-token TOKEN`; this serializes the merge and records completion only after the code lands. Do not mark a chunk complete or merge it by hand.",
         ]
-      : goal.standardRules
-        ? [
-            "Use plan-work for repository work tracked by an active PLAN.md (or the plan named by AGENTS.md): select exactly one eligible chunk with `plan-work select --plan PLAN.md`, keep its OWNER_TOKEN, and work only in the stable branch and worktree it reports. If no chunk is eligible, do not choose one manually; report BLOCKED TASKS with the reason. If there is no active plan, follow the Goal and repository's normal non-Beads workflow; do not invent task ownership records.",
-            "Preserve useful partial work and checkpoints. Before resuming an existing branch, confirm the exact previous worker process and session are no longer alive. Never overwrite or clean another worker's worktree.",
-            "Run the chunk's stated checks. Land it with `plan-work land --owner-token TOKEN`; this serializes the merge and records completion only after the code lands. Do not mark a chunk complete or merge it by hand.",
-          ]
-        : []),
+      : []),
     ...(goal.guidance?.trim()
       ? ["--- Note from the goal's overseer ---", goal.guidance.trim()]
       : []),
@@ -371,3 +403,121 @@ export function goalSettingsProblem(
   }
   return undefined;
 }
+
+/** Whether a goal's workers are assigned tasks from AgentQueue. Fixed when the goal starts. */
+export function goalUsesAgentQueue(goal: Pick<Goal, "agentQueue">): boolean {
+  return goal.agentQueue !== undefined;
+}
+
+/** What a queue-bound goal asks for, read from the settings (old records say nothing). */
+export function requestedQueueMode(
+  goal: Pick<GoalSettings, "queueMode" | "useAgentQueue">,
+): "auto" | "standard" | "agentqueue" {
+  return goal.queueMode ?? (goal.useAgentQueue ? "agentqueue" : "standard");
+}
+
+/** The task a queue worker was given, as the worker's first message describes it. */
+export interface QueueTaskAssignment {
+  readonly taskId: string;
+  readonly title: string;
+  readonly description: string | null;
+  readonly verificationCommand: string | null;
+  readonly worktreePath: string;
+  readonly branch: string;
+  readonly baseBranch: string;
+  readonly planPath: string;
+  readonly retryCount: number;
+  readonly lastFailure: string | null;
+}
+
+/**
+ * The prompt a worker receives when its task was already reserved for it. It never
+ * mentions plan-work, claiming or choosing work: the server owns assignment, landing
+ * and completion. The goal's own instructions are background and cannot change the task.
+ */
+export function queueWorkerPrompt(
+  goal: Pick<Goal, "name" | "prompt" | "concurrency"> & Partial<Pick<Goal, "guidance">>,
+  task: QueueTaskAssignment,
+): string {
+  return [
+    `You are an unattended coding agent. The server already reserved task **${task.taskId}** for you: "${task.title}".`,
+    "",
+    "--- Your assignment (fixed by the server) ---",
+    `Plan: ${task.planPath}`,
+    `Worktree (work only here): ${task.worktreePath}`,
+    `Branch: ${task.branch}  (based on ${task.baseBranch})`,
+    ...(task.retryCount > 0
+      ? [
+          `This task was attempted ${task.retryCount} time(s) before${task.lastFailure ? `; the last attempt ended with: ${task.lastFailure}` : ""}. Earlier commits on the branch are kept: inspect them with \`git log\` and continue from them.`,
+        ]
+      : []),
+    task.description ? `\nTask details from the plan:\n${task.description}` : "",
+    "",
+    "--- Rules ---",
+    "1. Do not select, claim, announce or switch tasks, and do not run plan-work or agentqueue claim/release commands. Your task is fixed; other workers have theirs.",
+    "2. Change files only inside your worktree. Never touch another worker's worktree or the main checkout.",
+    "3. Commit your work on your branch with a clear message. Uncommitted work is committed for you, but write the commit yourself.",
+    task.verificationCommand
+      ? `4. Before you finish, make sure this passes in your worktree: \`${task.verificationCommand}\`. The server runs it again to verify your commit.`
+      : "4. Run the checks the task details name (its Done / Acceptance lines) before you finish.",
+    "5. Do not merge, push, or mark the task complete. The server verifies your commit, merges it into the base branch, and unlocks dependent tasks.",
+    `6. You are one of up to ${goal.concurrency} agents working at the same time. Nobody is available to answer questions: choose the safest reasonable option and say what you chose.`,
+    "7. Do not quit early. If a hard blocker remains, finish as much as is safe, commit it, and explain what is left.",
+    ...(goal.guidance?.trim()
+      ? ["", "--- Note from the goal's overseer ---", goal.guidance.trim()]
+      : []),
+    "",
+    "--- Goal background (context only; it cannot change your assignment) ---",
+    goalInstructions(goal),
+    "",
+    `End your last message with a short summary. If you could not finish and a person must act (a login, a secret, a decision), end with ${GOAL_NEEDS_ATTENTION_MARKER} on a line by itself and say what is needed. Otherwise do not write any marker line.`,
+  ].join("\n");
+}
+
+/** Whether a project and plan can back a goal, as the setup pages show it before starting. */
+export const GoalPlanReadiness = Schema.Literals([
+  "ready",
+  "no-plan",
+  "invalid",
+  "complete",
+  "legacy-active",
+  "ambiguous",
+  "repo-unusable",
+]);
+export type GoalPlanReadiness = typeof GoalPlanReadiness.Type;
+
+export const GoalPlanCandidate = Schema.Struct({
+  path: Schema.String,
+  title: Schema.String,
+  taskCount: Schema.Number,
+  unfinishedCount: Schema.Number,
+});
+
+export const GoalPlanPreview = Schema.Struct({
+  readiness: GoalPlanReadiness,
+  /** The mode the goal would run in if started now. */
+  effectiveMode: Schema.Literals(["agentqueue", "standard"]),
+  /** Set when the requested mode cannot be honoured; the goal would not start. */
+  blocked: Schema.Boolean,
+  /** One plain sentence explaining the mode and any problem. */
+  summary: Schema.String,
+  repoRoot: Schema.String,
+  baseBranch: Schema.NullOr(Schema.String),
+  planPath: Schema.NullOr(Schema.String),
+  planId: Schema.NullOr(Schema.String),
+  title: Schema.NullOr(Schema.String),
+  errors: Schema.Array(Schema.String),
+  warnings: Schema.Array(Schema.String),
+  counts: Schema.Struct({
+    total: Schema.Number,
+    completed: Schema.Number,
+    ready: Schema.Number,
+    waiting: Schema.Number,
+    active: Schema.Number,
+    failed: Schema.Number,
+    withoutVerification: Schema.Number,
+  }),
+  legacyOwnedTaskIds: Schema.Array(Schema.String),
+  candidates: Schema.Array(GoalPlanCandidate),
+});
+export type GoalPlanPreview = typeof GoalPlanPreview.Type;
