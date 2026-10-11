@@ -175,6 +175,13 @@ Full glossary with file links: `docs/internals/glossary.md`
 
 ## Recent request log
 
+- 2026-10-11 — v0.0.66: AgentQueue repair after the first live Goal. A worker is finished only when its
+  model turn and its background commands have ended (settling used to kill running tests and land work
+  unverified); submission checks come from a structured per-task verification spec (declared `Checks:`,
+  derived from prose, or an explicit exemption) and "no check" is reported as unverified, never passed;
+  an attention request from a worker becomes a follow-up task that blocks dependants unless the task's
+  declared checks passed; landed worktrees are removed only after their last checkpoint and while unused,
+  and historical thread diffs read from the project repository. See `docs/agentqueue/ADR-0008-*.md`.
 - 2026-10-11 — AgentQueue made native in Goals: setup pages default to Auto mode (AgentQueue when the project
   has a valid active plan, otherwise standard; explicit AgentQueue refuses instead of falling back) with a
   server-checked plan preview; tasks are reserved before a worker exists (10 slots, 2 ready tasks starts 2);
