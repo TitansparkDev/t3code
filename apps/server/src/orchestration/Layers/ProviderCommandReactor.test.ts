@@ -1778,10 +1778,12 @@ describe("ProviderCommandReactor", () => {
       yield* Effect.promise(() =>
         waitFor(async () => {
           const readModel = await harness.readModel();
+          // The failure activity is appended after the session error is set.
+          const entry = readModel.threads.find((thread) => thread.id === ThreadId.make("thread-1"));
           return (
-            readModel.threads
-              .find((entry) => entry.id === ThreadId.make("thread-1"))
-              ?.session?.lastError?.startsWith("Provider usage limit reached.") ?? false
+            (entry?.session?.lastError?.startsWith("Provider usage limit reached.") ?? false) &&
+            (entry?.activities.some((activity) => activity.kind === "provider.turn.start.failed") ??
+              false)
           );
         }),
       );
@@ -4408,7 +4410,7 @@ describe("ProviderCommandReactor", () => {
       }),
     );
 
-    await Effect.runPromise(
+    await runtime!.runPromise(
       harness.engine.dispatch({
         type: "thread.activity.append",
         commandId: CommandId.make("cmd-user-input-requested"),
@@ -4441,7 +4443,7 @@ describe("ProviderCommandReactor", () => {
       }),
     );
 
-    await Effect.runPromise(
+    await runtime!.runPromise(
       harness.engine.dispatch({
         type: "thread.user-input.respond",
         commandId: CommandId.make("cmd-user-input-respond-stale"),

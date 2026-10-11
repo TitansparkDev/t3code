@@ -79,7 +79,10 @@ import {
 import {
   CLOUD_ENDPOINT_RUNTIME_CONFIG,
   CLOUD_ENDPOINT_CONFIRMED_ORIGIN,
+  CLOUD_MANAGED_ENDPOINT,
   decodeConfirmedOrigin,
+  decodeManagedEndpoint,
+  encodeManagedEndpointJson,
   CLOUD_LINKED_USER_ID,
   CLOUD_MINT_PUBLIC_KEY,
   decodeRuntimeConfig,
@@ -681,6 +684,13 @@ const applyCloudRelayConfig = Effect.fn("environment.cloud.applyRelayConfig")(fu
     } else {
       yield* dependencies.secrets.remove(CLOUD_ENDPOINT_RUNTIME_CONFIG);
     }
+    // The public endpoint is what clients build off-network QR pairing links from.
+    if (payload.endpoint) {
+      const endpointJson = yield* encodeManagedEndpointJson(payload.endpoint);
+      yield* dependencies.secrets.set(CLOUD_MANAGED_ENDPOINT, stringToBytes(endpointJson));
+    } else {
+      yield* dependencies.secrets.remove(CLOUD_MANAGED_ENDPOINT);
+    }
     if (payload.endpointRuntime === null || options?.confirmedOrigin === undefined) {
       return {
         ok: true,
@@ -857,6 +867,7 @@ const reconcileDesiredCloudLinkWith = Effect.fn("environment.cloud.reconcileDesi
         cloudUserId: link.cloudUserId,
         environmentCredential: link.environmentCredential,
         cloudMintPublicKey: link.cloudMintPublicKey,
+        endpoint: link.endpoint,
         endpointRuntime: link.endpointRuntime,
       },
       {
@@ -1277,17 +1288,27 @@ export const releaseManagedTunnelOnShutdown = Effect.fn(
 const readCloudLinkState = Effect.fn("environment.cloud.readLinkState")(function* (
   dependencies: CloudHttpDependencies,
 ) {
-  const [cloudUserId, relayUrl, relayIssuer, endpointRuntimeConfig, publishAgentActivity] =
-    yield* Effect.all(
-      [
-        dependencies.secrets.get(CLOUD_LINKED_USER_ID),
-        dependencies.secrets.get(RELAY_URL_SECRET),
-        dependencies.secrets.get(RELAY_ISSUER_SECRET),
-        dependencies.secrets.get(CLOUD_ENDPOINT_RUNTIME_CONFIG),
-        dependencies.secrets.get(PUBLISH_AGENT_ACTIVITY_SECRET),
-      ],
-      { concurrency: 5 },
-    );
+  const [
+    cloudUserId,
+    relayUrl,
+    relayIssuer,
+    endpointRuntimeConfig,
+    managedEndpoint,
+    publishAgentActivity,
+  ] = yield* Effect.all(
+    [
+      dependencies.secrets.get(CLOUD_LINKED_USER_ID),
+      dependencies.secrets.get(RELAY_URL_SECRET),
+      dependencies.secrets.get(RELAY_ISSUER_SECRET),
+      dependencies.secrets.get(CLOUD_ENDPOINT_RUNTIME_CONFIG),
+      dependencies.secrets.get(CLOUD_MANAGED_ENDPOINT),
+      dependencies.secrets.get(PUBLISH_AGENT_ACTIVITY_SECRET),
+    ],
+    { concurrency: 6 },
+  );
+  const decodedManagedEndpoint = Option.isSome(managedEndpoint)
+    ? Option.getOrNull(decodeManagedEndpoint(bytesToString(managedEndpoint.value)))
+    : null;
   return {
     linked: Option.isSome(cloudUserId),
     cloudUserId: Option.isSome(cloudUserId) ? bytesToString(cloudUserId.value) : null,
@@ -1296,6 +1317,7 @@ const readCloudLinkState = Effect.fn("environment.cloud.readLinkState")(function
     // The managed tunnel runtime config is only stored for managed links; a
     // publish-only link leaves it absent.
     managedTunnelActive: Option.isSome(endpointRuntimeConfig),
+    ...(decodedManagedEndpoint ? { managedEndpoint: decodedManagedEndpoint } : {}),
     publishAgentActivity: Option.isSome(publishAgentActivity)
       ? bytesToString(publishAgentActivity.value) === "true"
       : false,
@@ -1328,9 +1350,10 @@ const cloudUnlinkHandler = Effect.fn("environment.cloud.unlink")(
             dependencies.secrets.remove(CLOUD_MINT_PUBLIC_KEY),
             dependencies.secrets.remove(CLOUD_ENDPOINT_RUNTIME_CONFIG),
             dependencies.secrets.remove(CLOUD_ENDPOINT_CONFIRMED_ORIGIN),
+            dependencies.secrets.remove(CLOUD_MANAGED_ENDPOINT),
             dependencies.secrets.remove(PUBLISH_AGENT_ACTIVITY_SECRET),
           ],
-          { concurrency: 8 },
+          { concurrency: 9 },
         );
         yield* setCliDesiredCloudLink(false);
         return { ok: true, endpointRuntimeStatus } satisfies EnvironmentCloudRelayConfigResult;

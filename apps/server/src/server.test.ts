@@ -7173,6 +7173,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             },
             providerInstanceRegistry: { listInstances: Effect.succeed(instances) },
             providerRegistry: { refresh: () => probe, refreshInstance: () => probe },
+            providerService: { refreshQuota: () => Effect.succeed([]) },
           },
         });
         const wsUrl = yield* getWsServerUrl("/ws");

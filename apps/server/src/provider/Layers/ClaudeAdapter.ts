@@ -3504,8 +3504,23 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       return;
     }
 
+    // Limited retries may only carry an assistant error, without a new window
+    // event. Later parent responses replace this evidence if the turn recovers.
+    // The CLI can report authentication failure before ending the turn as a
+    // generic API error, so that evidence is retained for the result fallback.
+    const noteAssistantFailureEvidence = (turnState: NonNullable<typeof context.turnState>) => {
+      turnState.latestAssistantRateLimited = message.error === "rate_limit";
+      if (message.error === "authentication_failed") {
+        turnState.authenticationFailureMessage = claudeSignedOutMessage({
+          configDir: claudeEnvironment.CLAUDE_CONFIG_DIR,
+          cwd: path.resolve(context.session.cwd ?? "."),
+        });
+      }
+    };
+
     const apiErrorMessage = assistantApiErrorMessage(message);
     if (apiErrorMessage !== undefined) {
+      if (context.turnState) noteAssistantFailureEvidence(context.turnState);
       context.apiErrorMessage = apiErrorMessage;
       context.usageLimitError = usageLimitWithKnownRetryAt(
         providerUsageLimitFromError({ message: apiErrorMessage, detail: message }) ?? undefined,
@@ -3597,17 +3612,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
 
     if (context.turnState) {
-      // Limited retries may only carry an assistant error, without a new window
-      // event. Later parent responses replace this evidence if the turn recovers.
-      context.turnState.latestAssistantRateLimited = message.error === "rate_limit";
-      // The CLI can report authentication failure before ending the turn as a
-      // generic API error, so retain that evidence for the result fallback.
-      if (message.error === "authentication_failed") {
-        context.turnState.authenticationFailureMessage = claudeSignedOutMessage({
-          configDir: claudeEnvironment.CLAUDE_CONFIG_DIR,
-          cwd: path.resolve(context.session.cwd ?? "."),
-        });
-      }
+      noteAssistantFailureEvidence(context.turnState);
       if (
         normalizeClaudeActiveTokenUsage(
           message.message.usage,
@@ -3655,8 +3660,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     const apiError = resultApiError(message, context.apiErrorMessage);
     context.apiErrorMessage = undefined;
     const outcome = resultOutcome(message, failureHint);
+    // The structured outcome names the real cause (overload, expired login,
+    // rejected usage window). The raw API message only fills in when it has none.
     const status = apiError === undefined ? outcome.status : "failed";
-    const errorMessage = apiError?.message ?? outcome.errorMessage;
+    const errorMessage = outcome.errorMessage ?? apiError?.message;
 
     if (status === "failed") {
       yield* emitRuntimeError(

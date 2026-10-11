@@ -431,8 +431,15 @@ it.layer(testLayer)("AntigravityDriver", (it) => {
         expect(snapshot.models).toEqual([]);
         expect(snapshot.slashCommands).toEqual([]);
         expect(snapshot.supportsTextGeneration).toBe(false);
-        expect(h.acquisitions).toHaveLength(2);
-        expect(h.releases).toEqual([h.first.version, h.signedOut.version]);
+        // Each sign-in-required report first rechecks the saved access with one more
+        // short-lived runtime (the start hook and the refresh each ask); every launch is released.
+        expect(h.acquisitions).toHaveLength(4);
+        expect(h.releases).toEqual([
+          h.first.version,
+          h.signedOut.version,
+          h.signedOut.version,
+          h.signedOut.version,
+        ]);
         yield* h.assertClosed;
       }).pipe(Effect.scoped),
   );
@@ -456,7 +463,8 @@ it.layer(testLayer)("AntigravityDriver", (it) => {
         expect(snapshot.auth.status).toBe("unauthenticated");
         expect(snapshot.models).toEqual([]);
         expect(snapshot.supportsTextGeneration).toBe(false);
-        expect(h.releases).toEqual([h.first.version, h.signedOut.version]);
+        // The failed helper run plus the saved-access recheck it triggers.
+        expect(h.releases).toEqual([h.first.version, h.signedOut.version, h.signedOut.version]);
         yield* h.assertClosed;
       }).pipe(Effect.scoped),
   );

@@ -267,9 +267,15 @@ export const makeAntigravityAuth = Effect.fn("makeAntigravityAuth")(function* <
       ),
     );
 
-  const runSignIn = (flow: AuthFlow, stopSessions: Effect.Effect<void, ProviderSetupError>) =>
+  // An automatic refresh is requested from inside a failing process start, so it
+  // must not stop owned processes: that would interrupt its own caller.
+  const runSignIn = (
+    flow: AuthFlow,
+    stopSessions: Effect.Effect<void, ProviderSetupError>,
+    stopOwned = true,
+  ) =>
     Effect.gen(function* () {
-      yield* stopSessions.pipe(Effect.ensuring(stopOwnedProcesses));
+      yield* stopSessions.pipe(Effect.ensuring(stopOwned ? stopOwnedProcesses : Effect.void));
       const runtime = yield* options.makeRuntime(
         flow.interactive
           ? { onAuthorizationUrl: (url) => receiveAuthorizationUrl(flow, url) }
@@ -555,7 +561,7 @@ export const makeAntigravityAuth = Effect.fn("makeAntigravityAuth")(function* <
         activeFlow = flow;
         operation = "auth";
         yield* publishFlow(flow, flow.state);
-        flow.fiber = yield* runSignIn(flow, Effect.void).pipe(
+        flow.fiber = yield* runSignIn(flow, Effect.void, false).pipe(
           Effect.interruptible,
           Effect.forkIn(instanceScope),
         );

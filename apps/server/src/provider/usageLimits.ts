@@ -12,7 +12,9 @@ export interface ProviderUsageLimit {
 function absoluteIso(value: unknown): IsoDateTime | undefined {
   if (typeof value === "number" && Number.isFinite(value)) {
     const milliseconds = value < 10_000_000_000 ? value * 1_000 : value;
-    return DateTime.formatIso(DateTime.makeUnsafe(milliseconds)) as IsoDateTime;
+    // An out-of-range instant is no credible reset time: drop it, never throw.
+    const parsed = DateTime.make(milliseconds);
+    return parsed._tag === "Some" ? (DateTime.formatIso(parsed.value) as IsoDateTime) : undefined;
   }
   if (typeof value !== "string") return undefined;
   const parsed = DateTime.make(value);

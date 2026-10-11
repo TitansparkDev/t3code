@@ -5258,12 +5258,14 @@ describe("ClaudeAdapterLive", () => {
           "Claude usage limit reached. This turn is paused until the 7-day limit resets.",
         ],
       );
-      // A throw inside the telemetry handler would tear the session down.
+      // A throw inside the telemetry handler would tear the session down. A
+      // rejected window itself reports one usage-limit error (the auto-resume
+      // trigger); nothing else may be reported.
       assert.deepEqual(
         runtimeEvents
           .filter((event) => event.type === "session.exited" || event.type === "runtime.error")
-          .map((event) => event.type),
-        [],
+          .map((event) => (event.type === "runtime.error" ? event.payload.message : event.type)),
+        ["Claude usage limit reached.", "Claude usage limit reached."],
       );
       // Still live enough to take the next turn.
       yield* adapter.sendTurn({ threadId: THREAD_ID, input: "still here", attachments: [] });
