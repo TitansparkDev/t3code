@@ -151,6 +151,8 @@ describe("overseer reply", () => {
     ).toEqual({
       verdict: "continue",
       release: ["bd-1", "bd-2"],
+      retry: [],
+      unblock: [],
       guidance: "Install first.\nThen test.",
       chats: new Map(),
     });
@@ -160,10 +162,21 @@ describe("overseer reply", () => {
     expect(parseOverseerReply("I think maybe continue?")).toEqual({
       verdict: undefined,
       release: [],
+      retry: [],
+      unblock: [],
       guidance: undefined,
       chats: new Map(),
     });
     expect(parseOverseerReply("OVERSEER: STOP").verdict).toBe("stop");
+  });
+
+  it("reads queue repairs: tasks to retry and tasks to unblock", () => {
+    const decision = parseOverseerReply(
+      "OVERSEER: CONTINUE\nRETRY: RP1, RP4\nUNBLOCK: RP9\nGUIDANCE: Rebase first.",
+    );
+    expect(decision.retry).toEqual(["RP1", "RP4"]);
+    expect(decision.unblock).toEqual(["RP9"]);
+    expect(decision.guidance).toBe("Rebase first.");
   });
 
   it("reads the prompt for each stuck chat, which may span lines", () => {

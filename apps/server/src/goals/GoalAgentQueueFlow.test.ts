@@ -24,14 +24,19 @@ import {
   type ServerProvider,
 } from "@t3tools/contracts";
 import type { Goal, GoalSettings } from "@t3tools/contracts/goals";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as TestClock from "effect/testing/TestClock";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
-import { openQueueDatabase } from "../../../../packages/agent-queue-core/src/index.ts";
+import {
+  openQueueDatabase,
+  releaseClaim,
+} from "../../../../packages/agent-queue-core/src/index.ts";
 import {
   createTestGitRepo,
   execCommand,
@@ -127,6 +132,8 @@ const makeFlow = (plan: string, options: { readonly extraFiles?: Record<string, 
     const subscription = yield* PubSub.subscribe(events);
     let eventCount = 0;
     const scripts = new Map<string, ThreadScript>();
+    /** The model each thread was created with, as the engine would report it. */
+    const selections = new Map<string, unknown>();
     const providers = yield* Ref.make<ReadonlyArray<ServerProvider>>([provider("codex")]);
     const script = (threadId: string): ThreadScript =>
       scripts.get(threadId) ?? {
@@ -143,7 +150,7 @@ const makeFlow = (plan: string, options: { readonly extraFiles?: Record<string, 
         messages: state.reply === "" ? [] : [{ role: "assistant", text: state.reply }],
         activities: state.progress ? [{}] : [],
         session: state.lastError ? { lastError: state.lastError, status: "error" } : null,
-        modelSelection: CODEX,
+        modelSelection: selections.get(id) ?? CODEX,
       } as unknown as OrchestrationThread;
     };
 
@@ -163,7 +170,11 @@ const makeFlow = (plan: string, options: { readonly extraFiles?: Record<string, 
         }),
       ),
       Layer.mock(OrchestrationEngineService)({
-        dispatch: (command) => Queue.offer(commands, command).pipe(Effect.as({ sequence: 1 })),
+        dispatch: (command) => {
+          if (command.type === "thread.create")
+            selections.set(command.threadId, command.modelSelection);
+          return Queue.offer(commands, command).pipe(Effect.as({ sequence: 1 }));
+        },
         streamDomainEvents: Stream.fromSubscription(subscription),
       }),
       Layer.mock(ProviderRegistry)({ getProviders: Ref.get(providers) }),
@@ -776,6 +787,155 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
       yield* flow.waitFor("thread.create", 2);
       expect((yield* flow.goalOf(service)).status).toBe("running");
     }).pipe(Effect.scoped),
+  );
+
+  it.effect("dispatches by itself when another writer unlocks a dependency (queue events)", () =>
+    Effect.gen(function* () {
+      const flow = yield* makeFlow(planWith([{ id: "T1" }, { id: "T2", deps: ["T1"] }]));
+      const service = yield* flow.startServer;
+      yield* Effect.forkScoped(service.loop);
+      yield* Effect.yieldNow;
+      const [goal] = yield* service.create(settingsFor());
+      yield* flow.waitFor("thread.create", 1);
+      const token = goal!.chats[0]!.claimToken!;
+      // Something else (a person, another tool) completes T1 in the queue.
+      yield* Effect.sync(() => {
+        const db = openQueueDatabase({ gitCommonDir: flow.repo.gitCommonDir });
+        releaseClaim(db, { ownerToken: token, finalStatus: "completed" });
+        db.close();
+      });
+      // The scheduler's wakeup, not a worker, notices and starts T2.
+      yield* TestClock.adjust(Duration.seconds(5));
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust(Duration.seconds(1));
+      const creates = yield* flow.waitFor("thread.create", 2);
+      expect(creates[1]?.title).toContain("T2");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("a merge conflict is repaired by a repair worker on the existing commits", () =>
+    Effect.gen(function* () {
+      const flow = yield* makeFlow(planWith([{ id: "T1" }, { id: "T2" }]), {
+        extraFiles: { "shared.txt": "base\n" },
+      });
+      const service = yield* flow.startServer;
+      yield* Effect.forkScoped(service.loop);
+      yield* Effect.yieldNow;
+      yield* service.create(settingsFor());
+      yield* flow.waitFor("thread.create", 2);
+      yield* flow.work("T1", { file: "shared.txt", content: "from T1\n" });
+      yield* flow.eventually(
+        flow.taskRow("T1"),
+        (row) => row.status === "completed",
+        "T1 to merge",
+      );
+      yield* flow.work("T2", { file: "shared.txt", content: "from T2\n" });
+
+      // The conflict starts a repair worker; nothing is re-implemented and nothing needs a person.
+      const creates = yield* flow.waitFor("thread.create", 3);
+      const repair = creates[2]!;
+      expect(repair.title).toContain("Repair: T2");
+      expect(repair.worktreePath).toBe(flow.createdFor("T2")!.worktreePath);
+      const repairTurns = yield* flow.waitFor("thread.turn.start", 3);
+      const repairTurn = repairTurns.at(-1);
+      const text = repairTurn?.type === "thread.turn.start" ? repairTurn.message.text : "";
+      expect(text).toContain("merge repair");
+      expect(text).toContain("shared.txt");
+      expect(yield* flow.taskRow("T2")).toMatchObject({
+        status: "claimed",
+        integration_state: "repairing",
+      });
+
+      yield* Effect.promise(async () => {
+        const cwd = repair.worktreePath!;
+        await execCommand("git", ["rebase", "main"], cwd);
+        await NodeFSP.writeFile(NodePath.join(cwd, "shared.txt"), "from T1 and T2\n");
+        await execCommand("git", ["add", "shared.txt"], cwd);
+        await execCommand("git", ["-c", "core.editor=true", "rebase", "--continue"], cwd);
+      });
+      yield* flow.sessionEvent(repair.threadId, { status: "running", activeTurnId: "r" });
+      yield* flow.sessionEvent(repair.threadId, { status: "ready", activeTurnId: null });
+      const done = yield* flow.eventually(
+        flow.goalOf(service),
+        (g) => g.status === "complete",
+        "the goal to complete",
+      );
+      expect(done.chats.every((chat) => chat.status !== "running")).toBe(true);
+      expect(
+        yield* Effect.promise(() =>
+          NodeFSP.readFile(NodePath.join(flow.repo.rootDir, "shared.txt"), "utf8"),
+        ),
+      ).toBe("from T1 and T2\n");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("a failing check sends the worker back with the failure, not a generic nudge", () =>
+    Effect.gen(function* () {
+      const flow = yield* makeFlow(planWith([{ id: "T1", verify: "exit 3" }]));
+      const service = yield* flow.startServer;
+      yield* Effect.forkScoped(service.loop);
+      yield* Effect.yieldNow;
+      yield* service.create(settingsFor());
+      yield* flow.waitFor("thread.create", 1);
+      yield* flow.work("T1");
+      const turns = yield* flow.waitFor("thread.turn.start", 2);
+      const text = turns[1]?.type === "thread.turn.start" ? turns[1].message.text : "";
+      expect(text).toContain("check on your commit and it failed");
+      expect(text).toContain("exit 3");
+      expect(text).not.toContain("stuck or blocked");
+      // The task is not merged and not marked done.
+      expect((yield* flow.taskRow("T1")).status).toBe("claimed");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "an overseer that cannot start on a locked-keyring provider is retried on a healthy one",
+    () =>
+      Effect.gen(function* () {
+        const flow = yield* makeFlow(
+          planWith([
+            { id: "T1", verify: "" },
+            { id: "T2", deps: ["T1"] },
+          ]),
+        );
+        yield* Ref.set(flow.providers, [
+          provider("codex"),
+          {
+            ...provider("chatAgents"),
+            models: [{ slug: "chat-model" }],
+          } as unknown as ServerProvider,
+        ]);
+        const service = yield* flow.startServer;
+        yield* Effect.forkScoped(service.loop);
+        yield* Effect.yieldNow;
+        yield* service.create(settingsFor({ overseer: true }));
+        yield* flow.waitFor("thread.create", 1);
+        // T1's worker needs a person and nothing can verify it: T1 is parked, T2 can never start.
+        yield* flow.work("T1", { commit: false, reply: "I cannot do this.\n\nNEEDS ATTENTION" });
+        const overseers = yield* flow.waitFor("thread.create", 2);
+        const first = overseers[1]!;
+        expect(first.title).toBe("Goal overseer");
+        expect(first.modelSelection.instanceId).toBe("chatAgents");
+
+        flow.scripts.set(first.threadId, {
+          reply: "",
+          turnState: "error",
+          progress: false,
+          lastError:
+            "the ChatGPT app is on its loading splash because the desktop login keyring is locked (APP_SHELL_NOT_LOADED)",
+        });
+        yield* flow.sessionEvent(first.threadId, {
+          status: "error",
+          activeTurnId: null,
+          lastError: "APP_SHELL_NOT_LOADED",
+        });
+        const retried = yield* flow.waitFor("thread.create", 3);
+        expect(retried[2]?.title).toBe("Goal overseer");
+        expect(retried[2]?.modelSelection.instanceId).toBe("codex");
+        const goal = yield* flow.goalOf(service);
+        expect(goal.status).toBe("running");
+        expect(goal.pauses?.some((pause) => pause.instanceId === "chatAgents")).toBe(true);
+      }).pipe(Effect.scoped),
   );
 
   it.effect(

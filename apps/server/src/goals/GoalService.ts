@@ -106,6 +106,7 @@ export const StartSpacingMillis = Context.Reference<number>("t3/goals/StartSpaci
 
 /** How often running goals look for room to start another chat. */
 const TICK_INTERVAL = "5 seconds";
+const TICK_MILLIS = 5_000;
 
 export class GoalService extends Context.Service<
   GoalService,
@@ -1944,38 +1945,52 @@ export const make = Effect.gen(function* () {
    * dependants, a conflict that needs a repair worker, a task added or released. The
    * slow tick still reconciles, so a missed event only delays work.
    */
-  const queueEvents = Effect.forever(
-    Effect.sleep("1 second").pipe(
-      Effect.andThen(
-        Effect.gen(function* () {
-          for (const goal of yield* store.list) {
-            const binding = goal.agentQueue;
-            if (goal.status !== "running" || !binding) continue;
-            const batch = yield* queue
-              .events(binding, goal.queueEventCursor ?? -1)
-              .pipe(Effect.catch(() => Effect.succeed(undefined)));
-            if (!batch) continue;
-            if (batch.last !== goal.queueEventCursor) {
-              yield* store.update(goal.id, (current) => ({
-                ...current,
-                queueEventCursor: batch.last,
-              }));
-            }
-            if (batch.events.length === 0) continue;
-            yield* ensureIntegration(goal.id);
-            yield* fillLanes(goal.id).pipe(
-              lock.withPermits(1),
-              Effect.catchCause(logFailure("goals.event-fill-failed")),
-            );
-          }
-        }).pipe(Effect.catchCause(logFailure("goals.queue-events-failed"))),
-      ),
-    ),
-  );
+  const pollQueueEvents = Effect.gen(function* () {
+    for (const goal of yield* store.list) {
+      const binding = goal.agentQueue;
+      if (goal.status !== "running" || !binding) continue;
+      const batch = yield* queue
+        .events(binding, goal.queueEventCursor ?? -1)
+        .pipe(Effect.catch(() => Effect.succeed(undefined)));
+      if (!batch) continue;
+      if (batch.last !== goal.queueEventCursor) {
+        yield* store.update(goal.id, (current) => ({ ...current, queueEventCursor: batch.last }));
+      }
+      if (batch.events.length === 0) continue;
+      yield* ensureIntegration(goal.id);
+      yield* fillLanes(goal.id).pipe(
+        lock.withPermits(1),
+        Effect.catchCause(logFailure("goals.event-fill-failed")),
+      );
+    }
+  }).pipe(Effect.catchCause(logFailure("goals.queue-events-failed")));
+
+  /**
+   * One scheduler loop. While a queue goal runs it looks at the queue's event log every
+   * second; the full reconciling tick still runs every TICK_INTERVAL. Without queue goals
+   * it is the plain tick it always was.
+   */
+  const schedulerLoop = Effect.gen(function* () {
+    let lastTick = Number.NEGATIVE_INFINITY;
+    while (true) {
+      const watching = (yield* store.list).some(
+        (goal) => goal.status === "running" && goal.agentQueue !== undefined,
+      );
+      yield* Effect.sleep(watching ? "1 second" : TICK_INTERVAL);
+      const watchingNow = (yield* store.list).some(
+        (goal) => goal.status === "running" && goal.agentQueue !== undefined,
+      );
+      if (watchingNow) yield* pollQueueEvents;
+      const now = yield* nowMillis;
+      if (!watchingNow || now - lastTick >= TICK_MILLIS - 500) {
+        lastTick = now;
+        yield* tick;
+      }
+    }
+  });
 
   const loop = Effect.all(
     [
-      queueEvents,
       recover.pipe(Effect.catchCause(logFailure("goals.recovery-failed"))),
       Stream.runForEach(engine.streamDomainEvents, (event) =>
         event.type === "thread.session-set"
@@ -1984,7 +1999,7 @@ export const make = Effect.gen(function* () {
             )
           : Effect.void,
       ).pipe(Effect.catchCause(logFailure("goals.stream-failed"))),
-      Effect.forever(Effect.sleep(TICK_INTERVAL).pipe(Effect.andThen(tick))),
+      schedulerLoop,
     ],
     { concurrency: "unbounded", discard: true },
   );
@@ -2089,10 +2104,16 @@ export const make = Effect.gen(function* () {
       };
     }
     const importedAt = yield* nowIso;
+    // Events from here on wake the scheduler; earlier ones are already reflected in the queue.
+    const cursor = yield* queue.events(bound.value as QueueBinding, -1).pipe(
+      Effect.map((batch) => batch.last),
+      Effect.orElseSucceed(() => undefined),
+    );
     return {
       ok: true as const,
       agentQueue: { ...(bound.value as QueueBinding), importedAt },
       queueReason: undefined,
+      queueEventCursor: cursor,
     };
   });
 
@@ -2166,6 +2187,9 @@ export const make = Effect.gen(function* () {
         chats: [],
         ...(binding?.agentQueue ? { agentQueue: binding.agentQueue } : {}),
         ...(binding?.queueReason ? { queueReason: binding.queueReason } : {}),
+        ...(binding?.queueEventCursor !== undefined
+          ? { queueEventCursor: binding.queueEventCursor }
+          : {}),
       };
       yield* store.add(goal);
       if (!draft) yield* lock.withPermits(1)(fillLanes(goal.id));
@@ -2220,7 +2244,7 @@ export const make = Effect.gen(function* () {
         agentQueue: binding.agentQueue,
         queueReason: binding.queueReason,
         queueErrors: undefined,
-        queueEventCursor: undefined,
+        queueEventCursor: binding.queueEventCursor,
         queueProgress: undefined,
       }));
     }
