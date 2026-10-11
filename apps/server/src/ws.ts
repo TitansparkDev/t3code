@@ -3000,6 +3000,16 @@ const makeWsRpcLayer = (
               .pipe(Effect.map((list) => ({ goals: list }))),
             { "rpc.aggregate": "server" },
           ),
+        [WS_METHODS.serverPreviewGoalPlan]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverPreviewGoalPlan,
+            goals.previewPlan({
+              projectId: input.projectId,
+              queueMode: input.queueMode,
+              planPath: input.planPath,
+            }),
+            { "rpc.aggregate": "server" },
+          ),
         [WS_METHODS.serverUpdateGoal]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverUpdateGoal,

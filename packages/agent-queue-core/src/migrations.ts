@@ -106,6 +106,8 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
         ALTER TABLE tasks ADD COLUMN integration_error TEXT;
         ALTER TABLE tasks ADD COLUMN receipt_json TEXT;
         ALTER TABLE tasks ADD COLUMN integration_updated_at TEXT;
+        ALTER TABLE plans ADD COLUMN final_verification TEXT;
+        ALTER TABLE plans ADD COLUMN final_receipt_json TEXT;
         CREATE INDEX IF NOT EXISTS idx_tasks_integration ON tasks(integration_state) WHERE integration_state IS NOT NULL;
       `);
     },

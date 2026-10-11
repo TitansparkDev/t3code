@@ -13,13 +13,17 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as NodeChildProcess from "node:child_process";
 import {
-  commitPendingChanges,
+  adoptCandidate,
   evaluateDeadlock,
+  integrateCandidate,
+  isProcessAlive,
+  listCandidates,
+  submitCandidate,
+  verifyPlanCompletion,
   generateOverseerBriefing,
   getEventsSince,
   getQueueSnapshot,
   importPlanFile,
-  landCandidate,
   openQueueDatabase,
   previewPlan,
   releaseClaim,
@@ -28,10 +32,11 @@ import {
   reserveNextTask,
   resolveRepoGit,
   retryTask,
-  runVerification,
   teardownWorktree,
   unblockTask,
-  type LandingExecutionResult,
+  type CompletionReport,
+  type IntegrationOutcome,
+  type SubmitOutcome,
   type OverseerRepairResult,
   type PlanPreview,
   type QueueSnapshot,
@@ -60,6 +65,7 @@ export interface QueueStatus {
   readonly ready: number;
   readonly deadlocked: boolean;
   readonly deadlockReason: string | null;
+  readonly candidates: ReadonlyArray<CandidateInfo>;
   /** Failed or blocked tasks, with why. */
   readonly problems: ReadonlyArray<{
     readonly taskId: string;
@@ -70,6 +76,8 @@ export interface QueueStatus {
     readonly maxRetries: number;
   }>;
 }
+
+export type CandidateInfo = ReturnType<typeof listCandidates>[number];
 
 export interface ActiveClaim {
   readonly taskId: string;
@@ -87,11 +95,6 @@ export interface TaskInfo {
   readonly verificationCommand: string | null;
   readonly retryCount: number;
   readonly maxRetries: number;
-}
-
-export interface LandOutcome extends LandingExecutionResult {
-  /** The verification command's tail output when it failed. */
-  readonly verificationFailed?: boolean;
 }
 
 const fail = (operation: string, cause: unknown) =>
@@ -154,8 +157,11 @@ export class AgentQueueService extends Context.Service<
       status: "pending" | "completed" | "failed" | "blocked" | "retry",
       reason?: string,
     ) => Effect.Effect<boolean, AgentQueueError>;
-    /** Commit leftovers, run the task's check, rebase if needed, and land it on the base branch. */
-    readonly verifyAndLand: (
+    /**
+     * The worker finished: commit leftovers, run the task's check, and record the work as
+     * a candidate (the claim is released). Integration continues without the worker.
+     */
+    readonly submit: (
       binding: QueueBinding,
       input: {
         readonly taskId: string;
@@ -164,7 +170,22 @@ export class AgentQueueService extends Context.Service<
         readonly branch: string;
         readonly verificationCommand: string;
       },
-    ) => Effect.Effect<LandOutcome, AgentQueueError>;
+    ) => Effect.Effect<SubmitOutcome, AgentQueueError>;
+    /** Merge a submitted candidate through the staging worktree. Safe to repeat. */
+    readonly integrate: (
+      binding: QueueBinding,
+      taskId: string,
+    ) => Effect.Effect<IntegrationOutcome, AgentQueueError>;
+    /** Candidates waiting to merge or be repaired. */
+    readonly candidates: (
+      binding: QueueBinding,
+    ) => Effect.Effect<ReadonlyArray<CandidateInfo>, AgentQueueError>;
+    /** Register commits already on a branch as the candidate of a task nobody owns. */
+    readonly adopt: (
+      binding: QueueBinding,
+      taskId: string,
+      branch: string,
+    ) => Effect.Effect<{ readonly commit: string }, AgentQueueError>;
     /** Remove a landed worktree, or keep a failed one (with a salvage branch if it has work). */
     readonly teardown: (
       binding: QueueBinding,
@@ -179,13 +200,11 @@ export class AgentQueueService extends Context.Service<
       { readonly events: ReadonlyArray<StoredQueueEvent>; readonly last: number },
       AgentQueueError
     >;
-    /** Every finished task of the plan is on the base branch. Lists what is not. */
-    readonly verifyCompletion: (
+    /** Whether the whole plan is finished, judged from the queue and Git alone. */
+    readonly completion: (
       binding: QueueBinding,
-    ) => Effect.Effect<
-      { readonly complete: boolean; readonly unverified: ReadonlyArray<string> },
-      AgentQueueError
-    >;
+      options: { readonly runFinalCheck: boolean },
+    ) => Effect.Effect<CompletionReport, AgentQueueError>;
     readonly retryTask: (
       binding: QueueBinding,
       taskId: string,
@@ -254,7 +273,7 @@ const make = AgentQueueService.of({
         const problems = db
           .prepare(
             `SELECT id, title, status, failure_reason, retry_count, max_retries FROM tasks
-             WHERE plan_id = ? AND status IN ('failed', 'blocked')`,
+             WHERE plan_id = ? AND (status IN ('failed', 'blocked') OR integration_state = 'repair_needed')`,
           )
           .all(binding.planId) as Array<{
           id: string;
@@ -269,6 +288,7 @@ const make = AgentQueueService.of({
           ready,
           deadlocked: deadlock.isDeadlocked,
           deadlockReason: deadlock.reason ?? null,
+          candidates: listCandidates(db, binding.planId),
           problems: problems.map((row) => ({
             taskId: row.id,
             title: row.title,
@@ -292,7 +312,8 @@ const make = AgentQueueService.of({
           workerSessionId,
           // This server owns every claim it makes and renews them while the chat runs.
           // A claim whose renewals stopped is abandoned even though the server is alive.
-          isOwnerAlive: () => false,
+          isOwnerAlive: (pid, sessionId) =>
+            sessionId?.startsWith("goal-") ? false : isProcessAlive(pid),
         });
         return outcome.kind === "reserved" ? outcome.task : null;
       } finally {
@@ -394,50 +415,39 @@ const make = AgentQueueService.of({
       }),
     ),
 
-  verifyAndLand: (binding, input) =>
-    runAsync("verifyAndLand", async () => {
+  submit: (binding, input) =>
+    runAsync("submit", () => {
       const db = openQueueDatabase({ gitCommonDir: binding.gitCommonDir });
-      try {
-        const claim = db
-          .prepare(
-            "SELECT 1 FROM task_claims WHERE task_id = ? AND owner_token = ? AND released_at IS NULL",
-          )
-          .get(input.taskId, input.claimToken);
-        if (!claim) {
-          return { success: false, error: "The task claim is no longer held by this worker." };
-        }
-        // Verification can outlast the lease; keep it alive while we work.
-        renewLease(db, input.claimToken, 900);
-        commitPendingChanges(
-          input.worktreePath,
-          `${input.taskId}: commit changes the worker left uncommitted`,
-        );
-        const receipt = await runVerification(
-          input.taskId,
-          input.worktreePath,
-          input.verificationCommand,
-        );
-        if (!receipt.passed) {
-          return {
-            success: false,
-            verificationFailed: true,
-            error:
-              `Verification failed (exit ${receipt.exitCode}): ${receipt.stderrSnippet || receipt.stdoutSnippet}`.slice(
-                0,
-                1500,
-              ),
-          };
-        }
-        return await landCandidate(db, binding.repoRoot, binding.gitCommonDir, {
-          taskId: input.taskId,
-          worktreePath: input.worktreePath,
-          branch: input.branch,
-          baseBranch: binding.baseBranch,
-          receipt,
-        });
-      } finally {
-        db.close();
-      }
+      return submitCandidate(db, {
+        repoRoot: binding.repoRoot,
+        baseBranch: binding.baseBranch,
+        ...input,
+      }).finally(() => db.close());
+    }),
+
+  integrate: (binding, taskId) =>
+    runAsync("integrate", () => {
+      const db = openQueueDatabase({ gitCommonDir: binding.gitCommonDir });
+      return integrateCandidate(db, {
+        repoRoot: binding.repoRoot,
+        gitCommonDir: binding.gitCommonDir,
+        baseBranch: binding.baseBranch,
+        taskId,
+      }).finally(() => db.close());
+    }),
+
+  candidates: (binding) =>
+    run("candidates", () => withDb(binding, (db) => listCandidates(db, binding.planId))),
+
+  adopt: (binding, taskId, branch) =>
+    runAsync("adopt", () => {
+      const db = openQueueDatabase({ gitCommonDir: binding.gitCommonDir });
+      return adoptCandidate(db, {
+        repoRoot: binding.repoRoot,
+        baseBranch: binding.baseBranch,
+        taskId,
+        branch,
+      }).finally(() => db.close());
     }),
 
   teardown: (binding, worktreePath, branch, landed) =>
@@ -453,57 +463,29 @@ const make = AgentQueueService.of({
   events: (binding, cursor) =>
     run("events", () =>
       withDb(binding, (db) => {
+        // A negative cursor means "from now": start after the newest event.
+        if (cursor < 0) {
+          const newest = db.prepare("SELECT max(id) AS id FROM task_events").get() as {
+            id: number | null;
+          };
+          return { events: [], last: newest.id ?? 0 };
+        }
         const batch = getEventsSince(db, cursor, 200);
         return { events: batch.events, last: batch.lastEventId };
       }),
     ),
 
-  verifyCompletion: (binding) =>
-    run("verifyCompletion", () =>
-      withDb(binding, (db) => {
-        const completed = db
-          .prepare("SELECT id FROM tasks WHERE plan_id = ? AND status = 'completed'")
-          .all(binding.planId) as Array<{ id: string }>;
-        const total = (
-          db.prepare("SELECT count(*) AS n FROM tasks WHERE plan_id = ?").get(binding.planId) as {
-            n: number;
-          }
-        ).n;
-        const unverified: string[] = [];
-        for (const { id } of completed) {
-          const imported = db
-            .prepare(
-              "SELECT payload_json FROM task_events WHERE task_id = ? AND event_type IN ('task_imported', 'task_synced') ORDER BY id LIMIT 1",
-            )
-            .get(id) as { payload_json: string } | undefined;
-          // Ticked in the plan file before the queue ever ran it: done outside this queue.
-          if (imported && /"checked":true|plan-checkbox/.test(imported.payload_json)) continue;
-          const landed = db
-            .prepare(
-              "SELECT commit_hash FROM landing_queue WHERE task_id = ? AND status = 'landed' ORDER BY id DESC LIMIT 1",
-            )
-            .get(id) as { commit_hash: string | null } | undefined;
-          if (!landed?.commit_hash) {
-            unverified.push(id);
-            continue;
-          }
-          try {
-            git(binding.repoRoot, [
-              "merge-base",
-              "--is-ancestor",
-              landed.commit_hash,
-              binding.baseBranch,
-            ]);
-          } catch {
-            unverified.push(id);
-          }
-        }
-        return {
-          complete: total > 0 && completed.length === total && unverified.length === 0,
-          unverified,
-        };
-      }),
-    ),
+  completion: (binding, options) =>
+    runAsync("completion", () => {
+      const db = openQueueDatabase({ gitCommonDir: binding.gitCommonDir });
+      return verifyPlanCompletion(db, {
+        repoRoot: binding.repoRoot,
+        gitCommonDir: binding.gitCommonDir,
+        baseBranch: binding.baseBranch,
+        planId: binding.planId,
+        runFinalCheck: options.runFinalCheck,
+      }).finally(() => db.close());
+    }),
 
   retryTask: (binding, taskId) =>
     run("retryTask", () => withDb(binding, (db) => retryTask(db, taskId, 3))),

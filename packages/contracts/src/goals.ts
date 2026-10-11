@@ -91,8 +91,16 @@ export const GoalChat = Schema.Struct({
   /** The fencing token of the claim. Only the holder may release or land the task. */
   claimToken: Schema.optional(Schema.String),
   baseBranch: Schema.optional(Schema.String),
-  /** Times this worker was sent back to fix a landing conflict. */
+  /** Times this worker was sent back to fix a failed check. */
   landingRetries: Schema.optional(Schema.Number),
+  /**
+   * What became of the assigned task, from the queue's records (never from the worker's
+   * words): `submitted` = candidate recorded and awaiting integration, `integrated` =
+   * merged and completed, `returned` = given back untouched, `attention` = needs a person.
+   */
+  taskOutcome: Schema.optional(
+    Schema.Literals(["submitted", "integrated", "returned", "attention", "retry"]),
+  ),
 });
 export type GoalChat = typeof GoalChat.Type;
 
@@ -173,6 +181,33 @@ export const GoalAgentQueueBinding = Schema.Struct({
 });
 export type GoalAgentQueueBinding = typeof GoalAgentQueueBinding.Type;
 
+/** Where an AgentQueue goal stands, derived from the queue each time it is checked. */
+export const GoalQueueProgress = Schema.Struct({
+  total: Schema.Number,
+  completed: Schema.Number,
+  ready: Schema.Number,
+  /** Pending and waiting on tasks that are not done. */
+  waiting: Schema.Number,
+  /** Workers implementing (or repairing) right now. */
+  running: Schema.Number,
+  /** Submitted work waiting to merge. */
+  awaitingIntegration: Schema.Number,
+  /** Submitted work automatic repair could not merge; needs the overseer or a person. */
+  needsRepair: Schema.Number,
+  failed: Schema.Number,
+  phase: Schema.Literals([
+    "implementing",
+    "waiting-dependencies",
+    "waiting-integration",
+    "blocked",
+    "complete",
+    "idle",
+  ]),
+  note: Schema.optional(Schema.String),
+  checkedAt: IsoDateTime,
+});
+export type GoalQueueProgress = typeof GoalQueueProgress.Type;
+
 /** Historical Beads queue snapshot retained when reading older Goal records. */
 export const GoalQueue = Schema.Struct({
   ready: Schema.Number,
@@ -199,6 +234,7 @@ export const Goal = Schema.Struct({
   queue: Schema.optional(GoalQueue),
   /** Present when workers are assigned tasks from the repository's AgentQueue. */
   agentQueue: Schema.optional(GoalAgentQueueBinding),
+  queueProgress: Schema.optional(GoalQueueProgress),
   /** Why a goal that asked for `auto` runs without AgentQueue. */
   queueReason: Schema.optional(Schema.String),
   /** Last AgentQueue event this goal has seen, so a restart does not replay or miss wakeups. */
@@ -302,13 +338,18 @@ export interface OverseerDecision {
   readonly verdict: "continue" | "stop" | undefined;
   /** Chunks the overseer wants given back to the queue. */
   readonly release: ReadonlyArray<string>;
+  /** Failed tasks the overseer wants tried again (AgentQueue goals). */
+  readonly retry: ReadonlyArray<string>;
+  /** Blocked tasks the overseer wants released (AgentQueue goals). */
+  readonly unblock: ReadonlyArray<string>;
   /** The prompt for every worker that starts next. */
   readonly guidance: string | undefined;
   /** The prompt for each stuck chat the briefing numbered, by that number. */
   readonly chats: ReadonlyMap<number, string>;
 }
 
-const OVERSEER_DIRECTIVE = /^\s*(OVERSEER|RELEASE|GUIDANCE|CHAT\s+\d+)\s*:[ \t]*(.*)$/iu;
+const OVERSEER_DIRECTIVE =
+  /^\s*(OVERSEER|RELEASE|RETRY|UNBLOCK|GUIDANCE|CHAT\s+\d+)\s*:[ \t]*(.*)$/iu;
 const MAX_OVERSEER_TEXT = 6000;
 
 /**
@@ -334,6 +375,8 @@ export function parseOverseerReply(reply: string | undefined): OverseerDecision 
     const number = /^CHAT (\d+)$/u.exec(section.key)?.[1];
     if (number !== undefined && text(section)) chats.set(Number(number), text(section));
   }
+  const taskIds = (section: { lines: ReadonlyArray<string> } | undefined) =>
+    (section ? text(section) : "").split(/[\s,]+/u).filter((id) => /^[A-Za-z0-9._-]+$/u.test(id));
   const guidanceSection = first("GUIDANCE");
   return {
     verdict:
@@ -345,6 +388,8 @@ export function parseOverseerReply(reply: string | undefined): OverseerDecision 
     release: (first("RELEASE") ? text(first("RELEASE")!) : "")
       .split(/[\s,]+/u)
       .filter((id) => /^[A-Za-z0-9._-]+$/u.test(id)),
+    retry: taskIds(first("RETRY")),
+    unblock: taskIds(first("UNBLOCK")),
     guidance: guidanceSection ? text(guidanceSection) || undefined : undefined,
     chats,
   };
@@ -428,6 +473,8 @@ export interface QueueTaskAssignment {
   readonly planPath: string;
   readonly retryCount: number;
   readonly lastFailure: string | null;
+  /** Set when the work is already done and only has to be repaired so it can merge. */
+  readonly repair: string | null;
 }
 
 /**
@@ -439,6 +486,25 @@ export function queueWorkerPrompt(
   goal: Pick<Goal, "name" | "prompt" | "concurrency"> & Partial<Pick<Goal, "guidance">>,
   task: QueueTaskAssignment,
 ): string {
+  if (task.repair !== null) {
+    return [
+      `You are an unattended coding agent doing a merge repair. Task **${task.taskId}** ("${task.title}") was already implemented and committed, but it could not be merged into ${task.baseBranch}.`,
+      "",
+      "--- Your assignment (fixed by the server) ---",
+      `Worktree (work only here): ${task.worktreePath}`,
+      `Branch: ${task.branch}`,
+      `Why it did not merge: ${task.repair}`,
+      "",
+      "--- What to do ---",
+      `1. Do not redo the implementation. In your worktree, bring the branch up to date with ${task.baseBranch} (for example \`git rebase ${task.baseBranch}\`), resolve every conflict keeping the intent of both sides, and finish the rebase or merge.`,
+      task.verificationCommand
+        ? `2. Make sure this passes afterwards: \`${task.verificationCommand}\`.`
+        : "2. Run the checks the task details name before you finish.",
+      "3. Commit. Do not push, merge into the base branch, or touch any other worktree or the main checkout. The server merges it after you finish.",
+      "4. Nobody can answer questions: choose the safest option and say what you chose.",
+      `If a person must act, end with ${GOAL_NEEDS_ATTENTION_MARKER} on a line by itself and say what is needed.`,
+    ].join("\n");
+  }
   return [
     `You are an unattended coding agent. The server already reserved task **${task.taskId}** for you: "${task.title}".`,
     "",

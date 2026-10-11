@@ -438,14 +438,23 @@ export function importPlanFile(repoRoot: string, planPath: string): ImportedPlan
     db.exec("BEGIN IMMEDIATE;");
     try {
       db.prepare(`
-        INSERT INTO plans (id, file_path, checksum, title, status, registered_at, updated_at)
-        VALUES (?, ?, ?, ?, 'active', ?, ?)
+        INSERT INTO plans (id, file_path, checksum, title, status, registered_at, updated_at, final_verification)
+        VALUES (?, ?, ?, ?, 'active', ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           checksum = excluded.checksum,
           title = excluded.title,
           status = 'active',
+          final_verification = excluded.final_verification,
           updated_at = excluded.updated_at
-      `).run(planId, preview.planPath, preview.checksum, plan.parsed.title, now, now);
+      `).run(
+        planId,
+        preview.planPath,
+        preview.checksum,
+        plan.parsed.title,
+        now,
+        now,
+        plan.parsed.finalVerification ?? null,
+      );
 
       for (const task of plan.parsed.tasks) {
         const existing = db
@@ -534,4 +543,27 @@ export function importPlanFile(repoRoot: string, planPath: string): ImportedPlan
   } finally {
     db.close();
   }
+}
+
+/**
+ * Branches `plan-work` made for this plan (`agent-plan/<plan>/<task>`) that still hold
+ * commits the base branch does not have: work that was done but never landed.
+ */
+export function findUnmergedLegacyBranches(
+  repoRoot: string,
+  baseBranch: string,
+  planPath?: string | null,
+): string[] {
+  const prefix = planPath
+    ? `refs/heads/agent-plan/${legacyPlanSlug(planPath)}/`
+    : "refs/heads/agent-plan/";
+  const refs = git(repoRoot, ["for-each-ref", "--format=%(refname)", prefix]);
+  if (!refs) return [];
+  return refs
+    .split("\n")
+    .filter(Boolean)
+    .filter(
+      (ref) => git(repoRoot, ["rev-list", "--count", `refs/heads/${baseBranch}..${ref}`]) !== "0",
+    )
+    .map((ref) => ref.replace("refs/heads/", ""));
 }

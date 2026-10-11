@@ -16,3 +16,4 @@ export * from "./repoManager.ts";
 export * from "./planImport.ts";
 export * from "./reservation.ts";
 export * from "./integration.ts";
+export * from "./completion.ts";

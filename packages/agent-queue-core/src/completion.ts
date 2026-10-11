@@ -1,0 +1,205 @@
+// @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off preferSchemaOverJson:off
+/**
+ * The only definition of "this plan is finished". A worker's words, a ticked checkbox or
+ * one successful merge never satisfy it; only the queue's records checked against Git do.
+ *
+ * @module completion
+ */
+import type * as NodeSqlite from "node:sqlite";
+import * as NodeChildProcess from "node:child_process";
+import { acquireLandingLock, prepareStagingWorktree } from "./integration.ts";
+import { runVerification } from "./verifier.ts";
+
+export interface CompletionReport {
+  readonly complete: boolean;
+  /** Plain-language reason it is not complete yet, or null. */
+  readonly reason: string | null;
+  readonly total: number;
+  readonly completed: number;
+  /** Tasks that are not completed yet. */
+  readonly outstanding: ReadonlyArray<string>;
+  /** Tasks recorded as completed that Git does not show on the base branch. */
+  readonly unverified: ReadonlyArray<string>;
+  /** Submitted candidates still waiting to merge or be repaired. */
+  readonly integrationPending: ReadonlyArray<string>;
+  /** Tasks someone still holds a claim on. */
+  readonly activeClaims: ReadonlyArray<string>;
+  readonly finalCheck: "none" | "passed" | "failed" | "moved";
+  readonly baseHead: string | null;
+}
+
+function gitOk(cwd: string, args: ReadonlyArray<string>): boolean {
+  try {
+    NodeChildProcess.execFileSync("git", [...args], { cwd, stdio: ["ignore", "ignore", "ignore"] });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function gitOut(cwd: string, args: ReadonlyArray<string>): string | null {
+  try {
+    return NodeChildProcess.execFileSync("git", [...args], {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Reads the plan's state in one consistent snapshot and checks it against Git. With
+ * `runFinalCheck`, also runs the plan's `Final verification` command on a clean checkout
+ * of the base branch (once per base commit), and refuses completion if the base branch
+ * moved while it ran.
+ */
+export async function verifyPlanCompletion(
+  db: NodeSqlite.DatabaseSync,
+  input: {
+    readonly repoRoot: string;
+    readonly gitCommonDir: string;
+    readonly baseBranch: string;
+    readonly planId: string;
+    readonly runFinalCheck: boolean;
+  },
+): Promise<CompletionReport> {
+  const baseHead = gitOut(input.repoRoot, ["rev-parse", `refs/heads/${input.baseBranch}`]);
+
+  db.exec("BEGIN;");
+  let tasks: Array<{ id: string; status: string; integration_state: string | null }>;
+  let claims: Array<{ task_id: string }>;
+  let landings: Map<string, string>;
+  let imported: Set<string>;
+  let plan: { final_verification: string | null; final_receipt_json: string | null } | undefined;
+  try {
+    tasks = db
+      .prepare("SELECT id, status, integration_state FROM tasks WHERE plan_id = ?")
+      .all(input.planId) as typeof tasks;
+    claims = db
+      .prepare(
+        `SELECT c.task_id FROM task_claims c JOIN tasks t ON t.id = c.task_id
+         WHERE c.released_at IS NULL AND t.plan_id = ?`,
+      )
+      .all(input.planId) as typeof claims;
+    landings = new Map(
+      (
+        db
+          .prepare(
+            `SELECT l.task_id, l.commit_hash FROM landing_queue l JOIN tasks t ON t.id = l.task_id
+             WHERE t.plan_id = ? AND l.status = 'landed' AND l.commit_hash IS NOT NULL ORDER BY l.id`,
+          )
+          .all(input.planId) as Array<{ task_id: string; commit_hash: string }>
+      ).map((row) => [row.task_id, row.commit_hash]),
+    );
+    imported = new Set(
+      (
+        db
+          .prepare(
+            `SELECT e.task_id FROM task_events e JOIN tasks t ON t.id = e.task_id
+             WHERE t.plan_id = ? AND ((e.event_type = 'task_imported' AND e.payload_json LIKE '%"checked":true%')
+               OR (e.event_type = 'task_synced' AND e.payload_json LIKE '%plan-checkbox%'))`,
+          )
+          .all(input.planId) as Array<{ task_id: string }>
+      ).map((row) => row.task_id),
+    );
+    plan = db
+      .prepare("SELECT final_verification, final_receipt_json FROM plans WHERE id = ?")
+      .get(input.planId) as typeof plan;
+  } finally {
+    db.exec("COMMIT;");
+  }
+
+  const completedTasks = tasks.filter((task) => task.status === "completed");
+  const outstanding = tasks.filter((task) => task.status !== "completed").map((task) => task.id);
+  const integrationPending = tasks
+    .filter((task) => task.integration_state !== null)
+    .map((task) => task.id);
+  const unverified = completedTasks
+    .filter((task) => {
+      if (imported.has(task.id)) return false;
+      const commit = landings.get(task.id);
+      return (
+        !commit ||
+        !baseHead ||
+        !gitOk(input.repoRoot, ["merge-base", "--is-ancestor", commit, baseHead])
+      );
+    })
+    .map((task) => task.id);
+  const activeClaims = [...new Set(claims.map((claim) => claim.task_id))];
+
+  const base: Omit<CompletionReport, "complete" | "reason" | "finalCheck"> = {
+    total: tasks.length,
+    completed: completedTasks.length,
+    outstanding,
+    unverified,
+    integrationPending,
+    activeClaims,
+    baseHead,
+  };
+  const notYet = (reason: string, finalCheck: CompletionReport["finalCheck"] = "none") => ({
+    ...base,
+    complete: false,
+    reason,
+    finalCheck,
+  });
+
+  if (tasks.length === 0) return notYet("The plan has no tasks in the queue.");
+  if (outstanding.length > 0)
+    return notYet(
+      `${outstanding.length} task(s) are not completed: ${outstanding.slice(0, 5).join(", ")}.`,
+    );
+  if (integrationPending.length > 0)
+    return notYet(`Work is still waiting to merge: ${integrationPending.join(", ")}.`);
+  if (activeClaims.length > 0) return notYet(`Still being worked on: ${activeClaims.join(", ")}.`);
+  if (unverified.length > 0)
+    return notYet(
+      `Recorded as done but not found on ${input.baseBranch}: ${unverified.join(", ")}.`,
+    );
+  if (!baseHead) return notYet(`Base branch ${input.baseBranch} was not found.`);
+
+  const finalCommand = plan?.final_verification?.trim();
+  if (!finalCommand) return { ...base, complete: true, reason: null, finalCheck: "none" };
+
+  const previous = plan?.final_receipt_json
+    ? (JSON.parse(plan.final_receipt_json) as { baseHead?: string; passed?: boolean })
+    : undefined;
+  let passed = previous?.baseHead === baseHead && previous.passed === true;
+  if (!passed) {
+    if (!input.runFinalCheck)
+      return notYet("The plan's final verification has not run on the current base yet.");
+    // The staging worktree is shared with integration, so hold the landing lock while using it.
+    const release = await acquireLandingLock(input.gitCommonDir);
+    let receipt;
+    try {
+      const staging = prepareStagingWorktree(input.repoRoot, baseHead);
+      receipt = await runVerification("plan", staging, finalCommand, 900_000);
+    } finally {
+      release();
+    }
+    passed = receipt.passed;
+    db.prepare("UPDATE plans SET final_receipt_json = ?, updated_at = ? WHERE id = ?").run(
+      JSON.stringify({
+        baseHead,
+        passed,
+        exitCode: receipt.exitCode,
+        command: finalCommand,
+        verifiedAt: receipt.verifiedAt,
+        tail: (receipt.stderrSnippet || receipt.stdoutSnippet).slice(-600),
+      }),
+      new Date().toISOString(),
+      input.planId,
+    );
+    if (!passed) {
+      return notYet(
+        `The plan's final verification failed (exit ${receipt.exitCode}): ${(receipt.stderrSnippet || receipt.stdoutSnippet).slice(-300)}`,
+        "failed",
+      );
+    }
+    const after = gitOut(input.repoRoot, ["rev-parse", `refs/heads/${input.baseBranch}`]);
+    if (after !== baseHead)
+      return notYet(`${input.baseBranch} moved during the final check; checking again.`, "moved");
+  }
+  return { ...base, complete: true, reason: null, finalCheck: "passed" };
+}

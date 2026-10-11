@@ -42,6 +42,19 @@ export function retryTask(
       throw new Error(`Task ${taskId} not found`);
     }
 
+    // Submitted work the automatic repair gave up on: give it a fresh set of repair attempts.
+    const stuck = db.prepare("SELECT integration_state FROM tasks WHERE id = ?").get(taskId) as {
+      integration_state: string | null;
+    };
+    if (stuck.integration_state === "repair_needed") {
+      const now = new Date().toISOString();
+      db.prepare(
+        "UPDATE tasks SET integration_state = 'conflict', integration_attempts = 0, updated_at = ?, integration_updated_at = ? WHERE id = ?",
+      ).run(now, now, taskId);
+      db.exec("COMMIT;");
+      return { success: true, message: `Task ${taskId} will be repaired again.`, taskId };
+    }
+
     if (task.retry_count >= maxRetries) {
       throw new RetryBudgetExceededError(taskId, task.retry_count);
     }

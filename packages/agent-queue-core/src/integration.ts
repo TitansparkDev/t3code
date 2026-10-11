@@ -156,7 +156,7 @@ const stagingPath = (repoRoot: string) =>
   NodePath.join(repoRoot, ".worktrees", "agentqueue-staging");
 
 /** Our own throwaway worktree for merging and validating. Safe to reset: it holds no one's work. */
-function prepareStaging(repoRoot: string, baseOid: string): string {
+export function prepareStagingWorktree(repoRoot: string, baseOid: string): string {
   const path = stagingPath(repoRoot);
   NodeFS.mkdirSync(NodePath.dirname(path), { recursive: true });
   git(repoRoot, ["worktree", "prune"]);
@@ -499,7 +499,7 @@ export async function integrateCandidate(
       return { kind: "landed", commit: candidate, reconciled: true };
     }
 
-    const staging = prepareStaging(input.repoRoot, baseOid);
+    const staging = prepareStagingWorktree(input.repoRoot, baseOid);
     let stagedOid = candidate;
     if (git(input.repoRoot, ["merge-base", "--is-ancestor", baseOid, candidate]).code !== 0) {
       const merge = git(staging, [

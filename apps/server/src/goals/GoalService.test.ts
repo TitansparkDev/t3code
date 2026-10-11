@@ -26,6 +26,7 @@ import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSna
 import { GoalBeads, GoalBeadsError, summarizeBeads } from "./GoalBeads.ts";
 import * as GoalService from "./GoalService.ts";
 import * as GoalStore from "./GoalStore.ts";
+import { AgentQueueServiceLive } from "../queue/AgentQueueService.ts";
 
 const PROJECT = ProjectId.make("project-1");
 const CODEX = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6" };
@@ -92,6 +93,7 @@ const makeHarnessWith = (spacing: number) =>
 
     const layer = GoalService.layer.pipe(
       Layer.provideMerge(GoalStore.layer),
+      Layer.provideMerge(AgentQueueServiceLive),
       Layer.provideMerge(Layer.succeed(GoalService.StartSpacingMillis, spacing)),
       Layer.provideMerge(
         Layer.succeed(

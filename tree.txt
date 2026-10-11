@@ -22800,6 +22800,7 @@ packages/agent-queue-cli/test/cli.test.ts
 packages/agent-queue-cli/tsconfig.json
 packages/agent-queue-core/package.json
 packages/agent-queue-core/src/claimService.ts
+packages/agent-queue-core/src/completion.ts
 packages/agent-queue-core/src/db.ts
 packages/agent-queue-core/src/eventStream.ts
 packages/agent-queue-core/src/index.ts

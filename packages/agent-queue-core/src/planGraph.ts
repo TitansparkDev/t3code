@@ -16,6 +16,8 @@ export interface PlanTaskDefinition {
 export interface ParsedPlan {
   readonly title: string;
   readonly tasks: ReadonlyArray<PlanTaskDefinition>;
+  /** A command that must pass on the base branch after every task landed (`Final verification:`). */
+  readonly finalVerification?: string | null;
 }
 
 export class DependencyCycleError extends Error {
@@ -214,6 +216,7 @@ export function parsePlanMarkdown(markdown: string): ParsedPlan {
     priority: number;
   }
   let currentTask: Draft | null = null;
+  let finalVerification: string | null = null;
 
   const startTask = (id: string, taskTitle: string, checked: boolean): Draft => ({
     id,
@@ -244,6 +247,15 @@ export function parsePlanMarkdown(markdown: string): ParsedPlan {
 
   for (const line of lines) {
     const trimmed = line.trim();
+
+    // Plan-level check, written outside any task: Final verification: `cmd`
+    const finalMatch = trimmed.match(
+      /^(?:[-*]\s*)?(?:\*\*)?(?:Final|Plan|Goal) verification(?:\*\*)?:(?:\*\*)?\s*(.+)$/i,
+    );
+    if (finalMatch && !currentTask) {
+      finalVerification = commandFrom("verification", finalMatch[1]!);
+      continue;
+    }
 
     // Plan Title (first level-1 header)
     if (trimmed.startsWith("# ") && title === "Untitled Plan") {
@@ -333,7 +345,7 @@ export function parsePlanMarkdown(markdown: string): ParsedPlan {
 
   commitCurrentTask();
 
-  return { title, tasks };
+  return { title, tasks, finalVerification };
 }
 
 /**
