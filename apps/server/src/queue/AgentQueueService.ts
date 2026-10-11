@@ -11,7 +11,6 @@ import * as Context from "effect/Context";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as NodeChildProcess from "node:child_process";
 import {
   adoptCandidate,
   evaluateDeadlock,
@@ -220,13 +219,6 @@ export class AgentQueueService extends Context.Service<
     ) => Effect.Effect<string, AgentQueueError>;
   }
 >()("t3/queue/AgentQueueService") {}
-
-const git = (cwd: string, args: ReadonlyArray<string>) =>
-  NodeChildProcess.execFileSync("git", [...args], {
-    cwd,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-  }).trim();
 
 const make = AgentQueueService.of({
   preview: (repoRoot, planPath) => run("preview", () => previewPlan(repoRoot, planPath)),

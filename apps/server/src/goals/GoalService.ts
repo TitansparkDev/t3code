@@ -753,14 +753,32 @@ export const make = Effect.gen(function* () {
   };
 
   /** Settle a worker's thread with the orchestration engine's own settle command (idempotent id). */
-  const settleThread = (threadId: ThreadId) =>
-    engine
-      .dispatch({
-        type: "thread.settle",
-        commandId: CommandId.make(`goal-settle:${threadId}`),
-        threadId,
-      })
-      .pipe(Effect.ignoreCause({ log: true }));
+  const settleThread = (goalId: GoalId, threadId: ThreadId) =>
+    Effect.gen(function* () {
+      const settled = yield* engine
+        .dispatch({
+          type: "thread.settle",
+          commandId: CommandId.make(`goal-settle:${threadId}:${yield* randomUUID}`),
+          threadId,
+        })
+        .pipe(
+          Effect.as(true),
+          Effect.catchCause((cause) =>
+            logFailure("goals.settle-failed")(cause).pipe(Effect.as(false)),
+          ),
+        );
+      if (settled) yield* updateChat(goalId, threadId, { settled: true });
+    });
+
+  /** Settle any finished worker thread whose settle did not go through yet (blocked or lost). */
+  const settleFinishedChats = (goal: Goal) =>
+    Effect.gen(function* () {
+      for (const chat of goal.chats) {
+        if (chat.settled || chat.overseer) continue;
+        if (chat.taskOutcome !== "submitted" && chat.taskOutcome !== "integrated") continue;
+        yield* settleThread(goal.id, chat.threadId);
+      }
+    });
 
   /** Goals with an integration pass running, so one goal never integrates twice at once. */
   const integrating = new Set<GoalId>();
@@ -987,7 +1005,7 @@ export const make = Effect.gen(function* () {
         switch (result.kind) {
           case "submitted": {
             yield* updateChat(goalId, threadId, { taskOutcome: "submitted", completedAt: now });
-            yield* settleThread(threadId);
+            yield* settleThread(goalId, threadId);
             yield* ensureIntegration(goalId);
             return yield* fillLanes(goalId);
           }
@@ -1076,7 +1094,7 @@ export const make = Effect.gen(function* () {
         waitingForLimit: undefined,
         taskOutcome: "integrated",
       });
-      yield* settleThread(threadId);
+      yield* settleThread(goalId, threadId);
       yield* store.update(goalId, (current) => ({ ...current, holdStarts: undefined }));
       return yield* fillLanes(goalId);
     }
@@ -1092,7 +1110,7 @@ export const make = Effect.gen(function* () {
           waitingForLimit: undefined,
           taskOutcome: "submitted",
         });
-        yield* settleThread(threadId);
+        yield* settleThread(goalId, threadId);
         yield* ensureIntegration(goalId);
         return yield* fillLanes(goalId);
       }
@@ -1932,7 +1950,10 @@ export const make = Effect.gen(function* () {
   const tick = Effect.gen(function* () {
     for (const goal of yield* store.list) {
       if (goal.status !== "running") continue;
-      if (goal.agentQueue) yield* ensureIntegration(goal.id);
+      if (goal.agentQueue) {
+        yield* ensureIntegration(goal.id);
+        yield* settleFinishedChats(goal);
+      }
       yield* fillLanes(goal.id).pipe(
         lock.withPermits(1),
         Effect.catchCause(logFailure("goals.tick-failed")),

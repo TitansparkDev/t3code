@@ -91,6 +91,8 @@ export const GoalChat = Schema.Struct({
   /** The fencing token of the claim. Only the holder may release or land the task. */
   claimToken: Schema.optional(Schema.String),
   baseBranch: Schema.optional(Schema.String),
+  /** The worker's thread was settled with the orchestration engine once its task was handed in. */
+  settled: Schema.optional(Schema.Boolean),
   /** Times this worker was sent back to fix a failed check. */
   landingRetries: Schema.optional(Schema.Number),
   /**

@@ -4,9 +4,6 @@ import * as NodePath from "node:path";
 import * as NodeChildProcess from "node:child_process";
 import {
   openQueueDatabase,
-  parsePlanMarkdown,
-  computePlanChecksum,
-  validatePlanDag,
   getReadyTasks,
   claimTask,
   renewLease,
