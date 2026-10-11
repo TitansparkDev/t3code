@@ -26,6 +26,9 @@ export interface CompletionReport {
   readonly activeClaims: ReadonlyArray<string>;
   readonly finalCheck: "none" | "passed" | "failed" | "moved";
   readonly baseHead: string | null;
+  /** Where publishing the integration branch to the target branch stands. */
+  readonly publication: "none" | "pending" | "blocked" | "published";
+  readonly publicationNote: string | null;
 }
 
 function gitOk(cwd: string, args: ReadonlyArray<string>): boolean {
@@ -61,18 +64,27 @@ export async function verifyPlanCompletion(
     readonly repoRoot: string;
     readonly gitCommonDir: string;
     readonly baseBranch: string;
+    readonly integrationBranch: string;
     readonly planId: string;
     readonly runFinalCheck: boolean;
   },
 ): Promise<CompletionReport> {
   const baseHead = gitOut(input.repoRoot, ["rev-parse", `refs/heads/${input.baseBranch}`]);
+  const goalHead = gitOut(input.repoRoot, ["rev-parse", `refs/heads/${input.integrationBranch}`]);
 
   db.exec("BEGIN;");
   let tasks: Array<{ id: string; status: string; integration_state: string | null }>;
   let claims: Array<{ task_id: string }>;
   let landings: Map<string, string>;
   let imported: Set<string>;
-  let plan: { final_verification: string | null; final_receipt_json: string | null } | undefined;
+  let plan:
+    | {
+        final_verification: string | null;
+        final_receipt_json: string | null;
+        publication_state: string | null;
+        publication_note: string | null;
+      }
+    | undefined;
   try {
     tasks = db
       .prepare("SELECT id, status, integration_state FROM tasks WHERE plan_id = ?")
@@ -105,7 +117,9 @@ export async function verifyPlanCompletion(
       ).map((row) => row.task_id),
     );
     plan = db
-      .prepare("SELECT final_verification, final_receipt_json FROM plans WHERE id = ?")
+      .prepare(
+        "SELECT final_verification, final_receipt_json, publication_state, publication_note FROM plans WHERE id = ?",
+      )
       .get(input.planId) as typeof plan;
   } finally {
     db.exec("COMMIT;");
@@ -122,14 +136,17 @@ export async function verifyPlanCompletion(
       const commit = landings.get(task.id);
       return (
         !commit ||
-        !baseHead ||
-        !gitOk(input.repoRoot, ["merge-base", "--is-ancestor", commit, baseHead])
+        !goalHead ||
+        !gitOk(input.repoRoot, ["merge-base", "--is-ancestor", commit, goalHead])
       );
     })
     .map((task) => task.id);
   const activeClaims = [...new Set(claims.map((claim) => claim.task_id))];
 
-  const base: Omit<CompletionReport, "complete" | "reason" | "finalCheck"> = {
+  const base: Omit<
+    CompletionReport,
+    "complete" | "reason" | "finalCheck" | "publication" | "publicationNote"
+  > = {
     total: tasks.length,
     completed: completedTasks.length,
     outstanding,
@@ -138,11 +155,15 @@ export async function verifyPlanCompletion(
     activeClaims,
     baseHead,
   };
+  const publicationState = (plan?.publication_state ?? "none") as CompletionReport["publication"];
+  const publicationNote = plan?.publication_note ?? null;
   const notYet = (reason: string, finalCheck: CompletionReport["finalCheck"] = "none") => ({
     ...base,
     complete: false,
     reason,
     finalCheck,
+    publication: publicationState,
+    publicationNote,
   });
 
   if (tasks.length === 0) return notYet("The plan has no tasks in the queue.");
@@ -153,14 +174,31 @@ export async function verifyPlanCompletion(
   if (integrationPending.length > 0)
     return notYet(`Work is still waiting to merge: ${integrationPending.join(", ")}.`);
   if (activeClaims.length > 0) return notYet(`Still being worked on: ${activeClaims.join(", ")}.`);
-  if (unverified.length > 0)
+  if (unverified.length > 0) {
     return notYet(
-      `Recorded as done but not found on ${input.baseBranch}: ${unverified.join(", ")}.`,
+      `Recorded as done but not found on ${input.integrationBranch}: ${unverified.join(", ")}.`,
     );
-  if (!baseHead) return notYet(`Base branch ${input.baseBranch} was not found.`);
+  }
+  if (!baseHead || !goalHead) {
+    return notYet(`Branch ${input.baseBranch} or ${input.integrationBranch} was not found.`);
+  }
+  // Integrated is not finished: the target branch must actually contain the result.
+  if (!gitOk(input.repoRoot, ["merge-base", "--is-ancestor", goalHead, baseHead])) {
+    return notYet(
+      `The plan is integrated on ${input.integrationBranch} but not yet published to ${input.baseBranch}${publicationNote ? `: ${publicationNote}` : "."}`,
+    );
+  }
 
   const finalCommand = plan?.final_verification?.trim();
-  if (!finalCommand) return { ...base, complete: true, reason: null, finalCheck: "none" };
+  const done = (finalCheck: CompletionReport["finalCheck"]): CompletionReport => ({
+    ...base,
+    complete: true,
+    reason: null,
+    finalCheck,
+    publication: "published",
+    publicationNote,
+  });
+  if (!finalCommand) return done("none");
 
   const previous = plan?.final_receipt_json
     ? (JSON.parse(plan.final_receipt_json) as { baseHead?: string; passed?: boolean })
@@ -201,5 +239,5 @@ export async function verifyPlanCompletion(
     if (after !== baseHead)
       return notYet(`${input.baseBranch} moved during the final check; checking again.`, "moved");
   }
-  return { ...base, complete: true, reason: null, finalCheck: "passed" };
+  return done("passed");
 }

@@ -112,6 +112,23 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
       `);
     },
   },
+  {
+    version: 3,
+    name: "goal_integration_branch_and_publication",
+    up: (db) => {
+      // Each plan integrates into its own branch; publishing that branch to the target
+      // branch is a separate, recorded step.
+      db.exec(`
+        ALTER TABLE plans ADD COLUMN integration_branch TEXT;
+        ALTER TABLE plans ADD COLUMN base_branch TEXT;
+        ALTER TABLE plans ADD COLUMN base_commit TEXT;
+        ALTER TABLE plans ADD COLUMN publication_state TEXT;
+        ALTER TABLE plans ADD COLUMN publication_note TEXT;
+        ALTER TABLE plans ADD COLUMN published_commit TEXT;
+        ALTER TABLE plans ADD COLUMN publication_updated_at TEXT;
+      `);
+    },
+  },
 ];
 
 /**

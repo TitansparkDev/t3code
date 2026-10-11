@@ -22799,6 +22799,7 @@ packages/agent-queue-cli/src/index.ts
 packages/agent-queue-cli/test/cli.test.ts
 packages/agent-queue-cli/tsconfig.json
 packages/agent-queue-core/package.json
+packages/agent-queue-core/src/checkout.ts
 packages/agent-queue-core/src/claimService.ts
 packages/agent-queue-core/src/completion.ts
 packages/agent-queue-core/src/db.ts
@@ -22811,6 +22812,7 @@ packages/agent-queue-core/src/migrations.ts
 packages/agent-queue-core/src/overseerRepairs.ts
 packages/agent-queue-core/src/planGraph.ts
 packages/agent-queue-core/src/planImport.ts
+packages/agent-queue-core/src/publication.ts
 packages/agent-queue-core/src/queueInspector.ts
 packages/agent-queue-core/src/repoManager.ts
 packages/agent-queue-core/src/reservation.ts

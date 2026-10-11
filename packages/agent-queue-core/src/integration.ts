@@ -177,6 +177,38 @@ export function prepareStagingWorktree(repoRoot: string, baseOid: string): strin
   return path;
 }
 
+/** The branch a plan integrates into: only AgentQueue writes it, no checkout ever has it open. */
+export function integrationBranchFor(planId: string): string {
+  return `agentqueue/goal/${planId.replace(/^plan_/, "").replace(/[^A-Za-z0-9._-]+/g, "-")}`;
+}
+
+/**
+ * Make sure the plan's integration branch exists. A new branch starts at the target
+ * branch. An existing one that holds nothing the target lacks follows the target forward,
+ * so workers start from current code; one with integrated work is left exactly as it is.
+ */
+export function ensureIntegrationBranch(
+  repoRoot: string,
+  baseBranch: string,
+  integrationBranch: string,
+): string {
+  const baseOid = git(repoRoot, ["rev-parse", `refs/heads/${baseBranch}`]);
+  if (baseOid.code !== 0) throw new Error(`Base branch ${baseBranch} does not exist.`);
+  const ref = `refs/heads/${integrationBranch}`;
+  const existing = git(repoRoot, ["rev-parse", "--verify", "--quiet", ref]);
+  if (existing.code !== 0) {
+    const created = git(repoRoot, ["update-ref", ref, baseOid.stdout, ""]);
+    if (created.code !== 0)
+      throw new Error(`Could not create ${integrationBranch}: ${created.stderr}`);
+    return baseOid.stdout;
+  }
+  if (git(repoRoot, ["merge-base", "--is-ancestor", existing.stdout, baseOid.stdout]).code === 0) {
+    git(repoRoot, ["update-ref", ref, baseOid.stdout, existing.stdout]);
+    return baseOid.stdout;
+  }
+  return existing.stdout;
+}
+
 export interface SubmitInput {
   readonly repoRoot: string;
   readonly baseBranch: string;
@@ -305,7 +337,10 @@ export type IntegrationOutcome =
 export interface IntegrateInput {
   readonly repoRoot: string;
   readonly gitCommonDir: string;
+  /** The target branch; the plan's integration branch starts from it. */
   readonly baseBranch: string;
+  /** The branch candidates are integrated into (see integrationBranchFor). */
+  readonly integrationBranch: string;
   readonly taskId: string;
   /** Automatic repair attempts before the candidate is handed to the overseer. */
   readonly maxRepairs?: number;
@@ -379,80 +414,10 @@ function markLanded(
 }
 
 /**
- * Move the base branch to `stagedOid` without disturbing anyone's checkout. Returns a
- * reason when it must wait (checkout moved on, or has uncommitted edits to files this
- * change also touches), and throws only for real errors.
- */
-function promote(
-  repoRoot: string,
-  baseBranch: string,
-  baseOid: string,
-  stagedOid: string,
-):
-  | { readonly ok: true }
-  | { readonly ok: false; readonly reason: string; readonly files: string[] } {
-  const holder = checkedOutAt(repoRoot, baseBranch);
-  if (!holder) {
-    const update = git(repoRoot, [
-      "update-ref",
-      "-m",
-      "AgentQueue: integrate task",
-      `refs/heads/${baseBranch}`,
-      stagedOid,
-      baseOid,
-    ]);
-    return update.code === 0
-      ? { ok: true }
-      : { ok: false, reason: `${baseBranch} moved while integrating; trying again.`, files: [] };
-  }
-  const head = git(holder, ["rev-parse", "HEAD"]).stdout;
-  if (head !== baseOid) {
-    return { ok: false, reason: `${baseBranch} moved while integrating; trying again.`, files: [] };
-  }
-  if (
-    NodeFS.existsSync(
-      NodePath.join(git(holder, ["rev-parse", "--absolute-git-dir"]).stdout, "MERGE_HEAD"),
-    ) ||
-    NodeFS.existsSync(
-      NodePath.join(git(holder, ["rev-parse", "--absolute-git-dir"]).stdout, "rebase-merge"),
-    )
-  ) {
-    return {
-      ok: false,
-      reason: `The checkout at ${holder} is in the middle of a merge or rebase.`,
-      files: [],
-    };
-  }
-  const incoming = new Set(
-    git(holder, ["diff", "--name-only", baseOid, stagedOid]).stdout.split("\n").filter(Boolean),
-  );
-  const overlap = dirtyPaths(holder).filter((path) => {
-    if (incoming.has(path)) return true;
-    // An untracked directory can hide a file the merge would add.
-    return path.endsWith("/") && [...incoming].some((file) => file.startsWith(path));
-  });
-  if (overlap.length > 0) {
-    return {
-      ok: false,
-      reason: `The checkout at ${holder} has uncommitted edits to files this task also changes (${overlap.slice(0, 5).join(", ")}). They are left alone; the task merges when they are committed or removed.`,
-      files: overlap,
-    };
-  }
-  const merged = git(holder, ["merge", "--ff-only", stagedOid]);
-  if (merged.code !== 0) {
-    return {
-      ok: false,
-      reason: `Fast-forwarding ${baseBranch} at ${holder} was refused: ${merged.stderr.slice(0, 300)}`,
-      files: [],
-    };
-  }
-  return { ok: true };
-}
-
-/**
- * Try to put a candidate on the base branch. Safe to call repeatedly and concurrently:
- * the landing lock serialises it, an already-merged candidate is recognised, and every
- * failure leaves the candidate's commits and the shared checkout exactly as they were.
+ * Integrate a candidate into the plan's own integration branch. Safe to call repeatedly
+ * and concurrently: the landing lock serialises it, an already-integrated candidate is
+ * recognised, and every failure leaves the candidate's commits untouched. No checkout of
+ * the target branch is involved, so a dirty shared checkout cannot stop it.
  */
 export async function integrateCandidate(
   db: NodeSqlite.DatabaseSync,
@@ -492,16 +457,20 @@ export async function integrateCandidate(
       .get(input.taskId);
     if (!stillPending) return { kind: "not-pending" };
 
-    const baseOid = currentBranchHead(input.repoRoot, input.baseBranch);
-    // Merged by an earlier attempt that died before recording it: just record it.
-    if (git(input.repoRoot, ["merge-base", "--is-ancestor", candidate, baseOid]).code === 0) {
-      markLanded(db, input.taskId, row.candidate_branch, input.baseBranch, candidate, true);
-      return { kind: "landed", commit: candidate, reconciled: true };
+    const goalBranch = input.integrationBranch;
+    ensureIntegrationBranch(input.repoRoot, input.baseBranch, goalBranch);
+    const goalRef = `refs/heads/${goalBranch}`;
+    const tip = currentBranchHead(input.repoRoot, goalBranch);
+    // Integrated by an earlier attempt that died before recording it: just record it.
+    if (git(input.repoRoot, ["merge-base", "--is-ancestor", candidate, tip]).code === 0) {
+      markLanded(db, input.taskId, row.candidate_branch, goalBranch, tip, true);
+      return { kind: "landed", commit: tip, reconciled: true };
     }
 
-    const staging = prepareStagingWorktree(input.repoRoot, baseOid);
-    let stagedOid = candidate;
-    if (git(input.repoRoot, ["merge-base", "--is-ancestor", baseOid, candidate]).code !== 0) {
+    // Merge and check in a private worktree; the branch only moves once the result passed.
+    const staging = prepareStagingWorktree(input.repoRoot, tip);
+    let result = candidate;
+    if (git(input.repoRoot, ["merge-base", "--is-ancestor", tip, candidate]).code !== 0) {
       const merge = git(staging, [
         ...IDENTITY,
         "merge",
@@ -515,32 +484,40 @@ export async function integrateCandidate(
           .stdout.split("\n")
           .filter(Boolean);
         git(staging, ["merge", "--abort"]);
-        const reason = `Merging ${input.taskId} into ${input.baseBranch} conflicts in: ${files.join(", ") || merge.stderr.slice(0, 200)}`;
+        const reason = `Merging ${input.taskId} into ${goalBranch} conflicts in: ${files.join(", ") || merge.stderr.slice(0, 200)}`;
         const { exhausted } = markNeedsRepair(db, input.taskId, reason, files, maxRepairs);
         return { kind: "needs-repair", reason, files, exhausted };
       }
-      stagedOid = git(staging, ["rev-parse", "HEAD"]).stdout;
+      result = git(staging, ["rev-parse", "HEAD"]).stdout;
     } else {
       git(staging, ["checkout", "--force", "--detach", candidate]);
     }
 
-    // The merged result must still pass the task's check before it reaches the base branch.
-    if (stagedOid !== candidate && row.verification_command?.trim()) {
+    // Concurrent work was merged in, so the task's check must still pass on the result.
+    if (result !== candidate && row.verification_command?.trim()) {
       const receipt = await runVerification(input.taskId, staging, row.verification_command);
       if (!receipt.passed) {
-        const reason = `After merging with ${input.baseBranch}, the check failed (exit ${receipt.exitCode}): ${(receipt.stderrSnippet || receipt.stdoutSnippet).slice(-600)}`;
+        const reason = `After merging with ${goalBranch}, the check failed (exit ${receipt.exitCode}): ${(receipt.stderrSnippet || receipt.stdoutSnippet).slice(-600)}`;
         const { exhausted } = markNeedsRepair(db, input.taskId, reason, [], maxRepairs);
         return { kind: "needs-repair", reason, files: [], exhausted };
       }
     }
 
-    const promoted = promote(input.repoRoot, input.baseBranch, baseOid, stagedOid);
-    if (!promoted.ok) {
-      markDeferred(db, input.taskId, promoted.reason);
-      return { kind: "deferred", reason: promoted.reason, files: promoted.files };
+    const moved = git(input.repoRoot, [
+      "update-ref",
+      "-m",
+      `AgentQueue: integrate ${input.taskId}`,
+      goalRef,
+      result,
+      tip,
+    ]);
+    if (moved.code !== 0) {
+      const reason = `${goalBranch} changed while integrating; trying again.`;
+      markDeferred(db, input.taskId, reason);
+      return { kind: "deferred", reason, files: [] };
     }
-    markLanded(db, input.taskId, row.candidate_branch, input.baseBranch, stagedOid, false);
-    return { kind: "landed", commit: stagedOid, reconciled: false };
+    markLanded(db, input.taskId, row.candidate_branch, goalBranch, result, false);
+    return { kind: "landed", commit: result, reconciled: false };
   } finally {
     release();
   }
