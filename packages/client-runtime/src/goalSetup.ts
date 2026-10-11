@@ -50,17 +50,19 @@ export interface GoalSetupForm {
   readonly stopAfterProblems: number;
   /** Ask an overseer agent what to do when the goal gets stuck, before giving up. */
   readonly overseer: boolean;
+  /** How workers get work: `auto` uses AgentQueue when the project has a valid active plan. */
+  readonly queueMode: "auto" | "standard" | "agentqueue";
+  /** The plan file (relative to the repository). Empty picks the repository's active plan. */
+  readonly planPath: string;
 }
 
 /** What a new goal's name and instructions start as, so the plan-completion workflow is one tap away. */
 export const DEFAULT_GOAL_NAME = "Complete the plan";
-export const DEFAULT_GOAL_PROMPT = `Find the active fix-up plan for this repository and immediately claim one ready chunk through the configured parallel-plan/Beads workflow. Do not manually choose blocked work, duplicate another worker's claim, or modify another chunk's worktree. Execute it as a parallel worker. ONLY If no ready work is available stop and report that no claimable chunk is currently available.
+export const DEFAULT_GOAL_PROMPT = `Finish the active plan for this repository. Do your assigned work completely and to high production quality, following the plan, the original spec, repository instructions, acceptance criteria, scope boundaries, and the assigned validation level. Do not redesign the plan or expand into unrelated work.
 
-Do not quit easily. I want you to complete this task. If it has extra things you must do that aren't explicitly listed in the plan, do those things to complete the task successfully. You have full authority to do whatever you need to do to complete the chunk.
+Do not quit easily. If a task needs extra steps that are not listed in the plan, do them. You have full authority to do whatever you need to complete your work, as long as it does not harm other agents or anything else.
 
-Complete the claimed chunk fully and to high end production quality, following the sealed plan, original spec, repository instructions, acceptance criteria, scope boundaries, and assigned validation level. Do not unnecessarily redesign the plan or expand into unrelated work.
-
-Use the configured dedicated worktree and preserve resumable checkpoints/handoff state during substantial work. When the chunk is genuinely complete and its required verification passes, safely land/merge it according to the configured workflow, close the Bead, and prune your tree.`;
+Work in your own dedicated worktree, commit checkpoints as you go, and run the task's verification before you finish.`;
 
 /** What a draft is called until it has a name. The setup form shows it as empty. */
 export const UNTITLED_GOAL_NAME = "Untitled goal";
@@ -84,6 +86,8 @@ export function defaultGoalSetup(input: {
     beadsScope: "",
     stopAfterProblems: DEFAULT_GOAL_STOP_AFTER_PROBLEMS,
     overseer: true,
+    queueMode: "auto",
+    planPath: "",
   };
 }
 
@@ -108,6 +112,9 @@ export function goalToSetup(goal: Goal): GoalSetupForm {
     beadsScope: goal.beadsScope ?? "",
     stopAfterProblems: goal.stopAfterProblems ?? DEFAULT_GOAL_STOP_AFTER_PROBLEMS,
     overseer: goal.overseer !== false,
+    // Goals saved before AgentQueue existed keep running the way they always did.
+    queueMode: goal.queueMode ?? (goal.useAgentQueue ? "agentqueue" : "standard"),
+    planPath: goal.planPath ?? "",
   };
 }
 
@@ -169,6 +176,8 @@ export function goalSetupToSettings(form: GoalSetupForm): GoalSettings | undefin
     beadsScope: form.beadsScope.trim(),
     stopAfterProblems: whole(form.stopAfterProblems),
     overseer: form.overseer,
+    queueMode: form.queueMode,
+    ...(form.planPath.trim() ? { planPath: form.planPath.trim() } : {}),
   };
 }
 
@@ -202,5 +211,7 @@ export function goalSetupToDraftSettings(form: GoalSetupForm): GoalSettings | un
     beadsScope: form.beadsScope.trim(),
     stopAfterProblems: clamp(form.stopAfterProblems, MAX_GOAL_STOP_AFTER_PROBLEMS),
     overseer: form.overseer,
+    queueMode: form.queueMode,
+    ...(form.planPath.trim() ? { planPath: form.planPath.trim() } : {}),
   };
 }

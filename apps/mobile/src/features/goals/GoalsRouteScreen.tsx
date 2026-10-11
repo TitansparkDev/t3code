@@ -1,6 +1,7 @@
 import { useNavigation } from "@react-navigation/native";
 import {
   describeGoalPauses,
+  describeGoalMode,
   describeGoalProgress,
   describeGoalQueue,
 } from "@t3tools/client-runtime/goal-progress";
@@ -48,6 +49,7 @@ function GoalCard(props: {
   const { goal, environmentId } = props;
   const running = goal.status === "running";
   const queue = describeGoalQueue(goal);
+  const mode = describeGoalMode(goal);
   const needAttention = goal.chats.filter(
     (chat) => chat.status === "attention" || chat.status === "failed",
   ).length;
@@ -74,6 +76,7 @@ function GoalCard(props: {
           {STATUS_LABEL[goal.status]}
           {goal.status === "draft" ? " · not started" : ` · ${describeGoalProgress(goal)}`}
         </Text>
+        {mode ? <Text className="text-sm text-foreground-muted">{mode}</Text> : null}
         {queue ? <Text className="text-sm text-foreground-muted">{queue}</Text> : null}
         {goal.detail ? <Text className="text-sm text-foreground-muted">{goal.detail}</Text> : null}
         {goal.waitingUntil ? (

@@ -8,13 +8,14 @@ import {
   type GoalSetupForm,
 } from "@t3tools/client-runtime/goal-setup";
 import type { EnvironmentId, ProjectId, RuntimeMode } from "@t3tools/contracts";
-import type { GoalId } from "@t3tools/contracts/goals";
+import type { GoalId, GoalPlanPreview } from "@t3tools/contracts/goals";
 import {
   MAX_GOAL_AGENT_COUNT,
   MAX_GOAL_CONCURRENCY,
   type GoalSettings,
 } from "@t3tools/contracts/goals";
 import { getProviderOptionCurrentValue, getProviderOptionDescriptors } from "@t3tools/shared/model";
+import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Pressable, View } from "react-native";
@@ -101,6 +102,132 @@ function SwitchRow(props: {
         onValueChange={props.onChange}
         value={props.value}
       />
+    </View>
+  );
+}
+
+const QUEUE_MODES: ReadonlyArray<{
+  readonly mode: GoalSetupForm["queueMode"];
+  readonly label: string;
+}> = [
+  { mode: "auto", label: "Auto" },
+  { mode: "agentqueue", label: "AgentQueue" },
+  { mode: "standard", label: "Standard" },
+];
+
+/**
+ * What the goal would run on, checked by the server before it starts: repository, plan,
+ * mode, task counts and any problem. Reports whether the choice is blocked.
+ */
+function PlanPanel(props: {
+  readonly environmentId: EnvironmentId;
+  readonly projectId: ProjectId;
+  readonly queueMode: GoalSetupForm["queueMode"];
+  readonly planPath: string;
+  readonly onChange: (change: Partial<GoalSetupForm>) => void;
+  readonly onBlockedChange: (blocked: boolean) => void;
+}) {
+  const previewPlan = useAtomCommand(serverEnvironment.previewGoalPlan, { reportFailure: false });
+  const [preview, setPreview] = useState<GoalPlanPreview | null>(null);
+  const [failed, setFailed] = useState(false);
+  const { environmentId, projectId, queueMode, planPath, onBlockedChange } = props;
+  const previewRef = useRef(previewPlan);
+  useEffect(() => {
+    previewRef.current = previewPlan;
+  });
+  useEffect(() => {
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      void previewRef
+        .current({
+          environmentId,
+          input: {
+            projectId,
+            queueMode,
+            ...(planPath.trim() ? { planPath: planPath.trim() } : {}),
+          },
+        })
+        .then((result) => {
+          if (cancelled) return;
+          if (AsyncResult.isFailure(result)) {
+            setFailed(true);
+            onBlockedChange(queueMode === "agentqueue");
+            return;
+          }
+          setFailed(false);
+          setPreview(result.value);
+          onBlockedChange(result.value.blocked);
+        });
+    }, 400);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [environmentId, projectId, queueMode, planPath, onBlockedChange]);
+
+  const counts = preview?.counts;
+  return (
+    <View className="gap-2 rounded-[24px] bg-card p-4">
+      <Text className="text-sm text-foreground-muted">How agents get their work</Text>
+      <View className="flex-row flex-wrap gap-2">
+        {QUEUE_MODES.map((option) => (
+          <MaterialButton
+            key={option.mode}
+            label={option.label}
+            onPress={() => props.onChange({ queueMode: option.mode })}
+            tone={queueMode === option.mode ? "primary" : "secondary"}
+          />
+        ))}
+      </View>
+      {preview && preview.candidates.length > 1 ? (
+        <View className="flex-row flex-wrap gap-2">
+          {preview.candidates.map((candidate) => (
+            <MaterialButton
+              key={candidate.path}
+              label={`${candidate.path} (${candidate.unfinishedCount}/${candidate.taskCount})`}
+              onPress={() => props.onChange({ planPath: candidate.path })}
+              tone={(planPath || preview.planPath) === candidate.path ? "primary" : "secondary"}
+            />
+          ))}
+        </View>
+      ) : null}
+      {failed ? (
+        <Text className="text-sm text-danger-foreground">Could not check the plan.</Text>
+      ) : preview ? (
+        <View className="gap-1">
+          <Text
+            className={cn(
+              "text-sm",
+              preview.blocked ? "text-danger-foreground" : "text-foreground",
+            )}
+          >
+            {preview.summary}
+          </Text>
+          <Text className="text-sm text-foreground-muted">
+            {preview.effectiveMode === "agentqueue" ? "AgentQueue" : "Standard"}
+            {preview.planPath ? ` · ${preview.planPath}` : ""}
+            {preview.baseBranch ? ` → ${preview.baseBranch}` : ""}
+          </Text>
+          {counts && counts.total > 0 ? (
+            <Text className="text-sm text-foreground-muted">
+              {counts.total} tasks · {counts.completed} done · {counts.ready} ready now ·{" "}
+              {counts.waiting} waiting
+            </Text>
+          ) : null}
+          {preview.errors.map((message) => (
+            <Text className="text-sm text-danger-foreground" key={message}>
+              {message}
+            </Text>
+          ))}
+          {preview.warnings.map((message) => (
+            <Text className="text-sm text-foreground-muted" key={message}>
+              {message}
+            </Text>
+          ))}
+        </View>
+      ) : (
+        <Text className="text-sm text-foreground-muted">Checking the project's plan…</Text>
+      )}
     </View>
   );
 }
@@ -256,6 +383,7 @@ export function GoalForm(props: {
   const defaultOption = modelOptions.find((option) => option.isDefault) ?? modelOptions[0];
   const [form, setForm] = useState<GoalSetupForm>(props.initial);
   const [starting, setStarting] = useState(false);
+  const [planBlocked, setPlanBlocked] = useState(false);
   const agents =
     form.agents.length === 0 && defaultOption
       ? [agentFromOption(defaultOption, form.concurrency)]
@@ -354,6 +482,17 @@ export function GoalForm(props: {
               value={current.prompt}
             />
           </Field>
+
+          {current.projectId ? (
+            <PlanPanel
+              environmentId={props.environmentId}
+              onBlockedChange={setPlanBlocked}
+              onChange={patch}
+              planPath={current.planPath}
+              projectId={current.projectId}
+              queueMode={current.queueMode}
+            />
+          ) : null}
 
           <View className="flex-row flex-wrap gap-4">
             <Field label={`Agents at once (up to ${MAX_GOAL_CONCURRENCY})`}>
@@ -494,7 +633,7 @@ export function GoalForm(props: {
             <Text className="text-sm text-foreground-muted">Draft saved.</Text>
           ) : null}
           <MaterialButton
-            disabled={problem !== undefined}
+            disabled={problem !== undefined || planBlocked}
             fullWidth
             label={starting ? props.busyLabel : props.submitLabel}
             loading={starting}
@@ -503,7 +642,7 @@ export function GoalForm(props: {
           />
           {props.secondary ? (
             <MaterialButton
-              disabled={problem !== undefined || starting}
+              disabled={problem !== undefined || starting || planBlocked}
               fullWidth
               label={props.secondary.label}
               onPress={() => void finish(props.secondary!.onSubmit)}
@@ -565,7 +704,14 @@ export function CreateGoalScreen(props: {
           ? await updateGoal({ environmentId, input: { id, goal: settings } })
           : await createGoal({ environmentId, input: { goal: settings } });
         if (AsyncResult.isFailure(result)) {
-          Alert.alert("Could not start the goal", "Check the connection and try again.");
+          // The server explains a refusal (for example an unusable plan); show it.
+          const reason = Cause.squash(result.cause);
+          Alert.alert(
+            "Could not start the goal",
+            reason instanceof Error && reason.message
+              ? reason.message
+              : "Check the connection and try again.",
+          );
           return false;
         }
         if (id) {

@@ -26,6 +26,7 @@ import { useEnvironments } from "../../state/environments";
 import { useGoals } from "../../state/goals";
 import { runtimeModeConfig, runtimeModeOptions } from "../chat/runtimeModeConfig";
 import { ProviderOptionsPicker } from "../settings/ScheduledTasksSettings";
+import { GoalPlanPanel } from "./GoalPlanPanel";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Switch } from "../ui/switch";
@@ -130,6 +131,8 @@ export function GoalSetupPage({
   const current: GoalSetupForm = { ...form, agents };
   const problem = goalSetupProblem(current);
   const [starting, setStarting] = useState(false);
+  /** The server refused the chosen mode and plan, so starting would fail. */
+  const [planBlocked, setPlanBlocked] = useState(false);
   const dirty = useRef(false);
   const patch = (change: Partial<GoalSetupForm>) => {
     dirty.current = true;
@@ -264,6 +267,17 @@ export function GoalSetupPage({
                       ))}
                   </select>
                 </label>
+              ) : null}
+
+              {current.projectId ? (
+                <GoalPlanPanel
+                  environmentId={environmentId}
+                  onBlockedChange={setPlanBlocked}
+                  onChange={patch}
+                  planPath={current.planPath}
+                  projectId={current.projectId}
+                  queueMode={current.queueMode}
+                />
               ) : null}
 
               <div className="flex flex-wrap items-end gap-4">
@@ -495,13 +509,17 @@ export function GoalSetupPage({
               <div className="flex items-center justify-end gap-3">
                 {problem ? (
                   <p className="text-2xs text-muted-foreground">{problem}</p>
+                ) : planBlocked ? (
+                  <p className="text-2xs text-muted-foreground">
+                    Fix the plan problem above, or choose Auto or Standard mode.
+                  </p>
                 ) : keepsDraft && draftSavedAt ? (
                   <p className="text-2xs text-muted-foreground">Draft saved {draftSavedAt}</p>
                 ) : null}
                 {goal && goal.status !== "draft" ? (
                   <>
                     <Button
-                      disabled={problem !== undefined || starting}
+                      disabled={problem !== undefined || starting || planBlocked}
                       onClick={() => void start(false)}
                       type="button"
                       variant={goal.status === "running" ? "default" : "outline"}
@@ -510,7 +528,7 @@ export function GoalSetupPage({
                     </Button>
                     {goal.status !== "running" ? (
                       <Button
-                        disabled={problem !== undefined || starting}
+                        disabled={problem !== undefined || starting || planBlocked}
                         onClick={() => void start(true)}
                         type="button"
                       >
@@ -520,7 +538,7 @@ export function GoalSetupPage({
                   </>
                 ) : (
                   <Button
-                    disabled={problem !== undefined || starting}
+                    disabled={problem !== undefined || starting || planBlocked}
                     onClick={() => void start(true)}
                     type="button"
                   >

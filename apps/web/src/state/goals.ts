@@ -9,8 +9,8 @@
  */
 import { useAtomValue } from "@effect/atom-react";
 import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
-import type { EnvironmentId } from "@t3tools/contracts";
-import type { Goal, GoalId, GoalSettings } from "@t3tools/contracts/goals";
+import type { EnvironmentId, ProjectId } from "@t3tools/contracts";
+import type { Goal, GoalId, GoalPlanPreview, GoalSettings } from "@t3tools/contracts/goals";
 import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
@@ -95,6 +95,27 @@ export function useGoals() {
     },
     [refresh],
   );
+  /** What a goal would run on for this project and plan, without starting anything. */
+  const previewPlan = useCallback(
+    async (
+      environmentId: EnvironmentId,
+      input: {
+        readonly projectId: ProjectId;
+        readonly queueMode: "auto" | "standard" | "agentqueue";
+        readonly planPath?: string | undefined;
+      },
+    ): Promise<GoalPlanPreview> => {
+      const result = await runAtomCommand(
+        appAtomRegistry,
+        serverEnvironment.previewGoalPlan,
+        { environmentId, input },
+        { label: "preview goal plan" },
+      );
+      if (result._tag === "Failure") throw Cause.squash(result.cause);
+      return result.value;
+    },
+    [],
+  );
   /** Raise the goal's agent counts and start it if it is not running. */
   const addAgents = useCallback(
     async (environmentId: EnvironmentId, id: GoalId, count: number) => {
@@ -122,7 +143,7 @@ export function useGoals() {
   }, [environments, refresh]);
 
   return useMemo(
-    () => ({ environments, create, update, stop, restart, addAgents, remove }),
-    [environments, create, update, stop, restart, addAgents, remove],
+    () => ({ environments, create, update, stop, restart, addAgents, remove, previewPlan }),
+    [environments, create, update, stop, restart, addAgents, remove, previewPlan],
   );
 }

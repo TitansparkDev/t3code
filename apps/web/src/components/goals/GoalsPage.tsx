@@ -21,6 +21,7 @@ import { WorkspacePageContainer } from "../WorkspacePageContainer";
 import { WorkspacePageHeader } from "../WorkspacePageHeader";
 import {
   describeGoalPauses,
+  describeGoalMode,
   describeGoalProgress,
   describeGoalQueue,
 } from "@t3tools/client-runtime/goal-progress";
@@ -87,6 +88,9 @@ function GoalCard({
             {STATUS_LABEL[goal.status]}
             {goal.status === "draft" ? " · not started" : ` · ${describeGoalProgress(goal)}`}
           </p>
+          {describeGoalMode(goal) ? (
+            <p className="text-2xs text-muted-foreground/80">{describeGoalMode(goal)}</p>
+          ) : null}
           {describeGoalQueue(goal) ? (
             <p className="text-2xs text-muted-foreground/80">{describeGoalQueue(goal)}</p>
           ) : null}
