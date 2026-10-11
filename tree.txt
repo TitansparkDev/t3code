@@ -22527,6 +22527,7 @@ docs/agentqueue/ADR-0003-schema-and-migration-strategy.md
 docs/agentqueue/ADR-0004-coexistence-with-legacy-plan-work.md
 docs/agentqueue/ADR-0005-crash-recovery-and-heartbeats.md
 docs/agentqueue/ADR-0006-package-architecture-and-dependency-footprint.md
+docs/agentqueue/ADR-0007-candidates-integration-and-completion.md
 docs/agentqueue/PLAN.md
 docs/agentqueue/README.md
 docs/internals/assistant-citations.md
