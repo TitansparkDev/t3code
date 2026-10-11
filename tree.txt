@@ -20388,10 +20388,8 @@ apps/server/src/git/GitWorkflowService.ts
 apps/server/src/git/linkCreatedPullRequest.test.ts
 apps/server/src/git/linkCreatedPullRequest.ts
 apps/server/src/git/remoteRefs.ts
-apps/server/src/goals/GoalAgentQueue.test.ts
-apps/server/src/goals/GoalAgentQueueLifecycle.test.ts
+apps/server/src/goals/GoalAgentQueueFlow.test.ts
 apps/server/src/goals/GoalBeads.ts
-apps/server/src/goals/GoalRealAgentPilot.test.ts
 apps/server/src/goals/GoalService.test.ts
 apps/server/src/goals/GoalService.ts
 apps/server/src/goals/GoalStore.ts
@@ -20952,7 +20950,6 @@ apps/server/src/pullRequest/pullRequestChecks.ts
 apps/server/src/pullRequest/pullRequestSyncKey.test.ts
 apps/server/src/pullRequest/pullRequestSyncKey.ts
 apps/server/src/pullRequest/pullRequestViewedFiles.ts
-apps/server/src/queue/AgentQueueService.test.ts
 apps/server/src/queue/AgentQueueService.ts
 apps/server/src/quota/CodexTranscriptQuota.test.ts
 apps/server/src/quota/CodexTranscriptQuota.ts

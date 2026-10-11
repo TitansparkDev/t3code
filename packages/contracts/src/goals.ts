@@ -520,7 +520,7 @@ export function queueWorkerPrompt(
     task.description ? `\nTask details from the plan:\n${task.description}` : "",
     "",
     "--- Rules ---",
-    "1. Do not select, claim, announce or switch tasks, and do not run plan-work or agentqueue claim/release commands. Your task is fixed; other workers have theirs.",
+    "1. Do not select, claim, announce or switch tasks, and do not run any command that claims or releases tasks. Your task is fixed; other workers have theirs.",
     "2. Change files only inside your worktree. Never touch another worker's worktree or the main checkout.",
     "3. Commit your work on your branch with a clear message. Uncommitted work is committed for you, but write the commit yourself.",
     task.verificationCommand

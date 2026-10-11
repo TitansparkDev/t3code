@@ -306,6 +306,9 @@ export const make = Effect.gen(function* () {
   /** Serializes everything that changes a goal's chats, so lanes are never over-filled. */
   const lock = yield* Semaphore.make(1);
   const queue = yield* AgentQueueService;
+  /** Background work (submissions, merges) lives as long as the service, and ends with it. */
+  const background = yield* Effect.scope;
+  const fork = <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.forkIn(effect, background);
   const repositoryContext = yield* GoalBeads;
   const registry = yield* ProviderRegistry;
   const spacing = yield* StartSpacingMillis;
@@ -823,7 +826,9 @@ export const make = Effect.gen(function* () {
   });
 
   /** Merge every submitted candidate of a goal. Runs beside the scheduler and never blocks it. */
-  const runIntegration = Effect.fn("GoalService.runIntegration")(function* (goalId: GoalId) {
+  const runIntegration: (goalId: GoalId) => Effect.Effect<void> = Effect.fn(
+    "GoalService.runIntegration",
+  )(function* (goalId: GoalId) {
     while (true) {
       const goal = yield* currentGoal(goalId);
       const binding = goal?.agentQueue;
@@ -886,12 +891,12 @@ export const make = Effect.gen(function* () {
     }
   });
 
-  const ensureIntegration = (goalId: GoalId) =>
+  const ensureIntegration = (goalId: GoalId): Effect.Effect<void> =>
     integrating.has(goalId)
       ? Effect.void
       : Effect.gen(function* () {
           integrating.add(goalId);
-          yield* Effect.forkDetach(
+          yield* fork(
             runIntegration(goalId).pipe(
               Effect.catchCause(logFailure("goals.integration-failed")),
               Effect.ensuring(Effect.sync(() => integrating.delete(goalId))),
@@ -1170,18 +1175,19 @@ export const make = Effect.gen(function* () {
       waitingForLimit: undefined,
       taskOutcome: undefined,
     });
-    yield* Effect.forkDetach(
+    yield* fork(
       submitFlow(goalId, threadId).pipe(Effect.catchCause(logFailure("goals.submit-failed"))),
     );
   });
 
   /** Reserve tasks for free lanes. With no ready task nothing starts and no model turn is spent. */
-  const fillQueueLanes = Effect.fn("GoalService.fillQueueLanes")(function* (
-    goalId: GoalId,
-    binding: QueueBinding,
-  ) {
+  const fillQueueLanes: (goalId: GoalId, binding: QueueBinding) => Effect.Effect<void> = Effect.fn(
+    "GoalService.fillQueueLanes",
+  )(function* (goalId: GoalId, binding: QueueBinding) {
     const first = yield* currentGoal(goalId);
     if (!first || first.status !== "running") return;
+    // Submitted work that is waiting to merge is retried whenever the scheduler looks.
+    yield* ensureIntegration(goalId);
     for (const chat of first.chats) {
       if (chat.status !== "running" || !chat.claimToken) continue;
       const renewed = yield* queue
@@ -1224,7 +1230,6 @@ export const make = Effect.gen(function* () {
     if (!goal || goal.status !== "running") return;
     yield* refreshProgress(goal);
     if (goal.chats.some((chat) => chat.status === "running")) return;
-    if (integrating.has(goalId) || submitting.size > 0) return;
 
     const status = yield* queue.status(binding).pipe(
       Effect.map(Option.some),
@@ -1343,7 +1348,7 @@ export const make = Effect.gen(function* () {
         chat.taskOutcome === undefined &&
         !chat.overseer
       ) {
-        yield* Effect.forkDetach(
+        yield* fork(
           submitFlow(goal.id, chat.threadId).pipe(
             Effect.catchCause(logFailure("goals.submit-failed")),
           ),
