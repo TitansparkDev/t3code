@@ -192,6 +192,56 @@ function commandFrom(label: string, value: string): string | null {
   return null;
 }
 
+/** First words of code spans that are test, lint or build runs a server may execute as a check. */
+const CHECK_RUNNERS = new Set([
+  "uv",
+  "pytest",
+  "python",
+  "python3",
+  "ruff",
+  "mypy",
+  "npm",
+  "pnpm",
+  "yarn",
+  "bun",
+  "npx",
+  "vp",
+  "vpr",
+  "node",
+  "tsc",
+  "cargo",
+  "go",
+  "make",
+  "gradle",
+  "./gradlew",
+]);
+
+/**
+ * "Done:" and "Acceptance:" are prose, but the code spans inside them are often the exact
+ * checks ("from server/, uv run pytest a and uv run pytest -m b", each in code spans). Spans that start with
+ * a known test runner become one chained command; a leading directory span becomes its
+ * working directory. Anything else (curl against a deployment, a placeholder) is left to the
+ * description and never executed by the server.
+ */
+function proseChecks(value: string): string | null {
+  const spans = [...value.matchAll(/`([^`]+)`/g)].map((match) => match[1]!.trim());
+  let directory: string | null = null;
+  const commands: string[] = [];
+  for (const span of spans) {
+    if (/^[\w./-]+\/$/.test(span) && commands.length === 0) {
+      directory = span.replace(/\/$/, "");
+      continue;
+    }
+    const first = span.split(/\s+/, 1)[0] ?? "";
+    if (!CHECK_RUNNERS.has(first) || /<[A-Za-z]|\.\.\.|[;|]\s*(?:rm|curl|ssh)\b/.test(span))
+      continue;
+    commands.push(span);
+  }
+  if (commands.length === 0) return null;
+  const chained = commands.join(" && ");
+  return directory ? `cd ${JSON.stringify(directory)} && ${chained}` : chained;
+}
+
 /**
  * Parses markdown plan documents. Three task shapes are accepted:
  * ### [Status] TASK-ID: Title
@@ -315,9 +365,20 @@ export function parsePlanMarkdown(markdown: string): ParsedPlan {
         /^(?:[-*]\s*)?(?:\*\*)?(Verification|Verify|Test|Done|Acceptance)(?:\*\*)?:(?:\*\*)?\s*(.+)$/i,
       );
       if (verMatch) {
-        const command = commandFrom(verMatch[1]!, verMatch[2]!);
-        if (command) currentTask.verificationCommand = command;
-        else currentTask.descriptionLines.push(line);
+        const label = verMatch[1]!;
+        const command = commandFrom(label, verMatch[2]!);
+        if (command) {
+          currentTask.verificationCommand = command;
+          continue;
+        }
+        // A prose Done line stays in the description for the worker and may also carry the checks.
+        currentTask.descriptionLines.push(line);
+        const prose = /^(done|acceptance)$/i.test(label) ? proseChecks(verMatch[2]!) : null;
+        if (prose) {
+          currentTask.verificationCommand = currentTask.verificationCommand
+            ? `${currentTask.verificationCommand} && ${prose}`
+            : prose;
+        }
         continue;
       }
 

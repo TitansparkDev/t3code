@@ -984,14 +984,33 @@ const make = Effect.gen(function* () {
       }
       yield* captureCheckpointFromTurnCompletion(event).pipe(
         Effect.catch((error) =>
-          Effect.flatMap(nowIso, (createdAt) =>
-            appendCaptureFailureActivity({
+          Effect.gen(function* () {
+            // A worktree that was removed on purpose after its work landed has nothing left to
+            // capture, and the thread is history. An active thread whose directory vanished is
+            // a real failure and says so in plain words.
+            const latest = yield* resolveThreadDetail(event.threadId);
+            const worktreePath = latest?.worktreePath ?? null;
+            const gone =
+              worktreePath !== null &&
+              !(yield* fileSystem.exists(worktreePath).pipe(Effect.orElseSucceed(() => true)));
+            const retired = latest?.settledOverride === "settled" || latest?.archivedAt != null;
+            if (gone && retired) {
+              yield* Effect.logInfo("checkpoint capture skipped: worktree already removed", {
+                threadId: event.threadId,
+                worktreePath,
+              });
+              return;
+            }
+            const createdAt = yield* nowIso;
+            yield* appendCaptureFailureActivity({
               threadId: event.threadId,
               turnId,
-              detail: error.message,
+              detail: gone
+                ? `The thread's worktree no longer exists (${worktreePath}), so its turn could not be checkpointed.`
+                : error.message,
               createdAt,
-            }).pipe(Effect.catch(() => Effect.void)),
-          ),
+            }).pipe(Effect.catch(() => Effect.void));
+          }),
         ),
       );
       return;

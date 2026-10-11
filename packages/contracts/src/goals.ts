@@ -93,6 +93,10 @@ export const GoalChat = Schema.Struct({
   baseBranch: Schema.optional(Schema.String),
   /** The worker's thread was settled with the orchestration engine once its task was handed in. */
   settled: Schema.optional(Schema.Boolean),
+  /** What the worker asked a person for. Recorded for the person; it never decides the task. */
+  attentionNote: Schema.optional(Schema.String),
+  /** The task's worktree was removed after its work landed. */
+  worktreeRetired: Schema.optional(Schema.Boolean),
   /** Times this worker was sent back to fix a failed check. */
   landingRetries: Schema.optional(Schema.Number),
   /**
@@ -291,6 +295,20 @@ export function replyReportsGoalComplete(reply: string | undefined): boolean {
 /** Whether an agent's reply says it is blocked or needs the person to do something. */
 export function replyNeedsAttention(reply: string | undefined): boolean {
   return reply !== undefined && GOAL_NEEDS_ATTENTION_LINE.test(reply);
+}
+
+const GOAL_ATTENTION_NOTE = new RegExp(
+  `^[ \\t]*${GOAL_NEEDS_ATTENTION_MARKER}\\b[ \\t]*[-–—:]?[ \\t]*([^]*)$`,
+  "mu",
+);
+
+/**
+ * What a worker asked a person for: the marker line and what follows it, with or without a
+ * colon. Used to keep the request visible; AgentQueue tasks are decided by commits and checks.
+ */
+export function replyAttentionNote(reply: string | undefined): string | undefined {
+  const match = reply === undefined ? null : GOAL_ATTENTION_NOTE.exec(reply);
+  return match ? (match[1]!.trim() || "The worker asked for a person.").slice(0, 600) : undefined;
 }
 
 const GOAL_BLOCKED_LINE = new RegExp(

@@ -80,6 +80,31 @@ export const make = Effect.gen(function* () {
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
   const checkpointStore = yield* CheckpointStore.CheckpointStore;
 
+  /**
+   * Checkpoint refs live in the repository's shared ref store, so a thread whose worktree was
+   * removed after its work landed still has its history in the project's repository. Only a
+   * "not a repository" answer falls back; any other failure is reported as it happened.
+   */
+  const diffInWorkspace = (
+    threadContext: { readonly worktreePath: string | null; readonly workspaceRoot: string | null },
+    workspaceCwd: string,
+    input: Parameters<CheckpointStore.CheckpointStore["Service"]["diffCheckpoints"]>[0],
+  ) =>
+    checkpointStore
+      .diffCheckpoints(input)
+      .pipe(
+        Effect.catch((error) =>
+          error._tag === "VcsUnsupportedOperationError" &&
+          threadContext.worktreePath === workspaceCwd &&
+          threadContext.workspaceRoot !== null &&
+          threadContext.workspaceRoot !== workspaceCwd
+            ? checkpointStore
+                .diffCheckpoints({ ...input, cwd: threadContext.workspaceRoot })
+                .pipe(Effect.catch(() => Effect.fail(error)))
+            : Effect.fail(error),
+        ),
+      );
+
   const getTurnDiff: CheckpointDiffQuery["Service"]["getTurnDiff"] = Effect.fn("getTurnDiff")(
     function* (input) {
       const operation = "CheckpointDiffQuery.getTurnDiff";
@@ -165,15 +190,13 @@ export const make = Effect.gen(function* () {
         });
       }
 
-      const diff = yield* checkpointStore
-        .diffCheckpoints({
-          cwd: workspaceCwd,
-          fromCheckpointRef,
-          toCheckpointRef,
-          fallbackFromToHead: false,
-          ignoreWhitespace,
-        })
-        .pipe(Effect.withSpan("checkpoint.turnDiff.diffCheckpoints"));
+      const diff = yield* diffInWorkspace(threadContext.value, workspaceCwd, {
+        cwd: workspaceCwd,
+        fromCheckpointRef,
+        toCheckpointRef,
+        fallbackFromToHead: false,
+        ignoreWhitespace,
+      }).pipe(Effect.withSpan("checkpoint.turnDiff.diffCheckpoints"));
 
       const turnDiff = buildTurnDiffResult(input, diff);
       if (!isTurnDiffResult(turnDiff)) {
@@ -255,15 +278,13 @@ export const make = Effect.gen(function* () {
       });
     }
 
-    const diff = yield* checkpointStore
-      .diffCheckpoints({
-        cwd: workspaceCwd,
-        fromCheckpointRef: checkpointRefForThreadTurn(input.threadId, 0),
-        toCheckpointRef: threadContext.value.toCheckpointRef as CheckpointRef,
-        fallbackFromToHead: false,
-        ignoreWhitespace,
-      })
-      .pipe(Effect.withSpan("checkpoint.fullThread.diffCheckpoints"));
+    const diff = yield* diffInWorkspace(threadContext.value, workspaceCwd, {
+      cwd: workspaceCwd,
+      fromCheckpointRef: checkpointRefForThreadTurn(input.threadId, 0),
+      toCheckpointRef: threadContext.value.toCheckpointRef as CheckpointRef,
+      fallbackFromToHead: false,
+      ignoreWhitespace,
+    }).pipe(Effect.withSpan("checkpoint.fullThread.diffCheckpoints"));
 
     const turnDiff = buildTurnDiffResult(
       {

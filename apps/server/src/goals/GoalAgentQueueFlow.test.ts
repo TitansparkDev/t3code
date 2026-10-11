@@ -116,6 +116,10 @@ interface ThreadScript {
   turnState: string;
   progress: boolean;
   lastError: string | null;
+  /** A model turn is running (a worker woken by its own background job). */
+  busy?: boolean;
+  /** Whether the last turn's checkpoint is saved; unset means the thread reports none at all. */
+  checkpoint?: "saved" | "pending";
 }
 
 const makeFlow = (plan: string, options: { readonly extraFiles?: Record<string, string> } = {}) =>
@@ -137,6 +141,8 @@ const makeFlow = (plan: string, options: { readonly extraFiles?: Record<string, 
     const subscription = yield* PubSub.subscribe(events);
     let eventCount = 0;
     const scripts = new Map<string, ThreadScript>();
+    /** Background work the registry reports per thread (tests, watchers, subagents). */
+    const liveness = new Map<string, "working" | "monitoring">();
     /** The model each thread was created with, as the engine would report it. */
     const selections = new Map<string, unknown>();
     const providers = yield* Ref.make<ReadonlyArray<ServerProvider>>([provider("codex")]);
@@ -151,10 +157,20 @@ const makeFlow = (plan: string, options: { readonly extraFiles?: Record<string, 
     const thread = (id: string) => {
       const state = script(id);
       return {
-        latestTurn: { state: state.turnState },
+        latestTurn: { state: state.turnState, turnId: "turn-1" },
         messages: state.reply === "" ? [] : [{ role: "assistant", text: state.reply }],
         activities: state.progress ? [{}] : [],
-        session: state.lastError ? { lastError: state.lastError, status: "error" } : null,
+        ...(state.checkpoint
+          ? {
+              checkpoints:
+                state.checkpoint === "saved" ? [{ turnId: "turn-1", status: "ready" }] : [],
+            }
+          : {}),
+        session: state.lastError
+          ? { lastError: state.lastError, status: "error" }
+          : state.busy
+            ? { activeTurnId: "turn-2", status: "running" }
+            : null,
         modelSelection: selections.get(id) ?? CODEX,
       } as unknown as OrchestrationThread;
     };
@@ -190,7 +206,12 @@ const makeFlow = (plan: string, options: { readonly extraFiles?: Record<string, 
               ? [{ id: PROJECT, workspaceRoot: repo.rootDir } as never]
               : [],
           ),
-        getThreadShellById: () => Effect.succeed(Option.none()),
+        getThreadShellById: (threadId) =>
+          Effect.succeed(
+            liveness.has(threadId)
+              ? Option.some({ backgroundLiveness: liveness.get(threadId) } as never)
+              : Option.none(),
+          ),
         getThreadDetailById: (threadId) => Effect.succeed(Option.some(thread(threadId))),
       }),
     ).pipe(
@@ -286,7 +307,13 @@ const makeFlow = (plan: string, options: { readonly extraFiles?: Record<string, 
     /** The worker commits a file in the worktree the server assigned, then its turn ends. */
     const work = Effect.fn("work")(function* (
       taskId: string,
-      change: { file?: string; content?: string; reply?: string; commit?: boolean } = {},
+      change: {
+        file?: string;
+        content?: string;
+        reply?: string;
+        commit?: boolean;
+        checkpoint?: "saved" | "pending";
+      } = {},
     ) {
       const created = createdFor(taskId);
       if (!created?.worktreePath) return yield* Effect.die(new Error(`no worktree for ${taskId}`));
@@ -306,6 +333,7 @@ const makeFlow = (plan: string, options: { readonly extraFiles?: Record<string, 
         turnState: "completed",
         progress: true,
         lastError: null,
+        ...(change.checkpoint ? { checkpoint: change.checkpoint } : {}),
       });
       yield* sessionEvent(created.threadId, { status: "running", activeTurnId: "turn-1" });
       yield* sessionEvent(created.threadId, { status: "ready", activeTurnId: null });
@@ -353,6 +381,7 @@ const makeFlow = (plan: string, options: { readonly extraFiles?: Record<string, 
       repo,
       log,
       scripts,
+      liveness,
       providers,
       startServer,
       deps,
@@ -1027,5 +1056,283 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
         expect(text).toContain("no commit");
         expect(text).not.toContain("stuck or blocked");
       }).pipe(Effect.scoped),
+  );
+
+  /** Let the scheduler's slow tick run once (queue events every second, reconcile every five). */
+  const tickOnce = Effect.gen(function* () {
+    yield* TestClock.adjust(Duration.seconds(5));
+    yield* Effect.yieldNow;
+    yield* TestClock.adjust(Duration.seconds(1));
+    yield* Effect.yieldNow;
+  });
+
+  it.effect(
+    "a turn that ends while a background test still runs is not finished: nothing is submitted, settled or removed until the test ends and the model is idle",
+    () =>
+      Effect.gen(function* () {
+        const flow = yield* makeFlow(planWith([{ id: "T1" }]));
+        const service = yield* flow.startServer;
+        yield* Effect.forkScoped(service.loop);
+        yield* Effect.yieldNow;
+        yield* service.create(settingsFor());
+        yield* flow.waitFor("thread.create", 1);
+        const worktree = flow.createdFor("T1")!.worktreePath!;
+        const threadId = flow.createdFor("T1")!.threadId;
+
+        // "I'll wait for the integration suite": the turn ends, the suite is still running.
+        flow.liveness.set(threadId, "monitoring");
+        yield* flow.work("T1", { reply: "The full suite is still running; I'll wait for it." });
+        for (let round = 0; round < 3; round++) yield* tickOnce;
+        yield* flow.drain;
+        expect(flow.log.filter((c) => c.type === "thread.settle")).toHaveLength(0);
+        expect(flow.log.filter((c) => c.type === "thread.session.stop")).toHaveLength(0);
+        expect((yield* flow.taskRow("T1")).status).toBe("claimed");
+        expect((yield* flow.goalOf(service)).chats[0]?.status).toBe("running");
+        expect(NodeFS.existsSync(worktree)).toBe(true);
+
+        // The suite ends but the worker was woken by it and is writing again: still not done.
+        flow.liveness.delete(threadId);
+        flow.scripts.set(threadId, { ...flow.scripts.get(threadId)!, busy: true });
+        yield* tickOnce;
+        yield* flow.drain;
+        expect((yield* flow.taskRow("T1")).status).toBe("claimed");
+        expect(flow.log.filter((c) => c.type === "thread.settle")).toHaveLength(0);
+
+        // Genuinely finished: no turn, no background job. Now it is checked, merged and settled.
+        flow.scripts.set(threadId, { ...flow.scripts.get(threadId)!, busy: false });
+        yield* tickOnce;
+        yield* flow.eventually(
+          flow.taskRow("T1"),
+          (row) => row.status === "completed",
+          "T1 to merge once it is really finished",
+        );
+        yield* flow.waitFor("thread.settle", 1);
+        expect(yield* flow.landings("T1")).toBe(1);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "a worktree stays while the last turn's checkpoint is unsaved, then is removed once, with no worker left behind",
+    () =>
+      Effect.gen(function* () {
+        const flow = yield* makeFlow(planWith([{ id: "T1" }]));
+        const service = yield* flow.startServer;
+        yield* Effect.forkScoped(service.loop);
+        yield* Effect.yieldNow;
+        yield* service.create(settingsFor());
+        yield* flow.waitFor("thread.create", 1);
+        const created = flow.createdFor("T1")!;
+        yield* flow.work("T1", { checkpoint: "pending" });
+        yield* flow.eventually(
+          flow.taskRow("T1"),
+          (row) => row.status === "completed",
+          "T1 to merge",
+        );
+        yield* tickOnce;
+        expect(NodeFS.existsSync(created.worktreePath!)).toBe(true);
+
+        flow.scripts.set(created.threadId, {
+          ...flow.scripts.get(created.threadId)!,
+          checkpoint: "saved",
+        });
+        yield* tickOnce;
+        yield* flow.eventually(
+          Effect.sync(() => NodeFS.existsSync(created.worktreePath!)),
+          (exists) => !exists,
+          "the worktree to be removed after its checkpoint was saved",
+        );
+        const goal = yield* flow.goalOf(service);
+        expect(goal.chats[0]?.worktreeRetired).toBe(true);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "a committed worker that ends with NEEDS ATTENTION keeps its verified work and parks the request as its own task",
+    () =>
+      Effect.gen(function* () {
+        const flow = yield* makeFlow(planWith([{ id: "T1" }]));
+        const service = yield* flow.startServer;
+        yield* Effect.forkScoped(service.loop);
+        yield* Effect.yieldNow;
+        yield* service.create(settingsFor());
+        yield* flow.waitFor("thread.create", 1);
+        yield* flow.work("T1", {
+          reply:
+            "Implemented and tested.\n\nNEEDS ATTENTION: deploying this needs an owner decision about the tunnel.",
+        });
+        yield* flow.eventually(
+          flow.taskRow("T1"),
+          (row) => row.status === "completed",
+          "the committed work to merge",
+        );
+        expect(yield* flow.landings("T1")).toBe(1);
+        const followUp = yield* flow.taskRow("T1-FU1");
+        expect(followUp.status).toBe("blocked");
+        // Parked work is open work: the plan is not reported as done.
+        yield* tickOnce;
+        expect((yield* flow.goalOf(service)).status).not.toBe("complete");
+        const db = openQueueDatabase({ gitCommonDir: flow.repo.gitCommonDir });
+        const note = db.prepare("SELECT description FROM tasks WHERE id = 'T1-FU1'").get() as {
+          description: string;
+        };
+        db.close();
+        expect(note.description).toContain("owner decision about the tunnel");
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "NEEDS ATTENTION with nothing committed parks the task for a person instead of retrying it",
+    () =>
+      Effect.gen(function* () {
+        const flow = yield* makeFlow(planWith([{ id: "T1" }]));
+        const service = yield* flow.startServer;
+        yield* Effect.forkScoped(service.loop);
+        yield* Effect.yieldNow;
+        yield* service.create(settingsFor());
+        yield* flow.waitFor("thread.create", 1);
+        yield* flow.work("T1", { commit: false, reply: "NEEDS ATTENTION: I need a login." });
+        const goal = yield* flow.eventually(
+          flow.goalOf(service),
+          (g) => g.chats[0]?.status === "attention",
+          "the worker to be recorded as needing a person",
+        );
+        expect(goal.chats[0]?.taskOutcome).toBe("attention");
+        expect((yield* flow.taskRow("T1")).status).toBe("blocked");
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "prose Done lines with several commands become one real check whose exact failure is kept",
+    () =>
+      Effect.gen(function* () {
+        const plan = [
+          "# Flow plan",
+          "",
+          "- [ ] **T1 — Task T1.**",
+          "  - Depends on: none.",
+          '  - Done: run `node -e "process.exit(0)"` first and then `node -e "process.exit(5)"`; record the result.',
+          "",
+        ].join("\n");
+        const flow = yield* makeFlow(plan);
+        const service = yield* flow.startServer;
+        yield* Effect.forkScoped(service.loop);
+        yield* Effect.yieldNow;
+        yield* service.create(settingsFor());
+        yield* flow.waitFor("thread.create", 1);
+        yield* flow.work("T1");
+        const turns = yield* flow.waitFor("thread.turn.start", 2);
+        const text = turns[1]?.type === "thread.turn.start" ? turns[1].message.text : "";
+        expect(text).toContain("exit 5");
+        expect((yield* flow.taskRow("T1")).status).toBe("claimed");
+        const db = openQueueDatabase({ gitCommonDir: flow.repo.gitCommonDir });
+        const event = db
+          .prepare(
+            "SELECT payload_json FROM task_events WHERE task_id = 'T1' AND event_type = 'task_verification_failed'",
+          )
+          .get() as { payload_json: string };
+        db.close();
+        expect(JSON.parse(event.payload_json)).toMatchObject({ exitCode: 5, outcome: "failed" });
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "a restart between a worker finishing and its submission still checks, merges and settles it",
+    () =>
+      Effect.gen(function* () {
+        const flow = yield* makeFlow(planWith([{ id: "T1" }]));
+        // The first server never consumes the worker's events: it is gone before it sees them.
+        const first = yield* flow.startServer;
+        yield* first.create(settingsFor());
+        const created = (yield* flow.waitFor("thread.create", 1))[0]!;
+        yield* Effect.promise(async () => {
+          const cwd = created.worktreePath!;
+          await NodeFSP.writeFile(NodePath.join(cwd, "T1.txt"), "T1\n");
+          await execCommand("git", ["add", "-A"], cwd);
+          await execCommand("git", ["commit", "-m", "T1: implement"], cwd);
+        });
+        flow.scripts.set(created.threadId, {
+          reply: "Done.",
+          turnState: "completed",
+          progress: true,
+          lastError: null,
+        });
+        const second = yield* flow.startServer;
+        yield* Effect.forkScoped(second.loop);
+        yield* Effect.yieldNow;
+        yield* flow.eventually(
+          flow.taskRow("T1"),
+          (row) => row.status === "completed",
+          "T1 to merge after the restart",
+        );
+        expect(yield* flow.landings("T1")).toBe(1);
+        yield* flow.waitFor("thread.settle", 1);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "a standard goal waits for a worker's background job too, then finishes it normally",
+    () =>
+      Effect.gen(function* () {
+        const flow = yield* makeFlow(planWith([{ id: "T1" }, { id: "T2" }]));
+        const service = yield* flow.startServer;
+        yield* Effect.forkScoped(service.loop);
+        yield* Effect.yieldNow;
+        yield* service.create(
+          settingsFor({
+            queueMode: "standard",
+            concurrency: 1,
+            agents: [{ modelSelection: CODEX, count: 1 }],
+          }),
+        );
+        const [first] = yield* flow.waitFor("thread.create", 1);
+        flow.liveness.set(first!.threadId, "working");
+        flow.scripts.set(first!.threadId, {
+          reply: "Tests are still running.",
+          turnState: "completed",
+          progress: true,
+          lastError: null,
+        });
+        yield* flow.sessionEvent(first!.threadId, { status: "running", activeTurnId: "t" });
+        yield* flow.sessionEvent(first!.threadId, { status: "ready", activeTurnId: null });
+        for (let round = 0; round < 2; round++) yield* tickOnce;
+        yield* flow.drain;
+        expect(flow.log.filter((c) => c.type === "thread.create")).toHaveLength(1);
+        expect((yield* flow.goalOf(service)).chats[0]?.status).toBe("running");
+
+        flow.liveness.delete(first!.threadId);
+        yield* tickOnce;
+        // Finished for real: the lane frees and the next worker starts.
+        yield* flow.waitFor("thread.create", 2);
+        expect((yield* flow.goalOf(service)).chats[0]?.status).toBe("completed");
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("a finished goal still gets its landed worktrees removed", () =>
+    Effect.gen(function* () {
+      const flow = yield* makeFlow(planWith([{ id: "T1" }]));
+      const service = yield* flow.startServer;
+      yield* Effect.forkScoped(service.loop);
+      yield* Effect.yieldNow;
+      yield* service.create(settingsFor());
+      yield* flow.waitFor("thread.create", 1);
+      const worktree = flow.createdFor("T1")!.worktreePath!;
+      yield* flow.work("T1", { checkpoint: "pending" });
+      yield* flow.eventually(
+        flow.goalOf(service),
+        (g) => g.status === "complete",
+        "the goal to complete",
+      );
+      expect(NodeFS.existsSync(worktree)).toBe(true);
+      flow.scripts.set(flow.createdFor("T1")!.threadId, {
+        ...flow.scripts.get(flow.createdFor("T1")!.threadId)!,
+        checkpoint: "saved",
+      });
+      yield* tickOnce;
+      yield* flow.eventually(
+        Effect.sync(() => NodeFS.existsSync(worktree)),
+        (exists) => !exists,
+        "the worktree to be removed after the goal finished",
+      );
+    }).pipe(Effect.scoped),
   );
 });

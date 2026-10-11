@@ -22837,6 +22837,7 @@ packages/agent-queue-core/test/queueInspector.test.ts
 packages/agent-queue-core/test/repoManager.test.ts
 packages/agent-queue-core/test/scopeManager.test.ts
 packages/agent-queue-core/test/stateMachine.test.ts
+packages/agent-queue-core/test/verificationAndFollowUp.test.ts
 packages/agent-queue-core/test/worktreeAndLanding.test.ts
 packages/agent-queue-core/tsconfig.json
 packages/client-runtime/README.md

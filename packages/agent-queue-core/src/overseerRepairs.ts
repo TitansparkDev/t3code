@@ -322,3 +322,69 @@ export function generateOverseerBriefing(
 
   return lines.join("\n");
 }
+
+export interface FollowUpInput {
+  readonly planId: string;
+  readonly parentTaskId: string;
+  /** "repair" can be worked by an agent now; "decision" waits for a person or the overseer. */
+  readonly kind: "repair" | "decision";
+  readonly title: string;
+  readonly note: string;
+}
+
+/**
+ * Records leftover work next to a task whose commits are kept: a blocker the worker reported,
+ * or a repair a failed check calls for. The parent keeps its own outcome, nothing depends on
+ * the follow-up unless a plan says so, and the plan cannot complete while it stays open.
+ * Repeating the same note for the same parent returns the task that already exists.
+ */
+export function addFollowUpTask(
+  db: NodeSqlite.DatabaseSync,
+  input: FollowUpInput,
+): { readonly taskId: string; readonly created: boolean } {
+  db.exec("BEGIN IMMEDIATE;");
+  try {
+    const parent = db
+      .prepare("SELECT scope_patterns FROM tasks WHERE id = ? AND plan_id = ?")
+      .get(input.parentTaskId, input.planId) as { scope_patterns: string } | undefined;
+    if (!parent) throw new Error(`Task ${input.parentTaskId} not found`);
+    const note = input.note.trim().slice(0, 4000);
+    const siblings = db
+      .prepare("SELECT id, description FROM tasks WHERE plan_id = ? AND id LIKE ? ESCAPE '\\'")
+      .all(input.planId, `${input.parentTaskId.replace(/[\\%_]/g, "\\$&")}-FU%`) as Array<{
+      id: string;
+      description: string | null;
+    }>;
+    const existing = siblings.find((row) => row.description === note);
+    if (existing) {
+      db.exec("COMMIT;");
+      return { taskId: existing.id, created: false };
+    }
+    const taskId = `${input.parentTaskId}-FU${siblings.length + 1}`;
+    const now = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO tasks (id, plan_id, title, description, status, priority, scope_patterns,
+         dependencies, failure_reason, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 150, ?, '[]', ?, ?, ?)`,
+    ).run(
+      taskId,
+      input.planId,
+      input.title.slice(0, 200),
+      note,
+      input.kind === "decision" ? "blocked" : "pending",
+      parent.scope_patterns,
+      input.kind === "decision" ? note.slice(0, 500) : null,
+      now,
+      now,
+    );
+    recordEvent(db, taskId, "task_followup_created", {
+      parentTaskId: input.parentTaskId,
+      kind: input.kind,
+    });
+    db.exec("COMMIT;");
+    return { taskId, created: true };
+  } catch (error) {
+    db.exec("ROLLBACK;");
+    throw error;
+  }
+}

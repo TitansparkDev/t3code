@@ -260,17 +260,32 @@ export async function submitCandidate(
   ]);
   if (ahead.code !== 0 || ahead.stdout === "0") return { kind: "no-changes" };
 
+  const limit = db.prepare("SELECT timeout_seconds FROM tasks WHERE id = ?").get(input.taskId) as
+    | { timeout_seconds: number | null }
+    | undefined;
   const receipt = await runVerification(
     input.taskId,
     input.worktreePath,
     input.verificationCommand,
+    Math.max(60, limit?.timeout_seconds ?? 1800) * 1000,
   );
   if (!receipt.passed) {
+    // The exact result stays on record: what ran, how it ended, and the output's tail.
+    recordEvent(db, input.taskId, "task_verification_failed", {
+      command: receipt.verificationCommand,
+      commit: receipt.commitHash,
+      outcome: receipt.outcome,
+      exitCode: receipt.exitCode,
+      signal: receipt.signal,
+      durationMs: receipt.durationMs,
+      stdoutTail: receipt.stdoutSnippet,
+      stderrTail: receipt.stderrSnippet,
+    });
     return {
       kind: "verification-failed",
       receipt,
       error:
-        `Verification failed (exit ${receipt.exitCode}): ${receipt.stderrSnippet || receipt.stdoutSnippet}`.slice(
+        `Verification ${receipt.outcome === "timed-out" ? "did not finish" : "failed"} (exit ${receipt.exitCode}) for \`${receipt.verificationCommand}\`: ${receipt.stderrSnippet || receipt.stdoutSnippet}`.slice(
           0,
           1500,
         ),
@@ -303,7 +318,10 @@ export async function submitCandidate(
         commit: receipt.commitHash,
         verifiedAt: receipt.verifiedAt,
         durationMs: receipt.durationMs,
+        outcome: receipt.outcome,
+        signal: receipt.signal,
         stdoutTail: receipt.stdoutSnippet.slice(-500),
+        stderrTail: receipt.stderrSnippet.slice(-500),
       }),
       now,
       now,
@@ -425,7 +443,7 @@ export async function integrateCandidate(
 ): Promise<IntegrationOutcome> {
   const row = db
     .prepare(
-      `SELECT candidate_commit, candidate_branch, verification_command
+      `SELECT candidate_commit, candidate_branch, verification_command, timeout_seconds
        FROM tasks WHERE id = ? AND integration_state = 'pending' AND status = 'verifying'`,
     )
     .get(input.taskId) as
@@ -433,6 +451,7 @@ export async function integrateCandidate(
         candidate_commit: string | null;
         candidate_branch: string | null;
         verification_command: string | null;
+        timeout_seconds: number | null;
       }
     | undefined;
   if (!row?.candidate_commit) return { kind: "not-pending" };
@@ -495,7 +514,12 @@ export async function integrateCandidate(
 
     // Concurrent work was merged in, so the task's check must still pass on the result.
     if (result !== candidate && row.verification_command?.trim()) {
-      const receipt = await runVerification(input.taskId, staging, row.verification_command);
+      const receipt = await runVerification(
+        input.taskId,
+        staging,
+        row.verification_command,
+        Math.max(60, row.timeout_seconds ?? 1800) * 1000,
+      );
       if (!receipt.passed) {
         const reason = `After merging with ${goalBranch}, the check failed (exit ${receipt.exitCode}): ${(receipt.stderrSnippet || receipt.stdoutSnippet).slice(-600)}`;
         const { exhausted } = markNeedsRepair(db, input.taskId, reason, [], maxRepairs);

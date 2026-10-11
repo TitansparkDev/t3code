@@ -1,4 +1,11 @@
-import { CheckpointRef, ProjectId, ThreadId, TurnId } from "@t3tools/contracts";
+// @effect-diagnostics preferSchemaOverJson:off globalErrorInEffectFailure:off anyUnknownInErrorContext:off
+import {
+  CheckpointRef,
+  ProjectId,
+  ThreadId,
+  TurnId,
+  VcsUnsupportedOperationError,
+} from "@t3tools/contracts";
 import { it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -481,6 +488,84 @@ describe("CheckpointDiffQuery.layer", () => {
       expect(error.message).toBe(
         "Checkpoint invariant violation in CheckpointDiffQuery.getTurnDiff: Thread 'thread-missing' not found.",
       );
+    }),
+  );
+});
+
+describe("CheckpointDiffQuery after a worktree was removed", () => {
+  const notARepository = (cwd: string) =>
+    new VcsUnsupportedOperationError({
+      operation: "VcsDriverRegistry.resolve",
+      kind: "unknown",
+      detail: `No supported VCS repository was detected at ${cwd}.`,
+    });
+
+  /** Run a turn diff for a thread whose worktree is `worktreePath` and whose project is `/repo`. */
+  const turnDiff = (diffIn: (cwd: string) => Effect.Effect<string, unknown>) =>
+    Effect.gen(function* () {
+      const projectId = ProjectId.make("project-removed");
+      const threadId = ThreadId.make("thread-removed");
+      const context = makeThreadCheckpointContext({
+        projectId,
+        threadId,
+        workspaceRoot: "/repo",
+        worktreePath: "/repo/.worktrees/gone",
+        checkpointTurnCount: 1,
+        checkpointRef: checkpointRefForThreadTurn(threadId, 1),
+      });
+      const calls: string[] = [];
+      const store: CheckpointStore.CheckpointStore["Service"] = {
+        isGitRepository: () => Effect.succeed(true),
+        captureCheckpoint: () => Effect.void,
+        hasCheckpointRef: () => Effect.succeed(true),
+        restoreCheckpoint: () => Effect.succeed(true),
+        diffCheckpoints: ({ cwd }) => {
+          calls.push(cwd);
+          return diffIn(cwd) as never;
+        },
+        deleteCheckpointRefs: () => Effect.void,
+      };
+      const snapshot = new Proxy(
+        { getThreadCheckpointContext: () => Effect.succeedSome(context) },
+        { get: (target, key) => (target as never)[key] ?? (() => Effect.die("unused")) },
+      ) as unknown as ProjectionSnapshotQuery.ProjectionSnapshotQuery["Service"];
+      const layer = CheckpointDiffQuery.layer.pipe(
+        Layer.provideMerge(Layer.succeed(CheckpointStore.CheckpointStore, store)),
+        Layer.provideMerge(
+          Layer.succeed(ProjectionSnapshotQuery.ProjectionSnapshotQuery, snapshot),
+        ),
+      );
+      const result = yield* Effect.gen(function* () {
+        const query = yield* CheckpointDiffQuery.CheckpointDiffQuery;
+        return yield* query.getTurnDiff({ threadId, fromTurnCount: 0, toTurnCount: 1 });
+      }).pipe(Effect.provide(layer), Effect.exit);
+      return { result, calls };
+    });
+
+  it.effect("reads a historical thread's diff from the project repository", () =>
+    Effect.gen(function* () {
+      const { result, calls } = yield* turnDiff((cwd) =>
+        cwd === "/repo" ? Effect.succeed("patch") : Effect.fail(notARepository(cwd)),
+      );
+      expect(result._tag).toBe("Success");
+      expect(calls).toEqual(["/repo/.worktrees/gone", "/repo"]);
+    }),
+  );
+
+  it.effect("still reports the original failure when the project repository cannot answer", () =>
+    Effect.gen(function* () {
+      const { result, calls } = yield* turnDiff((cwd) => Effect.fail(notARepository(cwd)));
+      expect(result._tag).toBe("Failure");
+      expect(JSON.stringify(result)).toContain("/repo/.worktrees/gone");
+      expect(calls).toEqual(["/repo/.worktrees/gone", "/repo"]);
+    }),
+  );
+
+  it.effect("does not retry elsewhere for any other kind of failure", () =>
+    Effect.gen(function* () {
+      const { result, calls } = yield* turnDiff(() => Effect.fail(new Error("disk error")));
+      expect(result._tag).toBe("Failure");
+      expect(calls).toEqual(["/repo/.worktrees/gone"]);
     }),
   );
 });

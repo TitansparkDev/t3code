@@ -35,6 +35,7 @@ import {
   renewLease,
   reserveNextTask,
   resolveRepoGit,
+  addFollowUpTask,
   retryTask,
   teardownWorktree,
   unblockTask,
@@ -209,7 +210,7 @@ export class AgentQueueService extends Context.Service<
       worktreePath: string,
       branch: string,
       landed: boolean,
-    ) => Effect.Effect<void, AgentQueueError>;
+    ) => Effect.Effect<{ readonly preserved: boolean }, AgentQueueError>;
     readonly events: (
       binding: QueueBinding,
       cursor: number,
@@ -233,6 +234,16 @@ export class AgentQueueService extends Context.Service<
       binding: QueueBinding,
       options: { readonly runFinalCheck: boolean },
     ) => Effect.Effect<CompletionReport, AgentQueueError>;
+    /** Keep a worker's commits and record what is left (a blocker or a repair) as its own task. */
+    readonly addFollowUp: (
+      binding: QueueBinding,
+      input: {
+        readonly parentTaskId: string;
+        readonly kind: "repair" | "decision";
+        readonly title: string;
+        readonly note: string;
+      },
+    ) => Effect.Effect<{ readonly taskId: string; readonly created: boolean }, AgentQueueError>;
     readonly retryTask: (
       binding: QueueBinding,
       taskId: string,
@@ -502,9 +513,10 @@ const make = AgentQueueService.of({
 
   teardown: (binding, worktreePath, branch, landed) =>
     runAsync("teardown", async () => {
-      await teardownWorktree(binding.repoRoot, worktreePath, branch, {
+      return await teardownWorktree(binding.repoRoot, worktreePath, branch, {
         isSuccess: landed,
         deleteBranch: landed,
+        keepIfDirty: landed,
         preserveWorktreeOnFailure: !landed,
         emptyBaseRef: goalBranchOf(binding),
       });
@@ -565,6 +577,11 @@ const make = AgentQueueService.of({
         runFinalCheck: options.runFinalCheck,
       }).finally(() => db.close());
     }),
+
+  addFollowUp: (binding, input) =>
+    run("addFollowUp", () =>
+      withDb(binding, (db) => addFollowUpTask(db, { planId: binding.planId, ...input })),
+    ),
 
   retryTask: (binding, taskId) =>
     run("retryTask", () => withDb(binding, (db) => retryTask(db, taskId, 3))),

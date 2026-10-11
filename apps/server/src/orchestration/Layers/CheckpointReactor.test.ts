@@ -1,4 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off
+// @effect-diagnostics nodeBuiltinImport:off preferSchemaOverJson:off
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -296,6 +296,8 @@ describe("CheckpointReactor", () => {
       cwd: string,
     ) => VcsProcessTimeoutError | VcsProcessSpawnError | undefined;
     readonly workspaceRefresh?: (cwd: string) => Effect.Effect<void>;
+    /** Runs just before the store captures, to model the directory vanishing mid-capture. */
+    readonly beforeCapture?: (cwd: string) => void;
     readonly hasSession?: boolean;
     readonly seedFilesystemCheckpoints?: boolean;
     readonly initializeGit?: boolean;
@@ -386,6 +388,10 @@ describe("CheckpointReactor", () => {
                 const failure = options?.checkpointLookupFailure?.(input.cwd);
                 return failure ? Effect.fail(failure) : store.hasCheckpointRef(input);
               },
+              captureCheckpoint: (input) =>
+                Effect.sync(() => options?.beforeCapture?.(input.cwd)).pipe(
+                  Effect.andThen(store.captureCheckpoint(input)),
+                ),
             })),
           ),
         ).pipe(Layer.provide(VcsDriverRegistry.layer)),
@@ -662,6 +668,63 @@ describe("CheckpointReactor", () => {
         expect(
           model.threads[0]?.activities.some((a) => a.kind === "checkpoint.capture.failed"),
         ).toBe(false);
+      }),
+  );
+
+  effectIt.effect.each(["settled", "active"] as const)(
+    "a worktree removed before its turn's checkpoint is captured: %s thread",
+    (state) =>
+      Effect.gen(function* () {
+        let remove = false;
+        const harness = yield* Effect.promise(() =>
+          createHarness({
+            seedFilesystemCheckpoints: false,
+            hasSession: false,
+            beforeCapture: (cwd) => {
+              if (remove) NodeFS.rmSync(cwd, { recursive: true, force: true });
+            },
+          }),
+        );
+        const threadId = ThreadId.make("thread-1");
+        const turnId = asTurnId("turn-removed");
+        harness.provider.emit({
+          type: "turn.started",
+          eventId: EventId.make("evt-removed-start"),
+          provider: ProviderDriverKind.make("codex"),
+          createdAt: "2026-01-01T00:00:00.000Z",
+          threadId,
+          turnId,
+        });
+        expect(yield* harness.nextReceipt).toMatchObject({ type: "checkpoint.baseline.captured" });
+        if (state === "settled") {
+          yield* harness.engine.dispatch({
+            type: "thread.settle",
+            commandId: CommandId.make("cmd-settle-removed"),
+            threadId,
+          });
+        }
+        remove = true;
+        harness.provider.emit({
+          type: "turn.completed",
+          eventId: EventId.make("evt-removed-complete"),
+          provider: ProviderDriverKind.make("codex"),
+          createdAt: "2026-01-01T00:00:01.000Z",
+          threadId,
+          turnId,
+          payload: { state: "completed" },
+        });
+        yield* Effect.promise(harness.drain);
+        const failures = (yield* Effect.promise(harness.readModel)).threads[0]?.activities.filter(
+          (activity) => activity.kind === "checkpoint.capture.failed",
+        );
+        if (state === "settled") {
+          // History: the directory was retired on purpose, so there is nothing to report.
+          expect(failures).toEqual([]);
+        } else {
+          // A live thread whose directory vanished is a real failure, said in plain words.
+          expect(failures).toHaveLength(1);
+          expect(JSON.stringify(failures?.[0]?.payload)).toContain("no longer exists");
+        }
       }),
   );
 

@@ -196,6 +196,8 @@ export async function teardownWorktree(
     readonly isSuccess: boolean;
     readonly deleteBranch?: boolean;
     readonly preserveWorktreeOnFailure?: boolean;
+    /** With `isSuccess`: leave a worktree that still has uncommitted changes in place. */
+    readonly keepIfDirty?: boolean;
     /** When given, a worktree with no commits beyond it and no edits holds nothing and is removed. */
     readonly emptyBaseRef?: string;
   },
@@ -236,8 +238,13 @@ export async function teardownWorktree(
     return { preserved: true, salvageBranch };
   }
 
-  // Clean worktree removal
+  // Clean worktree removal. Edits made after the work was landed are somebody's unsaved work
+  // (a late write from a test or a woken worker): keep the worktree and let a person look.
   if (NodeFS.existsSync(worktreePath)) {
+    if (options.isSuccess && options.keepIfDirty) {
+      const dirty = execGit(["status", "--porcelain"], worktreePath);
+      if (dirty.code === 0 && dirty.stdout !== "") return { preserved: true };
+    }
     execGit(["worktree", "remove", "--force", worktreePath], repoRoot);
     if (NodeFS.existsSync(worktreePath)) {
       NodeFS.rmSync(worktreePath, { recursive: true, force: true });

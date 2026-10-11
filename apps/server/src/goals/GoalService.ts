@@ -78,6 +78,7 @@ import {
   parseOverseerReply,
   DEFAULT_GOAL_STOP_AFTER_PROBLEMS,
   problemStreak,
+  replyAttentionNote,
   replyNeedsAttention,
   replyReportsBlockedWork,
   replyReportsGoalComplete,
@@ -107,6 +108,10 @@ export const StartSpacingMillis = Context.Reference<number>("t3/goals/StartSpaci
 /** How often running goals look for room to start another chat. */
 const TICK_INTERVAL = "5 seconds";
 const TICK_MILLIS = 5_000;
+/** How long a finished turn's background commands are waited for before they are stopped on purpose. */
+const BACKGROUND_WAIT_MILLIS = 3 * 60 * 60_000;
+/** How long a landed worker's worktree waits for its last checkpoint before it is removed anyway. */
+const CHECKPOINT_WAIT_MILLIS = 30_000;
 
 export class GoalService extends Context.Service<
   GoalService,
@@ -318,6 +323,8 @@ export const make = Effect.gen(function* () {
   const lastStart = new Map<GoalId, number>();
   /** Why each goal was stuck when its overseer was asked, for the failure message. */
   const stuckReasons = new Map<GoalId, string>();
+  /** Chats whose turn ended while background commands still ran, and since when. */
+  const deferred = new Map<ThreadId, { goalId: GoalId; since: number }>();
 
   const logFailure = (message: string) => (cause: Cause.Cause<unknown>) =>
     Cause.hasInterruptsOnly(cause)
@@ -329,6 +336,45 @@ export const make = Effect.gen(function* () {
       Effect.map(Option.getOrUndefined),
       Effect.catchCause(() => Effect.succeed(undefined)),
     );
+
+  /** Background commands, watchers or subagents a thread's last turn left running, or null. */
+  const backgroundWorkOf = (threadId: ThreadId) =>
+    snapshots.getThreadShellById(threadId).pipe(
+      Effect.map(
+        Option.match({
+          onNone: () => null,
+          onSome: (shell) => shell.backgroundLiveness ?? null,
+        }),
+      ),
+      Effect.catchCause(() => Effect.succeed(null)),
+    );
+
+  /** Whether a model turn is running or about to (a settled worker woken by its own background job). */
+  const sessionBusy = (thread: OrchestrationThread | undefined) =>
+    thread?.session != null &&
+    (thread.session.activeTurnId !== null ||
+      thread.session.status === "starting" ||
+      thread.session.status === "running");
+
+  /** Whether the worker may be treated as finished: no turn, no background command still running. */
+  const workerQuiet = (threadId: ThreadId) =>
+    Effect.gen(function* () {
+      const [thread, background] = [yield* readThread(threadId), yield* backgroundWorkOf(threadId)];
+      return !sessionBusy(thread) && background === null;
+    });
+
+  /** Stop a thread's provider session. Used only on purpose, never to make a chat look finished. */
+  const stopSession = (threadId: ThreadId) =>
+    Effect.gen(function* () {
+      yield* engine
+        .dispatch({
+          type: "thread.session.stop",
+          commandId: CommandId.make(`goal-stop:${threadId}:${yield* randomUUID}`),
+          threadId,
+          createdAt: yield* nowIso,
+        })
+        .pipe(Effect.ignoreCause({ log: true }));
+    });
 
   const addChat = (goalId: GoalId, chat: GoalChat) =>
     store.update(goalId, (current) => ({
@@ -688,6 +734,20 @@ export const make = Effect.gen(function* () {
     const task = reserved.task;
     if (!task) return "none" as const;
 
+    // A worktree has one writer. An earlier worker for this task that a background job woke
+    // up again must stop before the next one starts in the same directory.
+    for (const earlier of goal.chats) {
+      if (earlier.worktreePath !== task.worktreePath || earlier.status === "running") continue;
+      if (!(yield* workerQuiet(earlier.threadId))) {
+        yield* Effect.logWarning("goals.stopping-stale-worker", {
+          goalId: goal.id,
+          taskId: task.taskId,
+          threadId: earlier.threadId,
+        });
+        yield* stopSession(earlier.threadId);
+      }
+    }
+
     const threadId = yield* openChat(goal, {
       title: `${task.repair ? "Repair" : "Goal worker"}: ${task.taskId} ${task.title}`.slice(
         0,
@@ -853,6 +913,80 @@ export const make = Effect.gen(function* () {
   });
 
   /** Merge every submitted candidate of a goal. Runs beside the scheduler and never blocks it. */
+  /**
+   * Whether a landed task's worktree may be removed: no worker holds a claim or runs in it, no
+   * model turn or background command still uses it, and the last turn's checkpoint is saved
+   * (a checkpoint needs the files, and a lookup afterwards would have nothing to read).
+   */
+  const worktreeFree = Effect.fn("GoalService.worktreeFree")(function* (
+    goal: Goal,
+    worktreePath: string,
+  ) {
+    const binding = goal.agentQueue;
+    if (binding) {
+      const claims = yield* queue
+        .activeClaims(binding)
+        .pipe(Effect.catch(() => Effect.succeed([] as const)));
+      if (claims.some((claim) => claim.worktreePath === worktreePath)) return false;
+    }
+    const now = yield* nowMillis;
+    for (const chat of goal.chats) {
+      if (chat.worktreePath !== worktreePath) continue;
+      if (chat.status === "running") return false;
+      if (!(yield* workerQuiet(chat.threadId))) return false;
+      const thread = yield* readThread(chat.threadId);
+      const turnId = thread?.latestTurn?.turnId;
+      if (!thread || !turnId || !thread.checkpoints) continue;
+      const saved =
+        thread.checkpoints.some((cp) => cp.turnId === turnId && cp.status !== "missing") ||
+        thread.activities.some(
+          (activity) => activity.kind === "checkpoint.capture.failed" && activity.turnId === turnId,
+        );
+      const endedAt = Date.parse(chat.completedAt ?? "");
+      if (!saved && (Number.isNaN(endedAt) || now - endedAt < CHECKPOINT_WAIT_MILLIS)) {
+        return false;
+      }
+    }
+    return true;
+  });
+
+  /** Remove a landed task's worktree once it is free; otherwise the sweep tries again later. */
+  const retireWorktree = Effect.fn("GoalService.retireWorktree")(function* (
+    goalId: GoalId,
+    worktreePath: string,
+    branch: string,
+  ) {
+    const goal = yield* currentGoal(goalId);
+    const binding = goal?.agentQueue;
+    if (!goal || !binding) return;
+    if (!(yield* worktreeFree(goal, worktreePath))) return;
+    const outcome = yield* queue.teardown(binding, worktreePath, branch, true).pipe(
+      Effect.map(Option.some),
+      Effect.catch((error) =>
+        logQueueError("goals.agentqueue-worktree-cleanup-failed")(error).pipe(
+          Effect.as(Option.none()),
+        ),
+      ),
+    );
+    if (Option.isNone(outcome) || outcome.value.preserved) return;
+    yield* store.update(goalId, (current) => ({
+      ...current,
+      chats: current.chats.map((chat) =>
+        chat.worktreePath === worktreePath ? { ...chat, worktreeRetired: true } : chat,
+      ),
+    }));
+  });
+
+  /** Landed work whose worktree could not be removed yet (still in use, or a checkpoint pending). */
+  const sweepLandedWorktrees = (goal: Goal) =>
+    Effect.gen(function* () {
+      for (const chat of goal.chats) {
+        if (chat.taskOutcome !== "integrated" || chat.worktreeRetired) continue;
+        if (!chat.worktreePath || !chat.branch) continue;
+        yield* retireWorktree(goal.id, chat.worktreePath, chat.branch);
+      }
+    }).pipe(Effect.catchCause(logFailure("goals.worktree-sweep-failed")));
+
   const runIntegration: (goalId: GoalId) => Effect.Effect<void> = Effect.fn(
     "GoalService.runIntegration",
   )(function* (goalId: GoalId) {
@@ -880,11 +1014,6 @@ export const make = Effect.gen(function* () {
         const result = outcome.value;
         if (result.kind === "landed") {
           progressed = true;
-          if (candidate.candidateWorktree && candidate.candidateBranch) {
-            yield* queue
-              .teardown(binding, candidate.candidateWorktree, candidate.candidateBranch, true)
-              .pipe(Effect.catch(logQueueError("goals.agentqueue-worktree-cleanup-failed")));
-          }
           yield* store.update(goalId, (current) => ({
             ...current,
             chats: current.chats.map((chat) =>
@@ -893,6 +1022,9 @@ export const make = Effect.gen(function* () {
                 : chat,
             ),
           }));
+          if (candidate.candidateWorktree && candidate.candidateBranch) {
+            yield* retireWorktree(goalId, candidate.candidateWorktree, candidate.candidateBranch);
+          }
         } else if (result.kind === "needs-repair") {
           progressed = true;
           yield* Effect.logWarning("goals.agentqueue-merge-needs-repair", {
@@ -978,6 +1110,17 @@ export const make = Effect.gen(function* () {
     submitting.add(chat.claimToken);
     const token = chat.claimToken;
     yield* Effect.gen(function* () {
+      // A candidate is never accepted while the worker's tests or commands still run, or while
+      // a model turn (a woken worker) is writing to the worktree: back to waiting, work kept.
+      if (!(yield* workerQuiet(threadId))) {
+        const waitingSince = yield* nowMillis;
+        yield* Effect.gen(function* () {
+          yield* updateChat(goalId, threadId, { status: "running", completedAt: undefined });
+          watching.set(threadId, { goalId, seenRunning: true });
+          deferred.set(threadId, { goalId, since: waitingSince });
+        }).pipe(lock.withPermits(1));
+        return;
+      }
       const info = yield* queue
         .taskInfo(binding, chat.taskId!)
         .pipe(Effect.catch(() => Effect.succeed(null)));
@@ -1013,6 +1156,18 @@ export const make = Effect.gen(function* () {
         switch (result.kind) {
           case "submitted": {
             yield* updateChat(goalId, threadId, { taskOutcome: "submitted", completedAt: now });
+            // The commits are kept and checked; what the worker needed a person for stays visible
+            // as its own parked task, so the plan cannot finish while it is open.
+            if (current.attentionNote) {
+              yield* queue
+                .addFollowUp(binding, {
+                  parentTaskId: chat.taskId!,
+                  kind: "decision",
+                  title: `Needs a person after ${chat.taskId}`,
+                  note: current.attentionNote,
+                })
+                .pipe(Effect.catch(logQueueError("goals.agentqueue-followup-failed")));
+            }
             yield* settleThread(goalId, threadId);
             yield* ensureIntegration(goalId);
             return yield* fillLanes(goalId);
@@ -1027,6 +1182,21 @@ export const make = Effect.gen(function* () {
           }
           case "no-changes":
           case "verification-failed": {
+            if (result.kind === "no-changes" && current.attentionNote) {
+              // Nothing was committed and the worker says a person must act: park the task.
+              yield* handBack(
+                binding,
+                current,
+                "blocked",
+                `Worker asked for a person: ${current.attentionNote}`,
+              );
+              yield* updateChat(goalId, threadId, {
+                status: "attention",
+                completedAt: now,
+                taskOutcome: "attention",
+              });
+              return yield* settleAfterProblem(goalId);
+            }
             const tries = current.landingRetries ?? 0;
             const feedback =
               result.kind === "no-changes"
@@ -1181,19 +1351,11 @@ export const make = Effect.gen(function* () {
       return yield* settleAfterProblem(goalId);
     }
 
-    // 3. The turn completed. A request for a person is honoured only when no check can show
-    //    the work is done; otherwise the check decides, whatever the worker wrote.
-    if (replyNeedsAttention(lastAssistantReply(thread)) && !info?.verificationCommand) {
-      const note = (lastAssistantReply(thread) ?? "").trim().slice(-400);
-      yield* handBack(binding, chat, "blocked", `Worker asked for a person: ${note}`);
-      yield* updateChat(goalId, threadId, {
-        status: "attention",
-        completedAt: now,
-        waitingForLimit: undefined,
-        taskOutcome: "attention",
-      });
-      return yield* settleAfterProblem(goalId);
-    }
+    // 3. The turn completed and nothing is still running. What the worker wrote never decides
+    //    the task: its commits and the task's check do (see submitFlow). A request for a person
+    //    is kept as a note so it is acted on without throwing the work away.
+    const attentionNote = replyAttentionNote(lastAssistantReply(thread));
+    if (attentionNote) yield* updateChat(goalId, threadId, { attentionNote });
 
     // Free the lane now; the check and the candidate record run beside the scheduler.
     yield* updateChat(goalId, threadId, {
@@ -1773,6 +1935,26 @@ export const make = Effect.gen(function* () {
       yield* finishOverseer(before, thread, threadId);
       return;
     }
+    // A turn that ended while its background commands (tests, watchers) still run is a pause,
+    // not a finish: settling now would stop the session and kill them. The chat stays working
+    // until they end; the tick looks again, and a wake-up turn is handled like any other.
+    if (knownLimit === undefined && (yield* backgroundWorkOf(threadId)) !== null) {
+      const now = yield* nowMillis;
+      const since = deferred.get(threadId)?.since ?? now;
+      if (now - since < BACKGROUND_WAIT_MILLIS) {
+        deferred.set(threadId, { goalId, since });
+        watching.set(threadId, { goalId, seenRunning: true });
+        if (since === now) {
+          yield* Effect.logInfo("goals.finish-deferred-background-work", { goalId, threadId });
+        }
+        return;
+      }
+      // Still running after hours: stop it explicitly. The work is then judged by its commits
+      // and the task's own check, never by the fact that the turn ended.
+      yield* Effect.logWarning("goals.background-work-stopped", { goalId, threadId });
+      yield* stopSession(threadId);
+    }
+    deferred.delete(threadId);
     if (chat.claimToken && before.agentQueue) {
       yield* finishQueueChat(before, before.agentQueue, chat, thread, knownLimit);
       return;
@@ -1930,6 +2112,27 @@ export const make = Effect.gen(function* () {
       yield* finishChat(watch.goalId, event.threadId);
     }).pipe(lock.withPermits(1));
 
+  /** Chats that paused on background commands are finished once those end and the model is idle. */
+  const finishDeferred = Effect.gen(function* () {
+    for (const [threadId, entry] of deferred) {
+      const goal = yield* currentGoal(entry.goalId);
+      if (!goal?.chats.some((chat) => chat.threadId === threadId && chat.status === "running")) {
+        deferred.delete(threadId);
+        continue;
+      }
+      const thread = yield* readThread(threadId);
+      if (sessionBusy(thread)) continue;
+      const now = yield* nowMillis;
+      if (
+        (yield* backgroundWorkOf(threadId)) !== null &&
+        now - entry.since < BACKGROUND_WAIT_MILLIS
+      ) {
+        continue;
+      }
+      yield* finishChat(entry.goalId, threadId).pipe(lock.withPermits(1));
+    }
+  }).pipe(Effect.catchCause(logFailure("goals.finish-deferred-failed")));
+
   const recover = Effect.gen(function* () {
     for (const stored of yield* store.list) {
       if (stored.useBeads) {
@@ -1978,11 +2181,15 @@ export const make = Effect.gen(function* () {
 
   /** Running goals look for room to start the next plan worker. */
   const tick = Effect.gen(function* () {
+    yield* finishDeferred;
     for (const goal of yield* store.list) {
+      // Landed work's worktrees are removed whatever became of the goal afterwards.
+      if (goal.status !== "running" && goal.agentQueue) yield* sweepLandedWorktrees(goal);
       if (goal.status !== "running") continue;
       if (goal.agentQueue) {
         yield* ensureIntegration(goal.id);
         yield* settleFinishedChats(goal);
+        yield* sweepLandedWorktrees(goal);
       }
       yield* fillLanes(goal.id).pipe(
         lock.withPermits(1),
