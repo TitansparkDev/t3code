@@ -54,6 +54,8 @@ export interface GoalSetupForm {
   readonly queueMode: "auto" | "standard" | "agentqueue";
   /** The plan file (relative to the repository). Empty picks the repository's active plan. */
   readonly planPath: string;
+  /** What publishing does about abandoned uncommitted edits in the target branch's checkout. */
+  readonly checkoutPolicy: "reconcile" | "wait";
 }
 
 /** What a new goal's name and instructions start as, so the plan-completion workflow is one tap away. */
@@ -88,6 +90,7 @@ export function defaultGoalSetup(input: {
     overseer: true,
     queueMode: "auto",
     planPath: "",
+    checkoutPolicy: "reconcile",
   };
 }
 
@@ -115,6 +118,7 @@ export function goalToSetup(goal: Goal): GoalSetupForm {
     // Goals saved before AgentQueue existed keep running the way they always did.
     queueMode: goal.queueMode ?? (goal.useAgentQueue ? "agentqueue" : "standard"),
     planPath: goal.planPath ?? "",
+    checkoutPolicy: goal.checkoutPolicy ?? "reconcile",
   };
 }
 
@@ -177,6 +181,7 @@ export function goalSetupToSettings(form: GoalSetupForm): GoalSettings | undefin
     stopAfterProblems: whole(form.stopAfterProblems),
     overseer: form.overseer,
     queueMode: form.queueMode,
+    checkoutPolicy: form.checkoutPolicy,
     ...(form.planPath.trim() ? { planPath: form.planPath.trim() } : {}),
   };
 }
@@ -212,6 +217,7 @@ export function goalSetupToDraftSettings(form: GoalSetupForm): GoalSettings | un
     stopAfterProblems: clamp(form.stopAfterProblems, MAX_GOAL_STOP_AFTER_PROBLEMS),
     overseer: form.overseer,
     queueMode: form.queueMode,
+    checkoutPolicy: form.checkoutPolicy,
     ...(form.planPath.trim() ? { planPath: form.planPath.trim() } : {}),
   };
 }

@@ -32,6 +32,7 @@ const PHASE_LABEL = {
   implementing: "Agents are working",
   "waiting-dependencies": "Waiting for other tasks to finish before more can start",
   "waiting-integration": "Waiting for finished work to merge",
+  "waiting-publication": "Finished and verified; waiting to update the target branch",
   blocked: "Blocked: needs repair or a decision",
   complete: "Complete: every task verified and merged",
   idle: "Idle",

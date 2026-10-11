@@ -6,6 +6,8 @@
  * integration and completion are the real ones. Only the orchestration engine (threads and
  * providers) is replaced by a recorder.
  */
+import * as NodeChildProcess from "node:child_process";
+import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -69,6 +71,9 @@ const provider = (instanceId: string): ServerProvider =>
     slashCommands: [],
     skills: [],
   }) as unknown as ServerProvider;
+
+/** A time hours in the past, for edits that have clearly been abandoned. */
+const longAgo = () => new Date(Date.now() - 6 * 3600_000);
 
 const PASS = 'node -e "process.exit(0)"';
 
@@ -229,6 +234,21 @@ const makeFlow = (plan: string, options: { readonly extraFiles?: Record<string, 
         if (done(value)) return value;
         yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 50)));
       }
+      yield* Effect.logError(
+        "LASTSTATE",
+        what,
+        JSON.stringify(
+          ((v: any) =>
+            v && v.chats
+              ? {
+                  s: v.status,
+                  d: v.detail,
+                  q: v.queueProgress,
+                  c: v.chats.map((c: any) => [c.taskId, c.status, c.taskOutcome]),
+                }
+              : v)(yield* read),
+        ),
+      );
       return yield* Effect.die(new Error(`Timed out waiting for ${what}`));
     });
 
@@ -496,153 +516,206 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
   );
 
   it.effect(
-    "a merge held up by uncommitted edits in the shared checkout settles the worker, keeps the work, and lands later",
+    "a dirty shared checkout does not stop the plan: tasks integrate, publication waits, then reconciles abandoned edits",
     () =>
       Effect.gen(function* () {
-        const flow = yield* makeFlow(planWith([{ id: "T1" }, { id: "T2" }]), {
-          extraFiles: { "shared.txt": "base\n" },
-        });
+        const flow = yield* makeFlow(
+          planWith([{ id: "T1" }, { id: "T2", deps: ["T1"] }, { id: "T3", deps: ["T2"] }]),
+          { extraFiles: { "shared.txt": "line1\nline2\nline3\nline4\nline5\n" } },
+        );
         const service = yield* flow.startServer;
         yield* Effect.forkScoped(service.loop);
         yield* Effect.yieldNow;
-        yield* service.create(settingsFor());
-        yield* flow.waitFor("thread.create", 2);
+        const [goal] = yield* service.create(settingsFor());
+        yield* flow.waitFor("thread.create", 1);
 
-        // Someone else is editing shared.txt in the main checkout when T1 finishes.
-        yield* Effect.promise(() =>
-          NodeFSP.writeFile(
-            NodePath.join(flow.repo.rootDir, "shared.txt"),
-            "someone else's edit\n",
-          ),
-        );
-        const t1 = yield* flow.work("T1", { file: "shared.txt", content: "task version\n" });
-        const settles = yield* flow.waitFor("thread.settle", 1);
-        expect(settles[0]?.threadId).toBe(t1);
+        // An older uncommitted edit sits in the shared checkout, on a file T1 also changes,
+        // and stays there for the whole run.
+        const shared = NodePath.join(flow.repo.rootDir, "shared.txt");
+        const edited = "line1\nline2\nline3\nline4\nEDITED\n";
+        yield* Effect.promise(() => NodeFSP.writeFile(shared, edited));
 
-        const held = yield* flow.eventually(
-          flow.taskRow("T1"),
-          (row) => row.integration_error !== null,
-          "the merge to be held",
-        );
-        expect(held).toMatchObject({ status: "verifying", integration_state: "pending" });
-        const goal = yield* flow.goalOf(service);
-        expect(goal.status).toBe("running");
-        expect(goal.chats.find((chat) => chat.threadId === t1)).toMatchObject({
-          status: "completed",
-          taskOutcome: "submitted",
+        yield* flow.work("T1", {
+          file: "shared.txt",
+          content: "TASK\nline2\nline3\nline4\nline5\n",
         });
-        // The worker is not running, so its slot is free, and nobody re-implements the task.
-        expect(goal.chats.filter((chat) => chat.status === "running")).toHaveLength(1);
-        expect(
-          yield* Effect.promise(() =>
-            NodeFSP.readFile(NodePath.join(flow.repo.rootDir, "shared.txt"), "utf8"),
-          ),
-        ).toBe("someone else's edit\n");
-
-        // The edit is committed away; the next look at the queue merges it by itself.
-        yield* Effect.promise(() =>
-          execCommand("git", ["checkout", "--", "shared.txt"], flow.repo.rootDir),
-        );
-        yield* service.addAgents(goal.id, 1);
+        // T1 is integrated and its worker settled, so the dependant starts right away.
         yield* flow.eventually(
           flow.taskRow("T1"),
           (row) => row.status === "completed",
-          "T1 to merge",
+          "T1 to integrate",
         );
-        expect(yield* flow.landings("T1")).toBe(1);
+        yield* flow.waitFor("thread.create", 2);
+        yield* flow.work("T2");
+        yield* flow.waitFor("thread.create", 3);
+        // T3's worktree already contains T1 and T2, although main does not.
+        const t3 = flow.createdFor("T3")!;
         expect(
           yield* Effect.promise(() =>
-            NodeFSP.readFile(NodePath.join(flow.repo.rootDir, "shared.txt"), "utf8"),
+            NodeFSP.readFile(NodePath.join(t3.worktreePath!, "T2.txt"), "utf8"),
           ),
-        ).toBe("task version\n");
+        ).toBe("T2\n");
+        yield* flow.work("T3");
+
+        // Every task is done; the goal is waiting to publish, not finished, and holds no live worker.
+        const waiting = yield* flow.eventually(
+          flow.goalOf(service),
+          (g) => g.queueProgress?.phase === "waiting-publication",
+          "publication to wait",
+        );
+        expect(waiting.status).toBe("running");
+        expect(waiting.chats.filter((chat) => chat.status === "running")).toHaveLength(0);
+        expect(waiting.queueProgress?.note).toContain("shared.txt");
+        expect(yield* Effect.promise(() => NodeFSP.readFile(shared, "utf8"))).toBe(edited);
+        const mainBefore = yield* Effect.promise(() =>
+          execCommand("git", ["rev-parse", "main"], flow.repo.rootDir),
+        );
+
+        // The edit is now provably abandoned (idle for hours); the next pass preserves and reconciles it.
+        const old = longAgo();
+        yield* Effect.sync(() => NodeFS.utimesSync(shared, old, old));
+        yield* service.addAgents(goal!.id, 1);
+        const done = yield* flow.eventually(
+          flow.goalOf(service),
+          (g) => g.status === "complete",
+          "the goal to complete after publishing",
+        );
+        expect(done.detail).toContain("published");
+        const mainAfter = yield* Effect.promise(() =>
+          execCommand("git", ["rev-parse", "main"], flow.repo.rootDir),
+        );
+        expect(mainAfter.stdout).not.toBe(mainBefore.stdout);
+        // Their edit survived, on top of the task's change, and a snapshot was kept.
+        expect(yield* Effect.promise(() => NodeFSP.readFile(shared, "utf8"))).toBe(
+          "TASK\nline2\nline3\nline4\nEDITED\n",
+        );
+        const snapshots = yield* Effect.promise(() =>
+          NodeFSP.readdir(NodePath.join(flow.repo.gitCommonDir, "agentqueue", "snapshots")),
+        );
+        expect(snapshots).toHaveLength(1);
+        // Nobody re-implemented anything.
+        yield* flow.drain;
+        expect(flow.log.filter((c) => c.type === "thread.create")).toHaveLength(3);
       }).pipe(Effect.scoped),
   );
 
   it.effect(
-    "a restart after submission but before the merge keeps the candidate and merges it once",
+    "a live owner of the checkout keeps publication pending without lying, and a restart keeps it pending until the owner leaves",
     () =>
       Effect.gen(function* () {
-        const flow = yield* makeFlow(planWith([{ id: "T1" }, { id: "T2" }]), {
-          extraFiles: { "shared.txt": "base\n" },
+        const flow = yield* makeFlow(planWith([{ id: "T1" }]), {
+          extraFiles: { "shared.txt": "line1\nline2\nline3\nline4\nline5\n" },
         });
+        const owner = NodeChildProcess.spawn("sleep", ["300"], {
+          cwd: flow.repo.rootDir,
+          stdio: "ignore",
+        });
+        yield* Effect.addFinalizer(() => Effect.sync(() => void owner.kill()));
         const first = yield* flow.startServer;
         yield* Effect.forkScoped(first.loop);
         yield* Effect.yieldNow;
         yield* first.create(settingsFor());
-        yield* flow.waitFor("thread.create", 2);
+        yield* flow.waitFor("thread.create", 1);
+        const shared = NodePath.join(flow.repo.rootDir, "shared.txt");
         yield* Effect.promise(() =>
-          NodeFSP.writeFile(NodePath.join(flow.repo.rootDir, "shared.txt"), "uncommitted\n"),
+          NodeFSP.writeFile(shared, "line1\nline2\nline3\nline4\nEDITED\n"),
         );
-        yield* flow.work("T1", { file: "shared.txt", content: "task\n" });
-        yield* flow.eventually(
-          flow.taskRow("T1"),
-          (row) => row.integration_error !== null,
-          "the merge to be held",
-        );
+        yield* flow.work("T1", {
+          file: "shared.txt",
+          content: "TASK\nline2\nline3\nline4\nline5\n",
+        });
 
-        // The server restarts: a new GoalService over the same store and the same queue.
+        const waiting = yield* flow.eventually(
+          flow.goalOf(first),
+          (g) => g.queueProgress?.phase === "waiting-publication",
+          "publication to wait",
+        );
+        expect(waiting.status).toBe("running");
+        expect(waiting.queueProgress?.note).toContain("sleep");
+
+        // The server restarts: the verified result and the pending publication are still there.
         const second = yield* flow.startServer;
         yield* Effect.forkScoped(second.loop);
         yield* Effect.yieldNow;
-        yield* Effect.promise(() =>
-          execCommand("git", ["checkout", "--", "shared.txt"], flow.repo.rootDir),
+        const again = yield* second.addAgents((yield* flow.goalOf(second)).id, 1);
+        expect(again[0]?.status).toBe("running");
+        expect((yield* flow.taskRow("T1")).status).toBe("completed");
+        expect(yield* Effect.promise(() => NodeFSP.readFile(shared, "utf8"))).toBe(
+          "line1\nline2\nline3\nline4\nEDITED\n",
         );
+
+        // The owner goes away and the edit is old: the goal publishes and completes.
+        owner.kill();
+        yield* Effect.promise(() => new Promise((resolve) => owner.once("exit", resolve)));
+        const old = longAgo();
+        yield* Effect.sync(() => NodeFS.utimesSync(shared, old, old));
+        yield* second.addAgents((yield* flow.goalOf(second)).id, 1);
         yield* flow.eventually(
-          flow.taskRow("T1"),
-          (row) => row.status === "completed",
-          "T1 to merge after restart",
+          flow.goalOf(second),
+          (g) => g.status === "complete",
+          "the goal to complete",
         );
         expect(yield* flow.landings("T1")).toBe(1);
-        yield* flow.drain;
-        // No second worker was started for T1.
-        expect(
-          flow.log.filter((c) => c.type === "thread.create" && c.title.includes("T1")),
-        ).toHaveLength(1);
       }).pipe(Effect.scoped),
   );
 
-  it.effect("a restart after the merge but before it was recorded does not merge twice", () =>
-    Effect.gen(function* () {
-      const flow = yield* makeFlow(planWith([{ id: "T1" }]), {
-        extraFiles: { "shared.txt": "base\n" },
-      });
-      const first = yield* flow.startServer;
-      yield* Effect.forkScoped(first.loop);
-      yield* Effect.yieldNow;
-      const [goal] = yield* first.create(settingsFor());
-      yield* flow.waitFor("thread.create", 1);
-      yield* Effect.promise(() =>
-        NodeFSP.writeFile(NodePath.join(flow.repo.rootDir, "shared.txt"), "uncommitted\n"),
-      );
-      yield* flow.work("T1", { file: "shared.txt", content: "task\n" });
-      yield* flow.eventually(
-        flow.taskRow("T1"),
-        (row) => row.integration_error !== null,
-        "the merge to be held",
-      );
-
-      // The merge happened by hand (as if the server died right after promoting), unrecorded.
-      yield* Effect.promise(async () => {
-        await execCommand("git", ["checkout", "--", "shared.txt"], flow.repo.rootDir);
-        const db = openQueueDatabase({ gitCommonDir: flow.repo.gitCommonDir });
-        const row = db.prepare("SELECT candidate_commit FROM tasks WHERE id = 'T1'").get() as {
-          candidate_commit: string;
-        };
-        db.close();
-        await execCommand("git", ["merge", "--ff-only", row.candidate_commit], flow.repo.rootDir);
-      });
-
-      const second = yield* flow.startServer;
-      yield* Effect.forkScoped(second.loop);
-      yield* Effect.yieldNow;
-      yield* flow.eventually(
-        flow.goalOf(second),
-        (g) => g.status === "complete",
-        "the goal to complete",
-      );
-      expect(yield* flow.landings("T1")).toBe(1);
-      expect(goal?.id).toBeDefined();
-    }).pipe(Effect.scoped),
+  it.effect(
+    "a crash after the target moved but before publication was recorded is recognised",
+    () =>
+      Effect.gen(function* () {
+        const flow = yield* makeFlow(planWith([{ id: "T1" }]), {
+          extraFiles: { "shared.txt": "line1\nline2\nline3\nline4\nline5\n" },
+        });
+        const owner = NodeChildProcess.spawn("sleep", ["300"], {
+          cwd: flow.repo.rootDir,
+          stdio: "ignore",
+        });
+        yield* Effect.addFinalizer(() => Effect.sync(() => void owner.kill()));
+        const first = yield* flow.startServer;
+        yield* Effect.forkScoped(first.loop);
+        yield* Effect.yieldNow;
+        yield* first.create(settingsFor());
+        yield* flow.waitFor("thread.create", 1);
+        const shared = NodePath.join(flow.repo.rootDir, "shared.txt");
+        yield* Effect.promise(() =>
+          NodeFSP.writeFile(shared, "line1\nline2\nline3\nline4\nEDITED\n"),
+        );
+        yield* flow.work("T1", {
+          file: "shared.txt",
+          content: "TASK\nline2\nline3\nline4\nline5\n",
+        });
+        yield* flow.eventually(
+          flow.goalOf(first),
+          (g) => g.queueProgress?.phase === "waiting-publication",
+          "publication to wait",
+        );
+        // The publisher got as far as moving the target (here: someone else fast-forwarded it
+        // to the same commit) and died before writing that down.
+        owner.kill();
+        yield* Effect.promise(() => new Promise((resolve) => owner.once("exit", resolve)));
+        yield* Effect.promise(async () => {
+          const db = openQueueDatabase({ gitCommonDir: flow.repo.gitCommonDir });
+          const goalBranch = (
+            db.prepare("SELECT integration_branch AS b FROM plans").get() as { b: string }
+          ).b;
+          db.close();
+          await execCommand("git", ["stash", "push", "--", "shared.txt"], flow.repo.rootDir);
+          await execCommand("git", ["merge", "--ff-only", goalBranch], flow.repo.rootDir);
+          await execCommand("git", ["stash", "pop"], flow.repo.rootDir).catch(() => undefined);
+        });
+        const second = yield* flow.startServer;
+        yield* Effect.forkScoped(second.loop);
+        yield* Effect.yieldNow;
+        yield* second.addAgents((yield* flow.goalOf(second)).id, 1);
+        yield* flow.eventually(
+          flow.goalOf(second),
+          (g) => g.status === "complete",
+          "the goal to complete",
+        );
+        expect(yield* flow.landings("T1")).toBe(1);
+        yield* flow.drain;
+        expect(flow.log.filter((c) => c.type === "thread.create")).toHaveLength(1);
+      }).pipe(Effect.scoped),
   );
 
   it.effect(
@@ -848,7 +921,7 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
 
       yield* Effect.promise(async () => {
         const cwd = repair.worktreePath!;
-        await execCommand("git", ["rebase", "main"], cwd);
+        await execCommand("git", ["rebase", "agentqueue/goal/PLAN"], cwd);
         await NodeFSP.writeFile(NodePath.join(cwd, "shared.txt"), "from T1 and T2\n");
         await execCommand("git", ["add", "shared.txt"], cwd);
         await execCommand("git", ["-c", "core.editor=true", "rebase", "--continue"], cwd);

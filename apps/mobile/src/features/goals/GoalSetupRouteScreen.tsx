@@ -555,6 +555,11 @@ export function GoalForm(props: {
           <View className="gap-4">
             <Text className="text-sm text-foreground-muted">Other settings</Text>
             <SwitchRow
+              label="When publishing, keep abandoned uncommitted edits safe (snapshot first)"
+              onChange={(checked) => patch({ checkoutPolicy: checked ? "reconcile" : "wait" })}
+              value={current.checkoutPolicy === "reconcile"}
+            />
+            <SwitchRow
               label="Restart agents cut off by a usage limit, when it resets"
               onChange={(autoResume) => patch({ autoResume })}
               value={current.autoResume}

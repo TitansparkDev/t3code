@@ -801,7 +801,11 @@ export const make = Effect.gen(function* () {
     const needsRepair = candidates.filter((c) => c.state === "repair_needed").length;
     const running = snapshot.counts.claimed + snapshot.counts.running;
     const waiting = Math.max(snapshot.counts.pending - ready, 0);
-    const deferred = awaiting.find((c) => c.state === "pending" && c.error)?.error ?? undefined;
+    const deferred =
+      awaiting.find((c) => c.state === "pending" && c.error)?.error ??
+      (status.value.publication.state === "pending" || status.value.publication.state === "blocked"
+        ? (status.value.publication.note ?? undefined)
+        : undefined);
     const phase: NonNullable<Goal["queueProgress"]>["phase"] =
       goal.status === "complete"
         ? "complete"
@@ -811,13 +815,17 @@ export const make = Effect.gen(function* () {
             ? "waiting-dependencies"
             : awaiting.length > 0
               ? "waiting-integration"
-              : needsRepair > 0 || snapshot.counts.failed > 0 || snapshot.counts.blocked > 0
-                ? "blocked"
-                : ready > 0
-                  ? "idle"
-                  : waiting > 0
-                    ? "blocked"
-                    : "idle";
+              : snapshot.counts.total > 0 &&
+                  snapshot.counts.completed === snapshot.counts.total &&
+                  status.value.publication.state !== "published"
+                ? "waiting-publication"
+                : needsRepair > 0 || snapshot.counts.failed > 0 || snapshot.counts.blocked > 0
+                  ? "blocked"
+                  : ready > 0
+                    ? "idle"
+                    : waiting > 0
+                      ? "blocked"
+                      : "idle";
     const next = {
       total: snapshot.counts.total,
       completed: snapshot.counts.completed,
@@ -1258,6 +1266,26 @@ export const make = Effect.gen(function* () {
     const { snapshot, ready, candidates } = status.value;
 
     if (snapshot.counts.total > 0 && snapshot.counts.completed === snapshot.counts.total) {
+      // Every task is integrated and verified on the plan's branch. Updating the target
+      // branch is a separate step that may have to wait for someone else's checkout.
+      const published = yield* queue
+        .publish(binding, { reconcileAbandoned: goal.checkoutPolicy !== "wait" })
+        .pipe(Effect.catch((error) => queueFailed(goalId, "publish", error).pipe(Effect.as(null))));
+      if (!published) return;
+      if (published.kind === "pending") {
+        yield* Effect.logInfo("goals.agentqueue-publication-pending", {
+          goalId,
+          cause: published.cause,
+          reason: published.reason,
+        });
+        yield* refreshProgress((yield* currentGoal(goalId)) ?? goal);
+        return;
+      }
+      if (published.kind === "blocked") {
+        yield* escalate(goalId, published.reason);
+        return;
+      }
+      yield* queueHealthy(goalId);
       const first = yield* queue
         .completion(binding, { runFinalCheck: true })
         .pipe(
@@ -1274,12 +1302,14 @@ export const make = Effect.gen(function* () {
           yield* setStatus(
             goalId,
             "complete",
-            `All ${first.total} tasks are verified and merged into ${binding.baseBranch}.`,
+            `All ${first.total} tasks are verified, integrated and published to ${binding.baseBranch}.`,
           );
           yield* refreshProgress({ ...latest, status: "complete" });
         }
         return;
       }
+      // Published later than this check read it, or the target moved again: look again next pass.
+      if (first.publication !== "published" && first.finalCheck === "none") return;
       yield* escalate(goalId, first.reason ?? "The plan is not verifiably complete.");
       return;
     }
@@ -2089,6 +2119,8 @@ export const make = Effect.gen(function* () {
   /** The binding (or reason for standard mode) a goal starts with, or why it cannot start. */
   const resolveBinding = Effect.fn("GoalService.resolveBinding")(function* (
     settings: GoalSettings,
+    /** The plan an earlier run of this goal was bound to, kept when it is started again. */
+    previous?: { readonly planPath: string },
   ) {
     const requested = requestedQueueMode(settings);
     if (requested === "standard") {
@@ -2097,17 +2129,21 @@ export const make = Effect.gen(function* () {
     const preview = yield* choose({
       projectId: settings.projectId,
       queueMode: requested,
-      planPath: settings.planPath,
+      planPath: settings.planPath ?? previous?.planPath,
     });
     if (preview.blocked) return { ok: false as const, message: preview.summary };
-    if (preview.effectiveMode === "standard") {
+    // Starting a finished AgentQueue goal again must not turn it into a standard goal just
+    // because its plan is complete: it stays bound and finishes by itself.
+    const stillBound =
+      previous !== undefined && requested === "auto" && preview.readiness === "complete";
+    if (preview.effectiveMode === "standard" && !stillBound) {
       return {
         ok: true as const,
         agentQueue: undefined,
         queueReason: requested === "auto" ? preview.summary : undefined,
       };
     }
-    const bound = yield* queue.bind(preview.repoRoot, preview.planPath ?? undefined).pipe(
+    const bound = yield* queue.bind(preview.repoRoot, preview.planPath ?? previous?.planPath).pipe(
       Effect.map(Option.some),
       Effect.catch((error) =>
         Effect.succeed(Option.none<string>()).pipe(
@@ -2255,7 +2291,7 @@ export const make = Effect.gen(function* () {
     // Starting (again) re-checks the plan and imports what changed, unless workers of the
     // earlier run are still going and keep the plan they began with.
     if (!(goal.agentQueue && goal.chats.some((chat) => chat.status === "running"))) {
-      const binding = yield* resolveBinding(goal);
+      const binding = yield* resolveBinding(goal, goal.agentQueue);
       if (!binding.ok) {
         yield* setStatus(id, "failed", binding.message.slice(0, 1500));
         return;

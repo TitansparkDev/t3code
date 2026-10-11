@@ -159,6 +159,13 @@ export const GoalSettings = Schema.Struct({
   queueMode: Schema.optional(Schema.Literals(["auto", "standard", "agentqueue"])),
   /** The plan file to use, relative to the project's repository. Empty picks the active plan. */
   planPath: Schema.optional(Schema.String),
+  /**
+   * What to do when publishing the finished plan meets uncommitted edits in the checkout
+   * that has the target branch open. `reconcile` (default) preserves provably abandoned edits
+   * in a snapshot and keeps them on top of the result; `wait` never touches the checkout.
+   * Edits with a live owner, staged changes and conflicts are never touched either way.
+   */
+  checkoutPolicy: Schema.optional(Schema.Literals(["reconcile", "wait"])),
   /** Historical flag; read as `queueMode: "agentqueue"` when `queueMode` is missing. */
   useAgentQueue: Schema.optional(Schema.Boolean),
   /** Historical; the bound plan id lives in `agentQueue`. */
@@ -174,6 +181,8 @@ export type GoalSettings = typeof GoalSettings.Type;
 export const GoalAgentQueueBinding = Schema.Struct({
   planId: Schema.String,
   planPath: Schema.String,
+  /** The branch finished tasks are integrated into; the target branch is updated from it at the end. */
+  integrationBranch: Schema.optional(Schema.String),
   /** The repository the queue and worktrees belong to. */
   repoRoot: Schema.String,
   gitCommonDir: Schema.String,
@@ -201,6 +210,7 @@ export const GoalQueueProgress = Schema.Struct({
     "implementing",
     "waiting-dependencies",
     "waiting-integration",
+    "waiting-publication",
     "blocked",
     "complete",
     "idle",
@@ -513,7 +523,7 @@ export function queueWorkerPrompt(
     "--- Your assignment (fixed by the server) ---",
     `Plan: ${task.planPath}`,
     `Worktree (work only here): ${task.worktreePath}`,
-    `Branch: ${task.branch}  (based on ${task.baseBranch})`,
+    `Branch: ${task.branch}  (started from the plan's integration branch ${task.baseBranch}, which already holds every finished predecessor task)`,
     ...(task.retryCount > 0
       ? [
           `This task was attempted ${task.retryCount} time(s) before${task.lastFailure ? `; the last attempt ended with: ${task.lastFailure}` : ""}. Earlier commits on the branch are kept: inspect them with \`git log\` and continue from them.`,
@@ -528,7 +538,7 @@ export function queueWorkerPrompt(
     task.verificationCommand
       ? `4. Before you finish, make sure this passes in your worktree: \`${task.verificationCommand}\`. The server runs it again to verify your commit.`
       : "4. Run the checks the task details name (its Done / Acceptance lines) before you finish.",
-    "5. Do not merge, push, or mark the task complete. The server verifies your commit, merges it into the base branch, and unlocks dependent tasks.",
+    "5. Do not merge, push, rebase onto main, or mark the task complete, and never touch another agent's branch or the main checkout. The server verifies your commit, integrates it into the plan's integration branch, unlocks dependent tasks, and publishes the finished plan to the target branch itself.",
     `6. You are one of up to ${goal.concurrency} agents working at the same time. Nobody is available to answer questions: choose the safest reasonable option and say what you chose.`,
     "7. Do not quit early. If a hard blocker remains, finish as much as is safe, commit it, and explain what is left.",
     ...(goal.guidance?.trim()

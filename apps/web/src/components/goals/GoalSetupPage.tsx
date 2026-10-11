@@ -447,6 +447,18 @@ export function GoalSetupPage({
                 </label>
                 <label className="flex items-center gap-2">
                   <Switch
+                    checked={current.checkoutPolicy === "reconcile"}
+                    onCheckedChange={(checked) =>
+                      patch({ checkoutPolicy: checked ? "reconcile" : "wait" })
+                    }
+                  />
+                  <span className="text-xs">
+                    When publishing, keep abandoned uncommitted edits in the checkout safely (a
+                    snapshot is saved first); edits someone is still using are never touched
+                  </span>
+                </label>
+                <label className="flex items-center gap-2">
+                  <Switch
                     checked={current.overseer}
                     onCheckedChange={(overseer) => patch({ overseer })}
                   />

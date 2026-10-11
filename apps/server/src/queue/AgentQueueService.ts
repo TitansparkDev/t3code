@@ -14,6 +14,11 @@ import * as Layer from "effect/Layer";
 import {
   adoptCandidate,
   evaluateDeadlock,
+  ensureIntegrationBranch,
+  integrationBranchFor,
+  publishPlan,
+  DEFAULT_PUBLISH_POLICY,
+  type PublishOutcome,
   integrateCandidate,
   isProcessAlive,
   listCandidates,
@@ -54,8 +59,20 @@ export interface QueueBinding {
   readonly planPath: string;
   readonly repoRoot: string;
   readonly gitCommonDir: string;
+  /** The target branch the finished plan is published to. */
   readonly baseBranch: string;
+  /** Where tasks are integrated; workers start from it. Defaults from the plan id. */
+  readonly integrationBranch?: string | undefined;
   readonly checksum: string;
+}
+
+/** The branch a plan's tasks integrate into. */
+export const goalBranchOf = (binding: Pick<QueueBinding, "planId" | "integrationBranch">) =>
+  binding.integrationBranch ?? integrationBranchFor(binding.planId);
+
+export interface PublicationStatus {
+  readonly state: "none" | "pending" | "blocked" | "published";
+  readonly note: string | null;
 }
 
 export interface QueueStatus {
@@ -65,6 +82,7 @@ export interface QueueStatus {
   readonly deadlocked: boolean;
   readonly deadlockReason: string | null;
   readonly candidates: ReadonlyArray<CandidateInfo>;
+  readonly publication: PublicationStatus;
   /** Failed or blocked tasks, with why. */
   readonly problems: ReadonlyArray<{
     readonly taskId: string;
@@ -199,6 +217,17 @@ export class AgentQueueService extends Context.Service<
       { readonly events: ReadonlyArray<StoredQueueEvent>; readonly last: number },
       AgentQueueError
     >;
+    /**
+     * Update the target branch from the plan's integration branch, safely. Pending when a
+     * checkout has uncommitted edits of a live owner; the verified result is kept either way.
+     */
+    readonly publish: (
+      binding: QueueBinding,
+      options: { readonly reconcileAbandoned: boolean },
+    ) => Effect.Effect<PublishOutcome, AgentQueueError>;
+    readonly publication: (
+      binding: QueueBinding,
+    ) => Effect.Effect<PublicationStatus, AgentQueueError>;
     /** Whether the whole plan is finished, judged from the queue and Git alone. */
     readonly completion: (
       binding: QueueBinding,
@@ -230,12 +259,29 @@ const make = AgentQueueService.of({
       if (!repoGit?.baseBranch) {
         throw new Error("AgentQueue cannot land tasks from a detached HEAD.");
       }
+      const integrationBranch = integrationBranchFor(imported.planId);
+      const baseCommit = ensureIntegrationBranch(repoRoot, repoGit.baseBranch, integrationBranch);
+      withDb({ gitCommonDir: repoGit.gitCommonDir }, (db) =>
+        db
+          .prepare(
+            `UPDATE plans SET integration_branch = ?, base_branch = ?,
+               base_commit = COALESCE(base_commit, ?), updated_at = ? WHERE id = ?`,
+          )
+          .run(
+            integrationBranch,
+            repoGit.baseBranch!,
+            baseCommit,
+            new Date().toISOString(),
+            imported.planId,
+          ),
+      );
       return {
         planId: imported.planId,
         planPath: imported.planPath,
         repoRoot,
         gitCommonDir: repoGit.gitCommonDir,
         baseBranch: repoGit.baseBranch,
+        integrationBranch,
         checksum: imported.checksum,
       } satisfies QueueBinding;
     }),
@@ -281,6 +327,17 @@ const make = AgentQueueService.of({
           deadlocked: deadlock.isDeadlocked,
           deadlockReason: deadlock.reason ?? null,
           candidates: listCandidates(db, binding.planId),
+          publication: (() => {
+            const row = db
+              .prepare("SELECT publication_state, publication_note FROM plans WHERE id = ?")
+              .get(binding.planId) as
+              | { publication_state: string | null; publication_note: string | null }
+              | undefined;
+            return {
+              state: (row?.publication_state ?? "none") as PublicationStatus["state"],
+              note: row?.publication_note ?? null,
+            };
+          })(),
           problems: problems.map((row) => ({
             taskId: row.id,
             title: row.title,
@@ -299,7 +356,7 @@ const make = AgentQueueService.of({
       try {
         const outcome = await reserveNextTask(db, {
           repoRoot: binding.repoRoot,
-          baseBranch: binding.baseBranch,
+          baseBranch: goalBranchOf(binding),
           planId: binding.planId,
           workerSessionId,
           // This server owns every claim it makes and renews them while the chat runs.
@@ -412,7 +469,7 @@ const make = AgentQueueService.of({
       const db = openQueueDatabase({ gitCommonDir: binding.gitCommonDir });
       return submitCandidate(db, {
         repoRoot: binding.repoRoot,
-        baseBranch: binding.baseBranch,
+        baseBranch: goalBranchOf(binding),
         ...input,
       }).finally(() => db.close());
     }),
@@ -424,6 +481,7 @@ const make = AgentQueueService.of({
         repoRoot: binding.repoRoot,
         gitCommonDir: binding.gitCommonDir,
         baseBranch: binding.baseBranch,
+        integrationBranch: goalBranchOf(binding),
         taskId,
       }).finally(() => db.close());
     }),
@@ -436,7 +494,7 @@ const make = AgentQueueService.of({
       const db = openQueueDatabase({ gitCommonDir: binding.gitCommonDir });
       return adoptCandidate(db, {
         repoRoot: binding.repoRoot,
-        baseBranch: binding.baseBranch,
+        baseBranch: goalBranchOf(binding),
         taskId,
         branch,
       }).finally(() => db.close());
@@ -448,7 +506,7 @@ const make = AgentQueueService.of({
         isSuccess: landed,
         deleteBranch: landed,
         preserveWorktreeOnFailure: !landed,
-        emptyBaseRef: binding.baseBranch,
+        emptyBaseRef: goalBranchOf(binding),
       });
     }),
 
@@ -467,6 +525,34 @@ const make = AgentQueueService.of({
       }),
     ),
 
+  publish: (binding, options) =>
+    runAsync("publish", () => {
+      const db = openQueueDatabase({ gitCommonDir: binding.gitCommonDir });
+      return publishPlan(db, {
+        repoRoot: binding.repoRoot,
+        gitCommonDir: binding.gitCommonDir,
+        baseBranch: binding.baseBranch,
+        integrationBranch: goalBranchOf(binding),
+        planId: binding.planId,
+        policy: { ...DEFAULT_PUBLISH_POLICY, reconcileAbandoned: options.reconcileAbandoned },
+      }).finally(() => db.close());
+    }),
+
+  publication: (binding) =>
+    run("publication", () =>
+      withDb(binding, (db) => {
+        const row = db
+          .prepare("SELECT publication_state, publication_note FROM plans WHERE id = ?")
+          .get(binding.planId) as
+          | { publication_state: string | null; publication_note: string | null }
+          | undefined;
+        return {
+          state: (row?.publication_state ?? "none") as PublicationStatus["state"],
+          note: row?.publication_note ?? null,
+        };
+      }),
+    ),
+
   completion: (binding, options) =>
     runAsync("completion", () => {
       const db = openQueueDatabase({ gitCommonDir: binding.gitCommonDir });
@@ -474,6 +560,7 @@ const make = AgentQueueService.of({
         repoRoot: binding.repoRoot,
         gitCommonDir: binding.gitCommonDir,
         baseBranch: binding.baseBranch,
+        integrationBranch: goalBranchOf(binding),
         planId: binding.planId,
         runFinalCheck: options.runFinalCheck,
       }).finally(() => db.close());
