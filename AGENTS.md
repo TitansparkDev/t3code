@@ -175,6 +175,14 @@ Full glossary with file links: `docs/internals/glossary.md`
 
 ## Recent request log
 
+- 2026-10-11 — v0.0.67: made the fork's CI honest. Release Smoke, Check (knip and lint) and the Test jobs
+  had been failing or queued for weeks, so server tests never ran: they asked for Blacksmith runners this
+  fork does not have (now GitHub-hosted `ubuntu-24.04`), and merge regressions stayed hidden. Repaired:
+  Claude result classification (the fork's API-error path overrode the structured outcome), the managed
+  tunnel endpoint missing from the Connect link state (off-network QR pairing), the Antigravity saved-access
+  recheck interrupting its own caller, an out-of-range usage-limit reset time throwing, bundled compatibility
+  policies for Cline and Chat Agents. Tests run with a fresh HOME and without the ambient `CLAUDE_*` session
+  variables, as in CI.
 - 2026-10-11 — v0.0.66: AgentQueue repair after the first live Goal. A worker is finished only when its
   model turn and its background commands have ended (settling used to kill running tests and land work
   unverified); submission checks come from a structured per-task verification spec (declared `Checks:`,
