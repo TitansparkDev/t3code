@@ -198,7 +198,9 @@ async function cleanUpFixture() {
 
 afterEach(cleanUpFixture);
 
-describe("editable file highlighting", () => {
+// Each case starts the Shiki engine (3-5s even on an idle machine), so the shared 15s
+// budget is too tight on a loaded CI runner.
+describe("editable file highlighting", { timeout: 60_000 }, () => {
   it("cleans up an already terminated worker pool", async () => {
     (await nextResponse()).deliver();
     expect(pool.getStats().totalWorkers).toBe(1);
