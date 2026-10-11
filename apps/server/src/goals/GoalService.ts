@@ -1163,6 +1163,11 @@ export const make = Effect.gen(function* () {
                 .addFollowUp(binding, {
                   parentTaskId: chat.taskId!,
                   kind: "decision",
+                  // Optional only when the task's own declared checks already passed; with
+                  // derived, exempt or no checks nothing shows the objective was met.
+                  blocking: !(
+                    result.receipt.source === "declared" && result.receipt.state === "passed"
+                  ),
                   title: `Needs a person after ${chat.taskId}`,
                   note: current.attentionNote,
                 })

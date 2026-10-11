@@ -20,8 +20,13 @@ describe("checks written as prose Done lines", () => {
       "  - Done: from `server/`, `uv run pytest tests/a.py -q` and `uv run pytest -m integration tests/b.py -q`, plus new cases.",
     );
     expect(parsed.verificationCommand).toBe(
-      'cd "server" && uv run pytest tests/a.py -q && uv run pytest -m integration tests/b.py -q',
+      "cd server && uv run pytest tests/a.py -q && uv run pytest -m integration tests/b.py -q",
     );
+    expect(parsed.verification).toMatchObject({ source: "derived" });
+    expect(parsed.verification?.checks.map((check) => [check.cwd, check.run])).toEqual([
+      ["server", "uv run pytest tests/a.py -q"],
+      ["server", "uv run pytest -m integration tests/b.py -q"],
+    ]);
     expect(parsed.description).toContain("plus new cases");
   });
 
@@ -36,9 +41,10 @@ describe("checks written as prose Done lines", () => {
     ).toBeNull();
   });
 
-  it("combines an explicit Verify command with the Done spans", () => {
+  it("lets a declared check win over anything derived from prose", () => {
     const parsed = task('  - Verify: `node -e "0"`\n  - Done: also `pytest -q`.');
-    expect(parsed.verificationCommand).toBe('node -e "0" && pytest -q');
+    expect(parsed.verification?.source).toBe("declared");
+    expect(parsed.verificationCommand).toBe('node -e "0"');
   });
 });
 

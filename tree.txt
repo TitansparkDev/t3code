@@ -22528,6 +22528,7 @@ docs/agentqueue/ADR-0004-coexistence-with-legacy-plan-work.md
 docs/agentqueue/ADR-0005-crash-recovery-and-heartbeats.md
 docs/agentqueue/ADR-0006-package-architecture-and-dependency-footprint.md
 docs/agentqueue/ADR-0007-candidates-integration-and-completion.md
+docs/agentqueue/ADR-0008-verification-contract-and-worker-settlement.md
 docs/agentqueue/PLAN.md
 docs/agentqueue/README.md
 docs/internals/assistant-citations.md
@@ -22818,6 +22819,7 @@ packages/agent-queue-core/src/repoManager.ts
 packages/agent-queue-core/src/reservation.ts
 packages/agent-queue-core/src/scopeManager.ts
 packages/agent-queue-core/src/stateMachine.ts
+packages/agent-queue-core/src/verificationSpec.ts
 packages/agent-queue-core/src/verifier.ts
 packages/agent-queue-core/src/worktreeManager.ts
 packages/agent-queue-core/test/claimService.test.ts
@@ -22838,6 +22840,7 @@ packages/agent-queue-core/test/repoManager.test.ts
 packages/agent-queue-core/test/scopeManager.test.ts
 packages/agent-queue-core/test/stateMachine.test.ts
 packages/agent-queue-core/test/verificationAndFollowUp.test.ts
+packages/agent-queue-core/test/verificationSpec.test.ts
 packages/agent-queue-core/test/worktreeAndLanding.test.ts
 packages/agent-queue-core/tsconfig.json
 packages/client-runtime/README.md

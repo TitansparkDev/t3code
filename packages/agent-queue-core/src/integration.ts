@@ -20,7 +20,8 @@ import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import { recordEvent } from "./eventStream.ts";
 import { renewLease } from "./claimService.ts";
-import { runVerification, type VerificationExecutionResult } from "./verifier.ts";
+import { runVerification } from "./verifier.ts";
+import { parseStoredSpec, runSpec, type SpecResult } from "./verificationSpec.ts";
 import { commitPendingChanges } from "./worktreeManager.ts";
 
 interface GitResult {
@@ -223,13 +224,13 @@ export type SubmitOutcome =
   | {
       readonly kind: "submitted";
       readonly candidateCommit: string;
-      readonly receipt: VerificationExecutionResult;
+      readonly receipt: SpecResult;
     }
   | { readonly kind: "no-changes" }
   | {
       readonly kind: "verification-failed";
       readonly error: string;
-      readonly receipt: VerificationExecutionResult;
+      readonly receipt: SpecResult;
     }
   | { readonly kind: "claim-lost" };
 
@@ -260,36 +261,32 @@ export async function submitCandidate(
   ]);
   if (ahead.code !== 0 || ahead.stdout === "0") return { kind: "no-changes" };
 
-  const limit = db.prepare("SELECT timeout_seconds FROM tasks WHERE id = ?").get(input.taskId) as
-    | { timeout_seconds: number | null }
+  // The checks come from the queue's own record of the task, never from the caller: a
+  // worker or a stale prompt cannot weaken them. The input command is only a legacy fallback.
+  const stored = db
+    .prepare("SELECT verification_command, verification_spec FROM tasks WHERE id = ?")
+    .get(input.taskId) as
+    | { verification_command: string | null; verification_spec: string | null }
     | undefined;
-  const receipt = await runVerification(
-    input.taskId,
-    input.worktreePath,
-    input.verificationCommand,
-    Math.max(60, limit?.timeout_seconds ?? 1800) * 1000,
+  const spec = parseStoredSpec(
+    stored?.verification_spec,
+    stored?.verification_command || input.verificationCommand,
   );
-  if (!receipt.passed) {
-    // The exact result stays on record: what ran, how it ended, and the output's tail.
-    recordEvent(db, input.taskId, "task_verification_failed", {
-      command: receipt.verificationCommand,
-      commit: receipt.commitHash,
-      outcome: receipt.outcome,
-      exitCode: receipt.exitCode,
-      signal: receipt.signal,
-      durationMs: receipt.durationMs,
-      stdoutTail: receipt.stdoutSnippet,
-      stderrTail: receipt.stderrSnippet,
-    });
+  const receipt = await runSpec(input.taskId, input.worktreePath, spec);
+  if (receipt.state === "failed" || receipt.state === "timed-out") {
+    // The exact result stays on record: every check that ran, how it ended, and the output's tail.
+    recordEvent(db, input.taskId, "task_verification_failed", { ...receipt });
     return {
       kind: "verification-failed",
       receipt,
-      error:
-        `Verification ${receipt.outcome === "timed-out" ? "did not finish" : "failed"} (exit ${receipt.exitCode}) for \`${receipt.verificationCommand}\`: ${receipt.stderrSnippet || receipt.stdoutSnippet}`.slice(
-          0,
-          1500,
-        ),
+      error: receipt.summary.slice(0, 1500),
     };
+  }
+  if (receipt.state === "unverified") {
+    recordEvent(db, input.taskId, "task_unverified", {
+      summary: receipt.summary,
+      rejected: receipt.rejected,
+    });
   }
 
   const now = new Date().toISOString();
@@ -313,15 +310,18 @@ export async function submitCandidate(
       input.branch,
       input.worktreePath,
       JSON.stringify({
-        command: receipt.verificationCommand,
-        exitCode: receipt.exitCode,
-        commit: receipt.commitHash,
+        state: receipt.state,
+        source: receipt.source,
+        commit: head,
         verifiedAt: receipt.verifiedAt,
-        durationMs: receipt.durationMs,
-        outcome: receipt.outcome,
-        signal: receipt.signal,
-        stdoutTail: receipt.stdoutSnippet.slice(-500),
-        stderrTail: receipt.stderrSnippet.slice(-500),
+        summary: receipt.summary,
+        exemptReason: receipt.exemptReason,
+        rejected: receipt.rejected,
+        checks: receipt.checks.map((check) => ({
+          ...check,
+          stdoutTail: check.stdoutTail.slice(-500),
+          stderrTail: check.stderrTail.slice(-500),
+        })),
       }),
       now,
       now,
@@ -443,7 +443,7 @@ export async function integrateCandidate(
 ): Promise<IntegrationOutcome> {
   const row = db
     .prepare(
-      `SELECT candidate_commit, candidate_branch, verification_command, timeout_seconds
+      `SELECT candidate_commit, candidate_branch, verification_command, verification_spec, receipt_json
        FROM tasks WHERE id = ? AND integration_state = 'pending' AND status = 'verifying'`,
     )
     .get(input.taskId) as
@@ -451,7 +451,8 @@ export async function integrateCandidate(
         candidate_commit: string | null;
         candidate_branch: string | null;
         verification_command: string | null;
-        timeout_seconds: number | null;
+        verification_spec: string | null;
+        receipt_json: string | null;
       }
     | undefined;
   if (!row?.candidate_commit) return { kind: "not-pending" };
@@ -512,18 +513,21 @@ export async function integrateCandidate(
       git(staging, ["checkout", "--force", "--detach", candidate]);
     }
 
-    // Concurrent work was merged in, so the task's check must still pass on the result.
-    if (result !== candidate && row.verification_command?.trim()) {
-      const receipt = await runVerification(
-        input.taskId,
-        staging,
-        row.verification_command,
-        Math.max(60, row.timeout_seconds ?? 1800) * 1000,
-      );
-      if (!receipt.passed) {
-        const reason = `After merging with ${goalBranch}, the check failed (exit ${receipt.exitCode}): ${(receipt.stderrSnippet || receipt.stdoutSnippet).slice(-600)}`;
-        const { exhausted } = markNeedsRepair(db, input.taskId, reason, [], maxRepairs);
-        return { kind: "needs-repair", reason, files: [], exhausted };
+    // Concurrent work was merged in, so the task's checks must still pass on the result.
+    const adopted = row.receipt_json?.includes('"adopted":true') === true;
+    if (result !== candidate || adopted) {
+      const spec = parseStoredSpec(row.verification_spec, row.verification_command);
+      if (spec.checks.length > 0) {
+        const receipt = await runSpec(input.taskId, staging, spec);
+        if (receipt.state === "failed" || receipt.state === "timed-out") {
+          recordEvent(db, input.taskId, "task_verification_failed", {
+            ...receipt,
+            phase: "after-merge",
+          });
+          const reason = `After merging with ${goalBranch}, the checks failed: ${receipt.summary.slice(-600)}`;
+          const { exhausted } = markNeedsRepair(db, input.taskId, reason, [], maxRepairs);
+          return { kind: "needs-repair", reason, files: [], exhausted };
+        }
       }
     }
 
@@ -596,7 +600,8 @@ export async function adoptCandidate(
     input.branch,
     JSON.stringify({
       adopted: true,
-      note: "Recovered from a preserved branch; verified again when merged.",
+      state: "unverified",
+      summary: "Recovered from a preserved branch; its checks run when it is merged.",
     }),
     now,
     now,

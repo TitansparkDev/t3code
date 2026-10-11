@@ -527,9 +527,11 @@ export function queueWorkerPrompt(
       "",
       "--- What to do ---",
       `1. Do not redo the implementation. In your worktree, bring the branch up to date with ${task.baseBranch} (for example \`git rebase ${task.baseBranch}\`), resolve every conflict keeping the intent of both sides, and finish the rebase or merge.`,
-      task.verificationCommand
-        ? `2. Make sure this passes afterwards: \`${task.verificationCommand}\`.`
-        : "2. Run the checks the task details name before you finish.",
+      checkInstruction(
+        task.verificationCommand,
+        "2. Make sure this passes afterwards",
+        "2. Run the checks the task details name before you finish.",
+      ),
       "3. Commit. Do not push, merge into the base branch, or touch any other worktree or the main checkout. The server merges it after you finish.",
       "4. Nobody can answer questions: choose the safest option and say what you chose.",
       `If a person must act, end with ${GOAL_NEEDS_ATTENTION_MARKER} on a line by itself and say what is needed.`,
@@ -553,9 +555,12 @@ export function queueWorkerPrompt(
     "1. Do not select, claim, announce or switch tasks, and do not run any command that claims or releases tasks. Your task is fixed; other workers have theirs.",
     "2. Change files only inside your worktree. Never touch another worker's worktree or the main checkout.",
     "3. Commit your work on your branch with a clear message. Uncommitted work is committed for you, but write the commit yourself.",
-    task.verificationCommand
-      ? `4. Before you finish, make sure this passes in your worktree: \`${task.verificationCommand}\`. The server runs it again to verify your commit.`
-      : "4. Run the checks the task details name (its Done / Acceptance lines) before you finish.",
+    checkInstruction(
+      task.verificationCommand,
+      "4. Before you finish, make sure this passes in your worktree",
+      "4. Run the checks the task details name (its Done / Acceptance lines) before you finish. The task defines no executable check, so the server cannot verify it: say exactly what you ran and saw.",
+      " The server runs it again on your commit, and your task is not accepted until it passes. If you start tests or other commands in the background, wait for their results before you finish; the server only looks at your work after your turn ends and your background commands are done.",
+    ),
     "5. Do not merge, push, rebase onto main, or mark the task complete, and never touch another agent's branch or the main checkout. The server verifies your commit, integrates it into the plan's integration branch, unlocks dependent tasks, and publishes the finished plan to the target branch itself.",
     `6. You are one of up to ${goal.concurrency} agents working at the same time. Nobody is available to answer questions: choose the safest reasonable option and say what you chose.`,
     "7. Do not quit early. If a hard blocker remains, finish as much as is safe, commit it, and explain what is left.",
@@ -617,3 +622,17 @@ export const GoalPlanPreview = Schema.Struct({
   candidates: Schema.Array(GoalPlanCandidate),
 });
 export type GoalPlanPreview = typeof GoalPlanPreview.Type;
+
+/** The prompt line for a task's check: a command to pass, an explicit exemption, or none defined. */
+function checkInstruction(
+  verification: string | null,
+  prefix: string,
+  none: string,
+  suffix = "",
+): string {
+  if (!verification) return none;
+  if (verification.startsWith("exempt:")) {
+    return `${prefix.slice(0, 2)} This task is exempt from executable checks (${verification.slice(7).trim()}). Record the evidence the task asks for in your final message.`;
+  }
+  return `${prefix}: \`${verification}\`.${suffix}`;
+}

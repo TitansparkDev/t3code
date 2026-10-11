@@ -122,7 +122,10 @@ interface ThreadScript {
   checkpoint?: "saved" | "pending";
 }
 
-const makeFlow = (plan: string, options: { readonly extraFiles?: Record<string, string> } = {}) =>
+const makeFlow = (
+  plan: string,
+  options: { readonly extraFiles?: Record<string, string>; readonly spacingMillis?: number } = {},
+) =>
   Effect.gen(function* () {
     const repo = yield* Effect.promise(() => createTestGitRepo("goal-flow-"));
     yield* Effect.addFinalizer(() => Effect.promise(() => repo.cleanup()));
@@ -178,7 +181,7 @@ const makeFlow = (plan: string, options: { readonly extraFiles?: Record<string, 
     const depsLayer = Layer.mergeAll(
       GoalStore.layer,
       AgentQueueServiceLive,
-      Layer.succeed(GoalService.StartSpacingMillis, 0),
+      Layer.succeed(GoalService.StartSpacingMillis, options.spacingMillis ?? 0),
       Layer.succeed(
         GoalBeads,
         GoalBeads.of({
@@ -973,7 +976,7 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
 
   it.effect("a failing check sends the worker back with the failure, not a generic nudge", () =>
     Effect.gen(function* () {
-      const flow = yield* makeFlow(planWith([{ id: "T1", verify: "exit 3" }]));
+      const flow = yield* makeFlow(planWith([{ id: "T1", verify: 'node -e "process.exit(3)"' }]));
       const service = yield* flow.startServer;
       yield* Effect.forkScoped(service.loop);
       yield* Effect.yieldNow;
@@ -983,7 +986,7 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
       const turns = yield* flow.waitFor("thread.turn.start", 2);
       const text = turns[1]?.type === "thread.turn.start" ? turns[1].message.text : "";
       expect(text).toContain("check on your commit and it failed");
-      expect(text).toContain("exit 3");
+      expect(text).toContain("exited 3");
       expect(text).not.toContain("stuck or blocked");
       // The task is not merged and not marked done.
       expect((yield* flow.taskRow("T1")).status).toBe("claimed");
@@ -1222,7 +1225,7 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
         yield* flow.work("T1");
         const turns = yield* flow.waitFor("thread.turn.start", 2);
         const text = turns[1]?.type === "thread.turn.start" ? turns[1].message.text : "";
-        expect(text).toContain("exit 5");
+        expect(text).toContain("exited 5");
         expect((yield* flow.taskRow("T1")).status).toBe("claimed");
         const db = openQueueDatabase({ gitCommonDir: flow.repo.gitCommonDir });
         const event = db
@@ -1231,7 +1234,16 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
           )
           .get() as { payload_json: string };
         db.close();
-        expect(JSON.parse(event.payload_json)).toMatchObject({ exitCode: 5, outcome: "failed" });
+        const payload = JSON.parse(event.payload_json) as {
+          state: string;
+          source: string;
+          checks: Array<{ exitCode: number; passed: boolean }>;
+        };
+        expect(payload).toMatchObject({ state: "failed", source: "derived" });
+        expect(payload.checks.map((check) => [check.exitCode, check.passed])).toEqual([
+          [0, true],
+          [5, false],
+        ]);
       }).pipe(Effect.scoped),
   );
 
@@ -1334,5 +1346,144 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
         "the worktree to be removed after the goal finished",
       );
     }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "without declared checks a NEEDS ATTENTION request blocks everything that waited on the task",
+    () =>
+      Effect.gen(function* () {
+        const flow = yield* makeFlow(
+          planWith([
+            { id: "T1", verify: "" },
+            { id: "T2", deps: ["T1"] },
+          ]),
+        );
+        const service = yield* flow.startServer;
+        yield* Effect.forkScoped(service.loop);
+        yield* Effect.yieldNow;
+        yield* service.create(settingsFor());
+        yield* flow.waitFor("thread.create", 1);
+        yield* flow.work("T1", {
+          reply: "Mostly done.\n\nNEEDS ATTENTION: the migration is not written yet.",
+        });
+        yield* flow.eventually(
+          flow.taskRow("T1"),
+          (row) => row.status === "completed",
+          "T1 to merge",
+        );
+        expect((yield* flow.taskRow("T1-FU1")).status).toBe("blocked");
+        const db = openQueueDatabase({ gitCommonDir: flow.repo.gitCommonDir });
+        const deps = () =>
+          (
+            db.prepare("SELECT dependencies FROM tasks WHERE id = 'T2'").get() as {
+              dependencies: string;
+            }
+          ).dependencies;
+        expect(JSON.parse(deps())).toEqual(["T1", "T1-FU1"]);
+        db.close();
+        for (let round = 0; round < 3; round++) yield* tickOnce;
+        yield* flow.drain;
+        // T2 must not start on top of an unfinished requirement, and the goal is not done.
+        expect(flow.log.filter((c) => c.type === "thread.create")).toHaveLength(1);
+        const goal = yield* flow.goalOf(service);
+        expect(goal.status).not.toBe("complete");
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "with declared checks that passed, the follow-up is optional: dependants still start",
+    () =>
+      Effect.gen(function* () {
+        const flow = yield* makeFlow(planWith([{ id: "T1" }, { id: "T2", deps: ["T1"] }]));
+        const service = yield* flow.startServer;
+        yield* Effect.forkScoped(service.loop);
+        yield* Effect.yieldNow;
+        yield* service.create(settingsFor());
+        yield* flow.waitFor("thread.create", 1);
+        yield* flow.work("T1", {
+          reply: "Done.\n\nNEEDS ATTENTION: consider a nicer error message.",
+        });
+        yield* flow.eventually(
+          flow.taskRow("T1"),
+          (row) => row.status === "completed",
+          "T1 to merge",
+        );
+        expect((yield* flow.taskRow("T1-FU1")).status).toBe("blocked");
+        const creates = yield* flow.waitFor("thread.create", 2);
+        expect(creates[1]?.title).toContain("T2");
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "a task merged with no check and no exemption is reported, and the goal does not claim completion",
+    () =>
+      Effect.gen(function* () {
+        const flow = yield* makeFlow(planWith([{ id: "T1", verify: "" }]));
+        const service = yield* flow.startServer;
+        yield* Effect.forkScoped(service.loop);
+        yield* Effect.yieldNow;
+        yield* service.create(settingsFor());
+        yield* flow.waitFor("thread.create", 1);
+        yield* flow.work("T1");
+        yield* flow.eventually(
+          flow.taskRow("T1"),
+          (row) => row.status === "completed",
+          "T1 to merge",
+        );
+        for (let round = 0; round < 3; round++) yield* tickOnce;
+        const goal = yield* flow.goalOf(service);
+        expect(goal.status).not.toBe("complete");
+        const db = openQueueDatabase({ gitCommonDir: flow.repo.gitCommonDir });
+        const receipt = db.prepare("SELECT receipt_json FROM tasks WHERE id = 'T1'").get() as {
+          receipt_json: string;
+        };
+        db.close();
+        expect(JSON.parse(receipt.receipt_json)).toMatchObject({ state: "unverified" });
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "a repair worker never starts while an earlier worker of the same worktree is still running a turn",
+    () =>
+      Effect.gen(function* () {
+        const flow = yield* makeFlow(planWith([{ id: "T1" }, { id: "T2" }]), {
+          extraFiles: { "shared.txt": "base\n" },
+          spacingMillis: 5_000,
+        });
+        const service = yield* flow.startServer;
+        yield* Effect.forkScoped(service.loop);
+        yield* Effect.yieldNow;
+        yield* service.create(settingsFor());
+        yield* flow.waitFor("thread.create", 1);
+        yield* tickOnce;
+        yield* flow.waitFor("thread.create", 2);
+        yield* flow.work("T1", { file: "shared.txt", content: "from T1\n" });
+        yield* flow.eventually(
+          flow.taskRow("T1"),
+          (row) => row.status === "completed",
+          "T1 to merge",
+        );
+        yield* flow.work("T2", { file: "shared.txt", content: "from T2\n" });
+        yield* flow.eventually(
+          flow.taskRow("T2"),
+          (row) => row.integration_state === "conflict",
+          "T2 to conflict",
+        );
+        // The first T2 worker is woken by a background job just as the repair is about to start.
+        const first = flow.createdFor("T2")!.threadId;
+        flow.scripts.set(first, { ...flow.scripts.get(first)!, busy: true });
+        yield* tickOnce;
+        yield* tickOnce;
+        const stops = yield* flow.waitFor("thread.session.stop", 1);
+        expect(stops[0]?.threadId).toBe(first);
+        yield* flow.waitFor("thread.create", 3);
+        // The stop was sent before the repair worker's chat was created.
+        const order = flow.log.map((c) => `${c.type}:${"threadId" in c ? c.threadId : ""}`);
+        expect(order.indexOf(`thread.session.stop:${first}`)).toBeLessThan(
+          order.lastIndexOf(
+            `thread.create:${(flow.log.filter((c) => c.type === "thread.create").at(-1) as { threadId: string }).threadId}`,
+          ),
+        );
+      }).pipe(Effect.scoped),
   );
 });

@@ -240,6 +240,7 @@ export class AgentQueueService extends Context.Service<
       input: {
         readonly parentTaskId: string;
         readonly kind: "repair" | "decision";
+        readonly blocking: boolean;
         readonly title: string;
         readonly note: string;
       },

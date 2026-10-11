@@ -129,6 +129,14 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
       `);
     },
   },
+  {
+    version: 4,
+    name: "task_verification_spec",
+    up: (db) => {
+      // Structured checks (cwd, timeout, resources, expected result) or an explicit exemption.
+      db.exec("ALTER TABLE tasks ADD COLUMN verification_spec TEXT;");
+    },
+  },
 ];
 
 /**

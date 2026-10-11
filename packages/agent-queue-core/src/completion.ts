@@ -20,6 +20,12 @@ export interface CompletionReport {
   readonly outstanding: ReadonlyArray<string>;
   /** Tasks recorded as completed that Git does not show on the base branch. */
   readonly unverified: ReadonlyArray<string>;
+  /**
+   * Completed tasks that were merged without any executable check or exemption, or whose
+   * latest recorded audit failed. Never counted as passed; the plan is not complete while
+   * any remain.
+   */
+  readonly unchecked: ReadonlyArray<string>;
   /** Submitted candidates still waiting to merge or be repaired. */
   readonly integrationPending: ReadonlyArray<string>;
   /** Tasks someone still holds a claim on. */
@@ -73,7 +79,13 @@ export async function verifyPlanCompletion(
   const goalHead = gitOut(input.repoRoot, ["rev-parse", `refs/heads/${input.integrationBranch}`]);
 
   db.exec("BEGIN;");
-  let tasks: Array<{ id: string; status: string; integration_state: string | null }>;
+  let tasks: Array<{
+    id: string;
+    status: string;
+    integration_state: string | null;
+    receipt_json: string | null;
+  }>;
+  let audits: Map<string, string>;
   let claims: Array<{ task_id: string }>;
   let landings: Map<string, string>;
   let imported: Set<string>;
@@ -87,8 +99,19 @@ export async function verifyPlanCompletion(
     | undefined;
   try {
     tasks = db
-      .prepare("SELECT id, status, integration_state FROM tasks WHERE plan_id = ?")
+      .prepare("SELECT id, status, integration_state, receipt_json FROM tasks WHERE plan_id = ?")
       .all(input.planId) as typeof tasks;
+    // The newest recorded audit of a task decides: an audit is a real run of its checks later on.
+    audits = new Map(
+      (
+        db
+          .prepare(
+            `SELECT e.task_id, e.payload_json FROM task_events e JOIN tasks t ON t.id = e.task_id
+             WHERE t.plan_id = ? AND e.event_type = 'task_audited' ORDER BY e.id`,
+          )
+          .all(input.planId) as Array<{ task_id: string; payload_json: string }>
+      ).map((row) => [row.task_id, row.payload_json]),
+    );
     claims = db
       .prepare(
         `SELECT c.task_id FROM task_claims c JOIN tasks t ON t.id = c.task_id
@@ -142,6 +165,28 @@ export async function verifyPlanCompletion(
     })
     .map((task) => task.id);
   const activeClaims = [...new Set(claims.map((claim) => claim.task_id))];
+  const receiptState = (json: string | null): string | null => {
+    if (!json) return null;
+    try {
+      const receipt = JSON.parse(json) as { state?: string; command?: string };
+      // Receipts from before structured checks: an empty command was never a check.
+      return receipt.state ?? (receipt.command ? "passed" : "unverified");
+    } catch {
+      return "unverified";
+    }
+  };
+  const unchecked = completedTasks
+    .filter((task) => {
+      const audit = audits.get(task.id);
+      if (audit) {
+        const state = (JSON.parse(audit) as { state?: string }).state;
+        return state !== "passed" && state !== "exempt";
+      }
+      if (imported.has(task.id)) return false;
+      const state = receiptState(task.receipt_json);
+      return state === "unverified" || state === "failed" || state === "timed-out";
+    })
+    .map((task) => task.id);
 
   const base: Omit<
     CompletionReport,
@@ -151,6 +196,7 @@ export async function verifyPlanCompletion(
     completed: completedTasks.length,
     outstanding,
     unverified,
+    unchecked,
     integrationPending,
     activeClaims,
     baseHead,
@@ -177,6 +223,11 @@ export async function verifyPlanCompletion(
   if (unverified.length > 0) {
     return notYet(
       `Recorded as done but not found on ${input.integrationBranch}: ${unverified.join(", ")}.`,
+    );
+  }
+  if (unchecked.length > 0) {
+    return notYet(
+      `${unchecked.length} merged task(s) have no passing executable check or recorded exemption: ${unchecked.slice(0, 8).join(", ")}. Define checks (Checks:) or an exemption (Verify: none — reason) and audit them.`,
     );
   }
   if (!baseHead || !goalHead) {

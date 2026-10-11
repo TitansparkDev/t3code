@@ -4,6 +4,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import { openQueueDatabase } from "./db.ts";
+import { NO_VERIFICATION, describeSpec, resolveDerivedDirectories } from "./verificationSpec.ts";
 import {
   computePlanChecksum,
   getReadyTasks,
@@ -375,11 +376,16 @@ export function previewPlan(repoRoot: string, planPath?: string): PlanPreview {
     active: resolved.filter((task) => ["claimed", "running", "verifying"].includes(task.status))
       .length,
     failed: resolved.filter((task) => task.status === "failed" || task.status === "blocked").length,
-    withoutVerification: parsed.tasks.filter((task) => !task.verificationCommand).length,
+    withoutVerification: parsed.tasks.filter(
+      (task) =>
+        !task.checked &&
+        !task.verification?.checks.length &&
+        task.verification?.source !== "exempt",
+    ).length,
   };
   if (counts.withoutVerification > 0 && counts.total > 0) {
     warnings.push(
-      `${counts.withoutVerification} of ${counts.total} tasks name no runnable Verify command; they land after the worker's commit, rebase and clean-worktree checks only.`,
+      `${counts.withoutVerification} of ${counts.total} tasks define no executable check and no exemption. They can merge but are reported as unverified, and the plan is not complete until each has a check (Checks:) or an explicit exemption (Verify: none — reason).`,
     );
   }
 
@@ -457,6 +463,11 @@ export function importPlanFile(repoRoot: string, planPath: string): ImportedPlan
       );
 
       for (const task of plan.parsed.tasks) {
+        const spec = resolveDerivedDirectories(
+          task.verification ?? NO_VERIFICATION,
+          repoRoot,
+          task.scopePatterns ?? [],
+        );
         const existing = db
           .prepare("SELECT status, plan_id FROM tasks WHERE id = ?")
           .get(task.id) as { status: string; plan_id: string | null } | undefined;
@@ -464,8 +475,9 @@ export function importPlanFile(repoRoot: string, planPath: string): ImportedPlan
           db.prepare(`
             INSERT INTO tasks (
               id, plan_id, title, description, status, priority,
-              scope_patterns, dependencies, verification_command, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              scope_patterns, dependencies, verification_command, verification_spec,
+              created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `).run(
             task.id,
             planId,
@@ -475,7 +487,8 @@ export function importPlanFile(repoRoot: string, planPath: string): ImportedPlan
             task.priority ?? 100,
             JSON.stringify(task.scopePatterns ?? []),
             JSON.stringify(task.dependencies ?? []),
-            task.verificationCommand ?? null,
+            describeSpec(spec) || null,
+            JSON.stringify(spec),
             now,
             now,
           );
@@ -500,7 +513,7 @@ export function importPlanFile(repoRoot: string, planPath: string): ImportedPlan
         ) {
           db.prepare(`
             UPDATE tasks SET title = ?, description = ?, priority = ?, scope_patterns = ?,
-              dependencies = ?, verification_command = ?, updated_at = ?
+              dependencies = ?, verification_command = ?, verification_spec = ?, updated_at = ?
             WHERE id = ?
           `).run(
             task.title,
@@ -508,7 +521,8 @@ export function importPlanFile(repoRoot: string, planPath: string): ImportedPlan
             task.priority ?? 100,
             JSON.stringify(task.scopePatterns ?? []),
             JSON.stringify(task.dependencies ?? []),
-            task.verificationCommand ?? null,
+            describeSpec(spec) || null,
+            JSON.stringify(spec),
             now,
             task.id,
           );

@@ -1,12 +1,26 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off preferSchemaOverJson:off
 import * as NodeCrypto from "node:crypto";
+import {
+  NO_VERIFICATION,
+  declaredCheck,
+  describeSpec,
+  exemptSpec,
+  proseCheck,
+  safeRelativeDirectory,
+  type RejectedCheck,
+  type VerificationCheck,
+  type VerificationSpec,
+} from "./verificationSpec.ts";
 
 export interface PlanTaskDefinition {
   readonly id: string;
   readonly title: string;
   readonly description?: string | null;
   readonly dependencies: ReadonlyArray<string>;
+  /** A readable form of the checks, for prompts and old readers. Execution uses `verification`. */
   readonly verificationCommand?: string | null;
+  /** What checks the task has, or the explicit exemption. Missing means unverified. */
+  readonly verification?: VerificationSpec;
   readonly scopePatterns?: ReadonlyArray<string>;
   readonly priority?: number;
   /** The plan's own checkbox was already ticked, so the work is done. */
@@ -192,56 +206,6 @@ function commandFrom(label: string, value: string): string | null {
   return null;
 }
 
-/** First words of code spans that are test, lint or build runs a server may execute as a check. */
-const CHECK_RUNNERS = new Set([
-  "uv",
-  "pytest",
-  "python",
-  "python3",
-  "ruff",
-  "mypy",
-  "npm",
-  "pnpm",
-  "yarn",
-  "bun",
-  "npx",
-  "vp",
-  "vpr",
-  "node",
-  "tsc",
-  "cargo",
-  "go",
-  "make",
-  "gradle",
-  "./gradlew",
-]);
-
-/**
- * "Done:" and "Acceptance:" are prose, but the code spans inside them are often the exact
- * checks ("from server/, uv run pytest a and uv run pytest -m b", each in code spans). Spans that start with
- * a known test runner become one chained command; a leading directory span becomes its
- * working directory. Anything else (curl against a deployment, a placeholder) is left to the
- * description and never executed by the server.
- */
-function proseChecks(value: string): string | null {
-  const spans = [...value.matchAll(/`([^`]+)`/g)].map((match) => match[1]!.trim());
-  let directory: string | null = null;
-  const commands: string[] = [];
-  for (const span of spans) {
-    if (/^[\w./-]+\/$/.test(span) && commands.length === 0) {
-      directory = span.replace(/\/$/, "");
-      continue;
-    }
-    const first = span.split(/\s+/, 1)[0] ?? "";
-    if (!CHECK_RUNNERS.has(first) || /<[A-Za-z]|\.\.\.|[;|]\s*(?:rm|curl|ssh)\b/.test(span))
-      continue;
-    commands.push(span);
-  }
-  if (commands.length === 0) return null;
-  const chained = commands.join(" && ");
-  return directory ? `cd ${JSON.stringify(directory)} && ${chained}` : chained;
-}
-
 /**
  * Parses markdown plan documents. Three task shapes are accepted:
  * ### [Status] TASK-ID: Title
@@ -261,7 +225,12 @@ export function parsePlanMarkdown(markdown: string): ParsedPlan {
     checked: boolean;
     descriptionLines: string[];
     dependencies: string[];
-    verificationCommand: string | null;
+    declared: VerificationCheck[];
+    derived: VerificationCheck[];
+    derivedDirectory: string | null;
+    rejected: RejectedCheck[];
+    exempt: VerificationSpec | null;
+    inChecks: boolean;
     scopePatterns: string[];
     priority: number;
   }
@@ -274,19 +243,47 @@ export function parsePlanMarkdown(markdown: string): ParsedPlan {
     checked,
     descriptionLines: [],
     dependencies: [],
-    verificationCommand: null,
+    declared: [],
+    derived: [],
+    derivedDirectory: null,
+    rejected: [],
+    exempt: null,
+    inChecks: false,
     scopePatterns: [],
     priority: 100,
   });
 
+  const specOf = (draft: Draft): VerificationSpec => {
+    if (draft.declared.length > 0) {
+      return {
+        source: "declared",
+        checks: draft.declared,
+        exemptReason: null,
+        rejected: draft.rejected,
+      };
+    }
+    if (draft.exempt)
+      return { ...draft.exempt, rejected: [...draft.exempt.rejected, ...draft.rejected] };
+    if (draft.derived.length > 0) {
+      const checks = draft.derived.map((check) => ({
+        ...check,
+        cwd: draft.derivedDirectory ?? check.cwd,
+      }));
+      return { source: "derived", checks, exemptReason: null, rejected: draft.rejected };
+    }
+    return { ...NO_VERIFICATION, rejected: draft.rejected };
+  };
+
   const commitCurrentTask = () => {
     if (currentTask) {
+      const verification = specOf(currentTask);
       tasks.push({
         id: currentTask.id,
         title: currentTask.title,
         description: currentTask.descriptionLines.join("\n").trim() || null,
         dependencies: currentTask.dependencies,
-        verificationCommand: currentTask.verificationCommand || null,
+        verificationCommand: describeSpec(verification) || null,
+        verification,
         scopePatterns: currentTask.scopePatterns,
         priority: currentTask.priority,
         ...(currentTask.checked ? { checked: true } : {}),
@@ -361,23 +358,78 @@ export function parsePlanMarkdown(markdown: string): ParsedPlan {
         continue;
       }
 
-      const verMatch = trimmed.match(
-        /^(?:[-*]\s*)?(?:\*\*)?(Verification|Verify|Test|Done|Acceptance)(?:\*\*)?:(?:\*\*)?\s*(.+)$/i,
-      );
-      if (verMatch) {
-        const label = verMatch[1]!;
-        const command = commandFrom(label, verMatch[2]!);
-        if (command) {
-          currentTask.verificationCommand = command;
+      // Bullets under a "Checks:" line: - `cmd` (cwd: server/, timeout: 20m, requires: gpu)
+      if (currentTask.inChecks) {
+        const bullet = trimmed.match(/^[-*]\s+`([^`]+)`\s*(?:\((.*)\))?\s*\.?$/);
+        if (bullet) {
+          const parsedCheck = declaredCheck(bullet[1]!.trim(), bullet[2] ?? "");
+          if (parsedCheck.check) currentTask.declared.push(parsedCheck.check);
+          if (parsedCheck.rejected) currentTask.rejected.push(parsedCheck.rejected);
           continue;
         }
-        // A prose Done line stays in the description for the worker and may also carry the checks.
-        currentTask.descriptionLines.push(line);
-        const prose = /^(done|acceptance)$/i.test(label) ? proseChecks(verMatch[2]!) : null;
-        if (prose) {
-          currentTask.verificationCommand = currentTask.verificationCommand
-            ? `${currentTask.verificationCommand} && ${prose}`
-            : prose;
+        if (trimmed !== "") currentTask.inChecks = false;
+      }
+
+      const checksHeader = trimmed.match(
+        /^(?:[-*]\s*)?(?:\*\*)?Checks(?:\*\*)?:(?:\*\*)?\s*(.*)$/i,
+      );
+      if (checksHeader) {
+        currentTask.inChecks = true;
+        const inline = checksHeader[1]!.trim();
+        const exemptInline = inline.match(/^(?:none|exempt)\s*[-–—:]\s*(.+)$/i);
+        if (exemptInline) {
+          currentTask.exempt = exemptSpec(exemptInline[1]!);
+          currentTask.inChecks = false;
+        } else if (inline !== "") {
+          const one = inline.match(/^`([^`]+)`\s*(?:\((.*)\))?\s*\.?$/);
+          if (one) {
+            const parsedCheck = declaredCheck(one[1]!.trim(), one[2] ?? "");
+            if (parsedCheck.check) currentTask.declared.push(parsedCheck.check);
+            if (parsedCheck.rejected) currentTask.rejected.push(parsedCheck.rejected);
+          }
+        }
+        continue;
+      }
+
+      const verMatch = trimmed.match(
+        /^(?:[-*]\s*)?(?:\*\*)?(Check|Verification|Verify|Test|Done|Acceptance|Exempt)(?:\*\*)?:(?:\*\*)?\s*(.+)$/i,
+      );
+      if (verMatch) {
+        const label = verMatch[1]!.toLowerCase();
+        const value = verMatch[2]!.trim();
+        const exemptValue = value.match(/^(?:none|exempt)\s*[-–—:]\s*(.+)$/i);
+        if (label === "exempt" || (label !== "done" && label !== "acceptance" && exemptValue)) {
+          currentTask.exempt = exemptSpec(label === "exempt" ? value : exemptValue![1]!);
+          continue;
+        }
+        if (label === "done" || label === "acceptance") {
+          // Prose: kept for the worker. Its runner-like code spans become derived checks.
+          currentTask.descriptionLines.push(line);
+          for (const match of value.matchAll(/`([^`]+)`/g)) {
+            const span = match[1]!.trim();
+            if (/^[\w./-]+\/$/.test(span) && currentTask.derived.length === 0) {
+              currentTask.derivedDirectory = safeRelativeDirectory(span);
+              continue;
+            }
+            const found = proseCheck(span);
+            if (found?.check) currentTask.derived.push(found.check);
+            if (found?.rejected) currentTask.rejected.push(found.rejected);
+          }
+          continue;
+        }
+        // Verify / Verification / Test / Check: a code span is a declared check, anything else is not run.
+        const one = value.match(/^`([^`]+)`\s*(?:\((.*)\))?\s*\.?$/);
+        if (one) {
+          const parsedCheck = declaredCheck(one[1]!.trim(), one[2] ?? "");
+          if (parsedCheck.check) currentTask.declared.push(parsedCheck.check);
+          if (parsedCheck.rejected) currentTask.rejected.push(parsedCheck.rejected);
+        } else if (label === "verification" || label === "verify" || label === "test") {
+          // Older plans wrote the command bare after the label.
+          const bare = declaredCheck(value.replace(/^`|`$/g, "").replace(/\.$/, ""), "");
+          if (bare.check) currentTask.declared.push(bare.check);
+          if (bare.rejected) currentTask.rejected.push(bare.rejected);
+        } else {
+          currentTask.descriptionLines.push(line);
         }
         continue;
       }

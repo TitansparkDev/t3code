@@ -137,6 +137,8 @@ Most code changes do not need an internal documentation change. Agents can read 
 
 ## Plans and work artifacts
 
+- Plan tasks that AgentQueue will run define their own verification: a `Checks:` list (one backticked command per bullet with `cwd`, `timeout`, `requires`, `expect`) or an explicit `Verify: none — <reason>`. A task with neither is merged as unverified and blocks plan completion. See [ADR-0008](docs/agentqueue/ADR-0008-verification-contract-and-worker-settlement.md).
+
 - Do not commit implementation plans, research notes, or agent scratch files. Keep temporary working material outside the worktree. `.plans/` is gitignored only as a safety net for legacy tooling.
 - Track active maintainer work in the GitHub issue or project item that owns it. External proposals follow `CONTRIBUTING.md` and belong in Ideas discussions.
 - A merged PR is the implementation record. Close or update its tracking item when the work lands; do not preserve a second checklist in the repository.

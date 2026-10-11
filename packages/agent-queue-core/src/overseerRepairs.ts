@@ -328,14 +328,21 @@ export interface FollowUpInput {
   readonly parentTaskId: string;
   /** "repair" can be worked by an agent now; "decision" waits for a person or the overseer. */
   readonly kind: "repair" | "decision";
+  /**
+   * Whether the original objective needs this done. A blocking follow-up is added as a
+   * dependency of every task that waited on the parent that has not started yet, so nothing
+   * builds on the unfinished requirement. Only work the parent's own acceptance already
+   * covered may be nonblocking.
+   */
+  readonly blocking: boolean;
   readonly title: string;
   readonly note: string;
 }
 
 /**
- * Records leftover work next to a task whose commits are kept: a blocker the worker reported,
- * or a repair a failed check calls for. The parent keeps its own outcome, nothing depends on
- * the follow-up unless a plan says so, and the plan cannot complete while it stays open.
+ * Records leftover work next to a task whose commits are kept: a requirement the worker could
+ * not finish, or a repair that a later audit calls for. The follow-up copies the parent's
+ * checks, so it is judged the same way. The plan cannot complete while it stays open.
  * Repeating the same note for the same parent returns the task that already exists.
  */
 export function addFollowUpTask(
@@ -345,8 +352,12 @@ export function addFollowUpTask(
   db.exec("BEGIN IMMEDIATE;");
   try {
     const parent = db
-      .prepare("SELECT scope_patterns FROM tasks WHERE id = ? AND plan_id = ?")
-      .get(input.parentTaskId, input.planId) as { scope_patterns: string } | undefined;
+      .prepare(
+        "SELECT scope_patterns, verification_command FROM tasks WHERE id = ? AND plan_id = ?",
+      )
+      .get(input.parentTaskId, input.planId) as
+      | { scope_patterns: string; verification_command: string | null }
+      | undefined;
     if (!parent) throw new Error(`Task ${input.parentTaskId} not found`);
     const note = input.note.trim().slice(0, 4000);
     const siblings = db
@@ -364,22 +375,45 @@ export function addFollowUpTask(
     const now = new Date().toISOString();
     db.prepare(
       `INSERT INTO tasks (id, plan_id, title, description, status, priority, scope_patterns,
-         dependencies, failure_reason, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, 150, ?, '[]', ?, ?, ?)`,
+         dependencies, verification_command, failure_reason, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       taskId,
       input.planId,
       input.title.slice(0, 200),
       note,
       input.kind === "decision" ? "blocked" : "pending",
+      input.blocking ? 200 : 50,
       parent.scope_patterns,
+      JSON.stringify([]),
+      parent.verification_command,
       input.kind === "decision" ? note.slice(0, 500) : null,
       now,
       now,
     );
+    let rewired: string[] = [];
+    if (input.blocking) {
+      const waiting = db
+        .prepare(
+          "SELECT id, dependencies FROM tasks WHERE plan_id = ? AND status IN ('pending', 'blocked')",
+        )
+        .all(input.planId) as Array<{ id: string; dependencies: string }>;
+      for (const task of waiting) {
+        const dependencies = JSON.parse(task.dependencies || "[]") as string[];
+        if (!dependencies.includes(input.parentTaskId) || dependencies.includes(taskId)) continue;
+        db.prepare("UPDATE tasks SET dependencies = ?, updated_at = ? WHERE id = ?").run(
+          JSON.stringify([...dependencies, taskId]),
+          now,
+          task.id,
+        );
+        rewired.push(task.id);
+      }
+    }
     recordEvent(db, taskId, "task_followup_created", {
       parentTaskId: input.parentTaskId,
       kind: input.kind,
+      blocking: input.blocking,
+      nowWaitingOnIt: rewired,
     });
     db.exec("COMMIT;");
     return { taskId, created: true };

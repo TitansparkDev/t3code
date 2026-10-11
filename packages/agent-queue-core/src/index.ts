@@ -19,3 +19,4 @@ export * from "./integration.ts";
 export * from "./checkout.ts";
 export * from "./publication.ts";
 export * from "./completion.ts";
+export * from "./verificationSpec.ts";
