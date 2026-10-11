@@ -41,7 +41,6 @@
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",
-    "@t3tools/agent-queue-core": "workspace:*",
     "@t3tools/contracts": "workspace:*",
     "@t3tools/shared": "workspace:*",
     "@t3tools/ssh": "workspace:*",

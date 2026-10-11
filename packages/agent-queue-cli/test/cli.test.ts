@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
-import * as fs from "node:fs/promises";
-import * as path from "node:path";
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
 import { runCli } from "../src/cli.ts";
 import { createTestGitRepo } from "../../agent-queue-core/test/harness/gitHarness.ts";
 
@@ -20,8 +20,8 @@ Verify: vp test src
 Depends on: TASK-01
 Verify: vp test src/second
 `;
-      const planFile = path.join(repo.rootDir, "SAMPLE_PLAN.md");
-      await fs.writeFile(planFile, planContent, "utf8");
+      const planFile = NodePath.join(repo.rootDir, "SAMPLE_PLAN.md");
+      await NodeFSP.writeFile(planFile, planContent, "utf8");
 
       // 2. agentqueue plan import SAMPLE_PLAN.md --json
       const importRes = runCli(["plan", "import", "SAMPLE_PLAN.md", "--json"], repo.rootDir);
@@ -93,8 +93,8 @@ Verify: vp test src/second
 # Intervention Plan
 ### INT-01: Intervention Task
 `;
-      const planFile = path.join(repo.rootDir, "INTERVENE.md");
-      await fs.writeFile(planFile, planContent, "utf8");
+      const planFile = NodePath.join(repo.rootDir, "INTERVENE.md");
+      await NodeFSP.writeFile(planFile, planContent, "utf8");
       runCli(["plan", "import", "INTERVENE.md", "--json"], repo.rootDir);
 
       // 1. Block task
@@ -148,8 +148,8 @@ Verify: vp test src/second
 # Readable Plan
 ### TXT-01: Text Task
 `;
-      const planFile = path.join(repo.rootDir, "READABLE.md");
-      await fs.writeFile(planFile, planContent, "utf8");
+      const planFile = NodePath.join(repo.rootDir, "READABLE.md");
+      await NodeFSP.writeFile(planFile, planContent, "utf8");
 
       const importRes = runCli(["plan", "import", "READABLE.md"], repo.rootDir);
       expect(importRes.exitCode).toBe(0);

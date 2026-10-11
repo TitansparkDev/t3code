@@ -86,6 +86,9 @@ export default defineConfig({
       // Macroscope's glob-per-line ignore grammar, not Markdown: formatting
       // it rewrites `*` as `_` and joins lines.
       ".macroscope/ignore.md",
+      // Fork planning notes whose over-indented list paragraphs the Markdown
+      // formatter re-indents on every run, so it can never settle.
+      "omni/PLAN.md",
       ".alchemy",
       "dist",
       "dist-electron",
