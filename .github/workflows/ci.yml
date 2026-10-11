@@ -213,7 +213,7 @@ jobs:
       - name: Test Rust crates
         run: |
           for crate in resource-monitor kde-snap-shot hyprland-snap-shot; do
-            heavy-build-slot cargo test --locked --manifest-path "native/$crate/Cargo.toml"
+            cargo test --locked --manifest-path "native/$crate/Cargo.toml"
           done
 
   # The static analysis below needs a macOS runner, which bills ~6.7x a Linux
