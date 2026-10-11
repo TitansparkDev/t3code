@@ -760,13 +760,18 @@ describe("DesktopWindow", () => {
             localEnvironmentEnabled: false,
           },
         });
+        // A closed window leaves the product's window registry through Electron's
+        // "closed" event; clearing only the main-window ref would leave a stale entry.
+        const closeMain = () => fakeWindow.windowListeners.get("closed")?.();
         yield* Effect.gen(function* () {
           const desktopWindow = yield* DesktopWindow.DesktopWindow;
           yield* desktopWindow.createMainIfBackendReady;
           assert.equal(yield* Ref.get(createCount), 1);
+          closeMain();
           yield* Ref.set(mainWindow, Option.none());
           yield* desktopWindow.activate;
           assert.equal(yield* Ref.get(createCount), 2);
+          closeMain();
           yield* Ref.set(mainWindow, Option.none());
           yield* desktopWindow.dispatchMenuAction("new-thread");
           assert.equal(yield* Ref.get(createCount), 3);
