@@ -742,10 +742,10 @@ export type ClineSettings = typeof ClineSettings.Type;
  * worker, the way W's Telegram service drives them. Every default points at
  * the live W install on this machine, so enabling it is one switch.
  */
-export const CHAT_AGENTS_DEFAULT_WORKER_PATH =
+const CHAT_AGENTS_DEFAULT_WORKER_PATH =
   "/srv/chatagents-w/deploy/current/desktop/chatgpt_worker_w.py";
-export const CHAT_AGENTS_DEFAULT_PYTHON_PATH = "/srv/chatagents-w/desktop-venv/bin/python";
-export const CHAT_AGENTS_DEFAULT_RUNTIME_ROOT = "/srv/chatagents-w";
+const CHAT_AGENTS_DEFAULT_PYTHON_PATH = "/srv/chatagents-w/desktop-venv/bin/python";
+const CHAT_AGENTS_DEFAULT_RUNTIME_ROOT = "/srv/chatagents-w";
 
 export const ChatAgentsSettings = makeProviderSettingsSchema(
   {

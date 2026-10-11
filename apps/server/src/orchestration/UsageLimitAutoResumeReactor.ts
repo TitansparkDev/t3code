@@ -30,7 +30,7 @@ export class UsageLimitAutoResumeReactor extends Context.Service<
 >()("t3/orchestration/UsageLimitAutoResumeReactor") {}
 
 /** Whether the user chose to resume this provider instance and model on their own. */
-export function isUsageLimitAutoResumeEnabled(
+function isUsageLimitAutoResumeEnabled(
   settings: Pick<ServerSettingsValue, "usageLimitAutoResume">,
   modelSelection: { readonly instanceId: string; readonly model: string },
 ): boolean {
@@ -47,7 +47,7 @@ export function isUsageLimitAutoResumeEnabled(
  * entering the usage-limit state, so a resume the user cancels stays cancelled.
  * Later attempts reuse the existing retry flow.
  */
-export const make = Effect.gen(function* () {
+const make = Effect.gen(function* () {
   const engine = yield* OrchestrationEngine.OrchestrationEngineService;
   const snapshots = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
   const settingsService = yield* ServerSettings.ServerSettingsService;

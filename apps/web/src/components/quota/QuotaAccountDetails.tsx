@@ -30,7 +30,7 @@ export const QuotaAccountDetails = memo(function QuotaAccountDetails({
       {snapshot.groups.map((group) => (
         <div className="space-y-1.5" key={group.key}>
           {snapshot.groups.length > 1 ? (
-            <div className="text-[11px] font-medium text-muted-foreground">{group.displayName}</div>
+            <div className="text-2xs font-medium text-muted-foreground">{group.displayName}</div>
           ) : null}
           {group.windows.length === 0 ? (
             <div className="text-xs text-muted-foreground">Usage figures not exposed</div>
@@ -56,7 +56,7 @@ export const QuotaAccountDetails = memo(function QuotaAccountDetails({
                       style={{ width: `${remaining}%` }}
                     />
                   </div>
-                  <div className="text-[10px] text-muted-foreground">
+                  <div className="text-3xs text-muted-foreground">
                     {formatQuotaReset(window.resetsAt, nowMs)}
                   </div>
                 </div>
@@ -66,7 +66,7 @@ export const QuotaAccountDetails = memo(function QuotaAccountDetails({
         </div>
       ))}
 
-      <div className="border-t border-border/60 pt-2 text-[10px] text-muted-foreground">
+      <div className="border-t border-border/60 pt-2 text-3xs text-muted-foreground">
         {snapshot.source === "provider-event"
           ? "Reported by the provider"
           : snapshot.source === "state-file"

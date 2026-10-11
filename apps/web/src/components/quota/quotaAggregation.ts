@@ -72,7 +72,7 @@ export function averageAntigravityWindowForKind(
 }
 
 /** State that an aggregate contains different provider reset times. */
-export function antigravityResetLabelForKind(
+function antigravityResetLabelForKind(
   accounts: ReadonlyArray<QuotaAggregationAccount>,
   kind: QuotaWindowKindForDisplay,
   nowMs: number,
@@ -92,7 +92,7 @@ function groupMatchesPool(group: QuotaGroup, pool: AntigravityQuotaPool): boolea
   return pool === "gemini" ? /gemini|google/.test(identity) : /claude|gpt/.test(identity);
 }
 
-export function antigravityGroupPoolKey(group: QuotaGroup): AntigravityQuotaPool | undefined {
+function antigravityGroupPoolKey(group: QuotaGroup): AntigravityQuotaPool | undefined {
   if (groupMatchesPool(group, "gemini")) return "gemini";
   if (groupMatchesPool(group, "claude-gpt")) return "claude-gpt";
   return undefined;

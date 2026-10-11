@@ -47,9 +47,11 @@ export function HandoffTargetDialog(props: {
     <Dialog open={props.open} onOpenChange={props.onOpenChange}>
       <DialogPopup className="max-w-xl">
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <GitForkIcon className="size-4" />
-            Choose a handoff target
+          <DialogTitle>
+            <span className="flex items-center gap-2">
+              <GitForkIcon className="size-4" />
+              Choose a handoff target
+            </span>
           </DialogTitle>
           <DialogDescription>
             {props.sourceTitle

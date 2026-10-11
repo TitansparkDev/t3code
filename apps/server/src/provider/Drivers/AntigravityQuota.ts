@@ -6,6 +6,7 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { ChildProcess } from "effect/unstable/process";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 
 import { spawnAndCollect } from "../providerSnapshot.ts";
@@ -76,6 +77,7 @@ function safeGoogleTokenUri(value: unknown): value is string {
  */
 export function discoverLocalAntigravityEndpoint(
   environment: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = "linux",
 ): { readonly port: number; readonly csrfToken?: string } | undefined {
   const envPort = environment.ANTIGRAVITY_PORT ?? environment.AGY_PORT ?? environment.GEMINI_PORT;
   if (envPort) {
@@ -86,7 +88,7 @@ export function discoverLocalAntigravityEndpoint(
     }
   }
 
-  if (process.platform === "linux") {
+  if (platform === "linux") {
     try {
       const fs = require("node:fs");
       const entries: string[] = fs.readdirSync("/proc");
@@ -123,45 +125,46 @@ export function discoverLocalAntigravityEndpoint(
  * Probe local running Antigravity endpoint.
  * Connects exclusively to 127.0.0.1. Never sends CSRF token to a remote host.
  */
-export const probeLocalAntigravityUsage = Effect.fn("probeLocalAntigravityUsage")(
-  function* (input: { readonly port: number; readonly csrfToken?: string }) {
-    const client = yield* HttpClient.HttpClient;
-    const endpoints = [
-      "/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary",
-      "/exa.language_server_pb.LanguageServerService/GetUserStatus",
-      "/exa.language_server_pb.LanguageServerService/GetCommandModelConfigs",
-    ];
+const probeLocalAntigravityUsage = Effect.fn("probeLocalAntigravityUsage")(function* (input: {
+  readonly port: number;
+  readonly csrfToken?: string;
+}) {
+  const client = yield* HttpClient.HttpClient;
+  const endpoints = [
+    "/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary",
+    "/exa.language_server_pb.LanguageServerService/GetUserStatus",
+    "/exa.language_server_pb.LanguageServerService/GetCommandModelConfigs",
+  ];
 
-    for (const endpoint of endpoints) {
-      const url = `http://127.0.0.1:${input.port}${endpoint}`;
-      let req = HttpClientRequest.post(url).pipe(
-        HttpClientRequest.setHeader("Content-Type", "application/json"),
-        HttpClientRequest.bodyJsonUnsafe({}),
+  for (const endpoint of endpoints) {
+    const url = `http://127.0.0.1:${input.port}${endpoint}`;
+    let req = HttpClientRequest.post(url).pipe(
+      HttpClientRequest.setHeader("Content-Type", "application/json"),
+      HttpClientRequest.bodyJsonUnsafe({}),
+    );
+    if (input.csrfToken) {
+      req = req.pipe(
+        HttpClientRequest.setHeader("X-Csrf-Token", input.csrfToken),
+        HttpClientRequest.setHeader("x-code-assist-csrf-token", input.csrfToken),
       );
-      if (input.csrfToken) {
-        req = req.pipe(
-          HttpClientRequest.setHeader("X-Csrf-Token", input.csrfToken),
-          HttpClientRequest.setHeader("x-code-assist-csrf-token", input.csrfToken),
-        );
-      }
+    }
 
-      const response = yield* client.execute(req).pipe(
-        Effect.flatMap(HttpClientResponse.filterStatusOk),
-        Effect.flatMap((res) => res.json),
-        Effect.timeout("3 seconds"),
-        Effect.option,
-      );
+    const response = yield* client.execute(req).pipe(
+      Effect.flatMap(HttpClientResponse.filterStatusOk),
+      Effect.flatMap((res) => res.json),
+      Effect.timeout("3 seconds"),
+      Effect.option,
+    );
 
-      if (Option.isSome(response)) {
-        const payload = parseAntigravityQuotaPayload(response.value);
-        if (payload && payload.groups.length > 0) {
-          return payload;
-        }
+    if (Option.isSome(response)) {
+      const payload = parseAntigravityQuotaPayload(response.value);
+      if (payload && payload.groups.length > 0) {
+        return payload;
       }
     }
-    return undefined;
-  },
-);
+  }
+  return undefined;
+});
 
 const directQuotaProbe = Effect.fn("readAntigravityDirectUsage")(function* (input: {
   readonly profileDirectory: string;
@@ -256,10 +259,11 @@ export const readAntigravityUsageLimits = Effect.fn("readAntigravityUsageLimits"
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const httpClient = yield* HttpClient.HttpClient;
+    const platform = yield* HostProcessPlatform;
 
     // 1. Try local loopback endpoint probe if discovered
     if (!input.disableLocalDiscovery) {
-      const localEndpoint = discoverLocalAntigravityEndpoint(input.environment);
+      const localEndpoint = discoverLocalAntigravityEndpoint(input.environment, platform);
       if (localEndpoint) {
         const localUsage = yield* probeLocalAntigravityUsage(localEndpoint).pipe(
           Effect.provideService(HttpClient.HttpClient, httpClient),
@@ -357,7 +361,7 @@ export function parseAntigravityUsage(stdout: string): AntigravityUsagePayload |
   return parseText(stdout);
 }
 
-export const readAntigravityUsage = Effect.fn("readAntigravityUsage")(function* (input: {
+const readAntigravityUsage = Effect.fn("readAntigravityUsage")(function* (input: {
   readonly environment: NodeJS.ProcessEnv;
   readonly profileDirectory: string;
 }) {

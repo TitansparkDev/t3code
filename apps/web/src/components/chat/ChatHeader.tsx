@@ -421,7 +421,7 @@ export const ChatHeader = memo(function ChatHeader({
                     setActionsOpen(false);
                     onForkThread?.();
                   }}
-                  className={actionsCollapsed ? "w-full justify-start gap-2" : undefined}
+                  className={actionsCollapsed ? "w-full justify-start" : undefined}
                 >
                   <GitForkIcon className="size-4 shrink-0" />
                   {actionsCollapsed && <span>Fork with handoff</span>}

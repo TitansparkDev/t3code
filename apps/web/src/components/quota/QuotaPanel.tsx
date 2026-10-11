@@ -112,13 +112,13 @@ export const QuotaPanel = memo(function QuotaPanel() {
   if (rows.length === 0) return null;
 
   return (
-    <div className="mb-1 rounded-lg border border-border/65 bg-sidebar-accent/25 p-1.5">
-      <div className="mb-1.5 flex items-center justify-between px-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+    <div className="mb-1 rounded-lg border border-border/65 bg-sidebar-row-hover p-1.5">
+      <div className="mb-1.5 flex items-center justify-between px-1 text-2xs font-medium uppercase tracking-wide text-muted-foreground">
         <span>Limits</span>
         <button
           aria-label="Refresh all account limits"
           aria-busy={quota.isRefreshing}
-          className="rounded-sm p-0.5 opacity-60 hover:bg-sidebar-accent hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-wait disabled:opacity-100"
+          className="rounded-sm p-0.5 opacity-60 hover:bg-sidebar-row-hover hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-wait disabled:opacity-100"
           disabled={quota.isRefreshing}
           onClick={quota.refresh}
           type="button"
@@ -168,7 +168,7 @@ export const QuotaPanel = memo(function QuotaPanel() {
 function QuotaSection({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className="flex min-w-0 flex-col gap-0.5" aria-label={title}>
-      <h3 className="px-1 text-[11px] font-semibold text-muted-foreground">{title}</h3>
+      <h3 className="px-1 text-2xs font-semibold text-muted-foreground">{title}</h3>
       {children}
     </section>
   );
@@ -185,7 +185,7 @@ const StandardQuotaRow = memo(function StandardQuotaRow({
   const ProviderIcon = PROVIDER_ICON_BY_PROVIDER[instance.driverKind] ?? null;
   const stale = snapshot ? isQuotaSnapshotStale(snapshot, nowMs) : false;
   const row = (
-    <div className={`${QUOTA_ROW_GRID} rounded-md px-1.5 py-1.5 hover:bg-sidebar-accent`}>
+    <div className={`${QUOTA_ROW_GRID} rounded-md px-1.5 py-1.5 hover:bg-sidebar-row-hover`}>
       <AccountName account={account} ProviderIcon={ProviderIcon} />
       <QuotaMetric
         label="5h"
@@ -252,7 +252,7 @@ const AntigravityAggregateRow = memo(function AntigravityAggregateRow({
     <button
       aria-expanded={expanded}
       aria-label={`${expanded ? "Hide" : "Show"} individual AGY account limits`}
-      className="flex w-full items-start gap-1.5 rounded-md px-1.5 py-1.5 text-left hover:bg-sidebar-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className="flex w-full items-start gap-1.5 rounded-md px-1.5 py-1.5 text-left hover:bg-sidebar-row-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       onClick={onToggle}
       type="button"
     >
@@ -272,7 +272,7 @@ const AntigravityAggregateRow = memo(function AntigravityAggregateRow({
                 <span className="block truncate text-xs leading-tight">
                   {index === 0 ? "AGY" : ""}
                 </span>
-                <span className="block truncate text-[10px]" style={{ color: pool.color }}>
+                <span className="block truncate text-3xs" style={{ color: pool.color }}>
                   {pool.label}
                 </span>
               </span>
@@ -323,11 +323,11 @@ const AntigravityAccountRow = memo(function AntigravityAccountRow({
           key={pool}
         >
           <span className="min-w-0 pl-5">
-            <span className="block truncate text-[11px] text-muted-foreground">
+            <span className="block truncate text-2xs text-muted-foreground">
               {index === 0 ? name : ""}
             </span>
             <span
-              className="block truncate text-[9px] leading-tight"
+              className="block truncate text-3xs leading-tight"
               style={{ color: pool === "gemini" ? "#4f8cff" : "#34d399" }}
             >
               {pool === "gemini" ? "Gemini Models" : "Claude & GPT models"}
@@ -417,10 +417,10 @@ function QuotaMetric({
     : undefined;
   return (
     <span className="min-w-0 space-y-0.5">
-      <span className="flex items-center justify-between gap-1 text-[10px] leading-none text-muted-foreground">
+      <span className="flex items-center justify-between gap-1 text-3xs leading-none text-muted-foreground">
         <span className="truncate">{label}</span>
         <span
-          className={`text-[11px] font-semibold tabular-nums ${stale ? "text-amber-500" : "text-foreground/80"}`}
+          className={`text-2xs font-semibold tabular-nums ${stale ? "text-warning" : "text-foreground/80"}`}
         >
           {remaining === undefined
             ? stale
@@ -430,7 +430,7 @@ function QuotaMetric({
         </span>
       </span>
       {reset ? (
-        <span className="block truncate text-[9px] leading-none text-muted-foreground/80">
+        <span className="block truncate text-3xs leading-none text-muted-foreground/80">
           {reset}
         </span>
       ) : null}
@@ -441,11 +441,11 @@ function QuotaMetric({
               ? "block h-full w-0 rounded-full"
               : `block h-full rounded-full ${
                   stale
-                    ? "bg-amber-500/60"
+                    ? "bg-warning/60"
                     : remaining <= 10
                       ? "bg-destructive"
                       : remaining <= 30
-                        ? "bg-amber-500"
+                        ? "bg-warning"
                         : accentColor
                           ? ""
                           : "bg-primary"

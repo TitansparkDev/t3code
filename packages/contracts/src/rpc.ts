@@ -710,7 +710,7 @@ const WsServerGetUsageSummaryRpc = Rpc.make(WS_METHODS.serverGetUsageSummary, {
   error: Schema.Union([EnvironmentAuthorizationError, UsageReadError]),
 });
 
-export const WsServerGetQuotaRpc = Rpc.make(WS_METHODS.serverGetQuota, {
+const WsServerGetQuotaRpc = Rpc.make(WS_METHODS.serverGetQuota, {
   payload: Schema.Struct({}),
   success: QuotaSummary,
   error: EnvironmentAuthorizationError,
@@ -721,40 +721,40 @@ export const WsServerGetQuotaRpc = Rpc.make(WS_METHODS.serverGetQuota, {
  * the clock, so every mutation round-trips and answers with the full list
  * rather than letting a client keep its own copy in step.
  */
-export const WsServerListScheduledTasksRpc = Rpc.make(WS_METHODS.serverListScheduledTasks, {
+const WsServerListScheduledTasksRpc = Rpc.make(WS_METHODS.serverListScheduledTasks, {
   payload: Schema.Struct({}),
   success: ScheduledTaskList,
   error: EnvironmentAuthorizationError,
 });
 
-export const WsServerSaveScheduledTaskRpc = Rpc.make(WS_METHODS.serverSaveScheduledTask, {
+const WsServerSaveScheduledTaskRpc = Rpc.make(WS_METHODS.serverSaveScheduledTask, {
   payload: Schema.Struct({ task: ScheduledTaskDraft }),
   success: ScheduledTaskList,
   error: EnvironmentAuthorizationError,
 });
 
-export const WsServerDeleteScheduledTaskRpc = Rpc.make(WS_METHODS.serverDeleteScheduledTask, {
+const WsServerDeleteScheduledTaskRpc = Rpc.make(WS_METHODS.serverDeleteScheduledTask, {
   payload: Schema.Struct({ id: ScheduledTaskId }),
   success: ScheduledTaskList,
   error: EnvironmentAuthorizationError,
 });
 
 /** Goals are environment-owned like tasks: every call answers with the full list. */
-export const WsServerListGoalsRpc = Rpc.make(WS_METHODS.serverListGoals, {
+const WsServerListGoalsRpc = Rpc.make(WS_METHODS.serverListGoals, {
   payload: Schema.Struct({}),
   success: GoalList,
   error: EnvironmentAuthorizationError,
 });
 
 /** Start a goal from the setup page. The list comes back with the new goal first. */
-export const WsServerCreateGoalRpc = Rpc.make(WS_METHODS.serverCreateGoal, {
+const WsServerCreateGoalRpc = Rpc.make(WS_METHODS.serverCreateGoal, {
   payload: Schema.Struct({ goal: GoalSettings, draft: Schema.optional(Schema.Boolean) }),
   success: GoalList,
   error: Schema.Union([OrchestrationDispatchCommandError, EnvironmentAuthorizationError]),
 });
 
 /** Look at a project's repository and plan the way a goal would, without changing anything. */
-export const WsServerPreviewGoalPlanRpc = Rpc.make(WS_METHODS.serverPreviewGoalPlan, {
+const WsServerPreviewGoalPlanRpc = Rpc.make(WS_METHODS.serverPreviewGoalPlan, {
   payload: Schema.Struct({
     projectId: ProjectId,
     queueMode: Schema.Literals(["auto", "standard", "agentqueue"]),
@@ -765,7 +765,7 @@ export const WsServerPreviewGoalPlanRpc = Rpc.make(WS_METHODS.serverPreviewGoalP
 });
 
 /** Change a goal's settings. The project cannot change; running chats keep their instructions. */
-export const WsServerUpdateGoalRpc = Rpc.make(WS_METHODS.serverUpdateGoal, {
+const WsServerUpdateGoalRpc = Rpc.make(WS_METHODS.serverUpdateGoal, {
   payload: Schema.Struct({
     id: GoalId,
     goal: GoalSettings,
@@ -776,21 +776,21 @@ export const WsServerUpdateGoalRpc = Rpc.make(WS_METHODS.serverUpdateGoal, {
   error: Schema.Union([OrchestrationDispatchCommandError, EnvironmentAuthorizationError]),
 });
 
-export const WsServerStopGoalRpc = Rpc.make(WS_METHODS.serverStopGoal, {
+const WsServerStopGoalRpc = Rpc.make(WS_METHODS.serverStopGoal, {
   payload: Schema.Struct({ id: GoalId }),
   success: GoalList,
   error: EnvironmentAuthorizationError,
 });
 
 /** Start a stopped, failed, or finished goal again. */
-export const WsServerRestartGoalRpc = Rpc.make(WS_METHODS.serverRestartGoal, {
+const WsServerRestartGoalRpc = Rpc.make(WS_METHODS.serverRestartGoal, {
   payload: Schema.Struct({ id: GoalId }),
   success: GoalList,
   error: EnvironmentAuthorizationError,
 });
 
 /** Raise a goal's agent counts by `count` and start it if it is not running. */
-export const WsServerAddGoalAgentsRpc = Rpc.make(WS_METHODS.serverAddGoalAgents, {
+const WsServerAddGoalAgentsRpc = Rpc.make(WS_METHODS.serverAddGoalAgents, {
   payload: Schema.Struct({
     id: GoalId,
     count: Schema.Number.check(Schema.isInt(), Schema.isBetween({ minimum: 1, maximum: 100 })),
@@ -799,14 +799,14 @@ export const WsServerAddGoalAgentsRpc = Rpc.make(WS_METHODS.serverAddGoalAgents,
   error: EnvironmentAuthorizationError,
 });
 
-export const WsServerDeleteGoalRpc = Rpc.make(WS_METHODS.serverDeleteGoal, {
+const WsServerDeleteGoalRpc = Rpc.make(WS_METHODS.serverDeleteGoal, {
   payload: Schema.Struct({ id: GoalId }),
   success: GoalList,
   error: EnvironmentAuthorizationError,
 });
 
 /** Run a task now, ignoring its schedule. The list comes back with the result. */
-export const WsServerRunScheduledTaskRpc = Rpc.make(WS_METHODS.serverRunScheduledTask, {
+const WsServerRunScheduledTaskRpc = Rpc.make(WS_METHODS.serverRunScheduledTask, {
   payload: Schema.Struct({ id: ScheduledTaskId }),
   success: ScheduledTaskList,
   error: EnvironmentAuthorizationError,
@@ -1578,7 +1578,7 @@ const WsSubscribeResourceTelemetryRpc = Rpc.make(WS_METHODS.subscribeResourceTel
   stream: true,
 });
 
-export const WsSubscribeQuotaRpc = Rpc.make(WS_METHODS.subscribeQuota, {
+const WsSubscribeQuotaRpc = Rpc.make(WS_METHODS.subscribeQuota, {
   payload: Schema.Struct({}),
   success: QuotaSummary,
   error: EnvironmentAuthorizationError,

@@ -83,7 +83,7 @@ export function UsageLimitsTooltip({ id }: { readonly id: string }) {
       role="tooltip"
       side="top"
       align="start"
-      className="pointer-events-auto w-72 max-w-[calc(100vw-2rem)] text-wrap"
+      className="pointer-events-auto w-72 max-w-[calc(100vw-2rem)]"
     >
       <UsageLimitsSummary />
     </TooltipPopup>

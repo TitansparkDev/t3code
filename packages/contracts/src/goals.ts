@@ -22,11 +22,11 @@ export const GoalId = Schema.String.pipe(Schema.brand("GoalId"));
 export type GoalId = typeof GoalId.Type;
 
 /** What an agent replies, on its own line, when a goal has no work left. */
-export const GOAL_COMPLETE_MARKER = "GOAL COMPLETE";
+const GOAL_COMPLETE_MARKER = "GOAL COMPLETE";
 /** What an agent replies at the start of a line when no plan chunk is ready. */
-export const GOAL_BLOCKED_MARKER = "BLOCKED TASKS";
+const GOAL_BLOCKED_MARKER = "BLOCKED TASKS";
 /** What an agent replies, on its own line, when it is stuck or needs the person. */
-export const GOAL_NEEDS_ATTENTION_MARKER = "NEEDS ATTENTION";
+const GOAL_NEEDS_ATTENTION_MARKER = "NEEDS ATTENTION";
 export const DEFAULT_GOAL_CONCURRENCY = 3;
 export const MAX_GOAL_CONCURRENCY = 100;
 export const MAX_GOAL_AGENT_COUNT = 100;
@@ -480,7 +480,7 @@ export function goalSettingsProblem(
 }
 
 /** Whether a goal's workers are assigned tasks from AgentQueue. Fixed when the goal starts. */
-export function goalUsesAgentQueue(goal: Pick<Goal, "agentQueue">): boolean {
+function goalUsesAgentQueue(goal: Pick<Goal, "agentQueue">): boolean {
   return goal.agentQueue !== undefined;
 }
 

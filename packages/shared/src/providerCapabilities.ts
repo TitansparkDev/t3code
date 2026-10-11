@@ -112,7 +112,7 @@ function planUnsupportedReason(provider: ProviderCapabilitySnapshot): string {
   return `${providerLabel(provider)} does not support Plan mode. Choose Build to continue.`;
 }
 
-export function providerShowsInteractionModeToggle(
+function providerShowsInteractionModeToggle(
   provider: ProviderCapabilitySnapshot | null | undefined,
   interactionMode: ProviderInteractionMode | undefined,
 ): boolean {

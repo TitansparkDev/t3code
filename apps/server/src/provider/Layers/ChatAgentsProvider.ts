@@ -40,7 +40,7 @@ const CHAT_AGENTS_PRESENTATION = {
   supportedRuntimeModes: ["full-access"] as ReadonlyArray<RuntimeMode>,
 } as const;
 
-export const CHAT_AGENTS_MODELS: ReadonlyArray<ServerProviderModel> = [
+const CHAT_AGENTS_MODELS: ReadonlyArray<ServerProviderModel> = [
   {
     slug: CHAT_AGENTS_MODEL,
     name: "ChatGPT desktop chat",

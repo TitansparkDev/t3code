@@ -150,7 +150,7 @@ export class GoalService extends Context.Service<
  * Chats that count against this start: a restart gets a fresh budget. A chat
  * still working always counts, whenever it began.
  */
-export function chatsSinceStart(goal: Goal): ReadonlyArray<GoalChat> {
+function chatsSinceStart(goal: Goal): ReadonlyArray<GoalChat> {
   const since = Date.parse(goal.restartedAt ?? goal.createdAt);
   // A finished overseer is not a worker: it never counts toward the budget or the problem streak.
   const reviewed = goal.reviewedChats ?? 0;
@@ -227,7 +227,7 @@ const GENERIC_WINDOW_WORDS = new Set([
  * (Claude's `seven_day_opus`, Antigravity's "Gemini 3 Flash") covers only models
  * that carry all of those words; a plain session or weekly window covers every model.
  */
-export function windowCoversModel(
+function windowCoversModel(
   window: { readonly id: string; readonly label: string },
   model: string,
 ): boolean {

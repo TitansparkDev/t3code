@@ -886,7 +886,7 @@ export function parseSessionUpdateEvent(params: EffectAcpSchema.SessionNotificat
   return { ...(modeId !== undefined ? { modeId } : {}), events };
 }
 
-export function buildAcpModelOptionDescriptors(
+function buildAcpModelOptionDescriptors(
   configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption> | null | undefined,
 ): ReadonlyArray<ProviderOptionDescriptor> {
   if (!configOptions) return [];

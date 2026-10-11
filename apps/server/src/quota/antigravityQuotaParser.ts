@@ -16,8 +16,8 @@ import {
 } from "@t3tools/contracts/quota";
 import type { ProviderInstanceId, ProviderUsageLimitsUpdate } from "@t3tools/contracts";
 
-export const WEEK_MINS = 7 * 24 * 60;
-export const MONTH_MINS = 30 * 24 * 60;
+const WEEK_MINS = 7 * 24 * 60;
+const MONTH_MINS = 30 * 24 * 60;
 
 export interface AntigravityUsageWindow {
   readonly id?: string;
@@ -87,7 +87,7 @@ export function parseResetTimestamp(value: unknown): string | undefined {
  * Valid percentage within [0, 100]. A slight overshoot (e.g. 101%)
  * is clamped to 100, but malformed numbers (<0 or >105) are rejected.
  */
-export function parseQuotaPercent(value: unknown): number | undefined {
+function parseQuotaPercent(value: unknown): number | undefined {
   const num = readFiniteNumber(value);
   if (num === undefined) return undefined;
   if (num < 0 || num > 105) return undefined;
@@ -98,7 +98,7 @@ export function parseQuotaPercent(value: unknown): number | undefined {
  * Valid remaining fraction in [0, 1]. Never clamp invalid numbers into
  * plausible fractions; reject anything outside [0, 1].
  */
-export function remainingFractionToUsedPercent(value: unknown): number | undefined {
+function remainingFractionToUsedPercent(value: unknown): number | undefined {
   const num = readFiniteNumber(value);
   if (num === undefined || num < 0 || num > 1) return undefined;
   return Math.round((100 - num * 100) * 100) / 100;
@@ -107,7 +107,7 @@ export function remainingFractionToUsedPercent(value: unknown): number | undefin
 /**
  * Valid remaining percent in [0, 100]. Rejects out-of-range numbers.
  */
-export function remainingPercentToUsedPercent(value: unknown): number | undefined {
+function remainingPercentToUsedPercent(value: unknown): number | undefined {
   const num = readFiniteNumber(value);
   if (num === undefined || num < 0 || num > 100) return undefined;
   return Math.round((100 - num) * 100) / 100;
@@ -117,7 +117,7 @@ export function remainingPercentToUsedPercent(value: unknown): number | undefine
  * Extract canonical usedPercent from an Antigravity bucket.
  * Accepts camelCase and snake_case field names.
  */
-export function parseBucketUsedPercent(bucket: Record<string, unknown>): number | undefined {
+function parseBucketUsedPercent(bucket: Record<string, unknown>): number | undefined {
   const frac = bucket["remainingFraction"] ?? bucket["remaining_fraction"];
   if (frac !== undefined) {
     const used = remainingFractionToUsedPercent(frac);
@@ -157,10 +157,7 @@ export function parseWindowDurationMins(value: unknown, fallbackText?: string): 
 /**
  * Clean window label.
  */
-export function cleanWindowLabel(
-  label: string | undefined,
-  durationMins: number | undefined,
-): string {
+function cleanWindowLabel(label: string | undefined, durationMins: number | undefined): string {
   if (label) {
     const cleaned = label.replace(/\s+remaining$/iu, "").trim();
     if (cleaned.length > 0) return cleaned;
@@ -201,7 +198,7 @@ export function classifyAntigravityIdentity(
 /**
  * Parse one Antigravity bucket into a normalized window.
  */
-export function parseAntigravityBucket(
+function parseAntigravityBucket(
   bucketValue: unknown,
   poolKey: string,
   fallbackLabel?: string,

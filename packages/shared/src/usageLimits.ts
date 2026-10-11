@@ -153,7 +153,7 @@ export interface LimitsGroup {
  * Provider snapshots come from the config stream every client already holds,
  * so opening the view costs no extra request.
  */
-export function collectLimitsGroups(
+function collectLimitsGroups(
   presentations: ReadonlyMap<
     EnvironmentId,
     {
@@ -191,7 +191,7 @@ export type LimitPresentations = ReadonlyMap<
  * A native provider with usable limits takes precedence over the same account
  * in a source, even when it belongs to another connected environment.
  */
-export function collectLimitSources(
+function collectLimitSources(
   presentations: ReadonlyMap<
     EnvironmentId,
     {

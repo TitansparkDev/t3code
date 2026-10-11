@@ -158,9 +158,11 @@ export function ForkThreadDialog(props: {
     <Dialog open={open} onOpenChange={(next) => (isSubmitting ? undefined : onOpenChange(next))}>
       <DialogPopup className="max-w-xl">
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <GitForkIcon className="size-5 text-primary" />
-            Fork conversation
+          <DialogTitle>
+            <span className="flex items-center gap-2">
+              <GitForkIcon className="size-5 text-primary" />
+              Fork conversation
+            </span>
           </DialogTitle>
           <DialogDescription>
             {thread?.title
@@ -169,88 +171,90 @@ export function ForkThreadDialog(props: {
             The original thread will remain untouched.
           </DialogDescription>
         </DialogHeader>
-        <DialogPanel className="space-y-4">
-          {error && (
-            <Alert variant="error" data-variant="error">
-              <CircleAlertIcon />
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
-          )}
-          <div className="space-y-1.5">
-            <label
-              htmlFor="fork-thread-title"
-              className="text-xs font-medium text-muted-foreground"
-            >
-              Thread title
-            </label>
-            <Input
-              id="fork-thread-title"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder="New thread title"
-              disabled={isSubmitting}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  void handleFork();
-                }
-              }}
-            />
-          </div>
-
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium text-muted-foreground">
-              Target provider &amp; model
-            </label>
-            {forkOptions.length === 0 ? (
-              <p className="rounded-lg border border-border/70 bg-muted/40 p-4 text-sm text-muted-foreground">
-                No available provider accounts or models were found.
-              </p>
-            ) : (
-              <div
-                className="max-h-60 overflow-y-auto space-y-1.5 rounded-lg border border-border/70 p-2"
-                role="listbox"
-                aria-label="Target models"
-              >
-                {forkOptions.map((option) => {
-                  const isSelected =
-                    selectedOption?.instanceId === option.instanceId &&
-                    selectedOption?.modelSlug === option.modelSlug;
-                  return (
-                    <button
-                      key={`${option.instanceId}:${option.modelSlug}`}
-                      type="button"
-                      role="option"
-                      aria-selected={isSelected}
-                      disabled={isSubmitting}
-                      className={cn(
-                        "flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm transition-colors",
-                        isSelected
-                          ? "bg-accent text-accent-foreground font-medium border border-primary/40"
-                          : "hover:bg-muted/60 text-foreground border border-transparent",
-                        isSubmitting && "opacity-60 cursor-not-allowed",
-                      )}
-                      onClick={() => setSelectedOption(option)}
-                    >
-                      <div className="min-w-0 flex-1 pr-2">
-                        <div className="flex items-center gap-2">
-                          <span className="truncate">{option.modelName}</span>
-                          {option.isCurrent && (
-                            <Badge variant="secondary" className="text-[10px] py-0 px-1.5">
-                              Current
-                            </Badge>
-                          )}
-                        </div>
-                        <div className="truncate text-xs text-muted-foreground">
-                          {option.providerDisplayName}
-                        </div>
-                      </div>
-                      {isSelected && <CheckIcon className="size-4 shrink-0 text-primary" />}
-                    </button>
-                  );
-                })}
-              </div>
+        <DialogPanel>
+          <div className="space-y-4">
+            {error && (
+              <Alert variant="error" data-variant="error">
+                <CircleAlertIcon />
+                <AlertDescription>{error}</AlertDescription>
+              </Alert>
             )}
+            <div className="space-y-1.5">
+              <label
+                htmlFor="fork-thread-title"
+                className="text-xs font-medium text-muted-foreground"
+              >
+                Thread title
+              </label>
+              <Input
+                id="fork-thread-title"
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                placeholder="New thread title"
+                disabled={isSubmitting}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    void handleFork();
+                  }
+                }}
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-muted-foreground">
+                Target provider &amp; model
+              </label>
+              {forkOptions.length === 0 ? (
+                <p className="rounded-lg border border-border/70 bg-muted/40 p-4 text-sm text-muted-foreground">
+                  No available provider accounts or models were found.
+                </p>
+              ) : (
+                <div
+                  className="max-h-60 overflow-y-auto space-y-1.5 rounded-lg border border-border/70 p-2"
+                  role="listbox"
+                  aria-label="Target models"
+                >
+                  {forkOptions.map((option) => {
+                    const isSelected =
+                      selectedOption?.instanceId === option.instanceId &&
+                      selectedOption?.modelSlug === option.modelSlug;
+                    return (
+                      <button
+                        key={`${option.instanceId}:${option.modelSlug}`}
+                        type="button"
+                        role="option"
+                        aria-selected={isSelected}
+                        disabled={isSubmitting}
+                        className={cn(
+                          "flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm transition-colors",
+                          isSelected
+                            ? "bg-accent text-accent-foreground font-medium border border-primary/40"
+                            : "hover:bg-muted/60 text-foreground border border-transparent",
+                          isSubmitting && "opacity-60 cursor-not-allowed",
+                        )}
+                        onClick={() => setSelectedOption(option)}
+                      >
+                        <div className="min-w-0 flex-1 pr-2">
+                          <div className="flex items-center gap-2">
+                            <span className="truncate">{option.modelName}</span>
+                            {option.isCurrent && (
+                              <Badge variant="secondary" size="sm">
+                                Current
+                              </Badge>
+                            )}
+                          </div>
+                          <div className="truncate text-xs text-muted-foreground">
+                            {option.providerDisplayName}
+                          </div>
+                        </div>
+                        {isSelected && <CheckIcon className="size-4 shrink-0 text-primary" />}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           </div>
         </DialogPanel>
         <DialogFooter>

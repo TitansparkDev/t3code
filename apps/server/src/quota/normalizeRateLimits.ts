@@ -455,7 +455,7 @@ function canonicalPeriodFromId(id: string): string {
 /**
  * Derives a stable semantic key for window deduplication and sparse merging.
  */
-export function deriveQuotaWindowKey(window: QuotaWindow, groupKey: string): string {
+function deriveQuotaWindowKey(window: QuotaWindow, groupKey: string): string {
   const pool = groupKey.toLowerCase().replace(/[^a-z0-9]+/g, "-");
   if (window.id) {
     const canonical = canonicalPeriodFromId(window.id);

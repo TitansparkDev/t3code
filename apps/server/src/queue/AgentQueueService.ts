@@ -68,7 +68,7 @@ export interface QueueBinding {
 }
 
 /** The branch a plan's tasks integrate into. */
-export const goalBranchOf = (binding: Pick<QueueBinding, "planId" | "integrationBranch">) =>
+const goalBranchOf = (binding: Pick<QueueBinding, "planId" | "integrationBranch">) =>
   binding.integrationBranch ?? integrationBranchFor(binding.planId);
 
 export interface PublicationStatus {

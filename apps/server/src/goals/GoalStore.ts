@@ -33,7 +33,7 @@ export class GoalStore extends Context.Service<
   }
 >()("t3/goals/GoalStore") {}
 
-export const make = Effect.gen(function* () {
+const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const serverConfig = yield* ServerConfig;

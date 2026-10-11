@@ -109,7 +109,7 @@ const detail = (row: Row, note: string): BeadDetail | undefined =>
     : undefined;
 
 /** Blocked and claimed chunks from `bd blocked` and `bd list --status in_progress`. */
-export function describeBeads(blockedJson: string, claimedJson: string) {
+function describeBeads(blockedJson: string, claimedJson: string) {
   const keep = (row: Row) => row.issue_type !== "epic";
   return {
     blocked: rows(blockedJson)
@@ -217,7 +217,7 @@ export const layer = Layer.effect(
 );
 
 /** No Beads anywhere: goals run plain agents. */
-export const layerNone = Layer.succeed(
+const layerNone = Layer.succeed(
   GoalBeads,
   GoalBeads.of({
     available: () => Effect.succeed(false),

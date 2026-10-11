@@ -59,15 +59,15 @@ export interface GoalSetupForm {
 }
 
 /** What a new goal's name and instructions start as, so the plan-completion workflow is one tap away. */
-export const DEFAULT_GOAL_NAME = "Complete the plan";
-export const DEFAULT_GOAL_PROMPT = `Finish the active plan for this repository. Do your assigned work completely and to high production quality, following the plan, the original spec, repository instructions, acceptance criteria, scope boundaries, and the assigned validation level. Do not redesign the plan or expand into unrelated work.
+const DEFAULT_GOAL_NAME = "Complete the plan";
+const DEFAULT_GOAL_PROMPT = `Finish the active plan for this repository. Do your assigned work completely and to high production quality, following the plan, the original spec, repository instructions, acceptance criteria, scope boundaries, and the assigned validation level. Do not redesign the plan or expand into unrelated work.
 
 Do not quit easily. If a task needs extra steps that are not listed in the plan, do them. You have full authority to do whatever you need to complete your work, as long as it does not harm other agents or anything else.
 
 Work in your own dedicated worktree, commit checkpoints as you go, and run the task's verification before you finish.`;
 
 /** What a draft is called until it has a name. The setup form shows it as empty. */
-export const UNTITLED_GOAL_NAME = "Untitled goal";
+const UNTITLED_GOAL_NAME = "Untitled goal";
 
 export function defaultGoalSetup(input: {
   readonly projectId: ProjectId | null;

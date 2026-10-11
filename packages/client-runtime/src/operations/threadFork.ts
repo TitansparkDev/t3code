@@ -18,7 +18,7 @@ export type ForkThreadEffect = Effect.Effect<
   EnvironmentSupervisor
 >;
 
-export const forkThread: (input: ThreadForkInput) => ForkThreadEffect = Effect.fn(
+const forkThread: (input: ThreadForkInput) => ForkThreadEffect = Effect.fn(
   "EnvironmentOperations.forkThread",
 )(function* (input) {
   return yield* request(WS_METHODS.threadsFork, input);

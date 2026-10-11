@@ -287,10 +287,7 @@ export const ClineIcon: Icon = ({ className, ...props }) => (
   <svg
     {...props}
     viewBox="0 0 92 96"
-    className={cn(
-      "fill-[#0F0F0F] stroke-[#0F0F0F] dark:fill-[#F5F5F5] dark:stroke-[#F5F5F5]",
-      className,
-    )}
+    className={cn("fill-[#0F0F0F] stroke-foreground dark:fill-[#F5F5F5]", className)}
   >
     <g transform="translate(0 0.5)">
       <path

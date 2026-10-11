@@ -14,9 +14,9 @@ import {
 import { resolveAttachmentPath, toSafeThreadAttachmentSegment } from "./attachmentStore.ts";
 
 export const FORK_TRANSCRIPT_FILE_NAME = "conversation-transcript.md";
-export const FORK_TRANSCRIPT_MIME_TYPE = "text/markdown";
-export const DEFAULT_FORK_MAX_CHARS = 200_000;
-export const FORK_ATTACHMENT_EXTENSION = "md";
+const FORK_TRANSCRIPT_MIME_TYPE = "text/markdown";
+const DEFAULT_FORK_MAX_CHARS = 200_000;
+const FORK_ATTACHMENT_EXTENSION = "md";
 
 /**
  * Creates a deterministic attachment ID for the forked transcript based on the target thread ID.

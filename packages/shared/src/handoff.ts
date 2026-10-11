@@ -9,7 +9,7 @@ import * as Schema from "effect/Schema";
 
 export const HANDOFF_FILE_NAME = "HANDOFF.md";
 export const HANDOFF_ACTIVITY_KIND = "thread.handoff";
-export const HANDOFF_ACTIVITY_TONE = "info" as const;
+const HANDOFF_ACTIVITY_TONE = "info" as const;
 const MAX_MESSAGE_CHARS = 12_000;
 const MAX_TRANSCRIPT_MESSAGES = 80;
 

@@ -20,10 +20,10 @@ import * as Schedule from "effect/Schedule";
 import { earliestReset } from "./quotaReducer.ts";
 
 /** Probe interval: sweep every fifteen minutes. */
-export const QUOTA_REFRESH_INTERVAL = "15 minutes";
+const QUOTA_REFRESH_INTERVAL = "15 minutes";
 
 /** Refresh any snapshot older than ten minutes. */
-export const QUOTA_REFRESH_MINIMUM_AGE_MS = 10 * 60 * 1000;
+const QUOTA_REFRESH_MINIMUM_AGE_MS = 10 * 60 * 1000;
 
 export interface QuotaRefreshLoopDependencies {
   readonly listInstanceIds: Effect.Effect<ReadonlyArray<ProviderInstanceId>>;

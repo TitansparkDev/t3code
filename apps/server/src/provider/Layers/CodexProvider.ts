@@ -445,7 +445,7 @@ const decodeCodexIdTokenIdentity = Schema.decodeUnknownEffect(
   ),
 );
 
-export function resolveCodexAuthHome(
+function resolveCodexAuthHome(
   input: { readonly homePath?: string; readonly environment?: NodeJS.ProcessEnv },
   inheritedEnvironment: NodeJS.ProcessEnv = process.env,
 ): string {
@@ -460,7 +460,7 @@ export function resolveCodexAuthHome(
   );
 }
 
-export const readCodexAccountId = Effect.fn("readCodexAccountId")(function* (homePath: string) {
+const readCodexAccountId = Effect.fn("readCodexAccountId")(function* (homePath: string) {
   return yield* Effect.tryPromise(() =>
     NodeFSP.readFile(NodePath.join(homePath, "auth.json"), "utf8"),
   ).pipe(

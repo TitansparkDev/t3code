@@ -158,7 +158,7 @@ export function inspectCheckCommand(
       ) {
         return `"${bare}" reaches an external address`;
       }
-      if (/^(\/|~)/.test(bare) && !/^\/tmp\//.test(bare)) {
+      if (/^(\/|~)/.test(bare) && !bare.startsWith("/tmp/")) {
         return `"${bare}" points outside the worktree`;
       }
       if (bare.split("/").includes("..")) return `"${bare}" leaves the worktree`;

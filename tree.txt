@@ -19538,7 +19538,6 @@ apps/mobile/src/features/connection/ConnectionsRouteScreen.tsx
 apps/mobile/src/features/connection/EnvironmentConnectionNotice.tsx
 apps/mobile/src/features/connection/GitHubRoutingSettings.tsx
 apps/mobile/src/features/connection/LocalEnvironmentList.tsx
-apps/mobile/src/features/connection/ProviderRefreshButton.tsx
 apps/mobile/src/features/connection/connectionTone.ts
 apps/mobile/src/features/connection/environmentSections.test.ts
 apps/mobile/src/features/connection/environmentSections.ts
@@ -20046,7 +20045,6 @@ apps/mobile/src/lib/useFontFamily.ts
 apps/mobile/src/lib/useHoverGesture.ts
 apps/mobile/src/lib/useMobileNavigationTheme.ts
 apps/mobile/src/lib/useNativePaste.ts
-apps/mobile/src/lib/useThemeColor.ts
 apps/mobile/src/lib/useUniwindTheme.ts
 apps/mobile/src/lib/uuid.ts
 apps/mobile/src/lib/videoPreviewSource.ts

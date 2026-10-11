@@ -180,7 +180,7 @@ export const QuotaSummary = Schema.Struct({
 export type QuotaSummary = typeof QuotaSummary.Type;
 
 /** Minutes in the window each provider treats as its hours-scale limit. */
-export const SHORT_WINDOW_MAX_MINS = 24 * 60;
+const SHORT_WINDOW_MAX_MINS = 24 * 60;
 
 /**
  * Classify a window by its published duration.

@@ -224,7 +224,7 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
 
 export const SidebarChromeFooter = memo(function SidebarChromeFooter() {
   return (
-    <SidebarFooter className="p-[var(--sidebar-content-inset)]">
+    <SidebarFooter>
       <QuotaPanel />
       <SidebarThreadUndoNotice />
       <SidebarProviderUpdatePill />

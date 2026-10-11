@@ -149,8 +149,8 @@ const CURSOR_DRIVER_KIND = ProviderDriverKind.make("cursor");
 const GROK_DRIVER_KIND = ProviderDriverKind.make("grok");
 const OPENCODE_DRIVER_KIND = ProviderDriverKind.make("opencode");
 const ANTIGRAVITY_DRIVER_KIND = ProviderDriverKind.make("antigravity");
-export const CLINE_DRIVER_KIND = ProviderDriverKind.make("cline");
-export const CHAT_AGENTS_DRIVER_KIND = ProviderDriverKind.make("chatAgents");
+const CLINE_DRIVER_KIND = ProviderDriverKind.make("cline");
+const CHAT_AGENTS_DRIVER_KIND = ProviderDriverKind.make("chatAgents");
 /** The one model Chat Agents offers: the ChatGPT desktop chat W drives. */
 export const CHAT_AGENTS_MODEL = "chatgpt-desktop";
 

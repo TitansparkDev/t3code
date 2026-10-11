@@ -37,7 +37,7 @@ import {
 
 const DRIVER = ProviderDriverKind.make("antigravity");
 
-export function getAntigravityFallbackModels(): ReadonlyArray<ServerProviderModel> {
+function getAntigravityFallbackModels(): ReadonlyArray<ServerProviderModel> {
   const catalog = resolveProviderCatalog(BUNDLED_MODEL_MANIFEST, DRIVER);
   return catalog?.models.map((entry) => entry.model) ?? [];
 }

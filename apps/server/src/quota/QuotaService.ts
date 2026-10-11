@@ -75,7 +75,7 @@ function summaryFromState(state: QuotaState): QuotaSummary {
   };
 }
 
-export const make = Effect.gen(function* () {
+const make = Effect.gen(function* () {
   const state = yield* SubscriptionRef.make<QuotaState>(emptyQuotaState);
   const revisions = yield* Ref.make<Map<ProviderInstanceId, number>>(new Map());
   const inflightProbes = new Map<

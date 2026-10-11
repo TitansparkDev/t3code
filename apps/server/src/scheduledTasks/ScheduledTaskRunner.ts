@@ -58,7 +58,7 @@ import { ScheduledTaskStore } from "./ScheduledTaskStore.ts";
  * A minute is the resolution a `HH:MM` schedule promises, and the check is a
  * pure comparison over a handful of records.
  */
-export const SCHEDULED_TASK_TICK_MS = 30_000;
+const SCHEDULED_TASK_TICK_MS = 30_000;
 
 interface PendingScheduledTarget {
   readonly taskId: ScheduledTaskId;
@@ -200,7 +200,7 @@ export class ScheduledTaskRunner extends Context.Service<
   }
 >()("t3/scheduledTasks/ScheduledTaskRunner") {}
 
-export const make = Effect.gen(function* () {
+const make = Effect.gen(function* () {
   const engine = yield* OrchestrationEngineService;
   const crypto = yield* Crypto.Crypto;
   const randomUUID = crypto.randomUUIDv4.pipe(Effect.orDie);

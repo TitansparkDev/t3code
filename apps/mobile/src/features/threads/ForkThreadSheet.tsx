@@ -25,7 +25,6 @@ import { AppText as Text } from "../../components/AppText";
 import { ProviderIcon } from "../../components/ProviderIcon";
 import { cn } from "../../lib/cn";
 import { buildModelOptions, type ModelOption } from "../../lib/modelOptions";
-import { useUniwindTheme } from "../../lib/useUniwindTheme";
 import { uuidv4 } from "../../lib/uuid";
 import { environmentServerConfigsAtom } from "../../state/server";
 import { closeForkThread, forkThreadCommand, forkThreadTargetAtom } from "../../state/thread-fork";
@@ -39,8 +38,6 @@ export function ForkThreadSheet(props: {
 }) {
   const { thread, onClose, onForkSuccess } = props;
   const insets = useSafeAreaInsets();
-  const theme = useUniwindTheme();
-  const mutedTextColor = String(theme["--color-foreground-muted"] ?? "#8e8e93");
   const serverConfigs = useAtomValue(environmentServerConfigsAtom);
   const serverConfig = serverConfigs.get(thread.environmentId);
   const forkThreadMutation = useAtomCommand(forkThreadCommand, { reportFailure: false });
@@ -191,7 +188,7 @@ export function ForkThreadSheet(props: {
               editable={!isSubmitting}
               onChangeText={setTitle}
               placeholder="Thread title"
-              placeholderTextColor={mutedTextColor}
+              placeholderTextColorClassName="accent-placeholder"
               value={title}
               autoCapitalize="sentences"
               autoCorrect

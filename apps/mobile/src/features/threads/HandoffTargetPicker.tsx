@@ -6,7 +6,6 @@ import { AndroidScreenHeader } from "../../components/AndroidScreenHeader";
 import { AppText as Text } from "../../components/AppText";
 import { SymbolView } from "../../components/AppSymbol";
 import { cn } from "../../lib/cn";
-import { useThemeColor } from "../../lib/useThemeColor";
 
 function quotaStatusLabel(option: HandoffTargetOption): string {
   if (option.remainingPercent !== undefined) return `${option.remainingPercent}% remaining`;
@@ -28,11 +27,6 @@ export function HandoffTargetPicker(props: {
   readonly onClose: () => void;
   readonly onSelect: (option: HandoffTargetOption) => void;
 }) {
-  const iconColor = useThemeColor("--color-icon");
-  const successColor = useThemeColor("--color-success");
-  const warningColor = useThemeColor("--color-warning");
-  const mutedColor = useThemeColor("--color-foreground-muted");
-
   return (
     <Modal
       animationType="slide"
@@ -74,7 +68,7 @@ export function HandoffTargetPicker(props: {
                   <SymbolView
                     name="arrow.triangle.branch"
                     size={16}
-                    tintColor={iconColor}
+                    tintColorClassName="accent-icon"
                     type="monochrome"
                   />
                 </View>
@@ -95,14 +89,6 @@ export function HandoffTargetPicker(props: {
                         ? "text-warning"
                         : "text-foreground-muted",
                   )}
-                  style={{
-                    color:
-                      option.quotaStatus === "fresh"
-                        ? successColor
-                        : option.quotaStatus === "stale"
-                          ? warningColor
-                          : mutedColor,
-                  }}
                 >
                   {quotaStatusLabel(option)}
                 </Text>
