@@ -93,7 +93,7 @@ export interface ActiveProcess {
  * operating system cannot tell, which callers must treat as "someone may be there".
  */
 export function activeProcessesIn(checkout: string): ReadonlyArray<ActiveProcess> | null {
-  if (process.platform !== "linux") return null;
+  if (NodeOS.type() !== "Linux") return null;
   const root = NodeFS.realpathSync(checkout);
   const nested = NodePath.join(root, ".worktrees") + NodePath.sep;
   const found: ActiveProcess[] = [];

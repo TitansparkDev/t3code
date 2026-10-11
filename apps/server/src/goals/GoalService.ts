@@ -43,7 +43,7 @@ import { findUnmergedLegacyBranches } from "../../../../packages/agent-queue-cor
  *    is not a problem: its lane is freed and the goal goes on.
  *  - Stopping a goal never interrupts chats already working; they finish and
  *    are recorded like any other.
- *  - Workers select chunks with plan-work. If a worker finds no eligible chunk,
+ *  - Standard goals: workers select chunks with plan-work. Queue goals: the server reserves each task first. If a worker finds no eligible chunk,
  *    the goal waits while other workers progress and asks the overseer when idle.
  *
  * @module goals/GoalService

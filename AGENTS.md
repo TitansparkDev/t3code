@@ -175,11 +175,13 @@ Full glossary with file links: `docs/internals/glossary.md`
 
 - 2026-10-11 — AgentQueue made native in Goals: setup pages default to Auto mode (AgentQueue when the project
   has a valid active plan, otherwise standard; explicit AgentQueue refuses instead of falling back) with a
-  server-checked plan preview; plans are imported and bound to the goal at start; tasks are reserved before a
-  worker exists (10 slots, 2 ready tasks starts 2); workers hand in a candidate, their thread is settled, and
-  the server merges it through a staging worktree (dirty shared checkouts defer, conflicts get a repair
-  worker); a goal completes only from verified queue and Git state, never from `GOAL COMPLETE`. Proven with
-  real Claude workers on isolated repos, including a server restart. See `docs/agentqueue/ADR-0007-*.md`.
+  server-checked plan preview; tasks are reserved before a worker exists (10 slots, 2 ready tasks starts 2);
+  workers hand in a candidate, their thread is settled, and the server integrates it into a per-plan branch
+  `agentqueue/goal/<plan>` that dependants start from, so a dirty shared checkout never blocks progress;
+  the finished plan is then published to the target branch (idle uncommitted edits are snapshotted and kept,
+  live ones are never touched and publication stays pending). A goal completes only from verified queue and
+  Git state, never from `GOAL COMPLETE`. Proven with real Claude workers on isolated repos. See
+  `docs/agentqueue/ADR-0007-*.md`.
 - 2026-10-10 — v0.0.63: native AgentQueue integration across T3 Code (`@t3tools/agent-queue-core`,
   `@t3tools/agent-queue-cli`, goal orchestration lifecycle, multi-agent dependency coordination,
   worktree dual-lock isolation, CAS claims, verification receipts, and cross-platform release).
