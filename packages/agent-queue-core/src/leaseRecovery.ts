@@ -67,7 +67,11 @@ export function preserveWorktreeChanges(
  * Scans for expired leases, verifies worker liveness, preserves partial work,
  * and recovers or quarantines tasks.
  */
-export function reconcileExpiredLeases(db: NodeSqlite.DatabaseSync): LeaseRecoveryResult[] {
+export function reconcileExpiredLeases(
+  db: NodeSqlite.DatabaseSync,
+  options: { readonly isOwnerAlive?: (pid: number, sessionId: string | null) => boolean } = {},
+): LeaseRecoveryResult[] {
+  const isAlive = options.isOwnerAlive ?? ((pid: number) => isProcessAlive(pid));
   const now = new Date().toISOString();
   const results: LeaseRecoveryResult[] = [];
 
@@ -77,12 +81,14 @@ export function reconcileExpiredLeases(db: NodeSqlite.DatabaseSync): LeaseRecove
       FROM task_claims c
       JOIN tasks t ON c.task_id = t.id
       WHERE c.released_at IS NULL AND c.expires_at <= ?
+        AND t.status IN ('claimed', 'running', 'verifying')
     `)
     .all(now) as Array<{
     id: number;
     task_id: string;
     owner_token: string;
     worker_pid: number;
+    worker_session_id: string | null;
     worktree_path: string;
     branch: string;
     retry_count: number;
@@ -90,9 +96,16 @@ export function reconcileExpiredLeases(db: NodeSqlite.DatabaseSync): LeaseRecove
     task_version: number;
   }>;
 
+  // A claim whose task already finished (landed, failed or blocked) only needs closing.
+  db.prepare(`
+    UPDATE task_claims SET released_at = ?
+    WHERE released_at IS NULL AND expires_at <= ?
+      AND task_id IN (SELECT id FROM tasks WHERE status IN ('completed', 'failed', 'blocked', 'pending'))
+  `).run(now, now);
+
   for (const claim of expiredClaims) {
     // 1. Liveness check: If the PID is still alive, do not break the lease
-    if (isProcessAlive(claim.worker_pid)) {
+    if (isAlive(claim.worker_pid, claim.worker_session_id)) {
       results.push({
         taskId: claim.task_id,
         ownerToken: claim.owner_token,

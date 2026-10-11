@@ -240,6 +240,15 @@ export async function landCandidate(
       success: true,
       landedCommit: finalCommit,
     };
+  } catch (error) {
+    // Leave the worker's commits and worktree alone; only record why landing failed.
+    const message = error instanceof Error ? error.message : String(error);
+    db.prepare(`
+      UPDATE landing_queue SET status = 'failed', error_message = ?, completed_at = ?
+      WHERE task_id = ? AND status IN ('merging', 'testing', 'queued')
+    `).run(message.slice(0, 1000), new Date().toISOString(), taskId);
+    recordEvent(db, taskId, "landing_error", { error: message.slice(0, 1000), baseBranch });
+    return { success: false, error: `Landing failed: ${message}` };
   } finally {
     releaseLockfile();
   }

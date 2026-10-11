@@ -22808,8 +22808,10 @@ packages/agent-queue-core/src/leaseRecovery.ts
 packages/agent-queue-core/src/migrations.ts
 packages/agent-queue-core/src/overseerRepairs.ts
 packages/agent-queue-core/src/planGraph.ts
+packages/agent-queue-core/src/planImport.ts
 packages/agent-queue-core/src/queueInspector.ts
 packages/agent-queue-core/src/repoManager.ts
+packages/agent-queue-core/src/reservation.ts
 packages/agent-queue-core/src/scopeManager.ts
 packages/agent-queue-core/src/stateMachine.ts
 packages/agent-queue-core/src/verifier.ts
@@ -22825,6 +22827,7 @@ packages/agent-queue-core/test/leaseRecovery.test.ts
 packages/agent-queue-core/test/overseerRepairs.test.ts
 packages/agent-queue-core/test/planExportImport.test.ts
 packages/agent-queue-core/test/planGraph.test.ts
+packages/agent-queue-core/test/planImportReservation.test.ts
 packages/agent-queue-core/test/queueInspector.test.ts
 packages/agent-queue-core/test/repoManager.test.ts
 packages/agent-queue-core/test/scopeManager.test.ts

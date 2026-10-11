@@ -20,7 +20,7 @@ export async function runVerification(
   taskId: string,
   worktreePath: string,
   verificationCommand: string,
-  timeoutMs = 60_000,
+  timeoutMs = 600_000,
 ): Promise<VerificationExecutionResult> {
   const startTime = Date.now();
   const verifiedAt = new Date().toISOString();
@@ -37,6 +37,21 @@ export async function runVerification(
   let exitCode = 0;
   let stdoutSnippet = "";
   let stderrSnippet = "";
+
+  // A task with no command is verified by git alone (commit, rebase and clean tree at landing).
+  if (verificationCommand.trim() === "") {
+    return {
+      taskId,
+      commitHash,
+      verificationCommand: "",
+      exitCode: 0,
+      passed: commitHash !== "unknown",
+      stdoutSnippet: "No verification command; checked by git state only.",
+      stderrSnippet: "",
+      durationMs: Date.now() - startTime,
+      verifiedAt,
+    };
+  }
 
   try {
     const output = NodeChildProcess.execSync(verificationCommand, {

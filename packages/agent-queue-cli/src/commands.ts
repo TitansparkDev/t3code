@@ -19,6 +19,8 @@ import {
   reconcileExpiredLeases,
   initRepo,
   doctorRepo,
+  importPlanFile,
+  previewPlan,
 } from "../../agent-queue-core/src/index.ts";
 import { resolveGitContext } from "./gitContext.ts";
 
@@ -48,84 +50,38 @@ export function importPlanCommand(
   options: CommandOptions = {},
 ): Record<string, unknown> {
   const git = resolveGitContext(options.cwd);
-  const db = openQueueDatabase({ gitCommonDir: git.gitCommonDir });
-  try {
-    const absPath = NodePath.isAbsolute(planFilePath)
-      ? planFilePath
-      : NodePath.resolve(options.cwd ?? process.cwd(), planFilePath);
-
-    if (!NodeFS.existsSync(absPath)) {
-      throw new Error(`Plan file not found: ${absPath}`);
-    }
-
-    const content = NodeFS.readFileSync(absPath, "utf8");
-    const checksum = computePlanChecksum(content);
-    const parsed = parsePlanMarkdown(content);
-
-    // Validate DAG invariants
-    validatePlanDag(parsed.tasks);
-
-    const relPath = NodePath.relative(git.rootDir, absPath);
-    const planId = `plan_${NodePath.basename(absPath, NodePath.extname(absPath))}`;
-    const now = new Date().toISOString();
-
-    db.exec("BEGIN IMMEDIATE;");
-    try {
-      db.prepare(`
-        INSERT INTO plans (id, file_path, checksum, title, status, registered_at, updated_at)
-        VALUES (?, ?, ?, ?, 'active', ?, ?)
-        ON CONFLICT(id) DO UPDATE SET
-          file_path = excluded.file_path,
-          checksum = excluded.checksum,
-          title = excluded.title,
-          updated_at = excluded.updated_at
-      `).run(planId, relPath, checksum, parsed.title, now, now);
-
-      for (const t of parsed.tasks) {
-        db.prepare(`
-          INSERT INTO tasks (
-            id, plan_id, title, description, status, priority,
-            scope_patterns, dependencies, verification_command, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(id) DO UPDATE SET
-            plan_id = excluded.plan_id,
-            title = excluded.title,
-            description = excluded.description,
-            priority = excluded.priority,
-            scope_patterns = excluded.scope_patterns,
-            dependencies = excluded.dependencies,
-            verification_command = excluded.verification_command,
-            updated_at = excluded.updated_at
-        `).run(
-          t.id,
-          planId,
-          t.title,
-          t.description ?? null,
-          t.priority ?? 100,
-          JSON.stringify(t.scopePatterns ?? []),
-          JSON.stringify(t.dependencies ?? []),
-          t.verificationCommand ?? null,
-          now,
-          now,
-        );
-      }
-
-      db.exec("COMMIT;");
-    } catch (err) {
-      db.exec("ROLLBACK;");
-      throw err;
-    }
-
-    return {
-      success: true,
-      planId,
-      title: parsed.title,
-      taskCount: parsed.tasks.length,
-      checksum,
-    };
-  } finally {
-    db.close();
+  const absPath = NodePath.isAbsolute(planFilePath)
+    ? planFilePath
+    : NodePath.resolve(options.cwd ?? process.cwd(), planFilePath);
+  if (!NodeFS.existsSync(absPath)) {
+    throw new Error(`Plan file not found: ${absPath}`);
   }
+  const imported = importPlanFile(git.rootDir, NodePath.relative(git.rootDir, absPath));
+  return {
+    success: true,
+    planId: imported.planId,
+    title: imported.title,
+    taskCount: imported.total,
+    added: imported.added,
+    checksum: imported.checksum,
+  };
+}
+
+/** Checks a plan without importing it: readiness, task counts, legacy owners and problems. */
+export function validatePlanCommand(
+  planFilePath: string | undefined,
+  options: CommandOptions = {},
+): Record<string, unknown> {
+  const git = resolveGitContext(options.cwd);
+  const rel = planFilePath
+    ? NodePath.relative(
+        git.rootDir,
+        NodePath.isAbsolute(planFilePath)
+          ? planFilePath
+          : NodePath.resolve(options.cwd ?? process.cwd(), planFilePath),
+      )
+    : undefined;
+  return { success: true, ...previewPlan(git.rootDir, rel) };
 }
 
 /**

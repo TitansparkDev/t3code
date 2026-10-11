@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off preferSchemaOverJson:off
 import {
   importPlanCommand,
+  validatePlanCommand,
   listTasksCommand,
   claimTaskCommand,
   heartbeatCommand,
@@ -85,6 +86,11 @@ export function runCli(
           const filePath = args.positional[0] || (args.flags.file as string);
           if (!filePath) throw new Error("Usage: agentqueue plan import <plan-file>");
           result = importPlanCommand(filePath, { cwd, json: jsonMode });
+        } else if (args.subcommand === "validate") {
+          result = validatePlanCommand(args.positional[0] || (args.flags.file as string), {
+            cwd,
+            json: jsonMode,
+          });
         } else {
           throw new Error(`Unknown plan subcommand: ${args.subcommand}`);
         }

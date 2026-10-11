@@ -9,6 +9,8 @@ export interface PlanTaskDefinition {
   readonly verificationCommand?: string | null;
   readonly scopePatterns?: ReadonlyArray<string>;
   readonly priority?: number;
+  /** The plan's own checkbox was already ticked, so the work is done. */
+  readonly checked?: boolean;
 }
 
 export interface ParsedPlan {
@@ -166,26 +168,63 @@ export function getReadyTasks(
   return ready.map((t) => t.id);
 }
 
+/** Words that appear after "Depends on:" but name no task. */
+const DEPENDENCY_STOP_WORDS = new Set(["none", "n/a", "na", "and", "or", "nothing", "-", "the"]);
+
+/** Splits a "Depends on:" value into task ids, ignoring prose and trailing punctuation. */
+function parseDependencyList(value: string): string[] {
+  return value
+    .split(/[,;\s]+/)
+    .map((d) => d.trim().replace(/^[`[(*]+|[`\]).,;:*]+$/g, ""))
+    .filter((d) => d.length > 0 && !DEPENDENCY_STOP_WORDS.has(d.toLowerCase()));
+}
+
+/** A verification value is a command when it is a single code span, or the line is labelled as one. */
+function commandFrom(label: string, value: string): string | null {
+  const trimmed = value.trim().replace(/\.$/, "");
+  const span = trimmed.match(/^`([^`]+)`$/);
+  if (span) return span[1]!.trim();
+  // Only explicit verification labels may carry an unquoted command; "Done:" and
+  // "Acceptance:" are prose in most plans and must never be run as shell.
+  if (/^(verification|verify|test)$/i.test(label)) return trimmed.replace(/^`|`$/g, "");
+  return null;
+}
+
 /**
- * Parses markdown plan documents supporting headings or list items:
+ * Parses markdown plan documents. Three task shapes are accepted:
  * ### [Status] TASK-ID: Title
- * or
- * - [ ] [TASK-ID] Title
+ * - [ ] [TASK-ID] Title   (or "- [ ] TASK-ID: Title")
+ * - [ ] **TASK-ID — Title**   (the shape `plan-work` plans use)
+ * Indented or following lines may carry `Depends on:`, `Scope:`, `Verify:` (or `Done:` as a
+ * single code span) and `Priority:`. A ticked checkbox marks the task already done.
  */
 export function parsePlanMarkdown(markdown: string): ParsedPlan {
   const lines = markdown.split(/\r?\n/);
   let title = "Untitled Plan";
   const tasks: PlanTaskDefinition[] = [];
 
-  let currentTask: {
+  interface Draft {
     id: string;
     title: string;
+    checked: boolean;
     descriptionLines: string[];
     dependencies: string[];
-    verificationCommand?: string | null;
+    verificationCommand: string | null;
     scopePatterns: string[];
-    priority?: number;
-  } | null = null;
+    priority: number;
+  }
+  let currentTask: Draft | null = null;
+
+  const startTask = (id: string, taskTitle: string, checked: boolean): Draft => ({
+    id,
+    title: taskTitle,
+    checked,
+    descriptionLines: [],
+    dependencies: [],
+    verificationCommand: null,
+    scopePatterns: [],
+    priority: 100,
+  });
 
   const commitCurrentTask = () => {
     if (currentTask) {
@@ -196,7 +235,8 @@ export function parsePlanMarkdown(markdown: string): ParsedPlan {
         dependencies: currentTask.dependencies,
         verificationCommand: currentTask.verificationCommand || null,
         scopePatterns: currentTask.scopePatterns,
-        priority: currentTask.priority ?? 100,
+        priority: currentTask.priority,
+        ...(currentTask.checked ? { checked: true } : {}),
       });
       currentTask = null;
     }
@@ -215,74 +255,72 @@ export function parsePlanMarkdown(markdown: string): ParsedPlan {
     const headerMatch = trimmed.match(/^###\s*(?:\[.*?\])?\s*([A-Za-z0-9_-]+)\s*[:—-]\s*(.+)$/);
     if (headerMatch) {
       commitCurrentTask();
-      currentTask = {
-        id: headerMatch[1]!.trim(),
-        title: headerMatch[2]!.trim(),
-        descriptionLines: [],
-        dependencies: [],
-        verificationCommand: null,
-        scopePatterns: [],
-        priority: 100,
-      };
+      currentTask = startTask(headerMatch[1]!.trim(), headerMatch[2]!.trim(), false);
+      continue;
+    }
+
+    // Bold list task: - [ ] **TASK-ID — Title.**
+    const boldMatch = line.match(
+      /^-\s*\[([ xX])\]\s*\*\*([A-Za-z][A-Za-z0-9_]*(?:[-.][A-Za-z0-9_]+)*)\s*[:—–-]+\s*(.+?)\s*\*\*\s*$/,
+    );
+    if (boldMatch) {
+      commitCurrentTask();
+      currentTask = startTask(
+        boldMatch[2]!,
+        boldMatch[3]!.trim().replace(/\.$/, ""),
+        boldMatch[1]!.toLowerCase() === "x",
+      );
       continue;
     }
 
     // List task: - [ ] [TASK-ID] Title or - [ ] TASK-ID: Title
     const listMatch = trimmed.match(
-      /^-\s*\[[ xX]\]\s*(?:\[([A-Za-z0-9_-]+)\]|([A-Za-z0-9_-]+)[:\s])\s*(.+)$/,
+      /^-\s*\[([ xX])\]\s*(?:\[([A-Za-z0-9_-]+)\]|([A-Za-z0-9_-]+)[:\s])\s*(.+)$/,
     );
     if (listMatch) {
       commitCurrentTask();
-      const id = (listMatch[1] || listMatch[2])!.trim();
-      currentTask = {
-        id,
-        title: listMatch[3]!.trim(),
-        descriptionLines: [],
-        dependencies: [],
-        verificationCommand: null,
-        scopePatterns: [],
-        priority: 100,
-      };
+      const id = (listMatch[2] || listMatch[3])!.trim();
+      currentTask = startTask(id, listMatch[4]!.trim(), listMatch[1]!.toLowerCase() === "x");
+      continue;
+    }
+
+    // Any other heading ends the current task, so section prose is not its description.
+    if (currentTask && /^#{1,6}\s/.test(trimmed)) {
+      commitCurrentTask();
       continue;
     }
 
     if (currentTask) {
-      // Check for Dependencies metadata
       const depMatch = trimmed.match(
         /^(?:[-*]\s*)?(?:\*\*)?(?:Dependencies|Depends on|Requires)(?:\*\*)?:(?:\*\*)?\s*(.+)$/i,
       );
       if (depMatch) {
-        const deps = depMatch[1]!
-          .split(/[,;\s]+/)
-          .map((d) => d.trim().replace(/^[`[]|[`\]]$/g, ""))
-          .filter((d) => d.length > 0 && d !== "none");
-        currentTask.dependencies.push(...deps);
+        currentTask.dependencies.push(...parseDependencyList(depMatch[1]!));
         continue;
       }
 
-      // Check for Verification metadata
       const verMatch = trimmed.match(
-        /^(?:[-*]\s*)?(?:\*\*)?(?:Verification|Verify|Test|Done|Acceptance)(?:\*\*)?:(?:\*\*)?\s*(.+)$/i,
+        /^(?:[-*]\s*)?(?:\*\*)?(Verification|Verify|Test|Done|Acceptance)(?:\*\*)?:(?:\*\*)?\s*(.+)$/i,
       );
       if (verMatch) {
-        currentTask.verificationCommand = verMatch[1]!.trim().replace(/^`|`$/g, "");
+        const command = commandFrom(verMatch[1]!, verMatch[2]!);
+        if (command) currentTask.verificationCommand = command;
+        else currentTask.descriptionLines.push(line);
         continue;
       }
 
-      // Check for Scope metadata
       const scopeMatch = trimmed.match(
         /^(?:[-*]\s*)?(?:\*\*)?(?:Scope|Scopes|Files)(?:\*\*)?:(?:\*\*)?\s*(.+)$/i,
       );
       if (scopeMatch) {
         const patterns = scopeMatch[1]!
           .split(/[,;\s]+/)
-          .map((s) => s.trim().replace(/^`|`$/g, ""))
+          .map((s) => s.trim().replace(/^`|`[.]?$|[.]$/g, ""))
           .filter(Boolean);
         currentTask.scopePatterns.push(...patterns);
         continue;
       }
 
-      // Check for Priority metadata
       const prioMatch = trimmed.match(/^Priority\s*:\s*(\d+)$/i);
       if (prioMatch) {
         currentTask.priority = parseInt(prioMatch[1]!, 10);

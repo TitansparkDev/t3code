@@ -188,13 +188,29 @@ export function assessRepoOnboarding(repoPath: string): RepoAssessment {
     });
     const planWorkWts = wtOut
       .split("\n")
-      .filter((line: string) => line.startsWith("worktree ") && line.includes("plan-work"));
+      .filter((line: string) => line.startsWith("branch refs/heads/agent-plan/"));
     if (planWorkWts.length > 0) {
       activePlanWorkClaims += planWorkWts.length;
       reasons.push(`Found ${planWorkWts.length} active plan-work worktree(s)`);
     }
   } catch {
     // Ignore
+  }
+
+  // Owner records are what `plan-work select` leaves behind until `plan-work land`.
+  try {
+    const ownersDir = NodePath.join(gitCommonDir, "plan-work-owners");
+    for (const planDir of NodeFS.readdirSync(ownersDir)) {
+      const owners = NodeFS.readdirSync(NodePath.join(ownersDir, planDir)).filter((name) =>
+        name.endsWith(".json"),
+      );
+      if (owners.length > 0) {
+        activePlanWorkClaims += owners.length;
+        reasons.push(`plan-work still owns ${owners.length} task(s) of plan "${planDir}"`);
+      }
+    }
+  } catch {
+    // No owner records.
   }
 
   let classification: RepoAssessment["classification"] = "safe_to_register";
