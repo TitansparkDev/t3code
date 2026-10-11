@@ -78,7 +78,7 @@ jobs:
   # limit stays at the default 4 so peak load per runner is unchanged.
   test:
     name: Test
-    runs-on: [self-hosted, Linux, X64, ajay-trusted]
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
       - name: Checkout
