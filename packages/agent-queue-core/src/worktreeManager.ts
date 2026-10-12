@@ -2,6 +2,7 @@
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
+import { DEFAULT_BRANCH_PREFIX } from "./contract.ts";
 
 export interface ProvisionWorktreeResult {
   readonly worktreePath: string;
@@ -33,9 +34,13 @@ function execGit(args: string[], cwd: string): { code: number; stdout: string; s
 /**
  * Sanitizes task ID and title into a legal git branch name.
  */
-export function sanitizeBranchName(taskId: string, title?: string): string {
+export function sanitizeBranchName(
+  taskId: string,
+  title?: string,
+  prefix = DEFAULT_BRANCH_PREFIX,
+): string {
   const sanitizedTask = taskId.replace(/[^a-zA-Z0-9._-]/g, "-");
-  if (!title) return `agentqueue/${sanitizedTask}`;
+  if (!title) return `${prefix}${sanitizedTask}`;
 
   const slug = title
     .toLowerCase()
@@ -43,7 +48,7 @@ export function sanitizeBranchName(taskId: string, title?: string): string {
     .slice(0, 30)
     .replace(/^-+|-+$/g, "");
 
-  return slug ? `agentqueue/${sanitizedTask}-${slug}` : `agentqueue/${sanitizedTask}`;
+  return slug ? `${prefix}${sanitizedTask}-${slug}` : `${prefix}${sanitizedTask}`;
 }
 
 /** Where a task's worktree and branch live. Deterministic, so a retry finds earlier work. */
@@ -51,25 +56,32 @@ export function planWorktree(
   repoRoot: string,
   taskId: string,
   title?: string,
+  prefix = DEFAULT_BRANCH_PREFIX,
 ): ProvisionWorktreeResult {
   return {
     worktreePath: NodePath.join(repoRoot, ".worktrees", "agentqueue", taskId),
-    branch: sanitizeBranchName(taskId, title),
+    branch: sanitizeBranchName(taskId, title, prefix),
   };
 }
 
-/** Keeps the worktree folder out of `git status` without touching tracked files. */
-function ensureWorktreesExcluded(repoRoot: string): void {
+/**
+ * Keeps the worktree folder, and files the agents' tooling drops into worktrees, out of
+ * `git status` without touching tracked files (the repository-wide exclude file is shared by
+ * every worktree, so `git add -A` in a task's worktree never commits them either).
+ */
+function ensureExcluded(repoRoot: string, extra: ReadonlyArray<string>): void {
   const common = execGit(["rev-parse", "--git-common-dir"], repoRoot);
   if (common.code !== 0) return;
   const excludeFile = NodePath.join(NodePath.resolve(repoRoot, common.stdout), "info", "exclude");
   try {
     const current = NodeFS.existsSync(excludeFile) ? NodeFS.readFileSync(excludeFile, "utf8") : "";
-    if (current.split(/\r?\n/).includes("/.worktrees/")) return;
+    const lines = new Set(current.split(/\r?\n/));
+    const missing = ["/.worktrees/", ...extra].filter((pattern) => !lines.has(pattern));
+    if (missing.length === 0) return;
     NodeFS.mkdirSync(NodePath.dirname(excludeFile), { recursive: true });
     NodeFS.appendFileSync(
       excludeFile,
-      `${current.endsWith("\n") || !current ? "" : "\n"}/.worktrees/\n`,
+      `${current.endsWith("\n") || !current ? "" : "\n"}${missing.join("\n")}\n`,
     );
   } catch {
     // The exclude file is a convenience; provisioning works without it.
@@ -99,10 +111,19 @@ export async function provisionWorktree(
   taskId: string,
   baseRef = "HEAD",
   title?: string,
+  options: {
+    readonly prefix?: string;
+    readonly branch?: string;
+    /** Tooling files to keep out of commits (see the repository contract). */
+    readonly ignore?: ReadonlyArray<string>;
+  } = {},
 ): Promise<ProvisionWorktreeResult> {
-  const { worktreePath, branch } = planWorktree(repoRoot, taskId, title);
+  const planned = planWorktree(repoRoot, taskId, title, options.prefix);
+  const worktreePath = planned.worktreePath;
+  // A branch that already holds this task's earlier work keeps its name.
+  const branch = options.branch ?? planned.branch;
   NodeFS.mkdirSync(NodePath.dirname(worktreePath), { recursive: true });
-  ensureWorktreesExcluded(repoRoot);
+  ensureExcluded(repoRoot, options.ignore ?? []);
   execGit(["worktree", "prune"], repoRoot);
 
   const registered = registeredWorktrees(repoRoot);
@@ -137,6 +158,67 @@ export async function provisionWorktree(
   }
 
   return { worktreePath, branch };
+}
+
+/**
+ * A worktree made before the plan's branch moved (a held task, a task handed back) holds
+ * nothing of its own; bring it to the current base so it sees fixes and finished predecessors.
+ * A branch with its own commits, or any uncommitted change, is never touched.
+ */
+export function refreshUnworkedWorktree(worktreePath: string, baseRef: string): boolean {
+  if (execGit(["status", "--porcelain"], worktreePath).stdout !== "") return false;
+  const base = execGit(["rev-parse", "--verify", "--quiet", `refs/heads/${baseRef}`], worktreePath);
+  if (base.code !== 0) return false;
+  if (execGit(["rev-parse", "HEAD"], worktreePath).stdout === base.stdout) return false;
+  if (execGit(["merge-base", "--is-ancestor", "HEAD", base.stdout], worktreePath).code !== 0)
+    return false;
+  return execGit(["merge", "--ff-only", base.stdout], worktreePath).code === 0;
+}
+
+/** Renames a task branch in place, keeping every commit; the worktree that has it checked out follows. */
+export function renameBranch(repoRoot: string, from: string, to: string): boolean {
+  if (from === to) return true;
+  if (execGit(["rev-parse", "--verify", "--quiet", `refs/heads/${to}`], repoRoot).code === 0)
+    return false;
+  return execGit(["branch", "-m", from, to], repoRoot).code === 0;
+}
+
+/** Whether a local branch exists. */
+export function branchExists(repoRoot: string, branch: string): boolean {
+  return execGit(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], repoRoot).code === 0;
+}
+
+/**
+ * Makes the worktree's branch contain a candidate commit that must be repaired. Work already
+ * on the branch is never dropped: if the branch cannot simply move forward to the candidate, its
+ * old tip is kept on a salvage branch first. Returns the branch tip afterwards, or an error.
+ */
+export function alignToCandidate(
+  worktreePath: string,
+  repoRoot: string,
+  branch: string,
+  candidate: string,
+): { readonly ok: boolean; readonly detail: string } {
+  if (execGit(["cat-file", "-e", `${candidate}^{commit}`], repoRoot).code !== 0) {
+    return { ok: false, detail: `candidate commit ${candidate.slice(0, 9)} no longer exists` };
+  }
+  commitPendingChanges(worktreePath, "AgentQueue: keep edits left in the repair worktree");
+  const head = execGit(["rev-parse", "HEAD"], worktreePath).stdout;
+  if (execGit(["merge-base", "--is-ancestor", candidate, "HEAD"], worktreePath).code === 0) {
+    return { ok: true, detail: "branch already contains the candidate" };
+  }
+  if (execGit(["merge-base", "--is-ancestor", "HEAD", candidate], worktreePath).code === 0) {
+    const moved = execGit(["merge", "--ff-only", candidate], worktreePath);
+    return moved.code === 0
+      ? { ok: true, detail: "branch moved forward to the candidate" }
+      : { ok: false, detail: moved.stderr };
+  }
+  const keep = `salvage/${NodePath.basename(branch)}-${Date.now()}`;
+  execGit(["branch", keep, head], repoRoot);
+  const reset = execGit(["reset", "--hard", candidate], worktreePath);
+  return reset.code === 0
+    ? { ok: true, detail: `branch reset to the candidate; previous tip kept on ${keep}` }
+    : { ok: false, detail: reset.stderr };
 }
 
 /** Commits anything a worker left uncommitted so it is part of the branch that is verified. */

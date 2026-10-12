@@ -32,6 +32,7 @@ export async function runVerification(
   worktreePath: string,
   verificationCommand: string,
   timeoutMs = 600_000,
+  env?: Readonly<Record<string, string>>,
 ): Promise<VerificationExecutionResult> {
   const startTime = Date.now();
   const verifiedAt = new Date().toISOString();
@@ -42,6 +43,7 @@ export async function runVerification(
     commitHash = NodeChildProcess.execSync("git rev-parse HEAD", {
       cwd: worktreePath,
       encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
     }).trim();
   } catch {}
 
@@ -78,6 +80,7 @@ export async function runVerification(
       cwd: worktreePath,
       stdio: ["ignore", "pipe", "pipe"],
       detached: true,
+      ...(env ? { env: { ...process.env, ...env } } : {}),
     });
     const killGroup = (signal: NodeJS.Signals) => {
       try {

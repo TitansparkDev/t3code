@@ -134,7 +134,8 @@ export async function verifyPlanCompletion(
           .prepare(
             `SELECT e.task_id FROM task_events e JOIN tasks t ON t.id = e.task_id
              WHERE t.plan_id = ? AND ((e.event_type = 'task_imported' AND e.payload_json LIKE '%"checked":true%')
-               OR (e.event_type = 'task_synced' AND e.payload_json LIKE '%plan-checkbox%'))`,
+               OR (e.event_type = 'task_synced' AND e.payload_json LIKE '%plan-checkbox%')
+               OR e.event_type = 'task_followup_resolved')`,
           )
           .all(input.planId) as Array<{ task_id: string }>
       ).map((row) => row.task_id),
@@ -166,7 +167,8 @@ export async function verifyPlanCompletion(
     .map((task) => task.id);
   const activeClaims = [...new Set(claims.map((claim) => claim.task_id))];
   const receiptState = (json: string | null): string | null => {
-    if (!json) return null;
+    // A merged task with no receipt at all has nothing showing its checks ever ran.
+    if (!json) return "unverified";
     try {
       const receipt = JSON.parse(json) as { state?: string; command?: string };
       // Receipts from before structured checks: an empty command was never a check.

@@ -3,7 +3,9 @@ import type * as NodeSqlite from "node:sqlite";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
+import { loadContract, toolAvailable } from "./contract.ts";
 import { openQueueDatabase } from "./db.ts";
+import { assignabilityFindings, executablesOf, titleTags } from "./preflight.ts";
 import { NO_VERIFICATION, describeSpec, resolveDerivedDirectories } from "./verificationSpec.ts";
 import {
   computePlanChecksum,
@@ -231,6 +233,74 @@ export function planIdFor(db: NodeSqlite.DatabaseSync | null, planPath: string):
  * worker still own part of it. `planPath` selects a plan; without it the repository's
  * single active plan (preferring `PLAN.md`) is used.
  */
+/**
+ * Problems an assignment will meet that can be seen without starting anything: an unreadable
+ * contract, tasks that need a capability this environment lacks, checks whose tool is not
+ * installed, tasks with nothing to audit their changes against.
+ */
+export function executionWarnings(input: {
+  readonly repoRoot: string;
+  readonly gitCommonDir: string;
+  readonly baseBranch: string;
+  readonly tasks: ReadonlyArray<PlanTaskDefinition>;
+}): string[] {
+  const warnings: string[] = [];
+  const loaded = loadContract({
+    repoRoot: input.repoRoot,
+    gitCommonDir: input.gitCommonDir,
+    refs: [input.baseBranch],
+  });
+  warnings.push(...loaded.problems);
+  const capabilityCache = new Map<string, boolean>();
+  const unavailable = new Map<string, string[]>();
+  const missingTools = new Map<string, string[]>();
+  const toolCache = new Map<string, boolean>();
+  let unscoped = 0;
+  for (const task of input.tasks) {
+    for (const finding of assignabilityFindings({
+      loaded,
+      repoRoot: input.repoRoot,
+      title: task.title,
+      capabilityCache,
+    })) {
+      if (finding.code !== "capability-unavailable") continue;
+      const tag =
+        titleTags(task.title).find((candidate) => loaded.contract.capabilities[candidate]) ?? "?";
+      unavailable.set(tag, [...(unavailable.get(tag) ?? []), task.id]);
+    }
+    for (const name of executablesOf(task.verification ?? NO_VERIFICATION)) {
+      let present = toolCache.get(name);
+      if (present === undefined) {
+        present = toolAvailable(
+          { name, probe: null, optional: false, install: null },
+          input.repoRoot,
+        );
+        toolCache.set(name, present);
+      }
+      const declared = loaded.contract.tools.find((tool) => tool.name === name);
+      if (!present && !declared?.install)
+        missingTools.set(name, [...(missingTools.get(name) ?? []), task.id]);
+    }
+    if ((task.scopePatterns ?? []).length === 0) unscoped++;
+  }
+  for (const [tag, ids] of unavailable) {
+    warnings.push(
+      `${ids.length} task(s) need the "${tag}" capability, which this environment does not provide (${ids.slice(0, 6).join(", ")}). They are held as external blockers; everything else continues.`,
+    );
+  }
+  for (const [name, ids] of missingTools) {
+    warnings.push(
+      `The checks of ${ids.slice(0, 6).join(", ")} need "${name}", which is not installed here; those tasks will be held until it is.`,
+    );
+  }
+  if (unscoped > 0 && input.tasks.length > 0) {
+    warnings.push(
+      `${unscoped} task(s) declare no Scope, so their changes cannot be audited against one.`,
+    );
+  }
+  return warnings;
+}
+
 export function previewPlan(repoRoot: string, planPath?: string): PlanPreview {
   const base = {
     repoRoot,
@@ -389,6 +459,15 @@ export function previewPlan(repoRoot: string, planPath?: string): PlanPreview {
     );
   }
 
+  warnings.push(
+    ...executionWarnings({
+      repoRoot,
+      gitCommonDir: repoGit.gitCommonDir,
+      baseBranch: repoGit.baseBranch,
+      tasks: parsed.tasks.filter((task) => !task.checked),
+    }),
+  );
+
   const legacyOwnedTaskIds = findLegacyOwners(repoGit.gitCommonDir, normalized);
   let readiness: PlanReadiness = "ready";
   if (problems.length > 0) readiness = "invalid";
@@ -469,8 +548,17 @@ export function importPlanFile(repoRoot: string, planPath: string): ImportedPlan
           task.scopePatterns ?? [],
         );
         const existing = db
-          .prepare("SELECT status, plan_id FROM tasks WHERE id = ?")
-          .get(task.id) as { status: string; plan_id: string | null } | undefined;
+          .prepare(
+            "SELECT status, plan_id, verification_spec, dependencies FROM tasks WHERE id = ?",
+          )
+          .get(task.id) as
+          | {
+              status: string;
+              plan_id: string | null;
+              verification_spec: string | null;
+              dependencies: string | null;
+            }
+          | undefined;
         if (!existing) {
           db.prepare(`
             INSERT INTO tasks (
@@ -511,6 +599,13 @@ export function importPlanFile(repoRoot: string, planPath: string): ImportedPlan
           existing.status === "failed" ||
           existing.status === "blocked"
         ) {
+          // Tasks the queue itself added (follow-ups for work that was kept but not finished)
+          // are not in the plan file. A task that waits on one keeps waiting: re-reading the plan
+          // must never unlock work behind an open requirement.
+          const planIds = new Set(plan.parsed.tasks.map((candidate) => candidate.id));
+          const queueAdded = (JSON.parse(existing.dependencies || "[]") as string[]).filter(
+            (dependency) => !planIds.has(dependency),
+          );
           db.prepare(`
             UPDATE tasks SET title = ?, description = ?, priority = ?, scope_patterns = ?,
               dependencies = ?, verification_command = ?, verification_spec = ?, updated_at = ?
@@ -520,13 +615,20 @@ export function importPlanFile(repoRoot: string, planPath: string): ImportedPlan
             task.description ?? null,
             task.priority ?? 100,
             JSON.stringify(task.scopePatterns ?? []),
-            JSON.stringify(task.dependencies ?? []),
+            JSON.stringify([...(task.dependencies ?? []), ...queueAdded]),
             describeSpec(spec) || null,
             JSON.stringify(spec),
             now,
             task.id,
           );
           updated++;
+        }
+        // A task imported before structured checks existed has no stored check at all, so its
+        // landed work could never be audited. Only the missing check is filled in.
+        if (existing.verification_spec === null && spec.source !== "none") {
+          db.prepare(
+            "UPDATE tasks SET verification_command = ?, verification_spec = ?, updated_at = ? WHERE id = ? AND verification_spec IS NULL",
+          ).run(describeSpec(spec) || null, JSON.stringify(spec), now, task.id);
         }
         // A task ticked in the plan file by hand or by plan-work is done for the queue too.
         if (task.checked && existing.status === "pending") {

@@ -20,7 +20,30 @@ import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import { recordEvent } from "./eventStream.ts";
 import { renewLease } from "./claimService.ts";
-import { runVerification } from "./verifier.ts";
+import {
+  expandCommand,
+  loadContract,
+  matchesAny,
+  resourcesNeededBy,
+  runShell,
+  type RepoContract,
+} from "./contract.ts";
+import {
+  classifyReason,
+  decideAfterFailure,
+  recordFailure,
+  type FailureClass,
+  type FailureDecision,
+} from "./failures.ts";
+import {
+  auditScope,
+  changedPaths,
+  requestAmendments,
+  storedAmendments,
+  type AmendmentOutcome,
+  type ScopeRequest,
+} from "./scopeAudit.ts";
+import { ensureSlot, taskEnvironment } from "./taskEnvironment.ts";
 import { parseStoredSpec, runSpec, type SpecResult } from "./verificationSpec.ts";
 import { commitPendingChanges } from "./worktreeManager.ts";
 
@@ -210,6 +233,110 @@ export function ensureIntegrationBranch(
   return existing.stdout;
 }
 
+/**
+ * Brings the target branch's newer commits into the plan's integration branch when they
+ * merge cleanly. Without this a fix made to the target branch (a guard script, a hook, a
+ * contract) can never reach the workers, who start from the integration branch. A conflict
+ * changes nothing and is reported; the publication step meets it later with full context.
+ */
+export async function syncIntegrationBranch(
+  repoRoot: string,
+  gitCommonDir: string,
+  targetBranch: string,
+  integrationBranch: string,
+): Promise<{
+  readonly kind: "current" | "merged" | "conflict" | "skipped";
+  readonly files?: ReadonlyArray<string>;
+}> {
+  const target = git(repoRoot, ["rev-parse", "--verify", "--quiet", `refs/heads/${targetBranch}`]);
+  const tip = git(repoRoot, [
+    "rev-parse",
+    "--verify",
+    "--quiet",
+    `refs/heads/${integrationBranch}`,
+  ]);
+  if (target.code !== 0 || tip.code !== 0) return { kind: "skipped" };
+  if (git(repoRoot, ["merge-base", "--is-ancestor", target.stdout, tip.stdout]).code === 0) {
+    return { kind: "current" };
+  }
+  const release = await acquireLandingLock(gitCommonDir);
+  try {
+    const goalTip = git(repoRoot, ["rev-parse", `refs/heads/${integrationBranch}`]).stdout;
+    const targetTip = git(repoRoot, ["rev-parse", `refs/heads/${targetBranch}`]).stdout;
+    if (git(repoRoot, ["merge-base", "--is-ancestor", targetTip, goalTip]).code === 0)
+      return { kind: "current" };
+    const staging = prepareStagingWorktree(repoRoot, goalTip);
+    const merge = git(staging, [
+      ...IDENTITY,
+      "merge",
+      "--no-edit",
+      "-m",
+      `AgentQueue: bring ${targetBranch} into ${integrationBranch}`,
+      targetTip,
+    ]);
+    if (merge.code !== 0) {
+      const files = git(staging, ["diff", "--name-only", "--diff-filter=U"])
+        .stdout.split("\n")
+        .filter(Boolean);
+      git(staging, ["merge", "--abort"]);
+      return { kind: "conflict", files };
+    }
+    const result = git(staging, ["rev-parse", "HEAD"]).stdout;
+    const moved = git(repoRoot, [
+      "update-ref",
+      "-m",
+      `AgentQueue: sync ${targetBranch}`,
+      `refs/heads/${integrationBranch}`,
+      result,
+      goalTip,
+    ]);
+    return moved.code === 0 ? { kind: "merged" } : { kind: "skipped" };
+  } finally {
+    release();
+  }
+}
+
+/**
+ * Settles a merge's conflicts in generated files by the contract's rule (rebuild them with the
+ * repository's own generator, or take the integration branch's copy). Returns what it settled
+ * and what is left for a person's judgement.
+ */
+export function resolveGeneratedConflicts(
+  staging: string,
+  contract: RepoContract,
+  conflicted: ReadonlyArray<string>,
+): { readonly resolved: string[]; readonly remaining: string[] } {
+  const resolved: string[] = [];
+  const remaining: string[] = [];
+  const toRegenerate = new Set<string>();
+  for (const file of conflicted) {
+    const rule = contract.generated.find((candidate) => matchesAny(file, candidate.paths));
+    if (!rule) {
+      remaining.push(file);
+      continue;
+    }
+    if (rule.onConflict === "regenerate" && rule.regenerate) toRegenerate.add(rule.regenerate);
+    // "ours" is the integration branch the staging worktree sits on.
+    const taken = git(staging, ["checkout", "--ours", "--", file]);
+    if (taken.code !== 0 && git(staging, ["rm", "--quiet", "--", file]).code !== 0) {
+      remaining.push(file);
+      continue;
+    }
+    git(staging, ["add", "--", file]);
+    resolved.push(file);
+  }
+  if (remaining.length > 0) return { resolved, remaining };
+  for (const command of toRegenerate) {
+    const ran = runShell(command, staging, { timeoutMs: 120_000 });
+    if (ran.code !== 0) return { resolved: [], remaining: [...conflicted] };
+    for (const rule of contract.generated) {
+      if (rule.regenerate === command)
+        for (const path of rule.paths) git(staging, ["add", "--", path]);
+    }
+  }
+  return { resolved, remaining };
+}
+
 export interface SubmitInput {
   readonly repoRoot: string;
   readonly baseBranch: string;
@@ -218,6 +345,11 @@ export interface SubmitInput {
   readonly worktreePath: string;
   readonly branch: string;
   readonly verificationCommand: string;
+  readonly gitCommonDir?: string;
+  /** The plan's target branch, where the repository contract is read from. */
+  readonly targetBranch?: string;
+  /** Scope amendments the worker asked for in its final message. */
+  readonly scopeRequests?: ReadonlyArray<ScopeRequest>;
 }
 
 export type SubmitOutcome =
@@ -225,12 +357,27 @@ export type SubmitOutcome =
       readonly kind: "submitted";
       readonly candidateCommit: string;
       readonly receipt: SpecResult;
+      /** Changes outside the declared scope that the contract or an amendment allows. */
+      readonly scope: {
+        readonly generated: ReadonlyArray<string>;
+        readonly supporting: ReadonlyArray<string>;
+        readonly amended: ReadonlyArray<string>;
+      };
     }
   | { readonly kind: "no-changes" }
   | {
       readonly kind: "verification-failed";
       readonly error: string;
-      readonly receipt: SpecResult;
+      readonly receipt: SpecResult | null;
+      readonly failureClass: FailureClass;
+      readonly decision: FailureDecision;
+    }
+  | {
+      readonly kind: "scope-violation";
+      readonly error: string;
+      readonly paths: ReadonlyArray<string>;
+      readonly amendment: AmendmentOutcome | null;
+      readonly decision: FailureDecision;
     }
   | { readonly kind: "claim-lost" };
 
@@ -272,15 +419,116 @@ export async function submitCandidate(
     stored?.verification_spec,
     stored?.verification_command || input.verificationCommand,
   );
-  const receipt = await runSpec(input.taskId, input.worktreePath, spec);
+  const gitCommonDir =
+    input.gitCommonDir ?? git(input.repoRoot, ["rev-parse", "--git-common-dir"]).stdout;
+  const gitDir = NodePath.resolve(input.repoRoot, gitCommonDir);
+  const loaded = loadContract({
+    repoRoot: input.repoRoot,
+    gitCommonDir: gitDir,
+    refs: [...new Set([input.targetBranch ?? input.baseBranch, input.baseBranch])],
+  });
+  const taskRow = db.prepare("SELECT scope_patterns FROM tasks WHERE id = ?").get(input.taskId) as
+    | { scope_patterns: string | null }
+    | undefined;
+  const scope = JSON.parse(taskRow?.scope_patterns || "[]") as string[];
+  const changed = changedPaths(input.worktreePath, `refs/heads/${input.baseBranch}`);
+  let verdict = auditScope({
+    changed,
+    scope,
+    contract: loaded.contract,
+    amendments: storedAmendments(db, input.taskId),
+  });
+  let amendment: AmendmentOutcome | null = null;
+  if (verdict.violations.length > 0 && (input.scopeRequests?.length ?? 0) > 0) {
+    amendment = requestAmendments(db, {
+      taskId: input.taskId,
+      requests: input.scopeRequests!,
+      contract: loaded.contract,
+      violations: verdict.violations,
+    });
+    verdict = auditScope({
+      changed,
+      scope,
+      contract: loaded.contract,
+      amendments: storedAmendments(db, input.taskId),
+    });
+  }
+  if (verdict.violations.length > 0 && loaded.contract.scopeEnforcement === "strict") {
+    const error = `These changed paths are outside the task's scope: ${verdict.violations.slice(0, 12).join(", ")}${amendment?.denied.length ? `. Amendment refused: ${amendment.denied.map((d) => `${d.path} (${d.why})`).join("; ")}` : ""}.`;
+    const recorded = recordFailure(db, input.taskId, {
+      failureClass: "scope",
+      message: error,
+      headCommit: head,
+      evidence: verdict,
+    });
+    return {
+      kind: "scope-violation",
+      error,
+      paths: verdict.violations,
+      amendment,
+      decision: decideAfterFailure("scope", recorded),
+    };
+  } else if (verdict.violations.length > 0) {
+    recordEvent(db, input.taskId, "scope_report", { violations: verdict.violations.slice(0, 20) });
+  }
+
+  const slot = ensureSlot(db, input.taskId);
+  const environment = taskEnvironment({
+    taskId: input.taskId,
+    slot,
+    gitCommonDir: gitDir,
+    contract: loaded.contract,
+  });
+  const fail = (failureClass: FailureClass, error: string, receipt: SpecResult | null) => {
+    const recorded = recordFailure(db, input.taskId, {
+      failureClass,
+      message: error,
+      headCommit: head,
+      evidence: receipt,
+    });
+    return {
+      kind: "verification-failed" as const,
+      receipt,
+      error: error.slice(0, 1500),
+      failureClass,
+      decision: decideAfterFailure(failureClass, recorded),
+    };
+  };
+  // The repository's own submit-time guards (for example its scope guard), with this task's
+  // real allowed set, run before the task's checks.
+  for (const guard of loaded.contract.guards) {
+    if (guard.phase !== "submit") continue;
+    const command = expandCommand(guard.run, {
+      taskId: input.taskId,
+      branch: input.branch,
+      base: input.baseBranch,
+      worktree: input.worktreePath,
+      allowedPaths: verdict.allowed,
+    });
+    const result = runShell(command, input.worktreePath, { env: environment.variables });
+    if (result.code !== 0 && !guard.optional) {
+      const reason = `The repository guard "${guard.name}" failed: ${result.output.slice(-600)}`;
+      recordEvent(db, input.taskId, "task_guard_failed", {
+        guard: guard.name,
+        output: result.output.slice(-500),
+      });
+      const cls = classifyReason(result.output);
+      return fail(cls === "transient" ? "verification" : cls, reason, null);
+    }
+  }
+  const receipt = await runSpec(input.taskId, input.worktreePath, spec, undefined, {
+    env: environment.variables,
+    lockDir: NodePath.join(gitDir, "agentqueue", "locks"),
+    extraRequires: resourcesNeededBy(
+      loaded.contract,
+      scope,
+      spec.checks.map((check) => check.run),
+    ),
+  });
   if (receipt.state === "failed" || receipt.state === "timed-out") {
     // The exact result stays on record: every check that ran, how it ended, and the output's tail.
     recordEvent(db, input.taskId, "task_verification_failed", { ...receipt });
-    return {
-      kind: "verification-failed",
-      receipt,
-      error: receipt.summary.slice(0, 1500),
-    };
+    return fail("verification", receipt.summary, receipt);
   }
   if (receipt.state === "unverified") {
     recordEvent(db, input.taskId, "task_unverified", {
@@ -336,7 +584,16 @@ export async function submitCandidate(
     db.exec("ROLLBACK;");
     throw error;
   }
-  return { kind: "submitted", candidateCommit: head, receipt };
+  return {
+    kind: "submitted",
+    candidateCommit: head,
+    receipt,
+    scope: {
+      generated: verdict.generated,
+      supporting: verdict.supporting,
+      amended: verdict.amended,
+    },
+  };
 }
 
 export type IntegrationOutcome =
@@ -499,18 +756,67 @@ export async function integrateCandidate(
         `AgentQueue: integrate ${input.taskId}`,
         candidate,
       ]);
+      let mergedHead: string | null = null;
       if (merge.code !== 0) {
         const files = git(staging, ["diff", "--name-only", "--diff-filter=U"])
           .stdout.split("\n")
           .filter(Boolean);
-        git(staging, ["merge", "--abort"]);
-        const reason = `Merging ${input.taskId} into ${goalBranch} conflicts in: ${files.join(", ") || merge.stderr.slice(0, 200)}`;
-        const { exhausted } = markNeedsRepair(db, input.taskId, reason, files, maxRepairs);
-        return { kind: "needs-repair", reason, files, exhausted };
+        // Generated files (a file list, a lockfile, a schema dump) conflict on every branch and
+        // are rebuilt, never merged by hand. Only the other conflicts need a person's judgement.
+        const contract = loadContract({
+          repoRoot: input.repoRoot,
+          gitCommonDir: input.gitCommonDir,
+          refs: [input.baseBranch, goalBranch],
+        }).contract;
+        const resolved = resolveGeneratedConflicts(staging, contract, files);
+        if (resolved.remaining.length === 0 && resolved.resolved.length > 0) {
+          const committed = git(staging, [...IDENTITY, "commit", "--no-edit"]);
+          if (committed.code === 0) {
+            mergedHead = git(staging, ["rev-parse", "HEAD"]).stdout;
+            recordEvent(db, input.taskId, "task_generated_resolved", { files: resolved.resolved });
+          }
+        }
+        if (mergedHead === null) {
+          git(staging, ["merge", "--abort"]);
+          const real = resolved.remaining.length > 0 ? resolved.remaining : files;
+          const generatedNote =
+            resolved.resolved.length > 0
+              ? ` (generated files ${resolved.resolved.join(", ")} are rebuilt by the server; do not hand-merge them)`
+              : "";
+          const reason = `Merging ${input.taskId} into ${goalBranch} conflicts in: ${real.join(", ") || merge.stderr.slice(0, 200)}${generatedNote}`;
+          const { exhausted } = markNeedsRepair(db, input.taskId, reason, real, maxRepairs);
+          return { kind: "needs-repair", reason, files: real, exhausted };
+        }
       }
-      result = git(staging, ["rev-parse", "HEAD"]).stdout;
+      result = mergedHead ?? git(staging, ["rev-parse", "HEAD"]).stdout;
     } else {
       git(staging, ["checkout", "--force", "--detach", candidate]);
+    }
+
+    // Files the repository rebuilds when work lands on its base branch (a file list, a schema
+    // dump) are rebuilt here too, once, on the serialised result: task branches never carry them.
+    const refreshRules = loadContract({
+      repoRoot: input.repoRoot,
+      gitCommonDir: input.gitCommonDir,
+      refs: [input.baseBranch, goalBranch],
+    }).contract.generated.filter((rule) => rule.refreshOnLand && rule.regenerate);
+    if (refreshRules.length > 0) {
+      if (git(staging, ["rev-parse", "HEAD"]).stdout !== result) {
+        git(staging, ["checkout", "--force", "--detach", result]);
+      }
+      for (const rule of refreshRules) {
+        runShell(rule.regenerate!, staging, { timeoutMs: 120_000 });
+        for (const path of rule.paths) git(staging, ["add", "-A", "--", path]);
+      }
+      if (git(staging, ["diff", "--cached", "--quiet"]).code !== 0) {
+        const refreshed = git(staging, [
+          ...IDENTITY,
+          "commit",
+          "-m",
+          `AgentQueue: refresh generated files after ${input.taskId}`,
+        ]);
+        if (refreshed.code === 0) result = git(staging, ["rev-parse", "HEAD"]).stdout;
+      }
     }
 
     // Concurrent work was merged in, so the task's checks must still pass on the result.
@@ -518,7 +824,30 @@ export async function integrateCandidate(
     if (result !== candidate || adopted) {
       const spec = parseStoredSpec(row.verification_spec, row.verification_command);
       if (spec.checks.length > 0) {
-        const receipt = await runSpec(input.taskId, staging, spec);
+        const gitDir = input.gitCommonDir;
+        const slot = ensureSlot(db, input.taskId);
+        const contract = loadContract({
+          repoRoot: input.repoRoot,
+          gitCommonDir: gitDir,
+          refs: [input.baseBranch, goalBranch],
+        }).contract;
+        const taskScope = JSON.parse(
+          (
+            db.prepare("SELECT scope_patterns FROM tasks WHERE id = ?").get(input.taskId) as {
+              scope_patterns: string | null;
+            }
+          ).scope_patterns || "[]",
+        ) as string[];
+        const receipt = await runSpec(input.taskId, staging, spec, undefined, {
+          env: taskEnvironment({ taskId: input.taskId, slot, gitCommonDir: gitDir, contract })
+            .variables,
+          lockDir: NodePath.join(gitDir, "agentqueue", "locks"),
+          extraRequires: resourcesNeededBy(
+            contract,
+            taskScope,
+            spec.checks.map((check) => check.run),
+          ),
+        });
         if (receipt.state === "failed" || receipt.state === "timed-out") {
           recordEvent(db, input.taskId, "task_verification_failed", {
             ...receipt,

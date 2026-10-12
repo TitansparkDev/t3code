@@ -2,6 +2,14 @@
 import type * as NodeSqlite from "node:sqlite";
 import * as NodeCrypto from "node:crypto";
 import { hasScopeConflict } from "./scopeManager.ts";
+import {
+  classifyReason,
+  decideAfterFailure,
+  failureSignature,
+  holdTask,
+  recordFailure,
+  type FailureClass,
+} from "./failures.ts";
 
 export interface ClaimRequest {
   readonly taskId: string;
@@ -113,6 +121,18 @@ export function claimTask(db: NodeSqlite.DatabaseSync, req: ClaimRequest): Claim
     }
 
     // CAS Update task
+    // One active owner per worktree and per branch, whoever asks and whatever the task: the
+    // database also enforces this, but a clear refusal beats a constraint error.
+    const owned = db
+      .prepare(
+        "SELECT task_id FROM task_claims WHERE released_at IS NULL AND task_id != ? AND (worktree_path = ? OR branch = ?)",
+      )
+      .get(task.id, req.worktreePath, req.branch) as { task_id: string } | undefined;
+    if (owned) {
+      db.exec("ROLLBACK;");
+      return { success: false, reason: `WORKTREE_OWNED (by ${owned.task_id})` };
+    }
+
     const nextVersion = task.version + 1;
     const updateResult = db
       .prepare(`
@@ -277,7 +297,16 @@ export function releaseClaimForRetry(
   db: NodeSqlite.DatabaseSync,
   ownerToken: string,
   reason: string,
-): { readonly released: boolean; readonly exhausted: boolean } {
+  options: {
+    /** Defaults to a reading of `reason`. */
+    readonly failureClass?: FailureClass;
+    /** The environment the failure happened in; a held task waits for it to change. */
+    readonly fingerprint?: string | null;
+    readonly headCommit?: string | null;
+    /** False when the caller already recorded this failure (a submission's own verdict). */
+    readonly record?: boolean;
+  } = {},
+): { readonly released: boolean; readonly exhausted: boolean; readonly held?: boolean } {
   const now = new Date().toISOString();
   db.exec("BEGIN IMMEDIATE;");
   try {
@@ -325,6 +354,33 @@ export function releaseClaimForRetry(
       db.exec("COMMIT;");
       return { released: true, exhausted };
     }
+    // The failure is classified and remembered. A deterministic one, or one that keeps coming
+    // back unchanged, must not cost another worker: the task is held with its evidence.
+    const failureClass = options.failureClass ?? classifyReason(reason);
+    const recorded =
+      options.record === false
+        ? null
+        : recordFailure(db, claim.task_id, {
+            failureClass,
+            message: reason,
+            headCommit: options.headCommit ?? null,
+          });
+    const decision = recorded
+      ? decideAfterFailure(failureClass, recorded)
+      : ({ action: "retry" } as const);
+    if (recorded && decision.action === "hold") {
+      db.prepare(
+        "UPDATE tasks SET status = 'pending', version = ?, updated_at = ? WHERE id = ?",
+      ).run(task.version + 1, now, claim.task_id);
+      holdTask(db, claim.task_id, {
+        failureClass,
+        message: `${reason} (${decision.why})`,
+        signature: recorded.signature,
+        fingerprint: options.fingerprint ?? null,
+      });
+      db.exec("COMMIT;");
+      return { released: true, exhausted: false, held: true };
+    }
     const retryCount = task.retry_count + 1;
     const exhausted = retryCount > task.max_retries;
     db.prepare(
@@ -347,6 +403,45 @@ export function releaseClaimForRetry(
     );
     db.exec("COMMIT;");
     return { released: true, exhausted };
+  } catch (error) {
+    db.exec("ROLLBACK;");
+    throw error;
+  }
+}
+
+/**
+ * Ends a claim and parks the task: its failure repeats, or cannot be cured by another worker.
+ * The task's branch and commits are untouched. With a fingerprint it comes back by itself
+ * when the environment changes; without one it waits for the overseer or a person.
+ */
+export function holdClaim(
+  db: NodeSqlite.DatabaseSync,
+  ownerToken: string,
+  input: {
+    readonly failureClass: FailureClass;
+    readonly reason: string;
+    readonly fingerprint: string | null;
+  },
+): boolean {
+  const now = new Date().toISOString();
+  db.exec("BEGIN IMMEDIATE;");
+  try {
+    const claim = db
+      .prepare("SELECT id, task_id FROM task_claims WHERE owner_token = ? AND released_at IS NULL")
+      .get(ownerToken) as { id: number; task_id: string } | undefined;
+    if (!claim) {
+      db.exec("ROLLBACK;");
+      return false;
+    }
+    db.prepare("UPDATE task_claims SET released_at = ? WHERE id = ?").run(now, claim.id);
+    holdTask(db, claim.task_id, {
+      failureClass: input.failureClass,
+      message: input.reason,
+      signature: failureSignature(input.failureClass, input.reason),
+      fingerprint: input.fingerprint,
+    });
+    db.exec("COMMIT;");
+    return true;
   } catch (error) {
     db.exec("ROLLBACK;");
     throw error;

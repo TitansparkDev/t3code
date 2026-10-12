@@ -175,6 +175,16 @@ Full glossary with file links: `docs/internals/glossary.md`
 
 ## Recent request log
 
+- 2026-10-12 — v0.0.68: AgentQueue execution contract. Workers were dispatched into assignments the
+  repository's own guards rejected (`agentqueue/*` branches, a hook rebuilding `tree.txt` on every task
+  branch, a scope guard run against `main`, fixed test ports and containers), and each deterministic wall
+  cost more worker turns. Now `.agentqueue/contract.json` (or inference, always probed) gives branch
+  prefixes, guards, generated files, protected paths, exclusive resources and capabilities; a task is
+  preflighted before a worker exists and held (not retried) on configuration, prerequisite or external
+  walls, then released by itself when the environment changes; scope is audited with validated
+  `SCOPE-REQUEST` amendments; merged-but-unchecked tasks are audited before publication. See
+  `docs/agentqueue/ADR-0009-*.md`. Overseer's queue was recovered (stale guard follow-ups closed, RP13's
+  production apply kept as an external hold) and its guard, hook and contract fixed in that repository.
 - 2026-10-11 — v0.0.67: made the fork's CI honest. Release Smoke, Check (knip and lint) and the Test jobs
   had been failing or queued for weeks, so server tests never ran: they asked for Blacksmith runners this
   fork does not have (now GitHub-hosted `ubuntu-24.04`), and merge regressions stayed hidden. Repaired:

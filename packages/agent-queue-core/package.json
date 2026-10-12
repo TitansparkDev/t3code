@@ -1,6 +1,6 @@
 {
   "name": "@t3tools/agent-queue-core",
-  "version": "0.0.67",
+  "version": "0.0.68",
   "private": true,
   "files": [
     "dist"
@@ -14,7 +14,8 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "vp test run --config ../../vite.config.ts --dir ."
+    "test": "vp test run --config ../../vite.config.ts --dir .",
+    "test:real-agent": "node --experimental-strip-types test/realAgent/realAgentGoal.mts"
   },
   "devDependencies": {
     "@types/node": "catalog:",

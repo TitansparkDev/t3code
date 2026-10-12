@@ -3,8 +3,12 @@ import {
   AgentQueueError,
   AgentQueueService,
   type QueueBinding,
+  parseScopeRequests,
 } from "../queue/AgentQueueService.ts";
-import { findUnmergedLegacyBranches } from "../../../../packages/agent-queue-core/src/index.ts";
+import {
+  describeEnvironment,
+  findUnmergedLegacyBranches,
+} from "../../../../packages/agent-queue-core/src/index.ts";
 /**
  * Runs goals: keeps up to `concurrency` chats working at once, starts the next
  * as each finishes, and stops when an agent says nothing is left.
@@ -711,6 +715,27 @@ export const make = Effect.gen(function* () {
     });
 
   /**
+   * Stops every earlier chat on this worktree that is not quiet. The queue hands a task out
+   * again only once the previous claim is gone, so any chat still working there lost its claim.
+   */
+  const stopStaleWorkers = Effect.fn("GoalService.stopStaleWorkers")(function* (
+    goal: Goal,
+    worktreePath: string,
+    claimToken: string,
+  ) {
+    for (const earlier of goal.chats) {
+      if (earlier.worktreePath !== worktreePath || earlier.claimToken === claimToken) continue;
+      if (!(yield* workerQuiet(earlier.threadId))) {
+        yield* Effect.logWarning("goals.stopping-stale-worker", {
+          goalId: goal.id,
+          threadId: earlier.threadId,
+        });
+        yield* stopSession(earlier.threadId);
+      }
+    }
+  });
+
+  /**
    * Reserve a ready task, then open a chat for it. The reservation comes first: when no
    * task is ready this returns "none" without creating a thread or spending a model turn.
    */
@@ -734,19 +759,49 @@ export const make = Effect.gen(function* () {
     const task = reserved.task;
     if (!task) return "none" as const;
 
-    // A worktree has one writer. An earlier worker for this task that a background job woke
-    // up again must stop before the next one starts in the same directory.
-    for (const earlier of goal.chats) {
-      if (earlier.worktreePath !== task.worktreePath || earlier.status === "running") continue;
-      if (!(yield* workerQuiet(earlier.threadId))) {
-        yield* Effect.logWarning("goals.stopping-stale-worker", {
-          goalId: goal.id,
+    // A task attempted before whose branch already holds commits is not redone: the server
+    // runs its checks on those commits first. If they pass, the work is submitted without a
+    // worker. If they fail, the worker is told exactly what failed instead of starting over.
+    let lastFailure = task.lastFailure;
+    if (task.retryCount > 0 && task.existingCommits.length > 0 && task.repair === null) {
+      yield* stopStaleWorkers(goal, task.worktreePath, task.claimToken);
+      const early = yield* queue
+        .submit(binding, {
           taskId: task.taskId,
-          threadId: earlier.threadId,
-        });
-        yield* stopSession(earlier.threadId);
+          claimToken: task.claimToken,
+          worktreePath: task.worktreePath,
+          branch: task.branch,
+          verificationCommand: task.verificationCommand ?? "",
+        })
+        .pipe(Effect.option);
+      if (Option.isSome(early)) {
+        const result = early.value;
+        if (result.kind === "submitted") {
+          yield* Effect.logInfo("goals.agentqueue-resumed-without-worker", { taskId: task.taskId });
+          yield* ensureIntegration(goal.id);
+          return "started" as const;
+        }
+        if (
+          (result.kind === "verification-failed" || result.kind === "scope-violation") &&
+          result.decision.action === "hold"
+        ) {
+          yield* queue
+            .release(binding, task.claimToken, "hold", `${result.error} (${result.decision.why})`, {
+              failureClass: result.kind === "verification-failed" ? result.failureClass : "scope",
+            })
+            .pipe(Effect.catch(logQueueError("goals.agentqueue-hold-failed")));
+          return "started" as const;
+        }
+        if (result.kind === "verification-failed" || result.kind === "scope-violation") {
+          lastFailure = result.error;
+        }
+        if (result.kind === "claim-lost") return "failed" as const;
       }
     }
+
+    // A worktree has one writer. An earlier worker for this task that a background job woke
+    // up again must stop before the next one starts in the same directory.
+    yield* stopStaleWorkers(goal, task.worktreePath, task.claimToken);
 
     const threadId = yield* openChat(goal, {
       title: `${task.repair ? "Repair" : "Goal worker"}: ${task.taskId} ${task.title}`.slice(
@@ -763,8 +818,18 @@ export const make = Effect.gen(function* () {
         baseBranch: task.baseBranch,
         planPath: binding.planPath,
         retryCount: task.retryCount,
-        lastFailure: task.lastFailure,
+        lastFailure,
         repair: task.repair?.reason ?? null,
+        existingCommits: task.repair ? task.repair.commits : task.existingCommits,
+        conflictFiles: task.repair?.files ?? [],
+        allowedPaths: task.scope.length > 0 ? task.allowedPaths : [],
+        guards: task.guards,
+        generatedPaths: task.generatedPaths,
+        environmentNotes: describeEnvironment({
+          slot: Number(task.environment.AGENTQUEUE_SLOT ?? 0),
+          variables: task.environment,
+        }),
+        notes: task.notes,
       }),
       agentIndex,
       modelSelection: agent.modelSelection,
@@ -1069,10 +1134,11 @@ export const make = Effect.gen(function* () {
     chat: GoalChat,
     how: "pending" | "retry" | "blocked",
     reason: string,
+    options?: { readonly record?: boolean },
   ) {
     if (!chat.claimToken) return;
     yield* queue
-      .release(binding, chat.claimToken, how, reason)
+      .release(binding, chat.claimToken, how, reason, options)
       .pipe(Effect.catch(logQueueError("goals.agentqueue-release-failed")));
     if (chat.worktreePath && chat.branch) {
       yield* queue
@@ -1124,6 +1190,9 @@ export const make = Effect.gen(function* () {
       const info = yield* queue
         .taskInfo(binding, chat.taskId!)
         .pipe(Effect.catch(() => Effect.succeed(null)));
+      const scopeRequests = parseScopeRequests(
+        lastAssistantReply(yield* readThread(threadId)) ?? "",
+      );
       const outcome = yield* queue
         .submit(binding, {
           taskId: chat.taskId!,
@@ -1131,6 +1200,7 @@ export const make = Effect.gen(function* () {
           worktreePath: chat.worktreePath!,
           branch: chat.branch!,
           verificationCommand: info?.verificationCommand ?? "",
+          scopeRequests,
         })
         .pipe(
           Effect.map((value) => ({ ok: true as const, value })),
@@ -1186,6 +1256,7 @@ export const make = Effect.gen(function* () {
             return yield* fillLanes(goalId);
           }
           case "no-changes":
+          case "scope-violation":
           case "verification-failed": {
             if (result.kind === "no-changes" && current.attentionNote) {
               // Nothing was committed and the worker says a person must act: park the task.
@@ -1203,19 +1274,53 @@ export const make = Effect.gen(function* () {
               return yield* settleAfterProblem(goalId);
             }
             const tries = current.landingRetries ?? 0;
+            // The queue recorded this failure and decided whether another attempt can help: the
+            // same failure on an unchanged commit must not spend another worker turn.
+            const held =
+              result.kind !== "no-changes" && result.decision.action === "hold"
+                ? result.decision
+                : null;
             const feedback =
               result.kind === "no-changes"
                 ? NO_COMMIT_PROMPT
-                : `The server ran the task's check on your commit and it failed:\n${result.error}\nFix it in your worktree, run the check yourself, and commit.`;
-            if (tries < (result.kind === "no-changes" ? 1 : 2) && fresh.status === "running") {
+                : result.kind === "scope-violation"
+                  ? `The server checked which files your commits change and found changes outside your task's allowed paths:\n${result.error}\nRevert those changes (for example \`git checkout ${binding.integrationBranch ?? binding.baseBranch} -- <path>\` or \`git rm\`), commit, and finish. If the task truly cannot be done without one of them, say so in your final message with a line \`SCOPE-REQUEST: <path>, <path> — <why>\` (concrete paths and a real reason). Do not widen your scope silently.`
+                  : `The server ran the task's check on your commit and it failed:\n${result.error}\nFix it in your worktree, run the check yourself, and commit.`;
+            if (
+              !held &&
+              tries < (result.kind === "no-changes" ? 1 : 2) &&
+              fresh.status === "running"
+            ) {
               yield* updateChat(goalId, threadId, { landingRetries: tries + 1 });
               if (yield* continueChat(fresh, current, feedback)) return;
+            }
+            const reasonText =
+              result.kind === "no-changes" ? "The worker made no commit." : result.error;
+            if (held) {
+              yield* queue
+                .release(binding, current.claimToken!, "hold", `${reasonText} (${held.why})`, {
+                  failureClass:
+                    result.kind === "verification-failed" ? result.failureClass : "scope",
+                })
+                .pipe(Effect.catch(logQueueError("goals.agentqueue-hold-failed")));
+              if (current.worktreePath && current.branch) {
+                yield* queue
+                  .teardown(binding, current.worktreePath, current.branch, false)
+                  .pipe(Effect.catch(logQueueError("goals.agentqueue-teardown-failed")));
+              }
+              yield* updateChat(goalId, threadId, {
+                status: "failed",
+                completedAt: now,
+                taskOutcome: "retry",
+              });
+              return yield* settleAfterProblem(goalId);
             }
             yield* handBack(
               binding,
               current,
               "retry",
-              result.kind === "no-changes" ? "The worker made no commit." : result.error,
+              reasonText,
+              result.kind === "no-changes" ? undefined : { record: false },
             );
             yield* updateChat(goalId, threadId, {
               status: "failed",
@@ -1433,6 +1538,19 @@ export const make = Effect.gen(function* () {
     const { snapshot, ready, candidates } = status.value;
 
     if (snapshot.counts.total > 0 && snapshot.counts.completed === snapshot.counts.total) {
+      // Merged is not checked: tasks that landed without a passing check are run against the
+      // integrated branch now. A failure becomes a blocking repair task, so nothing unchecked is
+      // published as finished.
+      const audit = yield* queue
+        .audit(binding)
+        .pipe(Effect.catch((error) => queueFailed(goalId, "audit", error).pipe(Effect.as(null))));
+      if (audit && audit.followUps.length > 0) {
+        yield* Effect.logWarning("goals.agentqueue-audit-failed", {
+          goalId,
+          followUps: audit.followUps,
+        });
+        return yield* fillLanes(goalId);
+      }
       // Every task is integrated and verified on the plan's branch. Updating the target
       // branch is a separate step that may have to wait for someone else's checkout.
       const published = yield* queue
@@ -1497,6 +1615,23 @@ export const make = Effect.gen(function* () {
           "failed",
           `Reached the limit of ${goal.maxChats} chats with ${ready} task(s) still ready.`,
         );
+      }
+      return;
+    }
+
+    // Everything that is stuck waits on the environment (a tool, a guard, a capability, a
+    // credential). No worker or overseer can change that, so nobody is asked and the goal does
+    // not fail: the held tasks are released by themselves once the environment changes, and
+    // meanwhile the reason stays visible on the goal.
+    if (status.value.awaitingEnvironment) {
+      const held = status.value.problems
+        .filter((p) => status.value.environmentTaskIds.includes(p.taskId) || p.failureClass)
+        .slice(0, 4)
+        .map((p) => `${p.taskId}: ${p.reason ?? p.failureClass}`)
+        .join("; ");
+      const waitingText = `Waiting for the environment: ${held}`.slice(0, 480);
+      if (goal.detail !== waitingText) {
+        yield* store.update(goalId, (current) => ({ ...current, detail: waitingText as never }));
       }
       return;
     }

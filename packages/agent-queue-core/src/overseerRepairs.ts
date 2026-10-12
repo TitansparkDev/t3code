@@ -2,6 +2,7 @@
 import type * as NodeSqlite from "node:sqlite";
 import { validatePlanDag, type PlanTaskDefinition } from "./planGraph.ts";
 import { recordEvent } from "./eventStream.ts";
+import type { FailureClass } from "./failures.ts";
 import { reconcileExpiredLeases } from "./leaseRecovery.ts";
 import { getQueueSnapshot, evaluateDeadlock } from "./queueInspector.ts";
 
@@ -229,18 +230,31 @@ export function removeDependency(
 export function unblockTask(db: NodeSqlite.DatabaseSync, taskId: string): OverseerRepairResult {
   db.exec("BEGIN IMMEDIATE;");
   try {
-    const task = db.prepare("SELECT id, status FROM tasks WHERE id = ?").get(taskId) as
-      | { id: string; status: string }
-      | undefined;
+    const task = db
+      .prepare("SELECT id, status, failure_class FROM tasks WHERE id = ?")
+      .get(taskId) as { id: string; status: string; failure_class: string | null } | undefined;
 
     if (!task) {
       throw new Error(`Task ${taskId} not found`);
+    }
+    // An external blocker (a capability, a credential, a live host) is not cured by saying so:
+    // the task is released by itself when the environment can provide it. Releasing it by hand
+    // would only send a worker at a wall, or let work look done that was never possible.
+    if (task.status === "blocked" && task.failure_class === "external") {
+      db.exec("ROLLBACK;");
+      return {
+        success: false,
+        message: `Task ${taskId} waits on something outside the queue (${task.failure_class}); it is released automatically once the environment provides it.`,
+        taskId,
+      };
     }
 
     const now = new Date().toISOString();
     db.prepare(`
       UPDATE tasks
       SET status = 'pending',
+          failure_class = NULL,
+          unblock_fingerprint = NULL,
           updated_at = ?
       WHERE id = ?
     `).run(now, taskId);
@@ -278,7 +292,7 @@ export function generateOverseerBriefing(
   // 3. Problem tasks
   const problemTasks = db
     .prepare(`
-      SELECT id, title, status, retry_count, dependencies, failure_reason
+      SELECT id, title, status, retry_count, dependencies, failure_reason, failure_class
       FROM tasks
       WHERE status IN ('failed', 'blocked') ${planId === undefined ? "" : "AND plan_id = ?"}
     `)
@@ -289,6 +303,7 @@ export function generateOverseerBriefing(
     retry_count: number;
     dependencies: string | null;
     failure_reason: string | null;
+    failure_class: string | null;
   }>;
 
   const lines: string[] = [
@@ -304,7 +319,17 @@ export function generateOverseerBriefing(
     for (const t of problemTasks) {
       const deps = t.dependencies ? JSON.parse(t.dependencies) : [];
       lines.push(
-        `- \`${t.id}\` ("${t.title}"): status=${t.status}, retries=${t.retry_count}, dependencies=[${deps.join(", ")}], reason=${t.failure_reason ?? "unknown"}`,
+        `- \`${t.id}\` ("${t.title}"): status=${t.status}, retries=${t.retry_count}, dependencies=[${deps.join(", ")}], reason=${t.failure_reason ?? "unknown"}${
+          t.failure_class
+            ? `, class=${t.failure_class} (${
+                t.failure_class === "external" ||
+                t.failure_class === "configuration" ||
+                t.failure_class === "prerequisite"
+                  ? "held by the server until the environment changes; retrying or unblocking it by hand cannot help"
+                  : "needs a change to the work itself"
+              })`
+            : ""
+        }`,
       );
     }
   }
@@ -337,6 +362,10 @@ export interface FollowUpInput {
   readonly blocking: boolean;
   readonly title: string;
   readonly note: string;
+  /** What kind of wall the leftover work is (see failures.ts); defaults to a plain decision. */
+  readonly failureClass?: FailureClass;
+  /** The environment it was seen in: the follow-up is revalidated when this changes. */
+  readonly fingerprint?: string | null;
 }
 
 /**
@@ -353,10 +382,14 @@ export function addFollowUpTask(
   try {
     const parent = db
       .prepare(
-        "SELECT scope_patterns, verification_command FROM tasks WHERE id = ? AND plan_id = ?",
+        "SELECT scope_patterns, verification_command, verification_spec FROM tasks WHERE id = ? AND plan_id = ?",
       )
       .get(input.parentTaskId, input.planId) as
-      | { scope_patterns: string; verification_command: string | null }
+      | {
+          scope_patterns: string;
+          verification_command: string | null;
+          verification_spec: string | null;
+        }
       | undefined;
     if (!parent) throw new Error(`Task ${input.parentTaskId} not found`);
     const note = input.note.trim().slice(0, 4000);
@@ -375,8 +408,9 @@ export function addFollowUpTask(
     const now = new Date().toISOString();
     db.prepare(
       `INSERT INTO tasks (id, plan_id, title, description, status, priority, scope_patterns,
-         dependencies, verification_command, failure_reason, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         dependencies, verification_command, verification_spec, failure_reason, failure_class,
+         unblock_fingerprint, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       taskId,
       input.planId,
@@ -387,7 +421,10 @@ export function addFollowUpTask(
       parent.scope_patterns,
       JSON.stringify([]),
       parent.verification_command,
+      parent.verification_spec,
       input.kind === "decision" ? note.slice(0, 500) : null,
+      input.kind === "decision" ? (input.failureClass ?? null) : null,
+      input.kind === "decision" ? (input.fingerprint ?? null) : null,
       now,
       now,
     );

@@ -132,6 +132,9 @@ const makeFlow = (
     yield* Effect.promise(async () => {
       await NodeFSP.writeFile(NodePath.join(repo.rootDir, "PLAN.md"), plan);
       for (const [name, content] of Object.entries(options.extraFiles ?? {})) {
+        await NodeFSP.mkdir(NodePath.dirname(NodePath.join(repo.rootDir, name)), {
+          recursive: true,
+        });
         await NodeFSP.writeFile(NodePath.join(repo.rootDir, name), content);
       }
       await execCommand("git", ["add", "."], repo.rootDir);
@@ -1484,6 +1487,147 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
             `thread.create:${(flow.log.filter((c) => c.type === "thread.create").at(-1) as { threadId: string }).threadId}`,
           ),
         );
+      }).pipe(Effect.scoped),
+  );
+
+  const GUARD = [
+    'import { execFileSync } from "node:child_process";',
+    'const branch = execFileSync("git", ["branch", "--show-current"]).toString().trim();',
+    'if (!branch.startsWith("agent/") && !branch.startsWith("agent-plan/")) {',
+    '  console.error("ERROR: refusing to work outside an isolated agent branch; current branch is " + branch);',
+    "  process.exit(1);",
+    "}",
+    "",
+  ].join("\n");
+  const GUARDED = {
+    "tools/guard.mjs": GUARD,
+    "AGENTS.md":
+      "Every automated worker must run `node tools/guard.mjs` (the checkout guard) before its first repository write.\n",
+  };
+
+  it.effect(
+    "a repository whose guard rejects the default branch convention: the worker starts on an accepted branch and is told the repository's own commands",
+    () =>
+      Effect.gen(function* () {
+        const flow = yield* makeFlow(planWith([{ id: "T1" }]), { extraFiles: GUARDED });
+        const service = yield* flow.startServer;
+        yield* Effect.forkScoped(service.loop);
+        yield* Effect.yieldNow;
+        yield* service.create(settingsFor());
+        const [created] = yield* flow.waitFor("thread.create", 1);
+        expect(created?.branch).toMatch(/^agent\//);
+        const prompt = turnsOf(flow.log)
+          .map((t) => (t.type === "thread.turn.start" ? t.message.text : ""))
+          .join("\n");
+        expect(prompt).toContain("node tools/guard.mjs");
+        expect(prompt).toContain("AGENTQUEUE_DB_NAME");
+        yield* flow.work("T1");
+        yield* flow.eventually(
+          flow.taskRow("T1"),
+          (row) => row.status === "completed",
+          "T1 to merge",
+        );
+        expect(yield* flow.landings("T1")).toBe(1);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "a retried task whose branch already holds commits that pass its check is submitted without starting another worker",
+    () =>
+      Effect.gen(function* () {
+        const flow = yield* makeFlow(planWith([{ id: "T1" }]));
+        const service = yield* flow.startServer;
+        yield* Effect.forkScoped(service.loop);
+        yield* Effect.yieldNow;
+        yield* service.create(settingsFor());
+        yield* flow.waitFor("thread.create", 1);
+        const created = flow.createdFor("T1")!;
+        // The worker finished the implementation, then its turn broke before it could say so.
+        yield* Effect.promise(async () => {
+          await NodeFSP.writeFile(NodePath.join(created.worktreePath!, "T1.txt"), "done\n");
+          await execCommand("git", ["add", "-A"], created.worktreePath!);
+          await execCommand("git", ["commit", "-m", "T1: implement"], created.worktreePath!);
+        });
+        flow.scripts.set(created.threadId, {
+          reply: "",
+          turnState: "error",
+          progress: true,
+          lastError: null,
+        });
+        yield* flow.sessionEvent(created.threadId, { status: "running", activeTurnId: "turn-1" });
+        yield* flow.sessionEvent(created.threadId, { status: "ready", activeTurnId: null });
+        yield* flow.eventually(
+          flow.taskRow("T1"),
+          (row) => row.status === "completed",
+          "the kept commits to be checked and merged",
+        );
+        expect(yield* flow.landings("T1")).toBe(1);
+        yield* flow.drain;
+        expect(flow.log.filter((c) => c.type === "thread.create")).toHaveLength(1);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "a missing prerequisite holds the task without a worker or a failure, and the goal resumes by itself once it exists",
+    () =>
+      Effect.gen(function* () {
+        const flagDir = yield* Effect.promise(() => NodeFSP.mkdtemp("/tmp/goal-flow-tool-"));
+        const flag = NodePath.join(flagDir, "installed");
+        const flow = yield* makeFlow(planWith([{ id: "T1" }, { id: "T2" }]), {
+          extraFiles: {
+            ".agentqueue/contract.json": JSON.stringify({
+              tools: [{ name: "needed-tool", probe: `test -f ${flag}` }],
+            }),
+          },
+        });
+        const service = yield* flow.startServer;
+        yield* Effect.forkScoped(service.loop);
+        yield* Effect.yieldNow;
+        yield* service.create(settingsFor());
+        for (let round = 0; round < 3; round++) yield* tickOnce;
+        yield* flow.drain;
+        expect(flow.log.filter((c) => c.type === "thread.create")).toHaveLength(0);
+        expect((yield* flow.taskRow("T1")).status).toBe("blocked");
+        const waiting = yield* flow.goalOf(service);
+        expect(waiting.status).toBe("running");
+        expect(waiting.detail).toContain("Waiting for the environment");
+        expect(waiting.chats).toHaveLength(0);
+
+        yield* Effect.promise(() => NodeFSP.writeFile(flag, "ok"));
+        yield* tickOnce;
+        yield* flow.waitFor("thread.create", 2);
+        expect((yield* flow.taskRow("T1")).retry_count).toBe(0);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "a worker that explains a problem and ends with a bare NEEDS ATTENTION keeps its explanation on the parked task",
+    () =>
+      Effect.gen(function* () {
+        const flow = yield* makeFlow(planWith([{ id: "T1" }]));
+        const service = yield* flow.startServer;
+        yield* Effect.forkScoped(service.loop);
+        yield* Effect.yieldNow;
+        yield* service.create(settingsFor());
+        yield* flow.waitFor("thread.create", 1);
+        yield* flow.work("T1", {
+          reply:
+            "Implemented it. The live apply needs the recovery key and a reviewed plan hash from a person with production access.\n\nNEEDS ATTENTION",
+        });
+        yield* flow.eventually(
+          flow.taskRow("T1"),
+          (row) => row.status === "completed",
+          "the committed work to merge",
+        );
+        const db = openQueueDatabase({ gitCommonDir: flow.repo.gitCommonDir });
+        const note = db
+          .prepare("SELECT description, failure_class, status FROM tasks WHERE id = 'T1-FU1'")
+          .get() as { description: string; failure_class: string | null; status: string };
+        db.close();
+        expect(note.description).toContain("recovery key");
+        // Production access is something the environment must provide, not a retry or an overseer.
+        expect(note.failure_class).toBe("external");
+        expect(note.status).toBe("blocked");
       }).pipe(Effect.scoped),
   );
 });

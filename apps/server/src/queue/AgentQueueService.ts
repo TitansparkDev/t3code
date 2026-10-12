@@ -32,6 +32,7 @@ import {
   previewPlan,
   releaseClaim,
   releaseClaimForRetry,
+  holdClaim,
   renewLease,
   reserveNextTask,
   resolveRepoGit,
@@ -39,6 +40,15 @@ import {
   retryTask,
   teardownWorktree,
   unblockTask,
+  auditUnverifiedTasks,
+  classifyReason,
+  environmentFingerprint,
+  loadContract,
+  probeBranchPrefix,
+  type AuditReport,
+  type FailureClass,
+  parseScopeRequests,
+  type ScopeRequest,
   type CompletionReport,
   type IntegrationOutcome,
   type SubmitOutcome,
@@ -82,6 +92,9 @@ export interface QueueStatus {
   readonly ready: number;
   readonly deadlocked: boolean;
   readonly deadlockReason: string | null;
+  /** Everything stuck waits on the environment (a capability, tool, guard or credential); no one needs to be asked. */
+  readonly awaitingEnvironment: boolean;
+  readonly environmentTaskIds: ReadonlyArray<string>;
   readonly candidates: ReadonlyArray<CandidateInfo>;
   readonly publication: PublicationStatus;
   /** Failed or blocked tasks, with why. */
@@ -92,6 +105,8 @@ export interface QueueStatus {
     readonly reason: string | null;
     readonly retryCount: number;
     readonly maxRetries: number;
+    /** Why it stopped, when classified (configuration, prerequisite, external...). */
+    readonly failureClass: string | null;
   }>;
 }
 
@@ -172,8 +187,13 @@ export class AgentQueueService extends Context.Service<
     readonly release: (
       binding: QueueBinding,
       claimToken: string,
-      status: "pending" | "completed" | "failed" | "blocked" | "retry",
+      status: "pending" | "completed" | "failed" | "blocked" | "retry" | "hold",
       reason?: string,
+      options?: {
+        readonly failureClass?: FailureClass;
+        readonly headCommit?: string | null;
+        readonly record?: boolean;
+      },
     ) => Effect.Effect<boolean, AgentQueueError>;
     /**
      * The worker finished: commit leftovers, run the task's check, and record the work as
@@ -187,6 +207,7 @@ export class AgentQueueService extends Context.Service<
         readonly worktreePath: string;
         readonly branch: string;
         readonly verificationCommand: string;
+        readonly scopeRequests?: ReadonlyArray<ScopeRequest>;
       },
     ) => Effect.Effect<SubmitOutcome, AgentQueueError>;
     /** Merge a submitted candidate through the staging worktree. Safe to repeat. */
@@ -245,6 +266,8 @@ export class AgentQueueService extends Context.Service<
         readonly note: string;
       },
     ) => Effect.Effect<{ readonly taskId: string; readonly created: boolean }, AgentQueueError>;
+    /** Run the stored checks of merged tasks that were never checked, against the plan's tip. */
+    readonly audit: (binding: QueueBinding) => Effect.Effect<AuditReport, AgentQueueError>;
     readonly retryTask: (
       binding: QueueBinding,
       taskId: string,
@@ -261,6 +284,26 @@ export class AgentQueueService extends Context.Service<
   }
 >()("t3/queue/AgentQueueService") {}
 
+/** The environment a deterministic failure happened in (see contract.ts). */
+function fingerprintOf(binding: QueueBinding, failureClass?: FailureClass): string | null {
+  try {
+    const refs = [...new Set([binding.baseBranch, goalBranchOf(binding)])];
+    const loaded = loadContract({
+      repoRoot: binding.repoRoot,
+      gitCommonDir: binding.gitCommonDir,
+      refs,
+    });
+    return environmentFingerprint({
+      repoRoot: binding.repoRoot,
+      loaded,
+      refs,
+      ...(failureClass === "external" ? { only: "capabilities" as const } : {}),
+    });
+  } catch {
+    return null;
+  }
+}
+
 const make = AgentQueueService.of({
   preview: (repoRoot, planPath) => run("preview", () => previewPlan(repoRoot, planPath)),
 
@@ -273,6 +316,21 @@ const make = AgentQueueService.of({
       }
       const integrationBranch = integrationBranchFor(imported.planId);
       const baseCommit = ensureIntegrationBranch(repoRoot, repoGit.baseBranch, integrationBranch);
+      // Before any worker exists, find out which branch names the repository's own guards
+      // accept, by really trying them. A repository that rejects every name cannot host a
+      // goal, and saying so now costs nothing.
+      const loaded = loadContract({
+        repoRoot,
+        gitCommonDir: repoGit.gitCommonDir,
+        refs: [repoGit.baseBranch, integrationBranch],
+      });
+      const probe = probeBranchPrefix({
+        repoRoot,
+        gitCommonDir: repoGit.gitCommonDir,
+        baseRef: repoGit.baseBranch,
+        loaded,
+      });
+      if (probe.prefix === null) throw new Error(probe.detail);
       withDb({ gitCommonDir: repoGit.gitCommonDir }, (db) =>
         db
           .prepare(
@@ -322,7 +380,7 @@ const make = AgentQueueService.of({
         const deadlock = evaluateDeadlock(db, binding.planId);
         const problems = db
           .prepare(
-            `SELECT id, title, status, failure_reason, retry_count, max_retries FROM tasks
+            `SELECT id, title, status, failure_reason, failure_class, retry_count, max_retries FROM tasks
              WHERE plan_id = ? AND (status IN ('failed', 'blocked') OR integration_state = 'repair_needed')`,
           )
           .all(binding.planId) as Array<{
@@ -330,6 +388,7 @@ const make = AgentQueueService.of({
           title: string;
           status: string;
           failure_reason: string | null;
+          failure_class: string | null;
           retry_count: number;
           max_retries: number;
         }>;
@@ -338,6 +397,8 @@ const make = AgentQueueService.of({
           ready,
           deadlocked: deadlock.isDeadlocked,
           deadlockReason: deadlock.reason ?? null,
+          awaitingEnvironment: deadlock.awaitingEnvironment === true,
+          environmentTaskIds: deadlock.environmentTaskIds ?? [],
           candidates: listCandidates(db, binding.planId),
           publication: (() => {
             const row = db
@@ -357,6 +418,7 @@ const make = AgentQueueService.of({
             reason: row.failure_reason,
             retryCount: row.retry_count,
             maxRetries: row.max_retries,
+            failureClass: row.failure_class,
           })),
         } satisfies QueueStatus;
       }),
@@ -369,6 +431,8 @@ const make = AgentQueueService.of({
         const outcome = await reserveNextTask(db, {
           repoRoot: binding.repoRoot,
           baseBranch: goalBranchOf(binding),
+          targetBranch: binding.baseBranch,
+          gitCommonDir: binding.gitCommonDir,
           planId: binding.planId,
           workerSessionId,
           // This server owns every claim it makes and renews them while the chat runs.
@@ -444,11 +508,36 @@ const make = AgentQueueService.of({
       }),
     ),
 
-  release: (binding, claimToken, status, reason) =>
+  release: (binding, claimToken, status, reason, options) =>
     run("release", () =>
       withDb(binding, (db) => {
+        if (status === "hold") {
+          const failureClass = options?.failureClass ?? classifyReason(reason ?? "");
+          const waitsForEnvironment =
+            failureClass === "configuration" ||
+            failureClass === "prerequisite" ||
+            failureClass === "external";
+          return holdClaim(db, claimToken, {
+            failureClass,
+            reason: reason ?? "Held",
+            fingerprint: waitsForEnvironment ? fingerprintOf(binding, failureClass) : null,
+          });
+        }
         if (status === "retry") {
-          return releaseClaimForRetry(db, claimToken, reason ?? "Attempt did not land").released;
+          const why = reason ?? "Attempt did not land";
+          const failureClass = options?.failureClass ?? classifyReason(why);
+          return releaseClaimForRetry(db, claimToken, why, {
+            failureClass,
+            // A deterministic failure waits for the environment to change; remember which one.
+            fingerprint:
+              failureClass === "transient" ||
+              failureClass === "verification" ||
+              failureClass === "scope"
+                ? null
+                : fingerprintOf(binding, failureClass),
+            headCommit: options?.headCommit ?? null,
+            ...(options?.record === false ? { record: false } : {}),
+          }).released;
         }
         if (status === "blocked") {
           const claim = db
@@ -482,6 +571,8 @@ const make = AgentQueueService.of({
       return submitCandidate(db, {
         repoRoot: binding.repoRoot,
         baseBranch: goalBranchOf(binding),
+        gitCommonDir: binding.gitCommonDir,
+        targetBranch: binding.baseBranch,
         ...input,
       }).finally(() => db.close());
     }),
@@ -581,8 +672,35 @@ const make = AgentQueueService.of({
 
   addFollowUp: (binding, input) =>
     run("addFollowUp", () =>
-      withDb(binding, (db) => addFollowUpTask(db, { planId: binding.planId, ...input })),
+      withDb(binding, (db) => {
+        // What the note says decides what it waits for: a wall the environment can lift
+        // (a guard, a tool) is revalidated when it changes; production access stays external.
+        const failureClass = classifyReason(input.note);
+        const deterministic =
+          failureClass === "configuration" ||
+          failureClass === "prerequisite" ||
+          failureClass === "external";
+        return addFollowUpTask(db, {
+          planId: binding.planId,
+          ...input,
+          ...(deterministic
+            ? { failureClass, fingerprint: fingerprintOf(binding, failureClass) }
+            : {}),
+        });
+      }),
     ),
+
+  audit: (binding) =>
+    runAsync("audit", () => {
+      const db = openQueueDatabase({ gitCommonDir: binding.gitCommonDir });
+      return auditUnverifiedTasks(db, {
+        repoRoot: binding.repoRoot,
+        gitCommonDir: binding.gitCommonDir,
+        baseBranch: binding.baseBranch,
+        integrationBranch: goalBranchOf(binding),
+        planId: binding.planId,
+      }).finally(() => db.close());
+    }),
 
   retryTask: (binding, taskId) =>
     run("retryTask", () => withDb(binding, (db) => retryTask(db, taskId, 3))),
@@ -599,3 +717,5 @@ const make = AgentQueueService.of({
 });
 
 export const AgentQueueServiceLive = Layer.succeed(AgentQueueService, make);
+
+export { parseScopeRequests };

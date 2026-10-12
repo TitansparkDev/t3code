@@ -13,6 +13,7 @@
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import { runVerification, type VerificationExecutionResult } from "./verifier.ts";
+import { withResources } from "./resourceLocks.ts";
 
 export interface VerificationCheck {
   readonly run: string;
@@ -440,30 +441,13 @@ export interface SpecResult {
   readonly summary: string;
 }
 
-/** Exclusive access to named shared resources, process-wide, taken in a fixed order. */
-const resourceTails = new Map<string, Promise<void>>();
-async function withResources<A>(
-  resources: ReadonlyArray<string>,
-  body: () => Promise<A>,
-): Promise<A> {
-  const names = [...new Set(resources)].sort();
-  const releases: Array<() => void> = [];
-  for (const name of names) {
-    const previous = resourceTails.get(name) ?? Promise.resolve();
-    let release!: () => void;
-    const mine = new Promise<void>((resolve) => (release = resolve));
-    resourceTails.set(
-      name,
-      previous.then(() => mine),
-    );
-    await previous;
-    releases.push(release);
-  }
-  try {
-    return await body();
-  } finally {
-    for (const release of releases) release();
-  }
+export interface RunSpecOptions {
+  /** Applies to every check: the task's isolated ports, database names, temp folder. */
+  readonly env?: Readonly<Record<string, string>>;
+  /** Where cross-process resource locks live; without it locks only hold inside this process. */
+  readonly lockDir?: string;
+  /** Exclusive resources every check of this run needs besides its own `requires` (from the repository contract). */
+  readonly extraRequires?: ReadonlyArray<string>;
 }
 
 export async function runSpec(
@@ -471,6 +455,7 @@ export async function runSpec(
   worktreePath: string,
   spec: VerificationSpec,
   timeoutOverrideSeconds?: number,
+  options: RunSpecOptions = {},
 ): Promise<SpecResult> {
   const verifiedAt = new Date().toISOString();
   const base = (
@@ -519,13 +504,17 @@ export async function runSpec(
       state = "failed";
       break;
     }
-    const result = await withResources(check.requires, () =>
-      runVerification(
-        taskId,
-        cwd,
-        check.run,
-        (timeoutOverrideSeconds ?? check.timeoutSeconds) * 1000,
-      ),
+    const result = await withResources(
+      [...check.requires, ...(options.extraRequires ?? [])],
+      () =>
+        runVerification(
+          taskId,
+          cwd,
+          check.run,
+          (timeoutOverrideSeconds ?? check.timeoutSeconds) * 1000,
+          options.env,
+        ),
+      options.lockDir,
     );
     commit = result.commitHash;
     const passed =

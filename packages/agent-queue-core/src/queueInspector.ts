@@ -32,10 +32,23 @@ export interface QueueSnapshotReport {
   readonly sampledAt: string;
 }
 
+const ENVIRONMENT_CLASSES: ReadonlySet<string> = new Set([
+  "external",
+  "configuration",
+  "prerequisite",
+]);
+
 export interface DeadlockEvaluation {
   readonly isDeadlocked: boolean;
   readonly reason?: string | null;
   readonly blockedTaskIds: ReadonlyArray<string>;
+  /**
+   * Every task that is actually stuck (not just waiting on another) waits on the environment:
+   * a capability, credential, live host, missing tool or repository guard. Another worker or an
+   * overseer cannot fix that; the tasks come back by themselves once the environment changes.
+   */
+  readonly awaitingEnvironment?: boolean;
+  readonly environmentTaskIds?: ReadonlyArray<string>;
 }
 
 /**
@@ -187,8 +200,33 @@ export function evaluateDeadlock(db: NodeSqlite.DatabaseSync, planId?: string): 
     return { isDeadlocked: false, blockedTaskIds: permanentlyBlockedTasks };
   }
 
+  // Which tasks are the actual stuck points: blocked with every dependency done.
+  const roots = tasks.filter((t) => {
+    if (t.status !== "blocked") return false;
+    const deps: string[] = JSON.parse(t.dependencies || "[]");
+    return deps.every((d) => completedSet.has(d));
+  });
+  const classes = new Map(
+    (
+      db
+        .prepare(
+          `SELECT id, failure_class FROM tasks ${planId === undefined ? "" : "WHERE plan_id = ?"}`,
+        )
+        .all(...(planId === undefined ? [] : [planId])) as Array<{
+        id: string;
+        failure_class: string | null;
+      }>
+    ).map((row) => [row.id, row.failure_class]),
+  );
+  const environmentRoots = roots
+    .filter((t) => ENVIRONMENT_CLASSES.has(classes.get(t.id) ?? ""))
+    .map((t) => t.id);
+  const awaitingEnvironment = roots.length > 0 && environmentRoots.length === roots.length;
+
   // 0 active workers and 0 runnable tasks while uncompleted tasks remain -> Deadlock!
   return {
+    awaitingEnvironment,
+    environmentTaskIds: environmentRoots,
     isDeadlocked: true,
     reason: `All ${permanentlyBlockedTasks.length} waiting tasks have unsatisfied or failed dependencies with 0 active workers`,
     blockedTaskIds: permanentlyBlockedTasks,

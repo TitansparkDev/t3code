@@ -11,3 +11,5 @@ This directory contains the Architecture Decision Records (ADRs) and design docu
 - [ADR-0005: Crash Recovery and Heartbeats](ADR-0005-crash-recovery-and-heartbeats.md) - Lease expiry, PID liveness fencing, and worktree recovery preservation.
 - [ADR-0006: Package Architecture and Dependency Footprint](ADR-0006-package-architecture-and-dependency-footprint.md) - Monorepo package boundaries (`packages/contracts`, `packages/agent-queue-core`, `apps/server/src/queue`).
 - [ADR-0007: Candidates, integration and completion](ADR-0007-candidates-integration-and-completion.md) - Task, worker and goal completion are separate; merges go through a staging worktree and never overwrite the shared checkout.
+- [ADR-0008: Verification contract and worker settlement](ADR-0008-verification-contract-and-worker-settlement.md) - Structured checks, quiet workers, unverified is never passed.
+- [ADR-0009: Execution contract, failure ledger and scope audit](ADR-0009-execution-contract-and-failure-ledger.md) - Repository guards decide branch names and rules, deterministic failures hold instead of retrying, scope is audited and widened only by rule, resources are reserved.

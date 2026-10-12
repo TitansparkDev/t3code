@@ -308,7 +308,15 @@ const GOAL_ATTENTION_NOTE = new RegExp(
  */
 export function replyAttentionNote(reply: string | undefined): string | undefined {
   const match = reply === undefined ? null : GOAL_ATTENTION_NOTE.exec(reply);
-  return match ? (match[1]!.trim() || "The worker asked for a person.").slice(0, 600) : undefined;
+  if (!match || reply === undefined) return undefined;
+  const after = match[1]!.trim();
+  if (after) return after.slice(0, 1200);
+  // A bare marker: the explanation is what the worker wrote just before it.
+  const before = reply
+    .slice(0, match.index)
+    .replace(/\*\*Needs attention:?\*\*:?/giu, "")
+    .trim();
+  return (before ? before.slice(-1200) : "The worker asked for a person.").trim();
 }
 
 const GOAL_BLOCKED_LINE = new RegExp(
@@ -505,6 +513,56 @@ export interface QueueTaskAssignment {
   readonly lastFailure: string | null;
   /** Set when the work is already done and only has to be repaired so it can merge. */
   readonly repair: string | null;
+  /** The commits already on the branch (oldest first, `sha subject`): kept work, never redone. */
+  readonly existingCommits?: ReadonlyArray<string>;
+  /** Files the merge conflicted in (repairs). */
+  readonly conflictFiles?: ReadonlyArray<string>;
+  /** Paths the task may change (scope, generated, supporting, amended). Empty = unrestricted. */
+  readonly allowedPaths?: ReadonlyArray<string>;
+  /** The repository's own commands to run, filled in for this task. */
+  readonly guards?: ReadonlyArray<{
+    readonly name: string;
+    readonly phase: string;
+    readonly command: string;
+  }>;
+  /** Generated files the server rebuilds when they conflict. */
+  readonly generatedPaths?: ReadonlyArray<string>;
+  /** This task's isolated resources, as lines for the prompt. */
+  readonly environmentNotes?: ReadonlyArray<string>;
+  /** Facts about this environment (missing optional tools, corrections already made). */
+  readonly notes?: ReadonlyArray<string>;
+}
+
+/** The part of a worker prompt that carries the repository's execution contract for this task. */
+function contractLines(task: QueueTaskAssignment): string[] {
+  const lines: string[] = [];
+  const start = (task.guards ?? []).filter((guard) => guard.phase === "start");
+  const submit = (task.guards ?? []).filter((guard) => guard.phase === "submit");
+  if (start.length > 0) {
+    lines.push(
+      "--- The repository's own guards (already passing for your branch; run them again if instructions ask) ---",
+      ...start.map((guard) => `- ${guard.name}: \`${guard.command}\``),
+    );
+  }
+  if (submit.length > 0) {
+    lines.push(
+      "--- Before you finish, run the repository's finalizer exactly as written here (the server runs the same command on your commit; it already knows the right base branch and your allowed paths) ---",
+      ...submit.map((guard) => `- ${guard.name}: \`${guard.command}\``),
+    );
+  }
+  if ((task.allowedPaths?.length ?? 0) > 0) {
+    lines.push(
+      `Paths you may change: ${task.allowedPaths!.join(", ")}. Anything else is rejected when you finish. If the task truly cannot be done without another file, change it anyway only after adding this line to your final message: \`SCOPE-REQUEST: <path>, <path> — <why the task needs it>\` (concrete paths, a real reason; refused for protected paths or paths another running task owns). Do not edit a file just to satisfy a guard.`,
+    );
+  }
+  if ((task.generatedPaths?.length ?? 0) > 0) {
+    lines.push(
+      `Generated files (${task.generatedPaths!.join(", ")}) are rebuilt by the server when they conflict; do not hand-merge them.`,
+    );
+  }
+  lines.push(...(task.environmentNotes ?? []));
+  for (const note of task.notes ?? []) lines.push(`Note: ${note}`);
+  return lines;
 }
 
 /**
@@ -524,6 +582,16 @@ export function queueWorkerPrompt(
       `Worktree (work only here): ${task.worktreePath}`,
       `Branch: ${task.branch}`,
       `Why it did not merge: ${task.repair}`,
+      ...((task.existingCommits?.length ?? 0) > 0
+        ? [
+            "The preserved implementation (already on your branch; this is the work to keep):",
+            ...task.existingCommits!.map((commit) => `  ${commit}`),
+          ]
+        : []),
+      ...((task.conflictFiles?.length ?? 0) > 0
+        ? [`Files that conflict: ${task.conflictFiles!.join(", ")}`]
+        : []),
+      ...contractLines(task),
       "",
       "--- What to do ---",
       `1. Do not redo the implementation. In your worktree, bring the branch up to date with ${task.baseBranch} (for example \`git rebase ${task.baseBranch}\`), resolve every conflict keeping the intent of both sides, and finish the rebase or merge.`,
@@ -549,7 +617,15 @@ export function queueWorkerPrompt(
           `This task was attempted ${task.retryCount} time(s) before${task.lastFailure ? `; the last attempt ended with: ${task.lastFailure}` : ""}. Earlier commits on the branch are kept: inspect them with \`git log\` and continue from them.`,
         ]
       : []),
+    ...((task.existingCommits?.length ?? 0) > 0
+      ? [
+          "Work already committed on this branch (kept; do not redo it, finish what is missing or fix what failed):",
+          ...task.existingCommits!.map((commit) => `  ${commit}`),
+        ]
+      : []),
     task.description ? `\nTask details from the plan:\n${task.description}` : "",
+    "",
+    ...contractLines(task),
     "",
     "--- Rules ---",
     "1. Do not select, claim, announce or switch tasks, and do not run any command that claims or releases tasks. Your task is fixed; other workers have theirs.",

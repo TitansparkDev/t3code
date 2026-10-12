@@ -137,6 +137,52 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
       db.exec("ALTER TABLE tasks ADD COLUMN verification_spec TEXT;");
     },
   },
+  {
+    version: 5,
+    name: "failure_ledger_scope_amendments_and_ownership",
+    up: (db) => {
+      // Why a task stopped (class + signature), what must change before it may run again
+      // (unblock_fingerprint), and the isolated resource slot it owns. Scope changes are
+      // recorded rows, never an edit of the plan's declared scope.
+      db.exec(`
+        ALTER TABLE tasks ADD COLUMN failure_class TEXT;
+        ALTER TABLE tasks ADD COLUMN failure_signature TEXT;
+        ALTER TABLE tasks ADD COLUMN unblock_fingerprint TEXT;
+        ALTER TABLE tasks ADD COLUMN env_slot INTEGER;
+        CREATE TABLE IF NOT EXISTS task_failures (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          task_id TEXT NOT NULL,
+          class TEXT NOT NULL,
+          signature TEXT NOT NULL,
+          message TEXT NOT NULL,
+          head_commit TEXT,
+          evidence_json TEXT NOT NULL DEFAULT '{}',
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_failures_task ON task_failures(task_id, id);
+        CREATE TABLE IF NOT EXISTS scope_amendments (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          task_id TEXT NOT NULL,
+          pattern TEXT NOT NULL,
+          reason TEXT NOT NULL,
+          source TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          UNIQUE(task_id, pattern)
+        );
+      `);
+      // One active owner per worktree and per branch, enforced by the database. A repository
+      // whose old rows already violate this keeps working without the index.
+      for (const column of ["worktree_path", "branch"]) {
+        try {
+          db.exec(
+            `CREATE UNIQUE INDEX IF NOT EXISTS idx_claims_active_${column} ON task_claims(${column}) WHERE released_at IS NULL`,
+          );
+        } catch {
+          // Duplicate active claims from an older version; the claim transaction still guards the task.
+        }
+      }
+    },
+  },
 ];
 
 /**
