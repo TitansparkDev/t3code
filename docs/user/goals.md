@@ -74,6 +74,26 @@ thread list; the Goals page shows how each one ended.
   otherwise on one of the goal's own models, and is asked at most twice per start. Turn
   it off under **Other settings**.
 
+## Plans with AgentQueue
+
+When the project has a valid `PLAN.md` (written with the `autonomous-plan` skill), the goal hands each ready
+task to one agent and keeps the rest out of its way. You do not manage the work:
+
+- **One agent owns a task until it is merged.** If a check fails after merging, or another task changed the same
+  lines, the same chat is continued with the exact conflict already prepared in its worktree. A new agent takes over
+  only when that provider is gone for good; a provider that is only out of usage is waited for.
+- **Waiting costs nothing.** A task that needs a file another running task holds, an emulator or build that is busy,
+  or an integration that cannot run yet is paused without using an agent lane or a model turn, and carries on by
+  itself. Shared tools (Gradle, emulators, Docker, databases) go through one queue for the whole machine, with a
+  limit chosen from the machine's memory.
+- **Failures that are not the task's are not its job.** A check that already fails the same way on the starting
+  branch is tracked as its own task instead of being blamed on the agent.
+- **The goal finishes only when every task is checked, merged and published** to your branch.
+
+Check a plan before starting it with `agentq plan lint PLAN.md --baseline`. It reports work no agent can do, live
+changes outside the final release task, missing files in a task's scope, checks that cannot run on this machine,
+and checks that already fail.
+
 ## Adding agents
 
 **+3 agents** on a goal (Goals page, web and mobile) raises its agents-at-once and most-agents

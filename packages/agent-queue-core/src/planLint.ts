@@ -169,6 +169,7 @@ export const BROAD_CHECKS: ReadonlyArray<RegExp> = [
   /^(uv run )?(ruff|mypy) [^\s]+ ?\.?$/,
   /^(\.\/)?gradlew (check|build|test|assemble)(\s+--[\w-]+)*$/,
   /^(vp|pnpm|npm|yarn|bun)( run)? (test|check|lint|build|typecheck)$/,
+  /^node --test( --[\w-]+(=\S+)?)*$/,
   /^vp test run$/,
   /^cargo (test|build|check)$/,
   /^go test \.\/\.\.\.$/,
@@ -361,9 +362,9 @@ export function lintPlan(input: PlanLintInput): PlanFinding[] {
     const scopeFiles = index.filter((file) => matchesAny(file, scope));
     for (const pattern of scope) {
       const exists = index.some((file) => pathMatches(file, pattern) || pathMatches(pattern, file));
-      const parent = pattern.replace(/\/(\*\*?)?$/, "").replace(/\/[^/]*$/, "");
-      const parentExists =
-        parent === pattern || parent === "" || index.some((file) => file.startsWith(`${parent}/`));
+      const trimmed = pattern.replace(/\/(\*\*?)?$/, "");
+      const parent = trimmed.includes("/") ? trimmed.replace(/\/[^/]*$/, "") : "";
+      const parentExists = parent === "" || index.some((file) => file.startsWith(`${parent}/`));
       if (!exists && !parentExists) {
         add({
           level: "error",

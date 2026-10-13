@@ -49,7 +49,8 @@ export function failingNames(output: string): string[] {
     const text = line.trim();
     const match =
       /^(?:FAILED|FAIL|ERROR)\s+(\S.{0,200})$/.exec(text) ??
-      /^[✗×✕]\s+(.{1,200})$/.exec(text) ??
+      /^[✗×✕✖]\s+(.{1,200})$/.exec(text) ??
+      /^not ok \d+ - (.{1,200})$/.exec(text) ??
       /^(.{1,200}?)\s+FAILED(?:\s|$)/.exec(text) ??
       /^error(?:\[\w+\])?:\s+(.{1,200})$/i.exec(text);
     if (match?.[1]) {
@@ -189,16 +190,25 @@ async function runAtBaseline(
         }
       }
     }
-    const result = await runSpec(
-      input.taskId,
-      path,
-      { source: "declared", checks: [input.check], exemptReason: null, rejected: [] },
-      undefined,
-      {
-        ...(input.env ? { env: input.env } : {}),
-        ...(input.extraRequires ? { extraRequires: input.extraRequires } : {}),
-      },
-    );
+    let result: Awaited<ReturnType<typeof runSpec>>;
+    try {
+      result = await runSpec(
+        input.taskId,
+        path,
+        { source: "declared", checks: [input.check], exemptReason: null, rejected: [] },
+        undefined,
+        {
+          ...(input.env ? { env: input.env } : {}),
+          ...(input.extraRequires ? { extraRequires: input.extraRequires } : {}),
+        },
+      );
+    } catch (error) {
+      // A busy or missing shared resource says nothing about the check: unknown, not "failed".
+      if (error instanceof ResourceWaitError) {
+        return { state: "unknown", stdout: "", stderr: error.message, exitCode: 1 };
+      }
+      throw error;
+    }
     const ran = result.checks[0];
     if (!ran) return { state: "unknown", stdout: "", stderr: result.summary, exitCode: 1 };
     return {

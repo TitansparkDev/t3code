@@ -22528,6 +22528,7 @@ docs/agentqueue/ADR-0006-package-architecture-and-dependency-footprint.md
 docs/agentqueue/ADR-0007-candidates-integration-and-completion.md
 docs/agentqueue/ADR-0008-verification-contract-and-worker-settlement.md
 docs/agentqueue/ADR-0009-execution-contract-and-failure-ledger.md
+docs/agentqueue/ADR-0010-owned-tasks-and-shared-resources.md
 docs/agentqueue/PLAN.md
 docs/agentqueue/README.md
 docs/internals/assistant-citations.md

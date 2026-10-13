@@ -359,3 +359,40 @@ describe("what the worker runs before finishing agrees with the server", () => {
     }
   }, 60_000);
 });
+
+describe("a repair that waited is retried without a worker when the branch moved", () => {
+  it("puts the candidate back to be merged when the integration branch changed since it failed", async () => {
+    const r = await makeRepo({
+      plan: plan([
+        { id: "A", scope: "src/" },
+        { id: "B", scope: "src/" },
+        { id: "C", scope: "other/" },
+      ]),
+      contract: CONTRACT,
+      files: { "src/s.txt": "base\n" },
+    });
+    try {
+      const tasks = [];
+      for (const id of ["A", "B", "C"]) {
+        const reserved = await r.reserve();
+        if (reserved.kind !== "reserved") throw new Error(`${id} should start`);
+        tasks.push(reserved.task);
+        const file = reserved.task.taskId === "C" ? "other/c.txt" : "src/s.txt";
+        await r.commitFile(reserved.task.worktreePath, file, `${reserved.task.taskId}\n`);
+        expect((await r.submit(reserved.task)).kind).toBe("submitted");
+      }
+      expect((await r.integrate("A")).kind).toBe("landed");
+      expect((await r.integrate("B")).kind).toBe("needs-repair");
+      expect(r.task("B").integration_state).toBe("conflict");
+      // Something else lands: B's failure was about an older branch.
+      expect((await r.integrate("C")).kind).toBe("landed");
+      const next = await r.reserve();
+      expect(next.kind).toBe("none");
+      if (next.kind === "none")
+        expect(next.skipped.map((s) => s.reason)).toContain("INTEGRATION_RETRY");
+      expect(r.task("B").integration_state).toBe("pending");
+    } finally {
+      await r.repo.cleanup();
+    }
+  }, 60_000);
+});

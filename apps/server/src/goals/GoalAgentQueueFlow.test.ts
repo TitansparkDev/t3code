@@ -1813,4 +1813,71 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
       }).pipe(Effect.scoped),
     90_000,
   );
+  it.effect(
+    "a restart while a worker waits on a stored job parks it, runs the job, and tells the same conversation",
+    () =>
+      Effect.gen(function* () {
+        const flow = yield* makeFlow(planWith([{ id: "T1" }]));
+        const first = yield* flow.startServer;
+        yield* first.create(settingsFor());
+        const created = (yield* flow.waitFor("thread.create", 1))[0]!;
+        const broker = openBroker();
+        const hints = { "restart-emulator": { capacity: 1 } };
+        broker.enqueue({
+          resources: [{ name: "restart-emulator" }],
+          pid: process.pid,
+          label: "someone else",
+          hints,
+        });
+        broker.pump();
+        const holder = broker.status().resources.find((r) => r.name === "restart-emulator")!
+          .holders[0]!.ticket;
+        const job = broker.enqueue({
+          resources: [{ name: "restart-emulator" }],
+          ownerRef: "T1",
+          repo: flow.repo.gitCommonDir,
+          hints,
+          job: { command: "echo survived-the-restart", cwd: flow.repo.rootDir },
+        });
+        yield* Effect.promise(async () => {
+          await NodeFSP.writeFile(NodePath.join(created.worktreePath!, "T1.txt"), "T1\n");
+          await execCommand("git", ["add", "-A"], created.worktreePath!);
+          await execCommand("git", ["commit", "-m", "T1: implement"], created.worktreePath!);
+        });
+        // The worker's turn ended with its command queued while the server was down.
+        flow.scripts.set(created.threadId, {
+          reply: "Queued.\nWAITING FOR " + job.id,
+          turnState: "completed",
+          progress: true,
+          lastError: null,
+        });
+        const second = yield* flow.startServer;
+        yield* Effect.forkScoped(second.loop);
+        yield* Effect.yieldNow;
+        yield* flow.eventually(
+          flow.goalOf(second),
+          (g) => g.chats[0]?.taskOutcome === "waiting",
+          "the recovered worker to be parked on its job",
+        );
+        expect((yield* flow.taskRow("T1")).status).toBe("claimed");
+        broker.finish(holder, { outcome: "ok" });
+        broker.close();
+        let delivered: OrchestrationCommand | undefined;
+        for (let round = 0; round < 40 && delivered === undefined; round++) {
+          yield* TestClock.adjust(Duration.seconds(5));
+          yield* Effect.yieldNow;
+          yield* TestClock.adjust(Duration.seconds(1));
+          yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 150)));
+          delivered = (yield* flow.drain).find(
+            (c) =>
+              c.type === "thread.turn.start" &&
+              c.threadId === created.threadId &&
+              c.message.text.includes("survived-the-restart"),
+          );
+        }
+        expect(delivered).toBeDefined();
+        expect(flow.log.filter((c) => c.type === "thread.create")).toHaveLength(1);
+      }).pipe(Effect.scoped),
+    60_000,
+  );
 });

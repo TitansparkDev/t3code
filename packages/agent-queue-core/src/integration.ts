@@ -1031,12 +1031,13 @@ function markNeedsRepair(
   const now = new Date().toISOString();
   db.prepare(
     `UPDATE tasks SET integration_state = ?, integration_attempts = ?, integration_error = ?,
-       integration_fingerprint = ?, integration_updated_at = ?, updated_at = ? WHERE id = ?`,
+       integration_fingerprint = ?, integration_tip = ?, integration_updated_at = ?, updated_at = ? WHERE id = ?`,
   ).run(
     exhausted ? "repair_needed" : "conflict",
     attempts,
     reason.slice(0, 1000),
     fingerprint,
+    tip || null,
     now,
     now,
     taskId,

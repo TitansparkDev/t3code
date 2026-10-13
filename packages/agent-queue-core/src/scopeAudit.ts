@@ -13,7 +13,7 @@
  */
 import type * as NodeSqlite from "node:sqlite";
 import * as NodeChildProcess from "node:child_process";
-import { matchesAny, normalizeRepoPath, pathMatches, type RepoContract } from "./contract.ts";
+import { matchesAny, normalizeRepoPath, type RepoContract } from "./contract.ts";
 import { recordEvent } from "./eventStream.ts";
 import { scopesIntersect } from "./scopeManager.ts";
 

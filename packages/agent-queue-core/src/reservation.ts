@@ -513,7 +513,31 @@ export async function reserveNextTask(
     .all(options.planId) as unknown as Array<
     Row & { integration_error: string | null; candidate_commit: string | null }
   >;
+  const integrationTip = NodeChildProcess.spawnSync(
+    "git",
+    ["rev-parse", `refs/heads/${options.baseBranch}`],
+    { cwd: options.repoRoot, encoding: "utf8" },
+  ).stdout.trim();
   for (const repair of repairs) {
+    if (options.excludeTaskIds?.has(repair.id)) continue;
+    // The integration branch moved since this failed (a follow-up landed, the other side of the
+    // conflict changed): the same candidate may merge now. Try that first; it costs no model turn.
+    const failedAt = (
+      db.prepare("SELECT integration_tip FROM tasks WHERE id = ?").get(repair.id) as {
+        integration_tip: string | null;
+      }
+    ).integration_tip;
+    if (failedAt && integrationTip && failedAt !== integrationTip) {
+      db.prepare(
+        "UPDATE tasks SET integration_state = 'pending', integration_tip = NULL, integration_updated_at = ? WHERE id = ? AND integration_state = 'conflict'",
+      ).run(new Date().toISOString(), repair.id);
+      recordEvent(db, repair.id, "task_integration_retried_after_change", {
+        from: failedAt.slice(0, 9),
+        to: integrationTip.slice(0, 9),
+      });
+      skipped.push({ taskId: repair.id, reason: "INTEGRATION_RETRY" });
+      continue;
+    }
     const planned = planWorktree(options.repoRoot, repair.id, repair.title, prefix);
     const claim = claimTask(db, {
       taskId: repair.id,

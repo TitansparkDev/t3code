@@ -419,11 +419,28 @@ export class ResourceBroker {
   constructor(options: BrokerOptions = {}) {
     const home = options.home ?? brokerHome();
     NodeFS.mkdirSync(home, { recursive: true });
-    this.db = new NodeSqlite.DatabaseSync(NodePath.join(home, "broker.sqlite"));
-    this.db.exec("PRAGMA busy_timeout = 15000;");
-    this.db.exec("PRAGMA journal_mode = WAL;");
-    this.db.exec("PRAGMA synchronous = NORMAL;");
-    this.db.exec(SCHEMA);
+    // Many processes may open a brand-new broker at the same moment; switching to WAL and creating
+    // the tables can then report "locked" even with a busy timeout, so setup is simply tried again.
+    let db: NodeSqlite.DatabaseSync | null = null;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        db = new NodeSqlite.DatabaseSync(NodePath.join(home, "broker.sqlite"));
+        db.exec("PRAGMA busy_timeout = 15000;");
+        db.exec("PRAGMA journal_mode = WAL;");
+        db.exec("PRAGMA synchronous = NORMAL;");
+        db.exec(SCHEMA);
+        break;
+      } catch (error) {
+        try {
+          db?.close();
+        } catch {
+          // nothing to close
+        }
+        if (attempt >= 8) throw error;
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100 + attempt * 150);
+      }
+    }
+    this.db = db;
     this.now = options.now ?? Date.now;
     this.host = options.host ?? readHost;
     this.config = options.config ?? loadResourceConfig;

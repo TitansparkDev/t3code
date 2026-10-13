@@ -199,6 +199,7 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
         ALTER TABLE tasks ADD COLUMN waits_for TEXT;
         ALTER TABLE tasks ADD COLUMN wait_reason TEXT;
         ALTER TABLE tasks ADD COLUMN integration_fingerprint TEXT;
+        ALTER TABLE tasks ADD COLUMN integration_tip TEXT;
         CREATE TABLE IF NOT EXISTS check_baselines (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           plan_id TEXT,

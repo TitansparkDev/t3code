@@ -833,9 +833,12 @@ export const make = Effect.gen(function* () {
     owner: GoalChat,
     text: string,
   ) {
-    if (owner.status === "running" || (owner.resumes ?? 0) >= MAX_OWNER_RESUMES)
-      return "replace" as const;
+    if ((owner.resumes ?? 0) >= MAX_OWNER_RESUMES) return "replace" as const;
     if (task.ownerTurns >= MAX_OWNER_RESUMES * 2) return "replace" as const;
+    // The owner is busy with something else right now (another task of its own, a turn still
+    // stopping after its settle): the task waits for it a moment instead of going to a stranger.
+    const soon = (yield* nowMillis) + 20_000;
+    if (owner.status === "running") return { wait: soon } as const;
     const unavailable = yield* unavailableAgents(goal);
     const out = unavailable.get(owner.agentIndex);
     // A provider that is only out for now (a usage limit, a back-off) is waited for: the task keeps
@@ -843,7 +846,8 @@ export const make = Effect.gen(function* () {
     if (out?.until !== undefined) return { wait: out.until } as const;
     if (out) return "replace" as const;
     const thread = yield* readThread(owner.threadId);
-    if (!thread || !(yield* workerQuiet(owner.threadId))) return "replace" as const;
+    if (!thread) return "replace" as const;
+    if (!(yield* workerQuiet(owner.threadId))) return { wait: soon } as const;
     // One writer per worktree: nothing else may still be working where the owner is about to.
     yield* stopStaleWorkers(goal, task.worktreePath, task.claimToken);
     const sent = yield* continueChat(goal, owner, text);
@@ -964,7 +968,12 @@ export const make = Effect.gen(function* () {
     yield* stopStaleWorkers(goal, task.worktreePath, task.claimToken);
 
     const assignment = assignmentOf(binding, task, lastFailure);
-    const owner = ownerChatOf(goal, task.taskId);
+    // The queue remembers which conversation owns the task even after that conversation moved on to
+    // another task (a follow-up), so ownership is read from there first.
+    const owner =
+      (task.ownerRef
+        ? goal.chats.find((chat) => String(chat.threadId) === task.ownerRef)
+        : undefined) ?? ownerChatOf(goal, task.taskId);
     if (owner) {
       const reason: QueueResumeReason = task.repair
         ? { kind: "conflict" }
@@ -2096,6 +2105,7 @@ export const make = Effect.gen(function* () {
     const agent = goal.agents[chat.agentIndex];
     if (!agent) return false;
     watching.set(chat.threadId, { goalId: goal.id, seenRunning: false });
+    const requestedAt = yield* nowIso;
     const sent = yield* engine
       .dispatch({
         type: "thread.turn.start",
@@ -2110,7 +2120,7 @@ export const make = Effect.gen(function* () {
         modelSelection: agent.modelSelection,
         runtimeMode: goal.runtimeMode,
         interactionMode: "default",
-        createdAt: yield* nowIso,
+        createdAt: requestedAt,
       })
       .pipe(
         Effect.as(true),
@@ -2126,6 +2136,7 @@ export const make = Effect.gen(function* () {
       status: "running",
       completedAt: undefined,
       blockedWork: undefined,
+      resumedAt: requestedAt,
     });
     return true;
   });
@@ -2302,6 +2313,18 @@ export const make = Effect.gen(function* () {
     }
     if (chat.overseer) {
       yield* finishOverseer(before, thread, threadId);
+      return;
+    }
+    // The end of a turn requested before this conversation was last continued (the stop that follows
+    // a settle, a late event of the previous turn) says nothing about the turn that is running now.
+    const requested = thread?.latestTurn?.requestedAt;
+    if (
+      chat.resumedAt &&
+      requested &&
+      Date.parse(requested) < Date.parse(chat.resumedAt) &&
+      knownLimit === undefined
+    ) {
+      watching.set(threadId, { goalId, seenRunning: false });
       return;
     }
     // A turn that ended while its background commands (tests, watchers) still run is a pause,

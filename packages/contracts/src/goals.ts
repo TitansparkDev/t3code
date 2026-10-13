@@ -106,6 +106,8 @@ export const GoalChat = Schema.Struct({
   resourceJobs: Schema.optional(Schema.Array(Schema.String)),
   /** Times this same conversation was brought back to continue its task (repair, retry, results). */
   resumes: Schema.optional(Schema.Number),
+  /** When the latest resume was sent: an end-of-turn event for a turn requested before it is stale. */
+  resumedAt: Schema.optional(IsoDateTime),
   /**
    * What became of the assigned task, from the queue's records (never from the worker's
    * words): `submitted` = candidate recorded and awaiting integration, `integrated` =
