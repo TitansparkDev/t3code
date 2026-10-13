@@ -16,6 +16,7 @@ import {
   repoInitCommand,
   repoDoctorCommand,
 } from "./commands.ts";
+import { runResourceCommand } from "./resourceCommands.ts";
 
 export interface ParsedArgs {
   readonly command: string;
@@ -58,6 +59,29 @@ export function parseArgs(rawArgs: string[]): ParsedArgs {
     positional: rest,
     flags,
   };
+}
+
+/**
+ * The entry point of the `agentq` binary. `run` and `resource` wait for machine resources and
+ * stream a command's output, so they are asynchronous; everything else is the synchronous CLI.
+ */
+export async function runCliAsync(
+  rawArgs: string[],
+  cwd: string = process.cwd(),
+): Promise<{ exitCode: number; output: string; error?: string }> {
+  try {
+    const handled = await runResourceCommand(rawArgs, cwd);
+    if (handled) {
+      return {
+        exitCode: handled.exitCode,
+        output: handled.stdout,
+        ...(handled.stderr ? { error: handled.stderr } : {}),
+      };
+    }
+  } catch (error: any) {
+    return { exitCode: 125, output: "", error: `agentq: ${error.message}` };
+  }
+  return runCli(rawArgs, cwd);
 }
 
 export function runCli(

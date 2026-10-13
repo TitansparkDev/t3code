@@ -13,7 +13,7 @@
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import { runVerification, type VerificationExecutionResult } from "./verifier.ts";
-import { withResources } from "./resourceLocks.ts";
+import { inferResources, withBrokerResources } from "./resourceRunner.ts";
 
 export interface VerificationCheck {
   readonly run: string;
@@ -430,8 +430,12 @@ export interface CheckResult {
 }
 
 export interface SpecResult {
-  /** "unverified" and "exempt" are never "passed". */
-  readonly state: "passed" | "failed" | "timed-out" | "unverified" | "exempt";
+  /**
+   * "unverified" and "exempt" are never "passed". "baseline-failed": every check that could be
+   * judged on this commit passed, and the rest already fail the same way on the integration branch
+   * the commit started from. It is not a pass and is not repeated against the task.
+   */
+  readonly state: "passed" | "failed" | "timed-out" | "unverified" | "exempt" | "baseline-failed";
   readonly source: VerificationSpec["source"];
   readonly commit: string;
   readonly checks: ReadonlyArray<CheckResult>;
@@ -504,17 +508,19 @@ export async function runSpec(
       state = "failed";
       break;
     }
-    const result = await withResources(
-      [...check.requires, ...(options.extraRequires ?? [])],
-      () =>
+    // The same shared pool a worker's `agentq run` uses: what the check declares, what the
+    // repository's contract says, and what its command line shows it will touch.
+    const result = await withBrokerResources(
+      [...check.requires, ...(options.extraRequires ?? []), ...inferResources(check.run)],
+      (granted) =>
         runVerification(
           taskId,
           cwd,
           check.run,
           (timeoutOverrideSeconds ?? check.timeoutSeconds) * 1000,
-          options.env,
+          { ...options.env, ...granted },
         ),
-      options.lockDir,
+      { label: `check of ${taskId}: ${check.run.slice(0, 80)}`, ownerRef: taskId },
     );
     commit = result.commitHash;
     const passed =

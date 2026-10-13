@@ -12,7 +12,7 @@ import {
   reviveHeldTasks,
   type FailureClass,
 } from "./failures.ts";
-import { syncIntegrationBranch } from "./integration.ts";
+import { startRepairMerge, syncIntegrationBranch, type RepairMerge } from "./integration.ts";
 import { reconcileExpiredLeases } from "./leaseRecovery.ts";
 import { getReadyTasks } from "./planGraph.ts";
 import {
@@ -23,7 +23,7 @@ import {
   type ExpandedGuard,
   type PreflightFinding,
 } from "./preflight.ts";
-import { storedAmendments } from "./scopeAudit.ts";
+import { pendingWaits, storedAmendments } from "./scopeAudit.ts";
 import { ensureSlot, taskEnvironment } from "./taskEnvironment.ts";
 import {
   alignToCandidate,
@@ -41,6 +41,16 @@ export interface RepairContext {
   readonly commits: ReadonlyArray<string>;
   /** Files the merge conflicted in. */
   readonly files: ReadonlyArray<string>;
+  /**
+   * What the server already did in the worktree: `conflicted` = a merge of the integration branch is
+   * in progress with `files` unresolved; `merged` = it is merged (cleanly, or by rule) and only the
+   * reason's failing check remains; `none` = no merge was needed or possible.
+   */
+  readonly mergeState: "conflicted" | "merged" | "none";
+  /** Files the server settled by rule (generated, union-merged). */
+  readonly settledByRule: ReadonlyArray<string>;
+  /** The branch that was merged in. */
+  readonly integrationBranch: string;
 }
 
 export interface ReservedTask {
@@ -69,7 +79,22 @@ export interface ReservedTask {
   readonly existingCommits: ReadonlyArray<string>;
   /** Paths the contract declares generated; the integrator rebuilds them on conflict. */
   readonly generatedPaths: ReadonlyArray<string>;
-  /** Exclusive resources this task holds for as long as its worker runs. */
+  /**
+   * Set when the task was parked for files another worker held and those are free now: the other
+   * worker's merged work was brought into the task's worktree (any real conflict left in progress).
+   */
+  readonly waited: {
+    readonly note: string;
+    readonly mergeState: "conflicted" | "merged" | "none";
+    readonly files: ReadonlyArray<string>;
+    readonly settledByRule: ReadonlyArray<string>;
+    readonly integrationBranch: string;
+  } | null;
+  /** The conversation accountable for this task so far (its owner), if one was recorded. */
+  readonly ownerRef: string | null;
+  /** How many times the owner has been resumed on this task. */
+  readonly ownerTurns: number;
+  /** Shared resources this task's checks will need, held only while a command runs (see resourceBroker.ts). */
   readonly resources: ReadonlyArray<string>;
 }
 
@@ -106,6 +131,7 @@ interface Row {
   scope_patterns: string | null;
   retry_count: number;
   failure_reason: string | null;
+  wait_reason?: string | null;
 }
 
 const json = <A>(text: string | null | undefined, fallback: A): A => {
@@ -154,7 +180,15 @@ function repairContext(
     .flatMap((match) => match[1]!.split(/,\s*/))
     .map((file) => file.trim())
     .filter(Boolean);
-  return { reason, candidateCommit: candidate, commits, files };
+  return {
+    reason,
+    candidateCommit: candidate,
+    commits,
+    files,
+    mergeState: "none",
+    settledByRule: [],
+    integrationBranch: baseBranch,
+  };
 }
 
 /**
@@ -218,7 +252,7 @@ export async function reserveNextTask(
   const rows = db
     .prepare(
       `SELECT id, title, description, status, dependencies, priority, verification_command,
-              verification_spec, scope_patterns, retry_count, failure_reason
+              verification_spec, scope_patterns, retry_count, failure_reason, wait_reason
        FROM tasks WHERE plan_id = ? ORDER BY created_at ASC, rowid ASC`,
     )
     .all(options.planId) as unknown as Row[];
@@ -230,7 +264,10 @@ export async function reserveNextTask(
       dependencies: json<string[]>(row.dependencies, []),
       priority: row.priority ?? 100,
     })),
-  );
+  ).filter((id) => {
+    // A task parked for a file another running task holds starts again by itself once it is free.
+    return pendingWaits(db, id).length === 0;
+  });
 
   const skipped: Array<{ taskId: string; reason: string }> = [];
   const held: Array<{ taskId: string; reason: string }> = [];
@@ -245,45 +282,6 @@ export async function reserveNextTask(
       scope,
       parseStoredSpec(specJson, command).checks.map((check) => check.run),
     );
-  /** How many running tasks hold each exclusive resource right now. */
-  const holders = () => {
-    const counts = new Map<string, number>();
-    const running = db
-      .prepare(
-        `SELECT t.id, t.scope_patterns, t.verification_spec, t.verification_command FROM tasks t
-         JOIN task_claims c ON c.task_id = t.id WHERE c.released_at IS NULL AND t.plan_id = ?`,
-      )
-      .all(options.planId) as Array<{
-      id: string;
-      scope_patterns: string | null;
-      verification_spec: string | null;
-      verification_command: string | null;
-    }>;
-    for (const task of running) {
-      for (const name of resourcesOf(
-        task.id,
-        json<string[]>(task.scope_patterns, []),
-        task.verification_spec,
-        task.verification_command,
-      )) {
-        counts.set(name, (counts.get(name) ?? 0) + 1);
-      }
-    }
-    return counts;
-  };
-  /** The name of a resource that has no room for this task, or null. */
-  const busyResource = (scope: ReadonlyArray<string>, row: Row) => {
-    const needed = resourcesOf(row.id, scope, row.verification_spec, row.verification_command);
-    if (needed.length === 0) return null;
-    const counts = holders();
-    return (
-      needed.find(
-        (name) =>
-          (counts.get(name) ?? 0) >=
-          (loaded.contract.resources.find((r) => r.name === name)?.limit ?? 1),
-      ) ?? null
-    );
-  };
   const toolCache = new Map<string, boolean>();
   const capabilityCache = new Map<string, boolean>();
   const prefix = candidatePrefixes(loaded, gitCommonDir, options.repoRoot)[0];
@@ -387,6 +385,7 @@ export async function reserveNextTask(
     scope: string[],
     provisioned: { worktreePath: string; branch: string },
     repair: RepairContext | null,
+    waited: ReservedTask["waited"] = null,
   ): ReservedTask | null => {
     const slot = ensureSlot(db, row.id);
     const environment = taskEnvironment({
@@ -447,7 +446,7 @@ export async function reserveNextTask(
       ...result.repairs,
       ...(resources.length > 0
         ? [
-            `You hold the exclusive resource(s) ${resources.join(", ")} while you work: no other worker runs tests that need them at the same time.`,
+            `Your checks use shared machine resources (${resources.join(", ")}). Run them with \`agentq run -- <command>\`: it waits in the machine's fair queue, holds the resource only while the command runs, and never makes your task fail because another worker is using it.`,
           ]
         : []),
       ...result.optionalToolsMissing.map(
@@ -487,6 +486,17 @@ export async function reserveNextTask(
         .slice(0, 30),
       generatedPaths: loaded.contract.generated.flatMap((rule) => rule.paths),
       resources,
+      waited,
+      ownerRef: (
+        db.prepare("SELECT owner_ref FROM tasks WHERE id = ?").get(row.id) as {
+          owner_ref: string | null;
+        }
+      ).owner_ref,
+      ownerTurns: (
+        db.prepare("SELECT owner_turns FROM tasks WHERE id = ?").get(row.id) as {
+          owner_turns: number;
+        }
+      ).owner_turns,
     };
   };
 
@@ -502,11 +512,6 @@ export async function reserveNextTask(
     Row & { integration_error: string | null; candidate_commit: string | null }
   >;
   for (const repair of repairs) {
-    const busyRepair = busyResource(json<string[]>(repair.scope_patterns, []), repair);
-    if (busyRepair) {
-      skipped.push({ taskId: repair.id, reason: `RESOURCE_BUSY (${busyRepair})` });
-      continue;
-    }
     const planned = planWorktree(options.repoRoot, repair.id, repair.title, prefix);
     const claim = claimTask(db, {
       taskId: repair.id,
@@ -521,7 +526,7 @@ export async function reserveNextTask(
       skipped.push({ taskId: repair.id, reason: claim.reason });
       continue;
     }
-    const context = repairContext(
+    let context = repairContext(
       options.repoRoot,
       options.baseBranch,
       repair.integration_error ?? "The candidate could not be merged.",
@@ -529,6 +534,40 @@ export async function reserveNextTask(
     );
     try {
       const provisioned = await provisionFor(repair.id, repair.title, context);
+      // The server does the git work: merge the integration branch into the task's worktree, settle
+      // generated and union-merged files by rule, and leave only the real conflict for the owner.
+      const merge: RepairMerge = startRepairMerge({
+        worktreePath: provisioned.worktreePath,
+        repoRoot: options.repoRoot,
+        gitCommonDir,
+        integrationBranch: options.baseBranch,
+        baseBranch: options.targetBranch ?? options.baseBranch,
+      });
+      if (merge.state === "up-to-date") {
+        // The candidate already contains the integration branch: it only needs to merge again.
+        releaseClaim(db, {
+          ownerToken: claim.claim.ownerToken,
+          finalStatus: "pending",
+          failureReason: null,
+        });
+        db.prepare(
+          "UPDATE tasks SET status = 'verifying', integration_state = 'pending', integration_updated_at = ? WHERE id = ?",
+        ).run(new Date().toISOString(), repair.id);
+        recordEvent(db, repair.id, "task_repair_not_needed", { detail: merge.detail });
+        continue;
+      }
+      context = {
+        ...context,
+        files: merge.files.length > 0 ? [...merge.files] : context.files,
+        mergeState:
+          merge.state === "conflicted"
+            ? "conflicted"
+            : merge.state === "merged"
+              ? "merged"
+              : "none",
+        settledByRule: merge.settledByRule,
+        commits: context.commits,
+      };
       db.prepare("UPDATE task_claims SET worktree_path = ?, branch = ? WHERE owner_token = ?").run(
         provisioned.worktreePath,
         provisioned.branch,
@@ -566,11 +605,6 @@ export async function reserveNextTask(
       holdForFindings(taskId, unassignable, false);
       continue;
     }
-    const busy = busyResource(scope, row);
-    if (busy) {
-      skipped.push({ taskId, reason: `RESOURCE_BUSY (${busy})` });
-      continue;
-    }
     const planned = planWorktree(options.repoRoot, taskId, row.title, prefix);
     const claim = claimTask(db, {
       taskId,
@@ -594,7 +628,34 @@ export async function reserveNextTask(
           "UPDATE task_claims SET worktree_path = ?, branch = ? WHERE owner_token = ?",
         ).run(provisioned.worktreePath, provisioned.branch, claim.claim.ownerToken);
       }
-      const task = finish(claim.claim.ownerToken, row, scope, provisioned, null);
+      // Parked for files another worker held, and they are free now: bring that worker's merged
+      // work into this worktree so the task continues on top of it.
+      let waited: ReservedTask["waited"] = null;
+      if (row.wait_reason) {
+        const merge = startRepairMerge({
+          worktreePath: provisioned.worktreePath,
+          repoRoot: options.repoRoot,
+          gitCommonDir,
+          integrationBranch: options.baseBranch,
+          baseBranch: options.targetBranch ?? options.baseBranch,
+        });
+        waited = {
+          note: row.wait_reason,
+          mergeState:
+            merge.state === "conflicted"
+              ? "conflicted"
+              : merge.state === "merged"
+                ? "merged"
+                : "none",
+          files: merge.files,
+          settledByRule: merge.settledByRule,
+          integrationBranch: options.baseBranch,
+        };
+        db.prepare("UPDATE tasks SET waits_for = NULL, wait_reason = NULL WHERE id = ?").run(
+          taskId,
+        );
+      }
+      const task = finish(claim.claim.ownerToken, row, scope, provisioned, null, waited);
       if (task) return { kind: "reserved", task };
     } catch (error) {
       releaseClaim(db, {

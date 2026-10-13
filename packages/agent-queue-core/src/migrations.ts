@@ -183,6 +183,37 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
       }
     },
   },
+  {
+    version: 6,
+    name: "task_owner_waits_and_baselines",
+    up: (db) => {
+      // owner_ref: the conversation that is accountable for the task from its first line of code to
+      // its integration; it survives the claim, the candidate and every repair.
+      // waits_for: a temporary scheduling constraint (a path another running task owns), not a
+      // dependency: it clears by itself once that task no longer holds the path.
+      // integration_fingerprint: what the last failed integration looked like (candidate, tip, files),
+      // so an unchanged situation is never repaired twice.
+      db.exec(`
+        ALTER TABLE tasks ADD COLUMN owner_ref TEXT;
+        ALTER TABLE tasks ADD COLUMN owner_turns INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE tasks ADD COLUMN waits_for TEXT;
+        ALTER TABLE tasks ADD COLUMN wait_reason TEXT;
+        ALTER TABLE tasks ADD COLUMN integration_fingerprint TEXT;
+        CREATE TABLE IF NOT EXISTS check_baselines (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          plan_id TEXT,
+          check_key TEXT NOT NULL,
+          ref_commit TEXT NOT NULL,
+          state TEXT NOT NULL,
+          signature TEXT,
+          failing_json TEXT NOT NULL DEFAULT '[]',
+          summary TEXT,
+          run_at TEXT NOT NULL,
+          UNIQUE(check_key, ref_commit)
+        );
+      `);
+    },
+  },
 ];
 
 /**

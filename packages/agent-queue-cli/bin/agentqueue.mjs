@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-import { runCli } from "../src/cli.ts";
+import { runCliAsync } from "../src/cli.ts";
 
 const rawArgs = process.argv.slice(2);
-const { exitCode, output } = runCli(rawArgs);
+const { exitCode, output, error } = await runCliAsync(rawArgs);
 
 if (output) {
   if (exitCode === 0) {
@@ -11,5 +11,6 @@ if (output) {
     process.stderr.write(output + "\n");
   }
 }
+if (error) process.stderr.write(error + "\n");
 
 process.exit(exitCode);

@@ -36,6 +36,7 @@ import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import {
+  openBroker,
   openQueueDatabase,
   releaseClaim,
 } from "../../../../packages/agent-queue-core/src/index.ts";
@@ -78,7 +79,9 @@ const longAgo = () => new Date(Date.now() - 6 * 3600_000);
 const PASS = 'node -e "process.exit(0)"';
 
 /** A plan in the shape plan-work plans use. `ready` tasks have no dependencies. */
-const planWith = (tasks: ReadonlyArray<{ id: string; deps?: string[]; verify?: string }>) =>
+const planWith = (
+  tasks: ReadonlyArray<{ id: string; deps?: string[]; verify?: string; scope?: string }>,
+) =>
   [
     "# Flow plan",
     "",
@@ -87,6 +90,7 @@ const planWith = (tasks: ReadonlyArray<{ id: string; deps?: string[]; verify?: s
     ...tasks.flatMap((task) => [
       `- [ ] **${task.id} — Task ${task.id}.**`,
       `  - Depends on: ${task.deps && task.deps.length > 0 ? task.deps.join(", ") : "none"}.`,
+      ...(task.scope ? [`  - Scope: ${task.scope}.`] : []),
       ...(task.verify === "" ? [] : [`  - Verify: \`${task.verify ?? PASS}\``]),
       "",
     ]),
@@ -326,6 +330,12 @@ const makeFlow = (
       const cwd = created.worktreePath;
       if (change.commit !== false) {
         yield* Effect.promise(async () => {
+          await NodeFSP.mkdir(
+            NodePath.dirname(NodePath.join(cwd, change.file ?? `${taskId}.txt`)),
+            {
+              recursive: true,
+            },
+          );
           await NodeFSP.writeFile(
             NodePath.join(cwd, change.file ?? `${taskId}.txt`),
             change.content ?? `${taskId}\n`,
@@ -434,7 +444,7 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
         const texts = turns.map((t) => (t.type === "thread.turn.start" ? t.message.text : ""));
         for (const text of texts) {
           expect(text).not.toContain("plan-work");
-          expect(text).toContain("already reserved");
+          expect(text).toContain("You own task");
         }
         expect(texts.some((t) => t.includes("T1"))).toBe(true);
         expect(texts.some((t) => t.includes("T2"))).toBe(true);
@@ -921,65 +931,80 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
     }).pipe(Effect.scoped),
   );
 
-  it.effect("a merge conflict is repaired by a repair worker on the existing commits", () =>
-    Effect.gen(function* () {
-      const flow = yield* makeFlow(planWith([{ id: "T1" }, { id: "T2" }]), {
-        extraFiles: { "shared.txt": "base\n" },
-      });
-      const service = yield* flow.startServer;
-      yield* Effect.forkScoped(service.loop);
-      yield* Effect.yieldNow;
-      yield* service.create(settingsFor());
-      yield* flow.waitFor("thread.create", 2);
-      yield* flow.work("T1", { file: "shared.txt", content: "from T1\n" });
-      yield* flow.eventually(
-        flow.taskRow("T1"),
-        (row) => row.status === "completed",
-        "T1 to merge",
-      );
-      yield* flow.work("T2", { file: "shared.txt", content: "from T2\n" });
+  it.effect(
+    "a merge conflict goes back to the same conversation, with the merge prepared in its worktree",
+    () =>
+      Effect.gen(function* () {
+        const flow = yield* makeFlow(planWith([{ id: "T1" }, { id: "T2" }]), {
+          extraFiles: { "shared.txt": "base\n" },
+        });
+        const service = yield* flow.startServer;
+        yield* Effect.forkScoped(service.loop);
+        yield* Effect.yieldNow;
+        yield* service.create(settingsFor());
+        yield* flow.waitFor("thread.create", 2);
+        yield* flow.work("T1", { file: "shared.txt", content: "from T1\n" });
+        yield* flow.eventually(
+          flow.taskRow("T1"),
+          (row) => row.status === "completed",
+          "T1 to merge",
+        );
+        yield* flow.work("T2", { file: "shared.txt", content: "from T2\n" });
 
-      // The conflict starts a repair worker; nothing is re-implemented and nothing needs a person.
-      const creates = yield* flow.waitFor("thread.create", 3);
-      const repair = creates[2]!;
-      expect(repair.title).toContain("Repair: T2");
-      expect(repair.worktreePath).toBe(flow.createdFor("T2")!.worktreePath);
-      const repairTurns = yield* flow.waitFor("thread.turn.start", 3);
-      const repairTurn = repairTurns.at(-1);
-      const text = repairTurn?.type === "thread.turn.start" ? repairTurn.message.text : "";
-      expect(text).toContain("merge repair");
-      expect(text).toContain("shared.txt");
-      expect(yield* flow.taskRow("T2")).toMatchObject({
-        status: "claimed",
-        integration_state: "repairing",
-      });
+        // The conflict does NOT start another worker: T2's own conversation is continued, in its own
+        // worktree, with the merge already started and only the real conflict left.
+        const t2 = flow.createdFor("T2")!;
+        const turns = yield* flow.waitFor("thread.turn.start", 3);
+        const resume = turns.at(-1);
+        expect(resume?.type === "thread.turn.start" && resume.threadId).toBe(t2.threadId);
+        const text = resume?.type === "thread.turn.start" ? resume.message.text : "";
+        expect(text).toContain("shared.txt");
+        expect(text).toContain("merge");
+        expect(flow.log.filter((c) => c.type === "thread.create")).toHaveLength(2);
+        expect(yield* flow.taskRow("T2")).toMatchObject({
+          status: "claimed",
+          integration_state: "repairing",
+        });
+        const cwd = t2.worktreePath!;
+        const status = yield* Effect.promise(
+          async () => (await execCommand("git", ["status", "--porcelain"], cwd)).stdout,
+        );
+        expect(status).toContain("UU shared.txt");
 
-      yield* Effect.promise(async () => {
-        const cwd = repair.worktreePath!;
-        await execCommand("git", ["rebase", "agentqueue/goal/PLAN"], cwd);
-        await NodeFSP.writeFile(NodePath.join(cwd, "shared.txt"), "from T1 and T2\n");
-        await execCommand("git", ["add", "shared.txt"], cwd);
-        await execCommand("git", ["-c", "core.editor=true", "rebase", "--continue"], cwd);
-      });
-      yield* flow.sessionEvent(repair.threadId, { status: "running", activeTurnId: "r" });
-      yield* flow.sessionEvent(repair.threadId, { status: "ready", activeTurnId: null });
-      const done = yield* flow.eventually(
-        flow.goalOf(service),
-        (g) => g.status === "complete",
-        "the goal to complete",
-      );
-      expect(done.chats.every((chat) => chat.status !== "running")).toBe(true);
-      expect(
-        yield* Effect.promise(() =>
-          NodeFSP.readFile(NodePath.join(flow.repo.rootDir, "shared.txt"), "utf8"),
-        ),
-      ).toBe("from T1 and T2\n");
-    }).pipe(Effect.scoped),
+        yield* Effect.promise(async () => {
+          await NodeFSP.writeFile(NodePath.join(cwd, "shared.txt"), "from T1 and T2\n");
+          await execCommand("git", ["add", "shared.txt"], cwd);
+          await execCommand("git", ["commit", "-qm", "resolve"], cwd);
+        });
+        yield* flow.sessionEvent(t2.threadId, { status: "running", activeTurnId: "r" });
+        yield* flow.sessionEvent(t2.threadId, { status: "ready", activeTurnId: null });
+        const done = yield* flow.eventually(
+          flow.goalOf(service),
+          (g) => g.status === "complete",
+          "the goal to complete",
+        );
+        expect(done.chats.every((chat) => chat.status !== "running")).toBe(true);
+        // One conversation per task all the way: two chats, one resumed once.
+        expect(done.chats).toHaveLength(2);
+        expect(done.chats.find((chat) => chat.taskId === "T2")?.resumes).toBe(1);
+        expect(
+          yield* Effect.promise(() =>
+            NodeFSP.readFile(NodePath.join(flow.repo.rootDir, "shared.txt"), "utf8"),
+          ),
+        ).toBe("from T1 and T2\n");
+      }).pipe(Effect.scoped),
   );
 
   it.effect("a failing check sends the worker back with the failure, not a generic nudge", () =>
     Effect.gen(function* () {
-      const flow = yield* makeFlow(planWith([{ id: "T1", verify: 'node -e "process.exit(3)"' }]));
+      const flow = yield* makeFlow(
+        planWith([
+          {
+            id: "T1",
+            verify: "node -e \"process.exit(require('fs').existsSync('T1.txt') ? 3 : 0)\"",
+          },
+        ]),
+      );
       const service = yield* flow.startServer;
       yield* Effect.forkScoped(service.loop);
       yield* Effect.yieldNow;
@@ -1216,10 +1241,14 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
           "",
           "- [ ] **T1 — Task T1.**",
           "  - Depends on: none.",
-          '  - Done: run `node -e "process.exit(0)"` first and then `node -e "process.exit(5)"`; record the result.',
+          '  - Done: run `node -e "process.exit(0)"` first and then `node scripts/check5.js`; record the result.',
           "",
         ].join("\n");
-        const flow = yield* makeFlow(plan);
+        const flow = yield* makeFlow(plan, {
+          extraFiles: {
+            "scripts/check5.js": "process.exit(require('fs').existsSync('T1.txt') ? 5 : 0);\n",
+          },
+        });
         const service = yield* flow.startServer;
         yield* Effect.forkScoped(service.loop);
         yield* Effect.yieldNow;
@@ -1629,5 +1658,159 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
         expect(note.failure_class).toBe("external");
         expect(note.status).toBe("blocked");
       }).pipe(Effect.scoped),
+  );
+  it.effect(
+    "a worker that queued a command for a busy resource is parked without using a lane, and its own conversation gets the result",
+    () =>
+      Effect.gen(function* () {
+        const flow = yield* makeFlow(planWith([{ id: "T1" }, { id: "T2" }]));
+        const service = yield* flow.startServer;
+        yield* Effect.forkScoped(service.loop);
+        yield* Effect.yieldNow;
+        // One lane: if the parked worker kept it, T2 could never start.
+        yield* service.create(
+          settingsFor({
+            concurrency: 1,
+            agents: settingsFor().agents.map((a) => ({ ...a, count: 1 })),
+          }),
+        );
+        yield* flow.waitFor("thread.create", 1);
+        const first = flow.createdFor("T1") ?? flow.createdFor("T2")!;
+        const firstTask = flow.createdFor("T1") ? "T1" : "T2";
+
+        // Something else holds the emulator; the worker's `agentq run` stored its command as a job.
+        const broker = openBroker();
+        const hints = { "test-emulator": { capacity: 1 } };
+        broker.enqueue({
+          resources: [{ name: "test-emulator" }],
+          pid: process.pid,
+          label: "someone else",
+          hints,
+        });
+        broker.pump();
+        const holder = broker.status().resources.find((r) => r.name === "test-emulator")!
+          .holders[0]!.ticket;
+        const job = broker.enqueue({
+          resources: [{ name: "test-emulator" }],
+          ownerRef: firstTask,
+          repo: flow.repo.gitCommonDir,
+          label: "connected tests",
+          hints,
+          job: { command: "echo emulator-tests-passed", cwd: flow.repo.rootDir },
+        });
+        yield* flow.work(firstTask, { reply: "Queued the emulator run.\nWAITING FOR " + job.id });
+
+        // Parked: not submitted, not failed, not holding the lane, claim kept.
+        const parked = yield* flow.eventually(
+          flow.goalOf(service),
+          (g) =>
+            g.chats.some((chat) => chat.taskId === firstTask && chat.taskOutcome === "waiting"),
+          "the worker to be parked on its stored job",
+        );
+        expect(parked.chats.find((chat) => chat.taskId === firstTask)?.resourceJobs).toEqual([
+          job.id,
+        ]);
+        expect((yield* flow.taskRow(firstTask)).status).toBe("claimed");
+        // The freed lane starts the other task; no extra chat for the parked one.
+        const creates = yield* flow.waitFor("thread.create", 2);
+        expect(creates).toHaveLength(2);
+
+        // The emulator frees up: the server runs the stored command and tells the SAME conversation.
+        broker.finish(holder, { outcome: "ok" });
+        broker.close();
+        let resumed: OrchestrationCommand | undefined;
+        for (let round = 0; round < 40 && resumed === undefined; round++) {
+          yield* TestClock.adjust(Duration.seconds(5));
+          yield* Effect.yieldNow;
+          yield* TestClock.adjust(Duration.seconds(1));
+          yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 150)));
+          resumed = (yield* flow.drain).find(
+            (turn) =>
+              turn.type === "thread.turn.start" &&
+              turn.threadId === first.threadId &&
+              turn.message.text.includes("emulator-tests-passed"),
+          );
+        }
+        expect(resumed).toBeDefined();
+        expect(flow.log.filter((c) => c.type === "thread.create")).toHaveLength(2);
+
+        // The worker finishes after the result: now the work is submitted and merged.
+        yield* flow.sessionEvent(first.threadId, { status: "running", activeTurnId: "turn-2" });
+        yield* flow.sessionEvent(first.threadId, { status: "ready", activeTurnId: null });
+        yield* flow.eventually(
+          flow.taskRow(firstTask),
+          (row) => row.status === "completed",
+          "the resumed worker's task to merge",
+        );
+      }).pipe(Effect.scoped),
+    60_000,
+  );
+
+  it.effect(
+    "a task that needs a file another running task holds is parked, and continues in its own conversation when the file is free",
+    () =>
+      Effect.gen(function* () {
+        const flow = yield* makeFlow(
+          planWith([
+            { id: "T1", scope: "src/a/" },
+            { id: "T2", scope: "src/b/" },
+          ]),
+        );
+        const service = yield* flow.startServer;
+        yield* Effect.forkScoped(service.loop);
+        yield* Effect.yieldNow;
+        yield* service.create(settingsFor());
+        yield* flow.waitFor("thread.create", 2);
+        // T1 needs a file that belongs to T2's area while T2 is still working.
+        yield* flow.work("T1", { file: "src/a/one.ts", content: "1\n" });
+        yield* Effect.promise(async () => {
+          const cwd = flow.createdFor("T1")!.worktreePath!;
+          await NodeFSP.mkdir(NodePath.join(cwd, "src/b"), { recursive: true });
+          await NodeFSP.writeFile(NodePath.join(cwd, "src/b/shared.ts"), "needed by T1\n");
+          await execCommand("git", ["add", "-A"], cwd);
+          await execCommand("git", ["commit", "-qm", "T1 touches T2's file"], cwd);
+        });
+        yield* flow.sessionEvent(flow.createdFor("T1")!.threadId, {
+          status: "running",
+          activeTurnId: "x",
+        });
+        yield* flow.sessionEvent(flow.createdFor("T1")!.threadId, {
+          status: "ready",
+          activeTurnId: null,
+        });
+        const parked = yield* flow.eventually(
+          flow.goalOf(service),
+          (g) => g.chats.find((chat) => chat.taskId === "T1")?.taskOutcome === "returned",
+          "T1 to be parked for the file",
+        );
+        expect(parked.chats.find((chat) => chat.taskId === "T1")?.status).toBe("completed");
+        expect((yield* flow.taskRow("T1")).status).toBe("pending");
+        expect(parked.status).toBe("running");
+
+        // T2 finishes and lands; T1 is continued in its own conversation, not a new one.
+        yield* flow.work("T2", { file: "src/b/two.ts", content: "2\n" });
+        const turns = yield* flow.waitFor("thread.turn.start", 3);
+        const again = turns.at(-1);
+        expect(again?.type === "thread.turn.start" && again.threadId).toBe(
+          flow.createdFor("T1")!.threadId,
+        );
+        expect(again?.type === "thread.turn.start" && again.message.text).toContain("free now");
+        expect(flow.log.filter((c) => c.type === "thread.create")).toHaveLength(2);
+        yield* flow.sessionEvent(flow.createdFor("T1")!.threadId, {
+          status: "running",
+          activeTurnId: "y",
+        });
+        yield* flow.sessionEvent(flow.createdFor("T1")!.threadId, {
+          status: "ready",
+          activeTurnId: null,
+        });
+        const done = yield* flow.eventually(
+          flow.goalOf(service),
+          (g) => g.status === "complete",
+          "the goal to complete",
+        );
+        expect(done.chats).toHaveLength(2);
+      }).pipe(Effect.scoped),
+    90_000,
   );
 });

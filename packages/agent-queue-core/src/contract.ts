@@ -90,6 +90,11 @@ export interface RepoContract {
   readonly env: Readonly<Record<string, string>>;
   /** Merge the target branch into the plan's branch when it moved and merges cleanly. */
   readonly syncBase: boolean;
+  /**
+   * Files where two branches each adding lines is normal (barrel exports, registries, changelogs):
+   * a conflict in them keeps both sides' lines. The task's own checks must still pass on the result.
+   */
+  readonly unionMerge: ReadonlyArray<string>;
 }
 
 export type ContractSource = "local" | "committed" | "inferred" | "default";
@@ -120,6 +125,7 @@ const EMPTY: RepoContract = {
   scopeEnforcement: "strict",
   env: {},
   syncBase: true,
+  unionMerge: [],
 };
 
 function git(cwd: string, args: ReadonlyArray<string>): { code: number; stdout: string } {
@@ -256,6 +262,7 @@ export function parseContract(
     ) as Record<string, string>;
   }
   if (typeof raw.syncBase === "boolean") partial.syncBase = raw.syncBase;
+  if (raw.unionMerge !== undefined) partial.unionMerge = asStrings(raw.unionMerge);
   return { partial, problems };
 }
 

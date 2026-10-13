@@ -73,7 +73,7 @@ describe("a multi-worker goal with foreseeable failures", () => {
             );
             await r.commitFile(task.worktreePath, "tree.txt", `${tree}src/${id}/file.txt\n`);
             if (task.taskId === "T2")
-              await r.commitFile(task.worktreePath, "src/zz.txt", "stray\n");
+              await r.commitFile(task.worktreePath, ".env", "TOKEN=stray\n");
             await sleep(30);
 
             for (;;) {
@@ -149,7 +149,9 @@ describe("a multi-worker goal with foreseeable failures", () => {
         c: 0,
       });
       const failures = r.db
-        .prepare("SELECT task_id, class FROM task_failures WHERE class != 'external' ORDER BY id")
+        .prepare(
+          "SELECT task_id, class FROM task_failures WHERE class != 'external' ORDER BY task_id",
+        )
         .all();
       expect(failures).toEqual([
         { task_id: "T2", class: "scope" },
@@ -161,7 +163,7 @@ describe("a multi-worker goal with foreseeable failures", () => {
       const tree = (await execCommand("git", ["show", `${r.goal}:tree.txt`], r.repo.rootDir))
         .stdout;
       for (const id of ["t1", "t2", "t3", "t6", "t7"]) expect(tree).toContain(`src/${id}/file.txt`);
-      expect(tree).not.toContain("src/zz.txt");
+      expect(tree).not.toContain(".env");
 
       // The environment grants the capability: the held task and its dependant finish.
       await NodeFSP.writeFile(flag, "ok");

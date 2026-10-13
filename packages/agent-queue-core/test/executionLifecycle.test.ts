@@ -62,7 +62,7 @@ describe("scope: strict, with legitimate generated and supporting changes", () =
     ]);
   });
 
-  it("sends back unrelated changes, accepts generated ones, and widens only on a validated, justified request", async () => {
+  it("approves necessary files by itself, refuses protected ones, and waits for files another running task holds", async () => {
     const r = await makeRepo({
       plan: plan([
         { id: "A", scope: "src/a/" },
@@ -74,7 +74,7 @@ describe("scope: strict, with legitimate generated and supporting changes", () =
     try {
       const a = await reserved(r);
       expect(a.taskId).toBe("A");
-      const b = await reserved(r); // B is running too: its scope is off limits to A's amendment
+      const b = await reserved(r); // B is running too: its scope is held
       await r.commitFile(a.worktreePath, "src/a/one.ts", "1\n");
       await r.commitFile(a.worktreePath, "tree.txt", "PLAN.md\nsrc/a/one.ts\n");
       await r.commitFile(a.worktreePath, "src/shared/util.ts", "u\n");
@@ -84,30 +84,16 @@ describe("scope: strict, with legitimate generated and supporting changes", () =
       const first = await r.submit(a);
       expect(first.kind).toBe("scope-violation");
       if (first.kind !== "scope-violation") return;
-      expect(first.paths).toEqual(["src/b/stolen.ts", "src/shared/util.ts", "tools/guard.mjs"]);
+      // The shared helper is simply granted. The protected guard is refused. B's file is B's.
+      expect(first.paths).toEqual(["src/b/stolen.ts", "tools/guard.mjs"]);
+      expect(first.amendment?.auto).toEqual(["src/shared/util.ts"]);
+      expect(first.amendment?.waits.map((w) => w.ownerTaskId)).toEqual(["B"]);
+      expect(first.amendment?.denied.map((d) => d.path)).toEqual(["tools/guard.mjs"]);
+      expect(first.amendment?.denied[0]?.why).toContain("protected");
 
-      const granted = await r.submit(a, [
-        {
-          paths: ["src/shared/util.ts"],
-          reason: "the shared helper must change for the new field",
-        },
-        { paths: ["src/b/stolen.ts"], reason: "also needed for the new field to work" },
-        { paths: ["tools/guard.mjs"], reason: "the guard rejects my branch, so relax it" },
-        { paths: ["src/*"], reason: "everything under src is related to this change" },
-      ]);
-      expect(granted.kind).toBe("scope-violation");
-      if (granted.kind !== "scope-violation") return;
-      expect(granted.paths).toEqual(["src/b/stolen.ts", "tools/guard.mjs"]);
-      expect(granted.amendment?.granted).toEqual(["src/shared/util.ts"]);
-      const why = Object.fromEntries(granted.amendment!.denied.map((d) => [d.path, d.why]));
-      expect(why["src/b/stolen.ts"]).toContain("another running task");
-      expect(why["tools/guard.mjs"]).toContain("protected");
-      expect(why["src/*"]).toContain("concrete");
-
-      // The worker removes what it cannot have; the granted amendment and the generated file stand.
       await execCommand("git", ["rm", "-q", "src/b/stolen.ts"], a.worktreePath);
       await execCommand("git", ["checkout", r.goal, "--", "tools/guard.mjs"], a.worktreePath);
-      await execCommand("git", ["commit", "-qm", "revert out of scope"], a.worktreePath);
+      await execCommand("git", ["commit", "-qm", "revert what is not mine"], a.worktreePath);
       const done = await r.submit(a);
       expect(done.kind).toBe("submitted");
       if (done.kind !== "submitted") return;
@@ -119,7 +105,41 @@ describe("scope: strict, with legitimate generated and supporting changes", () =
     }
   });
 
-  it("an out-of-scope change is not silently legitimised by being made", async () => {
+  it("parks a task that needs a file another running task holds, keeps its work, and resumes it when the file is free", async () => {
+    const r = await makeRepo({
+      plan: plan([
+        { id: "A", scope: "src/a/" },
+        { id: "B", scope: "src/b/" },
+      ]),
+      contract: CONTRACT,
+    });
+    try {
+      const a = await reserved(r);
+      const b = await reserved(r);
+      await r.commitFile(a.worktreePath, "src/a/one.ts", "1\n");
+      await r.commitFile(a.worktreePath, "src/b/needed.ts", "needed\n");
+      const parked = await r.submit(a);
+      expect(parked.kind).toBe("scope-wait");
+      if (parked.kind !== "scope-wait") return;
+      expect(parked.waitsFor).toEqual(["B"]);
+      expect(r.task("A").status).toBe("pending");
+      // Nothing is wasted on it while B holds the file.
+      expect((await r.reserve()).kind).toBe("none");
+      // B finishes and lands: A is handed out again, with its commit kept.
+      await r.commitFile(b.worktreePath, "src/b/two.ts", "2\n");
+      expect((await r.submit(b)).kind).toBe("submitted");
+      expect((await r.integrate("B")).kind).toBe("landed");
+      const again = await r.reserve();
+      expect(again.kind).toBe("reserved");
+      if (again.kind !== "reserved") return;
+      expect(again.task.taskId).toBe("A");
+      expect(again.task.existingCommits.length).toBeGreaterThan(0);
+    } finally {
+      await r.repo.cleanup();
+    }
+  });
+
+  it("does not grant a sensitive file just because it was changed, and holds a repeated attempt", async () => {
     const r = await makeRepo({
       plan: plan([{ id: "A", scope: "src/a/" }]),
       contract: CONTRACT,
@@ -127,12 +147,17 @@ describe("scope: strict, with legitimate generated and supporting changes", () =
     try {
       const a = await reserved(r);
       await r.commitFile(a.worktreePath, "src/a/one.ts", "1\n");
-      await r.commitFile(a.worktreePath, "elsewhere.txt", "e\n");
+      await r.commitFile(a.worktreePath, ".env", "TOKEN=1\n");
       const first = await r.submit(a);
       const second = await r.submit(a);
       expect(first.kind).toBe("scope-violation");
       expect(second.kind === "scope-violation" && second.decision.action).toBe("hold");
       expect(r.db.prepare("SELECT count(*) AS c FROM scope_amendments").get()).toEqual({ c: 0 });
+      // With a reason, it is granted.
+      const withReason = await r.submit(a, [
+        { paths: [".env"], reason: "the integration test needs a local placeholder value" },
+      ]);
+      expect(withReason.kind).toBe("submitted");
     } finally {
       await r.repo.cleanup();
     }
@@ -207,7 +232,11 @@ describe("integration: generated files are rebuilt, real conflicts are repaired 
         ).code,
       ).toBe(0);
 
-      await execCommand("git", ["merge", r.goal, "--no-edit", "-X", "theirs"], repair.worktreePath);
+      // The server already started the merge in the worktree and left only the real conflict.
+      expect(repair.repair?.mergeState).toBe("conflicted");
+      NodeFS.writeFileSync(NodePath.join(repair.worktreePath, "shared.txt"), "from A and B\n");
+      await execCommand("git", ["add", "shared.txt"], repair.worktreePath);
+      await execCommand("git", ["commit", "-qm", "resolve"], repair.worktreePath);
       expect((await r.submit(repair)).kind).toBe("submitted");
       expect((await r.integrate("B")).kind).toBe("landed");
     } finally {
@@ -306,7 +335,7 @@ describe("exclusive resources and long-running checks", () => {
     }
   });
 
-  it("serialises across processes with a lock file, and takes over a dead owner's lock", async () => {
+  it("serialises across processes through the broker, and frees a dead owner's hold", async () => {
     const dir = await tmpDir("aq-xproc-");
     const lockDir = NodePath.join(dir, "locks");
     const log = NodePath.join(dir, "log.txt");
@@ -325,17 +354,32 @@ await withResources(["gpu"], async () => {
     );
     const runChild = (name: string) =>
       new Promise<number | null>((resolve) =>
-        NodeChildProcess.spawn(process.execPath, [script, name], { stdio: "ignore" }).on(
-          "close",
-          resolve,
-        ),
+        NodeChildProcess.spawn(process.execPath, [script, name], {
+          stdio: "ignore",
+          env: {
+            ...process.env,
+            AGENTQUEUE_RESOURCE_HOME: dir,
+            AGENTQUEUE_LOCK_ROOT: lockDir,
+            AGENTQUEUE_RESOURCE_CONFIG: NodePath.join(dir, "resources.json"),
+          },
+        }).on("close", resolve),
       );
-    // A lock left by a process that no longer exists must not block anyone.
-    NodeFS.mkdirSync(lockDir, { recursive: true });
     NodeFS.writeFileSync(
-      NodePath.join(lockDir, "gpu.lock"),
-      JSON.stringify({ pid: 2147483646, since: Date.now() }),
+      NodePath.join(dir, "resources.json"),
+      JSON.stringify({ resources: { gpu: { capacity: 1, memoryMb: 0 } } }),
     );
+    // A hold left by a process that no longer exists must not block anyone.
+    const { ResourceBroker } = await import("../src/resourceBroker.ts");
+    const dead = NodeChildProcess.spawn("sleep", ["30"], { stdio: "ignore" });
+    const broker = new ResourceBroker({
+      home: dir,
+      config: () => ({ reserveMb: 0, resources: { gpu: { capacity: 1, memoryMb: 0 } } }),
+    });
+    broker.enqueue({ resources: [{ name: "gpu" }], pid: dead.pid!, label: "left behind" });
+    broker.pump();
+    dead.kill("SIGKILL");
+    broker.close();
+    await new Promise((resolve) => setTimeout(resolve, 300));
     const codes = await Promise.all([runChild("one"), runChild("two"), runChild("three")]);
     expect(codes).toEqual([0, 0, 0]);
     const lines = NodeFS.readFileSync(log, "utf8").trim().split("\n");
@@ -531,12 +575,11 @@ describe("generated files that land, and queue-added dependencies", () => {
 });
 
 describe("exclusive resources the repository cannot share", () => {
-  it("never gives two running tasks the same fixed test database", async () => {
+  it("does not keep a task from starting because another task will use the same fixed database", async () => {
     const r = await makeRepo({
       plan: plan([
         { id: "A", verify: 'node -e "process.exit(0)" integration-a' },
         { id: "B", verify: 'node -e "process.exit(0)" integration-b' },
-        { id: "C", verify: 'node -e "process.exit(0)"' },
       ]),
       contract: {
         branchPrefixes: ["agent/"],
@@ -546,17 +589,10 @@ describe("exclusive resources the repository cannot share", () => {
     try {
       const first = await reserved(r);
       const second = await reserved(r);
-      // A holds the database; B needs it too, so the next free task (C) runs beside A instead.
-      expect([first.taskId, second.taskId]).toEqual(["A", "C"]);
+      // The database is taken per command (agentq run / the server's checks), not per task.
+      expect([first.taskId, second.taskId]).toEqual(["A", "B"]);
       expect(first.resources).toEqual(["fixed-db"]);
-      const third = await r.reserve();
-      expect(third.kind === "none" && third.skipped.map((s) => s.reason)).toEqual([
-        "RESOURCE_BUSY (fixed-db)",
-      ]);
-      // Once A has handed in its work the database is free for B.
-      await r.commitFile(first.worktreePath, "a.txt", "a\n");
-      await r.submit(first);
-      expect((await r.reserve()).kind).toBe("reserved");
+      expect(first.notes.join(" ")).toMatch(/agentq run/);
     } finally {
       await r.repo.cleanup();
     }

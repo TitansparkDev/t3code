@@ -13,6 +13,14 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import {
   adoptCandidate,
+  admitWorker,
+  bindOwner,
+  createJobRunner,
+  describeJob,
+  openBroker,
+  ownerOf,
+  type JobRunner,
+  type Ticket,
   evaluateDeadlock,
   ensureIntegrationBranch,
   integrationBranchFor,
@@ -281,6 +289,40 @@ export class AgentQueueService extends Context.Service<
       binding: QueueBinding,
       reason: string,
     ) => Effect.Effect<string, AgentQueueError>;
+    /** Whether the machine has room for one more worker right now (memory and load), and why not. */
+    readonly admit: (
+      running: number,
+    ) => Effect.Effect<{ readonly ok: boolean; readonly reason: string | null }>;
+    /** Record the conversation accountable for a task, and who that was before. */
+    readonly bindOwner: (
+      binding: QueueBinding,
+      taskId: string,
+      ownerRef: string,
+    ) => Effect.Effect<void, AgentQueueError>;
+    readonly ownerOf: (
+      binding: QueueBinding,
+      taskId: string,
+    ) => Effect.Effect<
+      { readonly ownerRef: string | null; readonly turns: number },
+      AgentQueueError
+    >;
+    /**
+     * Stored resource jobs a task's worker handed to the queue: the ones still waiting or running,
+     * and the finished ones whose result its owner has not been told.
+     */
+    readonly resourceJobs: (
+      binding: QueueBinding,
+      taskId: string,
+    ) => Effect.Effect<
+      {
+        readonly open: ReadonlyArray<string>;
+        readonly finished: ReadonlyArray<{ readonly id: string; readonly summary: string }>;
+      },
+      AgentQueueError
+    >;
+    readonly reportJob: (jobId: string) => Effect.Effect<void, AgentQueueError>;
+    /** Start whatever stored jobs can run now (this server is their runner). Returns how many started. */
+    readonly runJobs: (binding: QueueBinding) => Effect.Effect<number, AgentQueueError>;
   }
 >()("t3/queue/AgentQueueService") {}
 
@@ -304,7 +346,73 @@ function fingerprintOf(binding: QueueBinding, failureClass?: FailureClass): stri
   }
 }
 
+/** One runner per repository: it executes that repository's stored resource jobs, here, in this server. */
+const jobRunners = new Map<string, JobRunner>();
+
 const make = AgentQueueService.of({
+  admit: (running) =>
+    Effect.sync(() => {
+      const verdict = admitWorker({ running });
+      return { ok: verdict.ok, reason: verdict.reason };
+    }),
+
+  bindOwner: (binding, taskId, ownerRef) =>
+    run("bindOwner", () => withDb(binding, (db) => bindOwner(db, taskId, ownerRef))),
+
+  ownerOf: (binding, taskId) => run("ownerOf", () => withDb(binding, (db) => ownerOf(db, taskId))),
+
+  resourceJobs: (binding, taskId) =>
+    run("resourceJobs", () => {
+      const broker = openBroker();
+      try {
+        broker.pump();
+        const tickets = broker
+          .forOwner(taskId, binding.gitCommonDir)
+          .filter((ticket) => ticket.kind === "job");
+        const finished = tickets.filter(
+          (ticket) =>
+            ticket.reportedAt === null &&
+            (ticket.state === "done" || ticket.state === "cancelled" || ticket.state === "expired"),
+        );
+        return {
+          open: tickets
+            .filter(
+              (ticket) =>
+                ticket.state === "waiting" ||
+                ticket.state === "granted" ||
+                ticket.state === "running",
+            )
+            .map((ticket) => ticket.id),
+          finished: finished.map((ticket: Ticket) => ({
+            id: ticket.id,
+            summary: describeJob(ticket),
+          })),
+        };
+      } finally {
+        broker.close();
+      }
+    }),
+
+  reportJob: (jobId) =>
+    run("reportJob", () => {
+      const broker = openBroker();
+      try {
+        broker.markReported(jobId);
+      } finally {
+        broker.close();
+      }
+    }),
+
+  runJobs: (binding) =>
+    runAsync("runJobs", async () => {
+      let runner = jobRunners.get(binding.gitCommonDir);
+      if (!runner) {
+        runner = createJobRunner({ repo: binding.gitCommonDir });
+        jobRunners.set(binding.gitCommonDir, runner);
+      }
+      return (await runner.tick()).length;
+    }),
+
   preview: (repoRoot, planPath) => run("preview", () => previewPlan(repoRoot, planPath)),
 
   bind: (repoRoot, planPath) =>

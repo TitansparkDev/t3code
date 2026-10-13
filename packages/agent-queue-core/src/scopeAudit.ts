@@ -116,56 +116,165 @@ export function parseScopeRequests(reply: string): ScopeRequest[] {
 export interface AmendmentOutcome {
   readonly granted: ReadonlyArray<string>;
   readonly denied: ReadonlyArray<{ readonly path: string; readonly why: string }>;
+  /** Granted without the worker asking: a necessary, unowned, non-sensitive file. */
+  readonly auto: ReadonlyArray<string>;
+  /** Paths another running task holds right now; the caller waits for them instead of failing. */
+  readonly waits: ReadonlyArray<{ readonly path: string; readonly ownerTaskId: string }>;
 }
 
 const MIN_REASON = 20;
 const MAX_PATHS = 25;
 
+/** Files whose change needs a stated reason: credentials, live data, CI, version-control internals. */
+const SENSITIVE_PATTERNS: ReadonlyArray<RegExp> = [
+  /(^|\/)\.env(\.(?!example$|sample$|template$|dist$)|$)/,
+  /\.(pem|key|p12|pfx|jks|keystore|kdbx)$/i,
+  /(^|\/)id_(rsa|ed25519|ecdsa|dsa)/,
+  /(^|\/)(secrets?|credentials?)(\/|\.|$)/i,
+  /(^|\/)\.git(\/|$)/,
+  /(^|\/)\.github\/(workflows|actions)\//,
+  /(^|\/)(userdata|\.t3)\//,
+  /\.(sqlite3?|db)(-wal|-shm)?$/i,
+];
+
+export const isSensitivePath = (path: string): boolean =>
+  SENSITIVE_PATTERNS.some((pattern) => pattern.test(path));
+
+/** Tasks (other than `taskId`) that hold a path right now: a live worker, or work waiting to be merged. */
+function activeOwnersOf(db: NodeSqlite.DatabaseSync, taskId: string, path: string): string[] {
+  const rows = db
+    .prepare(
+      `SELECT t.id, t.scope_patterns FROM tasks t
+       WHERE t.id != ? AND (
+         EXISTS (SELECT 1 FROM task_claims c WHERE c.task_id = t.id AND c.released_at IS NULL)
+         OR t.integration_state IN ('pending', 'conflict', 'repairing')
+       )`,
+    )
+    .all(taskId) as Array<{ id: string; scope_patterns: string }>;
+  return rows
+    .filter((row) => scopesIntersect([path], JSON.parse(row.scope_patterns || "[]") as string[]))
+    .map((row) => row.id);
+}
+
+/**
+ * Settles every path a candidate changed outside its scope, without a person and without a
+ * worker turn where the answer is knowable:
+ *  - protected paths are refused;
+ *  - a path another running task holds is waited for (the caller parks the task, it is not an error);
+ *  - a sensitive path is granted only with a stated reason (`SCOPE-REQUEST`);
+ *  - any other necessary file is granted automatically and recorded.
+ * Making a change never grants it by itself: the audit found the path, and a rule allowed it.
+ */
+export function decideScope(
+  db: NodeSqlite.DatabaseSync,
+  input: {
+    readonly taskId: string;
+    readonly requests: ReadonlyArray<ScopeRequest>;
+    readonly contract: RepoContract;
+    /** Paths the audit found outside the scope: only these can be granted. */
+    readonly violations: ReadonlyArray<string>;
+  },
+): AmendmentOutcome {
+  const granted: string[] = [];
+  const auto: string[] = [];
+  const denied: Array<{ path: string; why: string }> = [];
+  const waits: Array<{ path: string; ownerTaskId: string }> = [];
+  const already = storedAmendments(db, input.taskId);
+  const reasons = new Map<string, string>();
+  for (const request of input.requests) {
+    for (const path of request.paths) reasons.set(normalizeRepoPath(path), request.reason);
+  }
+  const grant = (path: string, reason: string, source: "worker-request" | "auto") => {
+    if (!already.includes(path)) {
+      db.prepare(
+        "INSERT OR IGNORE INTO scope_amendments (task_id, pattern, reason, source, created_at) VALUES (?, ?, ?, ?, ?)",
+      ).run(input.taskId, path, reason.slice(0, 500), source, new Date().toISOString());
+    }
+    granted.push(path);
+    if (source === "auto") auto.push(path);
+  };
+  for (const raw of input.violations.slice(0, MAX_PATHS * 4)) {
+    const path = normalizeRepoPath(raw);
+    const reason = reasons.get(path);
+    if (matchesAny(path, input.contract.protectedPaths)) {
+      denied.push({ path, why: "this path is protected" });
+      continue;
+    }
+    const owners = activeOwnersOf(db, input.taskId, path);
+    if (owners.length > 0) {
+      waits.push({ path, ownerTaskId: owners[0]! });
+      continue;
+    }
+    if (reason !== undefined && reason.length < MIN_REASON) {
+      denied.push({ path, why: "the reason is too short to judge" });
+      continue;
+    }
+    if (reason !== undefined) {
+      grant(path, reason, "worker-request");
+      continue;
+    }
+    if (isSensitivePath(path)) {
+      denied.push({
+        path,
+        why: "this kind of file needs a reason: add `SCOPE-REQUEST: <path> — <why the task needs it>` or revert it",
+      });
+      continue;
+    }
+    if (auto.length >= MAX_PATHS) {
+      denied.push({
+        path,
+        why: `more than ${MAX_PATHS} files outside the scope; the task is too wide for its scope`,
+      });
+      continue;
+    }
+    grant(
+      path,
+      "Changed by the task itself; not protected, sensitive or owned by another running task.",
+      "auto",
+    );
+  }
+  if (granted.length > 0 || denied.length > 0 || waits.length > 0) {
+    recordEvent(db, input.taskId, "scope_amendment", {
+      granted: granted.slice(0, 25),
+      auto: auto.slice(0, 25),
+      denied: denied.slice(0, 10),
+      waits: waits.slice(0, 10),
+    });
+  }
+  return { granted, denied, auto, waits };
+}
+
+/** Kept for callers that only handle explicit requests. */
 export function requestAmendments(
   db: NodeSqlite.DatabaseSync,
   input: {
     readonly taskId: string;
     readonly requests: ReadonlyArray<ScopeRequest>;
     readonly contract: RepoContract;
-    /** Paths the audit actually found outside the scope: only these can be granted. */
     readonly violations: ReadonlyArray<string>;
   },
 ): AmendmentOutcome {
-  const granted: string[] = [];
-  const denied: Array<{ path: string; why: string }> = [];
-  const others = db
-    .prepare(
-      `SELECT t.id, t.scope_patterns FROM tasks t JOIN task_claims c ON c.task_id = t.id
-       WHERE c.released_at IS NULL AND t.id != ?`,
-    )
-    .all(input.taskId) as Array<{ id: string; scope_patterns: string }>;
-  const already = storedAmendments(db, input.taskId);
-  for (const request of input.requests) {
-    for (const rawPath of request.paths.slice(0, MAX_PATHS)) {
-      const path = normalizeRepoPath(rawPath);
-      const refuse = (why: string) => denied.push({ path, why });
-      if (request.reason.length < MIN_REASON) refuse("the reason is too short to judge");
-      else if (/[*?]|^\.\.?$|(^|\/)\.\.(\/|$)|^\//.test(path))
-        refuse("name concrete repository paths, no wildcards or parents");
-      else if (matchesAny(path, input.contract.protectedPaths)) refuse("this path is protected");
-      else if (!input.violations.some((violation) => pathMatches(violation, path)))
-        refuse("the candidate does not change it outside its scope");
-      else if (
-        others.some((other) =>
-          scopesIntersect([path], JSON.parse(other.scope_patterns || "[]") as string[]),
-        )
-      ) {
-        refuse("another running task owns it");
-      } else if (!already.includes(path)) {
-        db.prepare(
-          "INSERT OR IGNORE INTO scope_amendments (task_id, pattern, reason, source, created_at) VALUES (?, ?, ?, 'worker-request', ?)",
-        ).run(input.taskId, path, request.reason.slice(0, 500), new Date().toISOString());
-        granted.push(path);
-      } else granted.push(path);
-    }
-  }
-  if (granted.length > 0 || denied.length > 0) {
-    recordEvent(db, input.taskId, "scope_amendment", { granted, denied: denied.slice(0, 10) });
-  }
-  return { granted, denied };
+  const asked = new Set(input.requests.flatMap((request) => request.paths.map(normalizeRepoPath)));
+  return decideScope(db, {
+    ...input,
+    violations: input.violations.filter((path) => asked.has(normalizeRepoPath(path))),
+  });
+}
+
+/** Whether a task's temporary waits have cleared: nobody holds the paths it needed any more. */
+export function pendingWaits(db: NodeSqlite.DatabaseSync, taskId: string): string[] {
+  const row = db.prepare("SELECT waits_for FROM tasks WHERE id = ?").get(taskId) as
+    | { waits_for: string | null }
+    | undefined;
+  const ids = JSON.parse(row?.waits_for || "[]") as string[];
+  return ids.filter((id) => {
+    const holder = db
+      .prepare(
+        `SELECT 1 FROM tasks t WHERE t.id = ? AND (
+           EXISTS (SELECT 1 FROM task_claims c WHERE c.task_id = t.id AND c.released_at IS NULL)
+           OR t.integration_state IN ('pending', 'conflict', 'repairing'))`,
+      )
+      .get(id);
+    return holder !== undefined;
+  });
 }

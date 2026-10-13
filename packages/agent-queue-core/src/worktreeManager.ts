@@ -223,6 +223,14 @@ export function alignToCandidate(
 
 /** Commits anything a worker left uncommitted so it is part of the branch that is verified. */
 export function commitPendingChanges(worktreePath: string, message: string): boolean {
+  // A merge the server started for the owner and that still has unresolved files is not "work left
+  // behind": committing it would make conflict markers part of the branch.
+  if (
+    execGit(["rev-parse", "-q", "--verify", "MERGE_HEAD"], worktreePath).code === 0 &&
+    execGit(["diff", "--name-only", "--diff-filter=U"], worktreePath).stdout.length > 0
+  ) {
+    return false;
+  }
   const status = execGit(["status", "--porcelain"], worktreePath);
   if (status.code !== 0 || status.stdout.length === 0) return false;
   if (execGit(["add", "-A"], worktreePath).code !== 0) return false;

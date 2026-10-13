@@ -252,8 +252,12 @@ describe("integration branch", () => {
       if (repair.kind !== "reserved") throw new Error("expected repair");
       releaseClaimForRetry(t.db, repair.task.claimToken, "repair worker gave up");
       expect(t.status(b.taskId).integration_state).toBe("conflict");
-      expect(await NodeFSP.readFile(NodePath.join(b.worktreePath, "shared.txt"), "utf8")).toBe(
-        "from b\n",
+      // The committed work is untouched; the worktree keeps the merge the server started for the owner.
+      expect(
+        (await execCommand("git", ["show", `${b.branch}:shared.txt`], t.repo.rootDir)).stdout,
+      ).toBe("from b\n");
+      expect(await NodeFSP.readFile(NodePath.join(b.worktreePath, "shared.txt"), "utf8")).toContain(
+        "<<<<<<<",
       );
       let last = await t.integrate(b.taskId);
       for (let i = 0; i < 4 && last.kind !== "needs-repair"; i++) {
@@ -262,7 +266,7 @@ describe("integration branch", () => {
       }
       t.db
         .prepare(
-          "UPDATE tasks SET integration_state = 'pending', integration_attempts = 2 WHERE id = ?",
+          "UPDATE tasks SET integration_state = 'pending', integration_attempts = 3 WHERE id = ?",
         )
         .run(b.taskId);
       expect(await t.integrate(b.taskId)).toMatchObject({ kind: "needs-repair", exhausted: true });

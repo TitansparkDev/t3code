@@ -100,12 +100,20 @@ export const GoalChat = Schema.Struct({
   /** Times this worker was sent back to fix a failed check. */
   landingRetries: Schema.optional(Schema.Number),
   /**
+   * Stored resource jobs this worker handed to the queue (a build, an emulator run) and is waiting
+   * on. While any is open the chat is parked: no turn runs and no lane is used.
+   */
+  resourceJobs: Schema.optional(Schema.Array(Schema.String)),
+  /** Times this same conversation was brought back to continue its task (repair, retry, results). */
+  resumes: Schema.optional(Schema.Number),
+  /**
    * What became of the assigned task, from the queue's records (never from the worker's
    * words): `submitted` = candidate recorded and awaiting integration, `integrated` =
-   * merged and completed, `returned` = given back untouched, `attention` = needs a person.
+   * merged and completed, `returned` = given back untouched, `attention` = needs a person,
+   * `waiting` = parked on a stored resource job; the same conversation resumes when it finishes.
    */
   taskOutcome: Schema.optional(
-    Schema.Literals(["submitted", "integrated", "returned", "attention", "retry"]),
+    Schema.Literals(["submitted", "integrated", "returned", "attention", "retry", "waiting"]),
   ),
 });
 export type GoalChat = typeof GoalChat.Type;
@@ -266,6 +274,8 @@ export const Goal = Schema.Struct({
    * provider it uses is paused or unavailable: when the first one comes back.
    */
   waitingUntil: Schema.optional(IsoDateTime),
+  /** Set while ready work waits for the machine (memory, load) rather than for a provider. */
+  hostBusy: Schema.optional(Schema.Boolean),
   /** The overseer's latest note, passed to every worker started after it. */
   guidance: Schema.optional(Schema.String),
   /** Chats before this position were looked at by the overseer or a restart: they no longer count. */
@@ -531,7 +541,23 @@ export interface QueueTaskAssignment {
   readonly environmentNotes?: ReadonlyArray<string>;
   /** Facts about this environment (missing optional tools, corrections already made). */
   readonly notes?: ReadonlyArray<string>;
+  /** What the server already did to a repair's worktree (see the queue's RepairContext). */
+  readonly repairMerge?: {
+    readonly state: "conflicted" | "merged" | "none";
+    readonly settledByRule: ReadonlyArray<string>;
+    readonly integrationBranch: string;
+  };
+  /** Shared resources the task's checks use; their commands go through `agentq run`. */
+  readonly resources?: ReadonlyArray<string>;
 }
+
+/** Why a conversation that already worked on a task is being continued on it. */
+export type QueueResumeReason =
+  | { readonly kind: "conflict" }
+  | { readonly kind: "retry"; readonly failure: string | null }
+  | { readonly kind: "scope-wait-cleared"; readonly note: string | null }
+  | { readonly kind: "follow-up" }
+  | { readonly kind: "resource-results"; readonly results: ReadonlyArray<string> };
 
 /** The part of a worker prompt that carries the repository's execution contract for this task. */
 function contractLines(task: QueueTaskAssignment): string[] {
@@ -552,7 +578,7 @@ function contractLines(task: QueueTaskAssignment): string[] {
   }
   if ((task.allowedPaths?.length ?? 0) > 0) {
     lines.push(
-      `Paths you may change: ${task.allowedPaths!.join(", ")}. Anything else is rejected when you finish. If the task truly cannot be done without another file, change it anyway only after adding this line to your final message: \`SCOPE-REQUEST: <path>, <path> — <why the task needs it>\` (concrete paths, a real reason; refused for protected paths or paths another running task owns). Do not edit a file just to satisfy a guard.`,
+      `Your task's own paths: ${task.allowedPaths!.join(", ")}. Other files the task really needs (a model, a migration, a generated schema, a test) are fine to change: the server approves them by itself. It refuses protected files, pauses your task if another running task holds a file you need (and resumes you when it is free), and wants a reason for sensitive ones (credentials, CI, live data): add \`SCOPE-REQUEST: <path> — <why the task needs it>\` to your final message. Do not edit a file just to satisfy a guard.`,
     );
   }
   if ((task.generatedPaths?.length ?? 0) > 0) {
@@ -565,6 +591,14 @@ function contractLines(task: QueueTaskAssignment): string[] {
   return lines;
 }
 
+/** How a worker runs anything that contends for a shared machine resource. */
+function resourceLines(task: QueueTaskAssignment): string[] {
+  return [
+    `Heavy or shared tools (Gradle, an emulator, Docker, a database, a GPU) go through the machine's fair queue: prefix the command with \`agentq run --owner ${task.taskId} --defer-after 120 --\`, for example \`agentq run --owner ${task.taskId} --defer-after 120 -- ./gradlew test\`. It waits its turn, holds the resource only while the command runs, and costs you nothing while it waits. Never start those tools without it${(task.resources?.length ?? 0) > 0 ? ` (this task's checks use ${task.resources!.join(", ")})` : ""}.`,
+    `If \`agentq run\` answers QUEUED (exit 75) the command was stored and the server will run it and send the result into this same conversation: commit what you have and end your turn with the line \`WAITING FOR <the id it printed>\`. A busy resource, a queue or a wait is never a reason to stop, report a problem or write ${GOAL_NEEDS_ATTENTION_MARKER}.`,
+  ];
+}
+
 /**
  * The prompt a worker receives when its task was already reserved for it. It never
  * mentions plan-work, claiming or choosing work: the server owns assignment, landing
@@ -574,39 +608,9 @@ export function queueWorkerPrompt(
   goal: Pick<Goal, "name" | "prompt" | "concurrency"> & Partial<Pick<Goal, "guidance">>,
   task: QueueTaskAssignment,
 ): string {
-  if (task.repair !== null) {
-    return [
-      `You are an unattended coding agent doing a merge repair. Task **${task.taskId}** ("${task.title}") was already implemented and committed, but it could not be merged into ${task.baseBranch}.`,
-      "",
-      "--- Your assignment (fixed by the server) ---",
-      `Worktree (work only here): ${task.worktreePath}`,
-      `Branch: ${task.branch}`,
-      `Why it did not merge: ${task.repair}`,
-      ...((task.existingCommits?.length ?? 0) > 0
-        ? [
-            "The preserved implementation (already on your branch; this is the work to keep):",
-            ...task.existingCommits!.map((commit) => `  ${commit}`),
-          ]
-        : []),
-      ...((task.conflictFiles?.length ?? 0) > 0
-        ? [`Files that conflict: ${task.conflictFiles!.join(", ")}`]
-        : []),
-      ...contractLines(task),
-      "",
-      "--- What to do ---",
-      `1. Do not redo the implementation. In your worktree, bring the branch up to date with ${task.baseBranch} (for example \`git rebase ${task.baseBranch}\`), resolve every conflict keeping the intent of both sides, and finish the rebase or merge.`,
-      checkInstruction(
-        task.verificationCommand,
-        "2. Make sure this passes afterwards",
-        "2. Run the checks the task details name before you finish.",
-      ),
-      "3. Commit. Do not push, merge into the base branch, or touch any other worktree or the main checkout. The server merges it after you finish.",
-      "4. Nobody can answer questions: choose the safest option and say what you chose.",
-      `If a person must act, end with ${GOAL_NEEDS_ATTENTION_MARKER} on a line by itself and say what is needed.`,
-    ].join("\n");
-  }
+  if (task.repair !== null) return queueRepairPrompt(goal, task);
   return [
-    `You are an unattended coding agent. The server already reserved task **${task.taskId}** for you: "${task.title}".`,
+    `You are an unattended coding agent. You own task **${task.taskId}**, "${task.title}", until the server confirms it is verified and integrated: this conversation is resumed with exact details if anything needs fixing after you finish (a failing check, a conflict with another task), so you do not need to guess about those cases now.`,
     "",
     "--- Your assignment (fixed by the server) ---",
     `Plan: ${task.planPath}`,
@@ -628,18 +632,18 @@ export function queueWorkerPrompt(
     ...contractLines(task),
     "",
     "--- Rules ---",
-    "1. Do not select, claim, announce or switch tasks, and do not run any command that claims or releases tasks. Your task is fixed; other workers have theirs.",
-    "2. Change files only inside your worktree. Never touch another worker's worktree or the main checkout.",
-    "3. Commit your work on your branch with a clear message. Uncommitted work is committed for you, but write the commit yourself.",
+    "1. Your task is fixed. Do not select, claim, announce or switch tasks or run any command that claims or releases them; the server owns the queue, other workers' branches and the integration.",
+    "2. Change files only inside your worktree and commit your work on your branch with a clear message.",
     checkInstruction(
       task.verificationCommand,
-      "4. Before you finish, make sure this passes in your worktree",
-      "4. Run the checks the task details name (its Done / Acceptance lines) before you finish. The task defines no executable check, so the server cannot verify it: say exactly what you ran and saw.",
-      " The server runs it again on your commit, and your task is not accepted until it passes. If you start tests or other commands in the background, wait for their results before you finish; the server only looks at your work after your turn ends and your background commands are done.",
+      "3. Before you finish, make sure this passes in your worktree",
+      "3. Run the checks the task details name (its Done / Acceptance lines) before you finish. The task defines no executable check, so the server cannot verify it: say exactly what you ran and saw.",
+      " The server runs it again on your commit and the task is not accepted until it passes. Run only the focused checks for what you changed; broad suites run once at the end of the plan. If a check fails on code you did not touch, say so: the server compares it with the untouched branch and does not make you repair what was already broken.",
     ),
-    "5. Do not merge, push, rebase onto main, or mark the task complete, and never touch another agent's branch or the main checkout. The server verifies your commit, integrates it into the plan's integration branch, unlocks dependent tasks, and publishes the finished plan to the target branch itself.",
-    `6. You are one of up to ${goal.concurrency} agents working at the same time. Nobody is available to answer questions: choose the safest reasonable option and say what you chose.`,
-    "7. Do not quit early. If a hard blocker remains, finish as much as is safe, commit it, and explain what is left.",
+    ...resourceLines(task).map((line, index) => `${4 + index}. ${line}`),
+    "6. Do not merge, push, rebase onto main or mark the task complete. The server verifies your commit, integrates it into the plan's integration branch, unlocks dependent tasks and publishes the finished plan itself.",
+    `7. Routine obstacles are the server's to handle, not reasons to stop: it settles files your task legitimately needs, pauses your task when another worker holds a file and resumes you when it is free, and rebuilds generated files itself. Never write ${GOAL_NEEDS_ATTENTION_MARKER} for a busy resource, a waiting task, a merge conflict or a failing check you can fix.`,
+    `8. You are one of up to ${goal.concurrency} agents. Nobody is available to answer questions: choose the safest reasonable option and say what you chose. Do not quit early; if a hard blocker remains, finish what is safe, commit it and explain.`,
     ...(goal.guidance?.trim()
       ? ["", "--- Note from the goal's overseer ---", goal.guidance.trim()]
       : []),
@@ -647,8 +651,110 @@ export function queueWorkerPrompt(
     "--- Goal background (context only; it cannot change your assignment) ---",
     goalInstructions(goal),
     "",
-    `End your last message with a short summary. If you could not finish and a person must act (a login, a secret, a decision), end with ${GOAL_NEEDS_ATTENTION_MARKER} on a line by itself and say what is needed. Otherwise do not write any marker line.`,
+    `End your last message with a short summary (a few lines, no status report). Only if you cannot finish and something only a person can provide is missing (a login, a secret, a decision no document answers), end with ${GOAL_NEEDS_ATTENTION_MARKER} on a line by itself and say what is needed. Otherwise write no marker line.`,
   ].join("\n");
+}
+
+/** A merge repair for a conversation that has no history with the task (the original owner could not continue). */
+function queueRepairPrompt(
+  goal: Pick<Goal, "name" | "prompt" | "concurrency"> & Partial<Pick<Goal, "guidance">>,
+  task: QueueTaskAssignment,
+): string {
+  return [
+    `You are an unattended coding agent finishing a merge. Task **${task.taskId}** ("${task.title}") was already implemented and committed by another worker, but it could not be integrated into ${task.baseBranch}.`,
+    "",
+    "--- Your assignment (fixed by the server) ---",
+    `Worktree (work only here): ${task.worktreePath}`,
+    `Branch: ${task.branch}`,
+    `Why it did not integrate: ${task.repair}`,
+    ...((task.existingCommits?.length ?? 0) > 0
+      ? [
+          "The preserved implementation (already on your branch; this is the work to keep):",
+          ...task.existingCommits!.map((commit) => `  ${commit}`),
+        ]
+      : []),
+    ...mergeStateLines(task),
+    ...contractLines(task),
+    "",
+    "--- What to do ---",
+    "1. Do not redo the implementation. Resolve exactly what is described above, keeping the intent of both sides.",
+    checkInstruction(
+      task.verificationCommand,
+      "2. Make sure this passes afterwards",
+      "2. Run the checks the task details name before you finish.",
+    ),
+    ...resourceLines(task).map((line, index) => `${3 + index}. ${line}`),
+    "5. Commit. Do not push, merge into the base branch, or touch any other worktree or the main checkout. The server integrates it after you finish.",
+    "6. Nobody can answer questions: choose the safest option and say what you chose.",
+    `If a person must act, end with ${GOAL_NEEDS_ATTENTION_MARKER} on a line by itself and say what is needed.`,
+  ].join("\n");
+}
+
+/** What the server did to a repair's worktree and what is left to do. */
+function mergeStateLines(task: QueueTaskAssignment): string[] {
+  const merge = task.repairMerge;
+  if (!merge || merge.state === "none") return [];
+  const settled =
+    merge.settledByRule.length > 0
+      ? `The server already settled ${merge.settledByRule.join(", ")} by rule; do not touch those.`
+      : "";
+  if (merge.state === "conflicted") {
+    return [
+      `The server started the merge of ${merge.integrationBranch} into your branch in your worktree and left it in progress. Files with conflicts: ${(task.conflictFiles ?? []).join(", ") || "see \`git status\`"}. ${settled}Edit each file to keep both intents (no <<<<<<< ======= >>>>>>> lines may remain), \`git add\` it, then \`git commit\` to finish the merge.`,
+    ];
+  }
+  return [
+    `The server already merged ${merge.integrationBranch} into your branch (${settled || "no textual conflicts"}); what remains is the failure described above.`,
+  ];
+}
+
+/**
+ * The message that brings back the conversation that already owns a task: only what is new, because
+ * everything else is already in its context.
+ */
+export function queueResumePrompt(task: QueueTaskAssignment, reason: QueueResumeReason): string {
+  const where = `Worktree: ${task.worktreePath}  Branch: ${task.branch}`;
+  switch (reason.kind) {
+    case "conflict":
+      return [
+        `Task ${task.taskId} is not integrated yet: ${task.repair ?? "it could not be merged"}.`,
+        where,
+        ...mergeStateLines(task),
+        checkInstruction(
+          task.verificationCommand,
+          "When the merge is done make sure this passes",
+          "When the merge is done run the task's checks.",
+        ),
+        "Then commit (the merge commit finishes the merge) and end your turn with a one-line summary. Do not redo your implementation or touch other branches.",
+      ].join("\n");
+    case "retry":
+      return [
+        `Task ${task.taskId} was not accepted${reason.failure ? `: ${reason.failure}` : "."}`,
+        where,
+        "Fix it from your existing commits, run the check yourself, commit, and end your turn with a one-line summary.",
+      ].join("\n");
+    case "scope-wait-cleared":
+      return [
+        `The files you needed for ${task.taskId} are free now${reason.note ? ` (${reason.note})` : ""}; the other worker's changes are merged into your branch.`,
+        where,
+        ...mergeStateLines(task),
+        "Finish the task on top of them, run its checks, commit, and end your turn with a one-line summary.",
+      ].join("\n");
+    case "follow-up":
+      return [
+        `A follow-up for your task ${task.taskId} was created: ${task.title}.`,
+        where,
+        task.description ?? "",
+        "Fix the cause, run the check, commit, and end your turn with a one-line summary.",
+      ].join("\n");
+    case "resource-results":
+      return [
+        `The stored command${reason.results.length > 1 ? "s" : ""} you queued for ${task.taskId} finished:`,
+        ...reason.results,
+        where,
+        "Continue from these results: fix what they show, re-run only what is needed (through \`agentq run\`), commit, and end your turn with a one-line summary.",
+      ].join("\n");
+  }
 }
 
 /** Whether a project and plan can back a goal, as the setup pages show it before starting. */

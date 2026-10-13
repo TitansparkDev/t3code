@@ -16,10 +16,12 @@
  */
 import type * as NodeSqlite from "node:sqlite";
 import * as NodeChildProcess from "node:child_process";
+import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import { recordEvent } from "./eventStream.ts";
-import { renewLease } from "./claimService.ts";
+import { releaseClaim, renewLease } from "./claimService.ts";
 import {
   expandCommand,
   loadContract,
@@ -31,6 +33,7 @@ import {
 import {
   classifyReason,
   decideAfterFailure,
+  failureSignature,
   recordFailure,
   type FailureClass,
   type FailureDecision,
@@ -38,11 +41,13 @@ import {
 import {
   auditScope,
   changedPaths,
-  requestAmendments,
+  decideScope,
   storedAmendments,
   type AmendmentOutcome,
   type ScopeRequest,
 } from "./scopeAudit.ts";
+import { attributeFailure } from "./baseline.ts";
+import { addFollowUpTask } from "./overseerRepairs.ts";
 import { ensureSlot, taskEnvironment } from "./taskEnvironment.ts";
 import { parseStoredSpec, runSpec, type SpecResult } from "./verificationSpec.ts";
 import { commitPendingChanges } from "./worktreeManager.ts";
@@ -337,6 +342,191 @@ export function resolveGeneratedConflicts(
   return { resolved, remaining };
 }
 
+/**
+ * Conflicts in files the contract lists as union-merged keep both sides' lines. Correctness is
+ * not assumed: the caller's checks run on the merged result before anything moves.
+ */
+export function resolveUnionConflicts(
+  staging: string,
+  contract: RepoContract,
+  conflicted: ReadonlyArray<string>,
+): { readonly resolved: string[]; readonly remaining: string[] } {
+  const resolved: string[] = [];
+  const remaining: string[] = [];
+  for (const file of conflicted) {
+    if (!matchesAny(file, contract.unionMerge)) {
+      remaining.push(file);
+      continue;
+    }
+    // Exact bytes of each side (git() trims its output, which would eat a file's last newline).
+    const stage = (n: 1 | 2 | 3) => {
+      const shown = NodeChildProcess.spawnSync("git", ["show", `:${n}:${file}`], {
+        cwd: staging,
+        encoding: "utf8",
+        maxBuffer: 64 * 1024 * 1024,
+      });
+      return { code: shown.status ?? 1, stdout: shown.stdout ?? "" };
+    };
+    const [base, ours, theirs] = [stage(1), stage(2), stage(3)];
+    if (ours.code !== 0 || theirs.code !== 0) {
+      remaining.push(file); // deleted on one side: that is a decision, not a union
+      continue;
+    }
+    const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "aq-union-"));
+    try {
+      NodeFS.writeFileSync(NodePath.join(dir, "ours"), ours.stdout);
+      NodeFS.writeFileSync(NodePath.join(dir, "base"), base.code === 0 ? base.stdout : "");
+      NodeFS.writeFileSync(NodePath.join(dir, "theirs"), theirs.stdout);
+      const merged = NodeChildProcess.spawnSync(
+        "git",
+        ["merge-file", "--union", "-p", "ours", "base", "theirs"],
+        { cwd: dir, encoding: "utf8" },
+      );
+      if (merged.status === null || merged.status < 0 || merged.stdout === undefined) {
+        remaining.push(file);
+        continue;
+      }
+      NodeFS.writeFileSync(NodePath.join(staging, file), merged.stdout);
+      git(staging, ["add", "--", file]);
+      resolved.push(file);
+    } finally {
+      NodeFS.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+  return { resolved, remaining };
+}
+
+/** Everything a merge conflict can be settled by rule: generated files, then union-merged files. */
+export function resolveMechanicalConflicts(
+  staging: string,
+  contract: RepoContract,
+  conflicted: ReadonlyArray<string>,
+): { readonly resolved: string[]; readonly remaining: string[] } {
+  const union = resolveUnionConflicts(staging, contract, conflicted);
+  const generated = resolveGeneratedConflicts(staging, contract, union.remaining);
+  return {
+    resolved: [...union.resolved, ...generated.resolved],
+    remaining: generated.remaining,
+  };
+}
+
+export interface RepairMerge {
+  /**
+   * `conflicted`: a merge of the integration branch is in progress in the worktree with these files
+   * unresolved. `merged`: the merge is done (by rule, or cleanly) and only a failing check remains.
+   * `up-to-date`: nothing to merge any more. `failed`: the merge could not be started.
+   */
+  readonly state: "conflicted" | "merged" | "up-to-date" | "failed";
+  readonly files: ReadonlyArray<string>;
+  readonly settledByRule: ReadonlyArray<string>;
+  readonly detail: string;
+}
+
+/**
+ * Prepares a repair so the task's own worker can finish it: the integration branch is merged into the
+ * task's worktree, generated and union-merged files are settled by rule, and whatever is left is
+ * left in progress as an ordinary git conflict. The worker resolves exactly that, commits, and
+ * resubmits; nothing about it needs to be rediscovered by hand.
+ */
+export function startRepairMerge(input: {
+  readonly worktreePath: string;
+  readonly repoRoot: string;
+  readonly gitCommonDir: string;
+  readonly integrationBranch: string;
+  readonly baseBranch: string;
+}): RepairMerge {
+  const { worktreePath } = input;
+  if (git(worktreePath, ["rev-parse", "-q", "--verify", "MERGE_HEAD"]).code === 0) {
+    const files = git(worktreePath, ["diff", "--name-only", "--diff-filter=U"])
+      .stdout.split("\n")
+      .filter(Boolean);
+    return {
+      state: files.length > 0 ? "conflicted" : "merged",
+      files,
+      settledByRule: [],
+      detail: "A merge was already in progress.",
+    };
+  }
+  commitPendingChanges(worktreePath, "AgentQueue: keep edits left in the repair worktree");
+  const ref = `refs/heads/${input.integrationBranch}`;
+  if (git(worktreePath, ["merge-base", "--is-ancestor", ref, "HEAD"]).code === 0) {
+    return {
+      state: "up-to-date",
+      files: [],
+      settledByRule: [],
+      detail: `${input.integrationBranch} is already merged.`,
+    };
+  }
+  const merge = git(worktreePath, [
+    ...IDENTITY,
+    "merge",
+    "--no-commit",
+    "--no-ff",
+    "-m",
+    `Merge ${input.integrationBranch} into ${NodePath.basename(worktreePath)}`,
+    ref,
+  ]);
+  const unmerged = () =>
+    git(worktreePath, ["diff", "--name-only", "--diff-filter=U"])
+      .stdout.split("\n")
+      .filter(Boolean);
+  if (merge.code === 0) {
+    const committed = git(worktreePath, [...IDENTITY, "commit", "--no-edit"]);
+    return committed.code === 0 ||
+      git(worktreePath, ["rev-parse", "-q", "--verify", "MERGE_HEAD"]).code !== 0
+      ? { state: "merged", files: [], settledByRule: [], detail: "The merge was clean." }
+      : { state: "failed", files: [], settledByRule: [], detail: committed.stderr.slice(0, 300) };
+  }
+  const files = unmerged();
+  if (files.length === 0) {
+    git(worktreePath, ["merge", "--abort"]);
+    return { state: "failed", files: [], settledByRule: [], detail: merge.stderr.slice(0, 300) };
+  }
+  const contract = loadContract({
+    repoRoot: input.repoRoot,
+    gitCommonDir: input.gitCommonDir,
+    refs: [input.baseBranch, input.integrationBranch],
+  }).contract;
+  const settled = resolveMechanicalConflicts(worktreePath, contract, files);
+  if (settled.remaining.length === 0) {
+    const committed = git(worktreePath, [...IDENTITY, "commit", "--no-edit"]);
+    if (committed.code === 0) {
+      return {
+        state: "merged",
+        files: [],
+        settledByRule: settled.resolved,
+        detail: "Conflicts were settled by rule.",
+      };
+    }
+  }
+  return {
+    state: "conflicted",
+    files: unmerged(),
+    settledByRule: settled.resolved,
+    detail: "Conflicts remain.",
+  };
+}
+
+/** Unresolved merge state or conflict markers in what a worker is about to hand in. */
+export function unresolvedMerge(worktreePath: string, baseRef: string): string[] {
+  const files = git(worktreePath, ["diff", "--name-only", "--diff-filter=U"])
+    .stdout.split("\n")
+    .filter(Boolean);
+  if (files.length > 0) return files;
+  const markers = git(worktreePath, ["diff", "-U0", `${baseRef}...HEAD`]);
+  const seen = new Map<string, Set<string>>();
+  let current = "";
+  for (const line of markers.stdout.split("\n")) {
+    if (line.startsWith("+++ b/")) current = line.slice(6);
+    else if (current) {
+      const kind = /^\+(<<<<<<< |=======$|>>>>>>> )/.exec(line)?.[1]?.[0];
+      if (kind) seen.set(current, (seen.get(current) ?? new Set()).add(kind));
+    }
+  }
+  // A real conflict has all three lines; a file that merely mentions one (a doc, a fixture) is not one.
+  return [...seen.entries()].filter(([, kinds]) => kinds.size === 3).map(([file]) => file);
+}
+
 export interface SubmitInput {
   readonly repoRoot: string;
   readonly baseBranch: string;
@@ -379,6 +569,15 @@ export type SubmitOutcome =
       readonly amendment: AmendmentOutcome | null;
       readonly decision: FailureDecision;
     }
+  | {
+      /**
+       * A file the task needs is held by another running task. Nothing failed: the task is parked
+       * with its work kept and starts again when that task no longer holds the file.
+       */
+      readonly kind: "scope-wait";
+      readonly paths: ReadonlyArray<string>;
+      readonly waitsFor: ReadonlyArray<string>;
+    }
   | { readonly kind: "claim-lost" };
 
 /**
@@ -399,6 +598,25 @@ export async function submitCandidate(
   // Verification can be long; the worker is idle so nobody else renews the lease.
   renewLease(db, input.claimToken, 1800);
 
+  // A repair is handed in as a finished merge: unresolved files, or markers committed by mistake,
+  // go back to the worker before anything else is looked at.
+  const unresolved = unresolvedMerge(input.worktreePath, `refs/heads/${input.baseBranch}`);
+  if (unresolved.length > 0) {
+    const error = `The merge is not finished: resolve the conflicts in ${unresolved.slice(0, 12).join(", ")}, \`git add\` them and commit (no <<<<<<< or >>>>>>> lines may remain).`;
+    const recorded = recordFailure(db, input.taskId, {
+      failureClass: "verification",
+      message: error,
+      headCommit: git(input.worktreePath, ["rev-parse", "HEAD"]).stdout,
+      evidence: { unresolved },
+    });
+    return {
+      kind: "verification-failed",
+      error,
+      receipt: null,
+      failureClass: "verification",
+      decision: decideAfterFailure("verification", recorded),
+    };
+  }
   commitPendingChanges(input.worktreePath, `${input.taskId}: commit changes left uncommitted`);
   const head = git(input.worktreePath, ["rev-parse", "HEAD"]).stdout;
   const ahead = git(input.repoRoot, [
@@ -439,10 +657,12 @@ export async function submitCandidate(
     amendments: storedAmendments(db, input.taskId),
   });
   let amendment: AmendmentOutcome | null = null;
-  if (verdict.violations.length > 0 && (input.scopeRequests?.length ?? 0) > 0) {
-    amendment = requestAmendments(db, {
+  if (verdict.violations.length > 0) {
+    // Settled by rule, not by a person: necessary files are granted, sensitive ones need a reason,
+    // a file another running task holds is waited for.
+    amendment = decideScope(db, {
       taskId: input.taskId,
-      requests: input.scopeRequests!,
+      requests: input.scopeRequests ?? [],
       contract: loaded.contract,
       violations: verdict.violations,
     });
@@ -454,7 +674,35 @@ export async function submitCandidate(
     });
   }
   if (verdict.violations.length > 0 && loaded.contract.scopeEnforcement === "strict") {
-    const error = `These changed paths are outside the task's scope: ${verdict.violations.slice(0, 12).join(", ")}${amendment?.denied.length ? `. Amendment refused: ${amendment.denied.map((d) => `${d.path} (${d.why})`).join("; ")}` : ""}.`;
+    const waitingPaths = new Set(amendment?.waits.map((wait) => wait.path) ?? []);
+    if (
+      amendment !== null &&
+      amendment.denied.length === 0 &&
+      verdict.violations.every((path) => waitingPaths.has(path))
+    ) {
+      const waitsFor = [...new Set(amendment.waits.map((wait) => wait.ownerTaskId))];
+      const detail = amendment.waits
+        .map((wait) => `${wait.path} (held by ${wait.ownerTaskId})`)
+        .join(", ");
+      const now = new Date().toISOString();
+      db.prepare("UPDATE tasks SET waits_for = ?, wait_reason = ? WHERE id = ?").run(
+        JSON.stringify(waitsFor),
+        `Needs ${detail}`.slice(0, 500),
+        input.taskId,
+      );
+      releaseClaim(db, {
+        ownerToken: input.claimToken,
+        finalStatus: "pending",
+        failureReason: null,
+      });
+      recordEvent(db, input.taskId, "task_waiting_for_files", {
+        waitsFor,
+        paths: verdict.violations.slice(0, 12),
+        at: now,
+      });
+      return { kind: "scope-wait", paths: verdict.violations, waitsFor };
+    }
+    const error = `These changed paths are outside the task's scope: ${verdict.violations.slice(0, 12).join(", ")}${amendment?.denied.length ? `. Not allowed: ${amendment.denied.map((d) => `${d.path} (${d.why})`).join("; ")}` : ""}.`;
     const recorded = recordFailure(db, input.taskId, {
       failureClass: "scope",
       message: error,
@@ -516,7 +764,7 @@ export async function submitCandidate(
       return fail(cls === "transient" ? "verification" : cls, reason, null);
     }
   }
-  const receipt = await runSpec(input.taskId, input.worktreePath, spec, undefined, {
+  const checkOptions = {
     env: environment.variables,
     lockDir: NodePath.join(gitDir, "agentqueue", "locks"),
     extraRequires: resourcesNeededBy(
@@ -524,7 +772,83 @@ export async function submitCandidate(
       scope,
       spec.checks.map((check) => check.run),
     ),
-  });
+  };
+  let receipt = await runSpec(input.taskId, input.worktreePath, spec, undefined, checkOptions);
+  // A check that fails on the integration branch the worker started from, in the same way, is not
+  // this worker's to repair: judge the rest, and keep the failure as its own blocking task.
+  const planRow = db.prepare("SELECT plan_id FROM tasks WHERE id = ?").get(input.taskId) as
+    | { plan_id: string | null }
+    | undefined;
+  const baselineFailures: Array<{
+    check: string;
+    cwd: string;
+    reason: string;
+    failing: ReadonlyArray<string>;
+  }> = [];
+  let remaining = [...spec.checks];
+  while (receipt.state === "failed" && planRow?.plan_id && remaining.length > 0) {
+    const failedResult = receipt.checks.find((entry) => !entry.passed);
+    const failedCheck = failedResult
+      ? remaining.find(
+          (check) => check.run === failedResult.run && (check.cwd ?? ".") === failedResult.cwd,
+        )
+      : undefined;
+    if (!failedResult || !failedCheck) break;
+    const origin = await attributeFailure(db, {
+      planId: planRow.plan_id,
+      taskId: input.taskId,
+      repoRoot: input.repoRoot,
+      integrationBranch: input.baseBranch,
+      candidateWorktree: input.worktreePath,
+      check: failedCheck,
+      failed: failedResult,
+      scope: verdict.allowed,
+      changed,
+      env: environment.variables,
+      extraRequires: checkOptions.extraRequires,
+    });
+    recordEvent(db, input.taskId, "task_failure_attributed", {
+      check: failedCheck.run,
+      origin: origin.origin,
+      reason: origin.reason.slice(0, 300),
+    });
+    if (origin.origin !== "baseline") {
+      receipt = {
+        ...receipt,
+        summary: `${receipt.summary}${baselineFailures.length > 0 ? ` (Already failing before this task and set aside: ${baselineFailures.map((entry) => entry.check).join("; ")}.)` : ""}`,
+      };
+      break;
+    }
+    baselineFailures.push({
+      check: failedCheck.run,
+      cwd: failedCheck.cwd ?? ".",
+      reason: origin.reason,
+      failing: origin.failing.slice(0, 20),
+    });
+    remaining = remaining.filter((check) => check !== failedCheck);
+    receipt =
+      remaining.length === 0
+        ? {
+            ...receipt,
+            state: "passed",
+            checks: [],
+            summary: "Every check already fails on the integration branch.",
+          }
+        : await runSpec(
+            input.taskId,
+            input.worktreePath,
+            { ...spec, checks: remaining },
+            undefined,
+            checkOptions,
+          );
+  }
+  if (baselineFailures.length > 0 && receipt.state === "passed") {
+    receipt = {
+      ...receipt,
+      state: "baseline-failed",
+      summary: `${receipt.checks.length} check(s) passed; ${baselineFailures.length} already failed before this task and are tracked on their own: ${baselineFailures.map((entry) => entry.check).join("; ")}.`,
+    };
+  }
   if (receipt.state === "failed" || receipt.state === "timed-out") {
     // The exact result stays on record: every check that ran, how it ended, and the output's tail.
     recordEvent(db, input.taskId, "task_verification_failed", { ...receipt });
@@ -565,6 +889,7 @@ export async function submitCandidate(
         summary: receipt.summary,
         exemptReason: receipt.exemptReason,
         rejected: receipt.rejected,
+        baselineFailures,
         checks: receipt.checks.map((check) => ({
           ...check,
           stdoutTail: check.stdoutTail.slice(-500),
@@ -583,6 +908,18 @@ export async function submitCandidate(
   } catch (error) {
     db.exec("ROLLBACK;");
     throw error;
+  }
+  if (planRow?.plan_id) {
+    for (const entry of baselineFailures) {
+      addFollowUpTask(db, {
+        planId: planRow.plan_id,
+        parentTaskId: input.taskId,
+        kind: "repair",
+        blocking: true,
+        title: `Fix a check that already failed: ${entry.check}`.slice(0, 120),
+        note: `While ${input.taskId} was checked, \`${entry.check}\` (in ${entry.cwd}) failed, and it fails the same way on the integration branch without ${input.taskId}'s changes. ${entry.reason}${entry.failing.length > 0 ? `\nFailing: ${entry.failing.join("; ")}` : ""}\nFix the cause so the check passes. Do not weaken, skip or delete the check.`,
+      });
+    }
   }
   return {
     kind: "submitted",
@@ -629,26 +966,39 @@ function markDeferred(db: NodeSqlite.DatabaseSync, taskId: string, reason: strin
   );
 }
 
+/** What a failed integration looked like, minus the candidate itself: a new commit that fails the same way is the same problem. */
+function integrationFingerprint(tip: string, files: ReadonlyArray<string>, reason: string): string {
+  return NodeCrypto.createHash("sha1")
+    .update(`${tip}|${[...files].sort().join(",")}|${failureSignature("merge-conflict", reason)}`)
+    .digest("hex")
+    .slice(0, 16);
+}
+
 function markNeedsRepair(
   db: NodeSqlite.DatabaseSync,
   taskId: string,
   reason: string,
   files: ReadonlyArray<string>,
   maxRepairs: number,
+  tip = "",
 ): { exhausted: boolean } {
-  const row = db.prepare("SELECT integration_attempts FROM tasks WHERE id = ?").get(taskId) as {
-    integration_attempts: number;
-  };
-  const attempts = row.integration_attempts + 1;
+  const row = db
+    .prepare("SELECT integration_attempts, integration_fingerprint FROM tasks WHERE id = ?")
+    .get(taskId) as { integration_attempts: number; integration_fingerprint: string | null };
+  const fingerprint = integrationFingerprint(tip, files, reason);
+  // Another worker landing since the last attempt is a new situation, not a repeat of the old one;
+  // only the same failure against the same integration tip spends the repair budget.
+  const attempts = row.integration_fingerprint === fingerprint ? row.integration_attempts + 1 : 1;
   const exhausted = attempts > maxRepairs;
   const now = new Date().toISOString();
   db.prepare(
     `UPDATE tasks SET integration_state = ?, integration_attempts = ?, integration_error = ?,
-       integration_updated_at = ?, updated_at = ? WHERE id = ?`,
+       integration_fingerprint = ?, integration_updated_at = ?, updated_at = ? WHERE id = ?`,
   ).run(
     exhausted ? "repair_needed" : "conflict",
     attempts,
     reason.slice(0, 1000),
+    fingerprint,
     now,
     now,
     taskId,
@@ -713,7 +1063,7 @@ export async function integrateCandidate(
       }
     | undefined;
   if (!row?.candidate_commit) return { kind: "not-pending" };
-  const maxRepairs = input.maxRepairs ?? 2;
+  const maxRepairs = input.maxRepairs ?? 3;
   const candidate = row.candidate_commit;
 
   if (git(input.repoRoot, ["cat-file", "-e", `${candidate}^{commit}`]).code !== 0) {
@@ -768,7 +1118,7 @@ export async function integrateCandidate(
           gitCommonDir: input.gitCommonDir,
           refs: [input.baseBranch, goalBranch],
         }).contract;
-        const resolved = resolveGeneratedConflicts(staging, contract, files);
+        const resolved = resolveMechanicalConflicts(staging, contract, files);
         if (resolved.remaining.length === 0 && resolved.resolved.length > 0) {
           const committed = git(staging, [...IDENTITY, "commit", "--no-edit"]);
           if (committed.code === 0) {
@@ -781,10 +1131,10 @@ export async function integrateCandidate(
           const real = resolved.remaining.length > 0 ? resolved.remaining : files;
           const generatedNote =
             resolved.resolved.length > 0
-              ? ` (generated files ${resolved.resolved.join(", ")} are rebuilt by the server; do not hand-merge them)`
+              ? ` (${resolved.resolved.join(", ")} are settled by the server by rule; do not hand-merge them)`
               : "";
           const reason = `Merging ${input.taskId} into ${goalBranch} conflicts in: ${real.join(", ") || merge.stderr.slice(0, 200)}${generatedNote}`;
-          const { exhausted } = markNeedsRepair(db, input.taskId, reason, real, maxRepairs);
+          const { exhausted } = markNeedsRepair(db, input.taskId, reason, real, maxRepairs, tip);
           return { kind: "needs-repair", reason, files: real, exhausted };
         }
       }
@@ -854,7 +1204,7 @@ export async function integrateCandidate(
             phase: "after-merge",
           });
           const reason = `After merging with ${goalBranch}, the checks failed: ${receipt.summary.slice(-600)}`;
-          const { exhausted } = markNeedsRepair(db, input.taskId, reason, [], maxRepairs);
+          const { exhausted } = markNeedsRepair(db, input.taskId, reason, [], maxRepairs, tip);
           return { kind: "needs-repair", reason, files: [], exhausted };
         }
       }

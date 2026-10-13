@@ -14,7 +14,7 @@ describe("AgentQueue SQLite Engine & Migrations (AQ-007)", () => {
       expect(db1).toBeDefined();
 
       const versionRow = db1.prepare("PRAGMA user_version").get() as { user_version: number };
-      expect(versionRow.user_version).toBe(5);
+      expect(versionRow.user_version).toBe(6);
 
       // Verify tables exist
       const tables = db1
@@ -35,7 +35,7 @@ describe("AgentQueue SQLite Engine & Migrations (AQ-007)", () => {
       db1.close();
       const db2 = openQueueDatabase({ gitCommonDir: repo.gitCommonDir });
       const versionRow2 = db2.prepare("PRAGMA user_version").get() as { user_version: number };
-      expect(versionRow2.user_version).toBe(5);
+      expect(versionRow2.user_version).toBe(6);
       db2.close();
     } finally {
       await repo.cleanup();

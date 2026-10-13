@@ -11,12 +11,71 @@
 import type * as NodeSqlite from "node:sqlite";
 import * as NodeChildProcess from "node:child_process";
 import * as NodePath from "node:path";
-import { loadContract, resourcesNeededBy } from "./contract.ts";
+import { loadContract, matchesAny, resourcesNeededBy } from "./contract.ts";
+import { scopesIntersect } from "./scopeManager.ts";
 import { recordEvent } from "./eventStream.ts";
 import { acquireLandingLock, prepareStagingWorktree } from "./integration.ts";
 import { addFollowUpTask } from "./overseerRepairs.ts";
 import { ensureSlot, taskEnvironment } from "./taskEnvironment.ts";
 import { parseStoredSpec, runSpec } from "./verificationSpec.ts";
+
+interface Landing {
+  readonly taskId: string;
+  readonly commit: string;
+}
+
+/** Files one landing changed on the integration branch (its first-parent diff). */
+function landingFiles(repoRoot: string, commit: string, cache: Map<string, string[]>): string[] {
+  const cached = cache.get(commit);
+  if (cached) return cached;
+  const out = NodeChildProcess.spawnSync("git", ["diff", "--name-only", `${commit}^1`, commit], {
+    cwd: repoRoot,
+    encoding: "utf8",
+  });
+  const files = (out.stdout ?? "").split("\n").filter(Boolean);
+  cache.set(commit, files);
+  return files;
+}
+
+/**
+ * The landings after `taskId`'s own that touched what the task owns or changed: the only ones that
+ * can have broken its checks. Everything else could not have, so its checks are not run again.
+ */
+function impactingLandings(
+  db: NodeSqlite.DatabaseSync,
+  repoRoot: string,
+  planId: string,
+  taskId: string,
+  scope: ReadonlyArray<string>,
+  cache: Map<string, string[]>,
+): Landing[] {
+  const landings = (
+    db
+      .prepare(
+        `SELECT l.task_id AS taskId, l.commit_hash AS sha FROM landing_queue l
+         JOIN tasks t ON t.id = l.task_id WHERE t.plan_id = ? AND l.status = 'landed' ORDER BY l.id`,
+      )
+      .all(planId) as unknown as Array<{ taskId: string; sha: string | null }>
+  )
+    .filter((landing) => landing.sha)
+    .map((landing) => ({ taskId: landing.taskId, commit: landing.sha! }));
+  const own = landings.findIndex((landing) => landing.taskId === taskId);
+  if (own === -1) return [];
+  const mine = new Set(landingFiles(repoRoot, landings[own]!.commit, cache));
+  const amended = (
+    db.prepare("SELECT pattern FROM scope_amendments WHERE task_id = ?").all(taskId) as Array<{
+      pattern: string;
+    }>
+  ).map((row) => row.pattern);
+  const owned = [...scope, ...amended];
+  return landings
+    .slice(own + 1)
+    .filter((landing) =>
+      landingFiles(repoRoot, landing.commit, cache).some(
+        (file) => mine.has(file) || matchesAny(file, owned) || scopesIntersect([file], owned),
+      ),
+    );
+}
 
 export interface AuditReport {
   readonly audited: ReadonlyArray<{ readonly taskId: string; readonly state: string }>;
@@ -86,9 +145,40 @@ export async function auditUnverifiedTasks(
       state = undefined;
     }
     return (
-      state === undefined || state === "unverified" || state === "failed" || state === "timed-out"
+      state === undefined ||
+      state === "unverified" ||
+      state === "failed" ||
+      state === "timed-out" ||
+      state === "baseline-failed"
     );
   });
+  // Change impact: a task that passed when it landed is run again only if something landed since
+  // that touched what it owns or changed, and only once per integration tip.
+  const fileCache = new Map<string, string[]>();
+  const impact = new Map<string, Landing[]>();
+  for (const task of tasks) {
+    if (needs.includes(task)) continue;
+    const last = db
+      .prepare(
+        "SELECT payload_json FROM task_events WHERE task_id = ? AND event_type = 'task_audited' ORDER BY id DESC LIMIT 1",
+      )
+      .get(task.id) as { payload_json: string } | undefined;
+    if (last && (JSON.parse(last.payload_json) as { commit?: string }).commit === tip) continue;
+    const spec = parseStoredSpec(task.verification_spec, task.verification_command);
+    if (spec.checks.length === 0) continue;
+    const scope = JSON.parse(
+      (
+        db.prepare("SELECT scope_patterns FROM tasks WHERE id = ?").get(task.id) as {
+          scope_patterns: string | null;
+        }
+      ).scope_patterns || "[]",
+    ) as string[];
+    const later = impactingLandings(db, input.repoRoot, input.planId, task.id, scope, fileCache);
+    if (later.length > 0) {
+      impact.set(task.id, later);
+      needs.push(task);
+    }
+  }
   if (needs.length === 0) return { audited, followUps, unauditable };
 
   const loaded = loadContract({
@@ -140,13 +230,42 @@ export async function auditUnverifiedTasks(
       });
       audited.push({ taskId: task.id, state: receipt.state });
       if (receipt.state === "failed" || receipt.state === "timed-out") {
+        // Which landing broke it? Search the ones that could have, instead of blaming the task.
+        let culprit = task.id;
+        const suspects = impact.get(task.id) ?? [];
+        if (suspects.length > 0) {
+          let low = 0;
+          let high = suspects.length - 1; // the tip itself fails; look for the first failing landing
+          while (low < high) {
+            const mid = Math.floor((low + high) / 2);
+            const probe = prepareStagingWorktree(input.repoRoot, suspects[mid]!.commit);
+            const earlier = await runSpec(task.id, probe, spec, undefined, {
+              env: taskEnvironment({
+                taskId: task.id,
+                slot,
+                gitCommonDir: input.gitCommonDir,
+                contract: loaded.contract,
+              }).variables,
+              extraRequires: resourcesNeededBy(
+                loaded.contract,
+                scope,
+                spec.checks.map((check) => check.run),
+              ),
+            });
+            if (earlier.state === "failed" || earlier.state === "timed-out") high = mid;
+            else low = mid + 1;
+          }
+          culprit = suspects[low]!.taskId;
+        }
+        const blamed =
+          culprit === task.id ? "" : ` The first landing after which it fails is ${culprit}'s.`;
         const followUp = addFollowUpTask(db, {
           planId: input.planId,
-          parentTaskId: task.id,
+          parentTaskId: culprit,
           kind: "repair",
           blocking: true,
-          title: `Repair ${task.id}: its checks fail on the integrated plan`,
-          note: `The checks of ${task.id} were run against the integration branch at ${tip.slice(0, 9)} and failed.\n${receipt.summary.slice(0, 1500)}\nFix the cause in the code and make them pass; do not weaken the checks.`,
+          title: `Repair ${task.id}'s checks, broken on the integrated plan`.slice(0, 120),
+          note: `The checks of ${task.id} (${spec.checks.map((check) => `\`${check.run}\``).join(", ")}) were run against the integration branch at ${tip.slice(0, 9)} and fail.${blamed}\n${receipt.summary.slice(0, 1500)}\nFix the cause in the code, whoever's change it was, and make them pass; do not weaken the checks.`,
         });
         followUps.push(followUp.taskId);
       }

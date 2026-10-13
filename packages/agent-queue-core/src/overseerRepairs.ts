@@ -409,8 +409,8 @@ export function addFollowUpTask(
     db.prepare(
       `INSERT INTO tasks (id, plan_id, title, description, status, priority, scope_patterns,
          dependencies, verification_command, verification_spec, failure_reason, failure_class,
-         unblock_fingerprint, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         unblock_fingerprint, created_at, updated_at, owner_ref)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT owner_ref FROM tasks WHERE id = ?))`,
     ).run(
       taskId,
       input.planId,
@@ -427,6 +427,7 @@ export function addFollowUpTask(
       input.kind === "decision" ? (input.fingerprint ?? null) : null,
       now,
       now,
+      input.parentTaskId,
     );
     let rewired: string[] = [];
     if (input.blocking) {

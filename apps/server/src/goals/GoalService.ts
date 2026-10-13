@@ -8,6 +8,7 @@ import {
 import {
   describeEnvironment,
   findUnmergedLegacyBranches,
+  type ReservedTask,
 } from "../../../../packages/agent-queue-core/src/index.ts";
 /**
  * Runs goals: keeps up to `concurrency` chats working at once, starts the next
@@ -73,7 +74,10 @@ import {
   MAX_GOAL_MAX_CHATS,
   goalInstructions,
   goalPrompt,
+  queueResumePrompt,
   queueWorkerPrompt,
+  type QueueResumeReason,
+  type QueueTaskAssignment,
   requestedQueueMode,
   type GoalPlanPreview,
   goalSettingsProblem,
@@ -539,6 +543,15 @@ export const make = Effect.gen(function* () {
         : { ...goal, waitingUntil, detail: detail as never };
     });
 
+  /** Say, on the goal, that ready work is waiting for the machine to have room. */
+  const markHostBusy = (goalId: GoalId, reason: string) =>
+    store.update(goalId, (goal) => {
+      const detail = `Waiting for the machine: ${reason} The goal carries on by itself.`;
+      return goal.hostBusy === true && goal.detail === detail
+        ? goal
+        : { ...goal, hostBusy: true, detail: detail.slice(0, 480) as never };
+    });
+
   /** The goal is no longer waiting on a provider. */
   const clearWaiting = (goalId: GoalId) =>
     store.update(goalId, (goal) =>
@@ -735,9 +748,117 @@ export const make = Effect.gen(function* () {
     }
   });
 
+  /** The conversation accountable for a task: the latest worker chat that worked on it. */
+  const ownerChatOf = (goal: Goal, taskId: string) => {
+    const direct = goal.chats.findLast((chat) => !chat.overseer && chat.taskId === taskId);
+    if (direct) return direct;
+    // A follow-up (T3-FU1) belongs to the conversation that owned its parent.
+    const parent = /^(.*)-FU\d+$/u.exec(taskId)?.[1];
+    return parent
+      ? goal.chats.findLast((chat) => !chat.overseer && chat.taskId === parent)
+      : undefined;
+  };
+
+  /** How many times one conversation is brought back onto a task before a fresh worker takes over. */
+  const MAX_OWNER_RESUMES = 8;
+
+  /** What the queue knows about a reserved task, as the prompt describes it. */
+  const assignmentOf = (binding: QueueBinding, task: ReservedTask, lastFailure: string | null) => {
+    const merge = task.repair
+      ? {
+          state: task.repair.mergeState,
+          settledByRule: task.repair.settledByRule,
+          integrationBranch: task.repair.integrationBranch,
+        }
+      : task.waited
+        ? {
+            state: task.waited.mergeState,
+            settledByRule: task.waited.settledByRule,
+            integrationBranch: task.waited.integrationBranch,
+          }
+        : undefined;
+    const assignment: QueueTaskAssignment = {
+      taskId: task.taskId,
+      title: task.title,
+      description: task.description,
+      verificationCommand: task.verificationCommand,
+      worktreePath: task.worktreePath,
+      branch: task.branch,
+      baseBranch: task.baseBranch,
+      planPath: binding.planPath,
+      retryCount: task.retryCount,
+      lastFailure,
+      repair: task.repair?.reason ?? null,
+      existingCommits: task.repair ? task.repair.commits : task.existingCommits,
+      conflictFiles: task.repair?.files ?? task.waited?.files ?? [],
+      allowedPaths: task.scope.length > 0 ? task.allowedPaths : [],
+      guards: task.guards,
+      generatedPaths: task.generatedPaths,
+      environmentNotes: describeEnvironment({
+        slot: Number(task.environment.AGENTQUEUE_SLOT ?? 0),
+        variables: task.environment,
+      }),
+      notes: task.notes,
+      resources: task.resources,
+      ...(merge ? { repairMerge: merge } : {}),
+    };
+    return assignment;
+  };
+
   /**
-   * Reserve a ready task, then open a chat for it. The reservation comes first: when no
-   * task is ready this returns "none" without creating a thread or spending a model turn.
+   * Bring the conversation that owns a task back onto it, in the same thread with its whole
+   * context, instead of starting a stranger. Returns false when that conversation cannot continue
+   * (its provider is out, it is gone, it has been resumed too often): then a fresh worker takes the
+   * task over from the preserved commits, which is the exception.
+   */
+  const resumeOwner = Effect.fn("GoalService.resumeOwner")(function* (
+    goal: Goal,
+    binding: QueueBinding,
+    task: ReservedTask,
+    owner: GoalChat,
+    text: string,
+  ) {
+    if (owner.status === "running" || (owner.resumes ?? 0) >= MAX_OWNER_RESUMES) return false;
+    if (task.ownerTurns >= MAX_OWNER_RESUMES * 2) return false;
+    const unavailable = yield* unavailableAgents(goal);
+    if (unavailable.has(owner.agentIndex)) return false;
+    const thread = yield* readThread(owner.threadId);
+    if (!thread || !(yield* workerQuiet(owner.threadId))) return false;
+    // One writer per worktree: nothing else may still be working where the owner is about to.
+    yield* stopStaleWorkers(goal, task.worktreePath, task.claimToken);
+    const sent = yield* continueChat(goal, owner, text);
+    if (!sent) return false;
+    yield* updateChat(goal.id, owner.threadId, {
+      claimToken: task.claimToken,
+      taskId: task.taskId,
+      worktreePath: task.worktreePath,
+      branch: task.branch,
+      baseBranch: task.baseBranch,
+      settled: false,
+      taskOutcome: undefined,
+      resourceJobs: undefined,
+      attentionNote: undefined,
+      landingRetries: 0,
+      worktreeRetired: undefined,
+      resumes: (owner.resumes ?? 0) + 1,
+    });
+    yield* queue
+      .bindOwner(binding, task.taskId, owner.threadId)
+      .pipe(Effect.catch(logQueueError("goals.agentqueue-bind-owner-failed")));
+    yield* Effect.logInfo("goals.agentqueue-owner-resumed", {
+      goalId: goal.id,
+      taskId: task.taskId,
+      threadId: owner.threadId,
+      resumes: (owner.resumes ?? 0) + 1,
+    });
+    return true;
+  });
+
+  /**
+   * Reserve a ready task, then give it to its owner. The reservation comes first: when no
+   * task is ready this returns "none" without creating a thread or spending a model turn. A
+   * task that already has an owner (a repair, a retry, a task that waited for a file) goes back
+   * to that same conversation; only a new task, or one whose owner cannot continue, gets a new chat.
    */
   const startQueueChat = Effect.fn("GoalService.startQueueChat")(function* (
     goal: Goal,
@@ -746,6 +867,16 @@ export const make = Effect.gen(function* () {
   ) {
     const agent = goal.agents[agentIndex];
     if (!agent) return "none" as const;
+    // The machine decides how many workers are sensible, not a fixed count: when memory or load
+    // leaves no headroom nothing starts, and nothing is wasted by asking.
+    const running = goal.chats.filter((chat) => chat.status === "running" && !chat.overseer).length;
+    const admitted = yield* queue.admit(running);
+    if (!admitted.ok) {
+      yield* markHostBusy(goal.id, admitted.reason ?? "The machine has no spare capacity.");
+      return "none" as const;
+    }
+    if (goal.hostBusy)
+      yield* store.update(goal.id, (current) => ({ ...current, hostBusy: undefined }));
     const workerId = `goal-${goal.id}-agent-${agentIndex}-${yield* randomUUID}`;
     const reserved = yield* queue.reserveNext(binding, workerId).pipe(
       Effect.map((task) => ({ ok: true as const, task })),
@@ -796,6 +927,7 @@ export const make = Effect.gen(function* () {
           lastFailure = result.error;
         }
         if (result.kind === "claim-lost") return "failed" as const;
+        if (result.kind === "scope-wait") return "started" as const;
       }
     }
 
@@ -803,34 +935,27 @@ export const make = Effect.gen(function* () {
     // up again must stop before the next one starts in the same directory.
     yield* stopStaleWorkers(goal, task.worktreePath, task.claimToken);
 
+    const assignment = assignmentOf(binding, task, lastFailure);
+    const owner = ownerChatOf(goal, task.taskId);
+    if (owner) {
+      const reason: QueueResumeReason = task.repair
+        ? { kind: "conflict" }
+        : task.waited
+          ? { kind: "scope-wait-cleared", note: task.waited.note }
+          : /-FU\d+$/u.test(task.taskId) && owner.taskId !== task.taskId
+            ? { kind: "follow-up" }
+            : { kind: "retry", failure: lastFailure };
+      if (yield* resumeOwner(goal, binding, task, owner, queueResumePrompt(assignment, reason))) {
+        return "started" as const;
+      }
+    }
+
     const threadId = yield* openChat(goal, {
       title: `${task.repair ? "Repair" : "Goal worker"}: ${task.taskId} ${task.title}`.slice(
         0,
         120,
       ),
-      text: queueWorkerPrompt(goal, {
-        taskId: task.taskId,
-        title: task.title,
-        description: task.description,
-        verificationCommand: task.verificationCommand,
-        worktreePath: task.worktreePath,
-        branch: task.branch,
-        baseBranch: task.baseBranch,
-        planPath: binding.planPath,
-        retryCount: task.retryCount,
-        lastFailure,
-        repair: task.repair?.reason ?? null,
-        existingCommits: task.repair ? task.repair.commits : task.existingCommits,
-        conflictFiles: task.repair?.files ?? [],
-        allowedPaths: task.scope.length > 0 ? task.allowedPaths : [],
-        guards: task.guards,
-        generatedPaths: task.generatedPaths,
-        environmentNotes: describeEnvironment({
-          slot: Number(task.environment.AGENTQUEUE_SLOT ?? 0),
-          variables: task.environment,
-        }),
-        notes: task.notes,
-      }),
+      text: queueWorkerPrompt(goal, assignment),
       agentIndex,
       modelSelection: agent.modelSelection,
       worktreePath: task.worktreePath,
@@ -849,6 +974,9 @@ export const make = Effect.gen(function* () {
       );
       return "failed" as const;
     }
+    yield* queue
+      .bindOwner(binding, task.taskId, threadId)
+      .pipe(Effect.catch(logQueueError("goals.agentqueue-bind-owner-failed")));
     return "started" as const;
   });
 
@@ -1255,6 +1383,18 @@ export const make = Effect.gen(function* () {
             });
             return yield* fillLanes(goalId);
           }
+          case "scope-wait": {
+            // Not a failure: a file the task needs is held by another running task. The task is parked
+            // with its commits; this same conversation continues when the file is free.
+            yield* Effect.logInfo("goals.agentqueue-task-waiting-for-files", {
+              goalId,
+              taskId: chat.taskId,
+              waitsFor: result.waitsFor,
+            });
+            yield* updateChat(goalId, threadId, { completedAt: now, taskOutcome: "returned" });
+            yield* settleThread(goalId, threadId);
+            return yield* fillLanes(goalId);
+          }
           case "no-changes":
           case "scope-violation":
           case "verification-failed": {
@@ -1284,7 +1424,7 @@ export const make = Effect.gen(function* () {
               result.kind === "no-changes"
                 ? NO_COMMIT_PROMPT
                 : result.kind === "scope-violation"
-                  ? `The server checked which files your commits change and found changes outside your task's allowed paths:\n${result.error}\nRevert those changes (for example \`git checkout ${binding.integrationBranch ?? binding.baseBranch} -- <path>\` or \`git rm\`), commit, and finish. If the task truly cannot be done without one of them, say so in your final message with a line \`SCOPE-REQUEST: <path>, <path> — <why>\` (concrete paths and a real reason). Do not widen your scope silently.`
+                  ? `The server checked which files your commits change and cannot accept some of them:\n${result.error}\nProtected files cannot be changed: revert them (for example \`git checkout ${binding.integrationBranch ?? binding.baseBranch} -- <path>\` or \`git rm\`) and commit. A sensitive file the task truly needs is accepted with a line \`SCOPE-REQUEST: <path> — <why>\` in your final message. Then finish.`
                   : `The server ran the task's check on your commit and it failed:\n${result.error}\nFix it in your worktree, run the check yourself, and commit.`;
             if (
               !held &&
@@ -1461,9 +1601,32 @@ export const make = Effect.gen(function* () {
       return yield* settleAfterProblem(goalId);
     }
 
-    // 3. The turn completed and nothing is still running. What the worker wrote never decides
-    //    the task: its commits and the task's check do (see submitFlow). A request for a person
-    //    is kept as a note so it is acted on without throwing the work away.
+    // 3a. The worker handed commands to the machine's queue (a busy emulator, a long build) and
+    //     ended its turn. Nothing is wrong and nothing is finished: the conversation is parked, its
+    //     lane is free, and the server brings it back with the results when they exist.
+    const handedOver = chat.taskId
+      ? yield* queue.resourceJobs(binding, chat.taskId).pipe(Effect.option)
+      : Option.none();
+    if (Option.isSome(handedOver) && handedOver.value.open.length > 0) {
+      yield* updateChat(goalId, threadId, {
+        status: "completed",
+        completedAt: now,
+        waitingForLimit: undefined,
+        taskOutcome: "waiting",
+        resourceJobs: handedOver.value.open,
+      });
+      yield* settleThread(goalId, threadId);
+      yield* Effect.logInfo("goals.agentqueue-worker-parked-on-resource", {
+        goalId,
+        taskId: chat.taskId,
+        jobs: handedOver.value.open,
+      });
+      return yield* fillLanes(goalId);
+    }
+
+    // 3b. The turn completed and nothing is still running. What the worker wrote never decides
+    //     the task: its commits and the task's check do (see submitFlow). A request for a person
+    //     is kept as a note so it is acted on without throwing the work away.
     const attentionNote = replyAttentionNote(lastAssistantReply(thread));
     if (attentionNote) yield* updateChat(goalId, threadId, { attentionNote });
 
@@ -1488,7 +1651,8 @@ export const make = Effect.gen(function* () {
     // Submitted work that is waiting to merge is retried whenever the scheduler looks.
     yield* ensureIntegration(goalId);
     for (const chat of first.chats) {
-      if (chat.status !== "running" || !chat.claimToken) continue;
+      if ((chat.status !== "running" && chat.taskOutcome !== "waiting") || !chat.claimToken)
+        continue;
       const renewed = yield* queue
         .heartbeat(binding, chat.claimToken)
         .pipe(Effect.catch(() => Effect.succeed(false)));
@@ -1669,7 +1833,11 @@ export const make = Effect.gen(function* () {
     for (const claim of claims) {
       if (!claim.workerSessionId?.startsWith(prefix)) continue;
       const owner = goal.chats.find((chat) => chat.claimToken === claim.claimToken);
-      const alive = owner && (owner.status === "running" || submitting.has(claim.claimToken));
+      const alive =
+        owner &&
+        (owner.status === "running" ||
+          owner.taskOutcome === "waiting" ||
+          submitting.has(claim.claimToken));
       const waitingSubmit = owner?.status === "completed" && owner.taskOutcome === undefined;
       if (alive || waitingSubmit) continue;
       yield* Effect.logWarning("goals.agentqueue-orphan-claim", {
@@ -2319,6 +2487,62 @@ export const make = Effect.gen(function* () {
     }
   }).pipe(lock.withPermits(1));
 
+  /**
+   * Runs the stored resource jobs that can run now, and brings each parked conversation back with
+   * the result of what it queued. The conversation is the one that asked, in its own thread.
+   */
+  const deliverJobResults = Effect.fn("GoalService.deliverJobResults")(function* (goalId: GoalId) {
+    const goal = yield* currentGoal(goalId);
+    const binding = goal?.agentQueue;
+    if (!goal || !binding || goal.status !== "running") return;
+    yield* queue.runJobs(binding).pipe(Effect.catch(logQueueError("goals.resource-jobs-failed")));
+    for (const chat of goal.chats) {
+      if (chat.taskOutcome !== "waiting" || !chat.taskId || chat.status === "running") continue;
+      const jobs = yield* queue.resourceJobs(binding, chat.taskId).pipe(Effect.option);
+      if (Option.isNone(jobs) || jobs.value.open.length > 0 || jobs.value.finished.length === 0) {
+        continue;
+      }
+      const fresh = (yield* currentGoal(goalId)) ?? goal;
+      const unavailable = yield* unavailableAgents(fresh);
+      if (unavailable.has(chat.agentIndex)) continue;
+      if (!(yield* workerQuiet(chat.threadId))) continue;
+      const info = yield* queue
+        .taskInfo(binding, chat.taskId)
+        .pipe(Effect.catch(() => Effect.succeed(null)));
+      const text = queueResumePrompt(
+        {
+          taskId: chat.taskId,
+          title: info?.title ?? chat.taskId,
+          description: info?.description ?? null,
+          verificationCommand: info?.verificationCommand ?? null,
+          worktreePath: chat.worktreePath ?? "",
+          branch: chat.branch ?? "",
+          baseBranch: chat.baseBranch ?? binding.baseBranch,
+          planPath: binding.planPath,
+          retryCount: info?.retryCount ?? 0,
+          lastFailure: null,
+          repair: null,
+        },
+        { kind: "resource-results", results: jobs.value.finished.map((job) => job.summary) },
+      );
+      if (!(yield* continueChat(fresh, chat, text))) continue;
+      for (const job of jobs.value.finished) {
+        yield* queue.reportJob(job.id).pipe(Effect.catch(logQueueError("goals.report-job-failed")));
+      }
+      yield* updateChat(goalId, chat.threadId, {
+        taskOutcome: undefined,
+        resourceJobs: undefined,
+        settled: false,
+        resumes: (chat.resumes ?? 0) + 1,
+      });
+      yield* Effect.logInfo("goals.agentqueue-resource-results-delivered", {
+        goalId,
+        taskId: chat.taskId,
+        jobs: jobs.value.finished.map((job) => job.id),
+      });
+    }
+  });
+
   /** Running goals look for room to start the next plan worker. */
   const tick = Effect.gen(function* () {
     yield* finishDeferred;
@@ -2330,6 +2554,10 @@ export const make = Effect.gen(function* () {
         yield* ensureIntegration(goal.id);
         yield* settleFinishedChats(goal);
         yield* sweepLandedWorktrees(goal);
+        yield* deliverJobResults(goal.id).pipe(
+          lock.withPermits(1),
+          Effect.catchCause(logFailure("goals.job-delivery-failed")),
+        );
       }
       yield* fillLanes(goal.id).pipe(
         lock.withPermits(1),
