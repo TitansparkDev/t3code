@@ -49,6 +49,7 @@ function impactingLandings(
   taskId: string,
   scope: ReadonlyArray<string>,
   cache: Map<string, string[]>,
+  shared: (file: string) => boolean,
 ): Landing[] {
   const landings = (
     db
@@ -62,20 +63,22 @@ function impactingLandings(
     .map((landing) => ({ taskId: landing.taskId, commit: landing.sha! }));
   const own = landings.findIndex((landing) => landing.taskId === taskId);
   if (own === -1) return [];
-  const mine = new Set(landingFiles(repoRoot, landings[own]!.commit, cache));
+  // Files every task touches by design (a changelog, a generated list) say nothing about whether
+  // one task could have broken another.
+  const mine = new Set(
+    landingFiles(repoRoot, landings[own]!.commit, cache).filter((f) => !shared(f)),
+  );
   const amended = (
     db.prepare("SELECT pattern FROM scope_amendments WHERE task_id = ?").all(taskId) as Array<{
       pattern: string;
     }>
   ).map((row) => row.pattern);
   const owned = [...scope, ...amended];
-  return landings
-    .slice(own + 1)
-    .filter((landing) =>
-      landingFiles(repoRoot, landing.commit, cache).some(
-        (file) => mine.has(file) || matchesAny(file, owned) || scopesIntersect([file], owned),
-      ),
-    );
+  return landings.slice(own + 1).filter((landing) =>
+    landingFiles(repoRoot, landing.commit, cache)
+      .filter((file) => !shared(file))
+      .some((file) => mine.has(file) || matchesAny(file, owned) || scopesIntersect([file], owned)),
+  );
 }
 
 export interface AuditReport {
@@ -156,6 +159,11 @@ export async function auditUnverifiedTasks(
   // Change impact: a task that passed when it landed is run again only if something landed since
   // that touched what it owns or changed, and only once per integration tip.
   const fileCache = new Map<string, string[]>();
+  const contractOfPlan = loadContract({
+    repoRoot: input.repoRoot,
+    gitCommonDir: input.gitCommonDir,
+    refs: [input.baseBranch, input.integrationBranch],
+  }).contract;
   const impact = new Map<string, Landing[]>();
   for (const task of tasks) {
     if (needs.includes(task)) continue;
@@ -174,7 +182,21 @@ export async function auditUnverifiedTasks(
         }
       ).scope_patterns || "[]",
     ) as string[];
-    const later = impactingLandings(db, input.repoRoot, input.planId, task.id, scope, fileCache);
+    const later = impactingLandings(
+      db,
+      input.repoRoot,
+      input.planId,
+      task.id,
+      scope,
+      fileCache,
+      (file) =>
+        matchesAny(file, [
+          ...contractOfPlan.supportingPaths,
+          ...contractOfPlan.generated.flatMap((rule) => rule.paths),
+          ...contractOfPlan.unionMerge,
+          ...contractOfPlan.ignoredPaths,
+        ]),
+    );
     if (later.length > 0) {
       impact.set(task.id, later);
       needs.push(task);

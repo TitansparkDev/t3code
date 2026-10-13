@@ -735,9 +735,12 @@ export const make = Effect.gen(function* () {
     goal: Goal,
     worktreePath: string,
     claimToken: string,
+    /** The task's owner is not a stray writer: it is the one that will continue, once it is quiet. */
+    except?: ThreadId | undefined,
   ) {
     for (const earlier of goal.chats) {
       if (earlier.worktreePath !== worktreePath || earlier.claimToken === claimToken) continue;
+      if (except !== undefined && earlier.threadId === except) continue;
       if (!(yield* workerQuiet(earlier.threadId))) {
         yield* Effect.logWarning("goals.stopping-stale-worker", {
           goalId: goal.id,
@@ -849,7 +852,7 @@ export const make = Effect.gen(function* () {
     if (!thread) return "replace" as const;
     if (!(yield* workerQuiet(owner.threadId))) return { wait: soon } as const;
     // One writer per worktree: nothing else may still be working where the owner is about to.
-    yield* stopStaleWorkers(goal, task.worktreePath, task.claimToken);
+    yield* stopStaleWorkers(goal, task.worktreePath, task.claimToken, owner.threadId);
     const sent = yield* continueChat(goal, owner, text);
     if (!sent) return "replace" as const;
     yield* updateChat(goal.id, owner.threadId, {
@@ -916,12 +919,29 @@ export const make = Effect.gen(function* () {
     const task = reserved.task;
     if (!task) return "none" as const;
 
+    // The queue remembers which conversation owns the task even after that conversation moved on to
+    // another task (a follow-up), so ownership is read from there first.
+    const owner =
+      (task.ownerRef
+        ? goal.chats.find((chat) => String(chat.threadId) === task.ownerRef)
+        : undefined) ?? ownerChatOf(goal, task.taskId);
+    // The owner is still working (or still stopping after a settle): the task waits for it a moment
+    // instead of going to a stranger or putting a second writer in the worktree.
+    if (owner && (owner.status === "running" || !(yield* workerQuiet(owner.threadId)))) {
+      const now = yield* nowMillis;
+      ownerWaits.set(`${goal.id}:${task.taskId}`, now + 20_000);
+      yield* queue
+        .release(binding, task.claimToken, "pending", "Waiting for its owner to be idle.")
+        .pipe(Effect.catch(logQueueError("goals.agentqueue-release-failed")));
+      return "skipped" as const;
+    }
+
     // A task attempted before whose branch already holds commits is not redone: the server
     // runs its checks on those commits first. If they pass, the work is submitted without a
     // worker. If they fail, the worker is told exactly what failed instead of starting over.
     let lastFailure = task.lastFailure;
     if (task.retryCount > 0 && task.existingCommits.length > 0 && task.repair === null) {
-      yield* stopStaleWorkers(goal, task.worktreePath, task.claimToken);
+      yield* stopStaleWorkers(goal, task.worktreePath, task.claimToken, owner?.threadId);
       const early = yield* queue
         .submit(binding, {
           taskId: task.taskId,
@@ -965,15 +985,9 @@ export const make = Effect.gen(function* () {
 
     // A worktree has one writer. An earlier worker for this task that a background job woke
     // up again must stop before the next one starts in the same directory.
-    yield* stopStaleWorkers(goal, task.worktreePath, task.claimToken);
+    yield* stopStaleWorkers(goal, task.worktreePath, task.claimToken, owner?.threadId);
 
     const assignment = assignmentOf(binding, task, lastFailure);
-    // The queue remembers which conversation owns the task even after that conversation moved on to
-    // another task (a follow-up), so ownership is read from there first.
-    const owner =
-      (task.ownerRef
-        ? goal.chats.find((chat) => String(chat.threadId) === task.ownerRef)
-        : undefined) ?? ownerChatOf(goal, task.taskId);
     if (owner) {
       const reason: QueueResumeReason = task.repair
         ? { kind: "conflict" }
@@ -1620,7 +1634,10 @@ export const make = Effect.gen(function* () {
     }
 
     // 2. The claim is still ours: classify how the turn ended.
-    const interrupted = thread?.latestTurn?.state === "interrupted";
+    // A turn that never reached an end (the server or its machine went down while it ran) was cut
+    // off, not failed: the task goes back without spending a retry.
+    const interrupted =
+      thread?.latestTurn?.state === "interrupted" || thread?.latestTurn?.state === "running";
     const failedTurn = knownLimit !== undefined || thread?.latestTurn?.state !== "completed";
     const hit = knownLimit ?? (failedTurn && !interrupted ? usageLimitOf(thread) : undefined);
     const stopped = hit !== undefined || interrupted;

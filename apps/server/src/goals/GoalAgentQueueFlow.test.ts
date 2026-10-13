@@ -1475,7 +1475,7 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
   );
 
   it.effect(
-    "a repair worker never starts while an earlier worker of the same worktree is still running a turn",
+    "a repair waits for its owner while the owner is still running a turn, instead of putting a second writer in the worktree",
     () =>
       Effect.gen(function* () {
         const flow = yield* makeFlow(planWith([{ id: "T1" }, { id: "T2" }]), {
@@ -1501,21 +1501,28 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
           (row) => row.integration_state === "conflict",
           "T2 to conflict",
         );
-        // The first T2 worker is woken by a background job just as the repair is about to start.
+        // The T2 worker is woken by a background job just as the repair is about to start.
         const first = flow.createdFor("T2")!.threadId;
         flow.scripts.set(first, { ...flow.scripts.get(first)!, busy: true });
-        yield* tickOnce;
-        yield* tickOnce;
-        const stops = yield* flow.waitFor("thread.session.stop", 1);
-        expect(stops[0]?.threadId).toBe(first);
-        yield* flow.waitFor("thread.create", 3);
-        // The stop was sent before the repair worker's chat was created.
-        const order = flow.log.map((c) => `${c.type}:${"threadId" in c ? c.threadId : ""}`);
-        expect(order.indexOf(`thread.session.stop:${first}`)).toBeLessThan(
-          order.lastIndexOf(
-            `thread.create:${(flow.log.filter((c) => c.type === "thread.create").at(-1) as { threadId: string }).threadId}`,
-          ),
-        );
+        for (let round = 0; round < 3; round++) yield* tickOnce;
+        yield* flow.drain;
+        // Nothing new is started and the busy worker is not stopped: it is the one that will repair.
+        expect(flow.log.filter((c) => c.type === "thread.create")).toHaveLength(2);
+        expect(flow.log.filter((c) => c.type === "thread.session.stop")).toHaveLength(0);
+        // Once it is quiet, the same conversation is asked to finish the merge.
+        flow.scripts.set(first, { ...flow.scripts.get(first)!, busy: false });
+        let resumed: OrchestrationCommand | undefined;
+        for (let round = 0; round < 10 && resumed === undefined; round++) {
+          yield* tickOnce;
+          resumed = (yield* flow.drain).find(
+            (c) =>
+              c.type === "thread.turn.start" &&
+              c.threadId === first &&
+              c.message.text.includes("shared.txt"),
+          );
+        }
+        expect(resumed).toBeDefined();
+        expect(flow.log.filter((c) => c.type === "thread.create")).toHaveLength(2);
       }).pipe(Effect.scoped),
   );
 
