@@ -290,3 +290,72 @@ describe("change-impact audit", () => {
     }
   }, 90_000);
 });
+
+describe("what the worker runs before finishing agrees with the server", () => {
+  it("approves a necessary extra file now, runs the repository's finalizer with the real allowed paths, and refuses protected files", async () => {
+    const { finalizeTask } = await import("../src/finalize.ts");
+    const guard = [
+      'const { execFileSync } = require("node:child_process");',
+      "const allowed = process.argv.slice(2);",
+      "const base = process.env.BASE;",
+      'const changed = execFileSync("git", ["diff", "--name-only", base + "...HEAD"]).toString().split("\\n").filter(Boolean);',
+      "const bad = changed.filter((f) => !allowed.some((a) => f === a || f.startsWith(a)));",
+      'if (bad.length) { console.error("outside: " + bad.join(", ")); process.exit(1); }',
+    ].join("\n");
+    const r = await makeRepo({
+      plan: plan([{ id: "A", scope: "src/a/" }]),
+      contract: {
+        ...CONTRACT,
+        protectedPaths: ["tools/"],
+        guards: [
+          {
+            name: "scope-guard",
+            run: "BASE={base} node tools/scope-guard.js {scopePaths}",
+            phase: "submit",
+          },
+        ],
+      },
+      files: { "tools/scope-guard.js": guard },
+    });
+    try {
+      const a = await r.reserve();
+      if (a.kind !== "reserved") throw new Error("A should start");
+      await r.commitFile(a.task.worktreePath, "src/a/one.ts", "1\n");
+      await r.commitFile(a.task.worktreePath, "src/shared/needed.ts", "n\n");
+      const report = finalizeTask(r.db, {
+        taskId: "A",
+        worktree: a.task.worktreePath,
+        repoRoot: r.repo.rootDir,
+        gitCommonDir: r.repo.gitCommonDir,
+      });
+      // The shared helper is approved by the same rule the server uses, so the finalizer passes.
+      expect(report.ok).toBe(true);
+      expect(report.approved).toContain("src/shared/needed.ts");
+      // And the server then accepts exactly the same commit.
+      expect((await r.submit(a.task)).kind).toBe("submitted");
+
+      const b = await makeRepo({
+        plan: plan([{ id: "A", scope: "src/a/" }]),
+        contract: { ...CONTRACT, protectedPaths: ["tools/"] },
+        files: { "tools/x.js": "x\n" },
+      });
+      try {
+        const reserved = await b.reserve();
+        if (reserved.kind !== "reserved") throw new Error("A should start");
+        await b.commitFile(reserved.task.worktreePath, "tools/x.js", "changed\n");
+        const refused = finalizeTask(b.db, {
+          taskId: "A",
+          worktree: reserved.task.worktreePath,
+          repoRoot: b.repo.rootDir,
+          gitCommonDir: b.repo.gitCommonDir,
+        });
+        expect(refused.ok).toBe(false);
+        expect(refused.problems.join(" ")).toContain("protected");
+      } finally {
+        await b.repo.cleanup();
+      }
+    } finally {
+      await r.repo.cleanup();
+    }
+  }, 60_000);
+});

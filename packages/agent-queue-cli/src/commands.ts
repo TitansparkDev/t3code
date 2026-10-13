@@ -13,6 +13,8 @@ import {
   getEventsSince,
   getQueueSnapshot,
   evaluateDeadlock,
+  finalizeTask,
+  parseScopeRequests,
   reconcileExpiredLeases,
   initRepo,
   doctorRepo,
@@ -142,6 +144,28 @@ export async function lintPlanWithBaselineCommand(
     findings: result.findings,
     report: result.report,
   };
+}
+
+/** What a worker runs before it finishes (see finalize.ts): the server's scope decision and the repository's finalizer. */
+export function finalizeTaskCommand(
+  taskId: string,
+  requestText: string | undefined,
+  options: CommandOptions = {},
+): Record<string, unknown> {
+  const git = resolveGitContext(options.cwd);
+  const db = openQueueDatabase({ gitCommonDir: git.gitCommonDir });
+  try {
+    const report = finalizeTask(db, {
+      taskId,
+      worktree: git.rootDir,
+      repoRoot: git.rootDir,
+      gitCommonDir: git.gitCommonDir,
+      requests: requestText ? parseScopeRequests(requestText) : [],
+    });
+    return { success: true, ...report };
+  } finally {
+    db.close();
+  }
 }
 
 /**

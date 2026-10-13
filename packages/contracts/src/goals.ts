@@ -549,6 +549,8 @@ export interface QueueTaskAssignment {
   };
   /** Shared resources the task's checks use; their commands go through `agentq run`. */
   readonly resources?: ReadonlyArray<string>;
+  /** How long a command waits for a busy resource before it is stored as a job. Default 120. */
+  readonly deferAfterSeconds?: number;
 }
 
 /** Why a conversation that already worked on a task is being continued on it. */
@@ -572,8 +574,7 @@ function contractLines(task: QueueTaskAssignment): string[] {
   }
   if (submit.length > 0) {
     lines.push(
-      "--- Before you finish, run the repository's finalizer exactly as written here (the server runs the same command on your commit; it already knows the right base branch and your allowed paths) ---",
-      ...submit.map((guard) => `- ${guard.name}: \`${guard.command}\``),
+      `--- Before you finish, run \`agentq task finalize ${task.taskId}\` in your worktree. It runs the repository's own finalizer (${submit.map((guard) => guard.name).join(", ")}) with your task's real allowed paths, and approves extra files your task needs the same way the server will, so a guard you run later never contradicts the server. Do not run the finalizer's raw command yourself. ---`,
     );
   }
   if ((task.allowedPaths?.length ?? 0) > 0) {
@@ -594,7 +595,7 @@ function contractLines(task: QueueTaskAssignment): string[] {
 /** How a worker runs anything that contends for a shared machine resource. */
 function resourceLines(task: QueueTaskAssignment): string[] {
   return [
-    `Heavy or shared tools (Gradle, an emulator, Docker, a database, a GPU) go through the machine's fair queue: prefix the command with \`agentq run --owner ${task.taskId} --defer-after 120 --\`, for example \`agentq run --owner ${task.taskId} --defer-after 120 -- ./gradlew test\`. It waits its turn, holds the resource only while the command runs, and costs you nothing while it waits. Never start those tools without it${(task.resources?.length ?? 0) > 0 ? ` (this task's checks use ${task.resources!.join(", ")})` : ""}.`,
+    `Heavy or shared tools (Gradle, an emulator, Docker, a database, a GPU) go through the machine's fair queue: prefix the command with \`agentq run --owner ${task.taskId} --defer-after ${task.deferAfterSeconds ?? 120} --\`, for example \`agentq run --owner ${task.taskId} --defer-after ${task.deferAfterSeconds ?? 120} -- ./gradlew test\`. It waits its turn, holds the resource only while the command runs, and costs you nothing while it waits. Never start those tools without it${(task.resources?.length ?? 0) > 0 ? ` (this task's checks use ${task.resources!.join(", ")})` : ""}.`,
     `If \`agentq run\` answers QUEUED (exit 75) the command was stored and the server will run it and send the result into this same conversation: commit what you have and end your turn with the line \`WAITING FOR <the id it printed>\`. A busy resource, a queue or a wait is never a reason to stop, report a problem or write ${GOAL_NEEDS_ATTENTION_MARKER}.`,
   ];
 }

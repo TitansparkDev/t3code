@@ -213,6 +213,8 @@ export async function reserveNextTask(
     readonly gitCommonDir?: string;
     /** The plan's target branch; contract and guards are read from it first. */
     readonly targetBranch?: string;
+    /** Tasks to leave alone this time (their owner is temporarily unavailable and will be waited for). */
+    readonly excludeTaskIds?: ReadonlySet<string>;
   },
 ): Promise<ReserveOutcome> {
   reconcileExpiredLeases(
@@ -592,6 +594,7 @@ export async function reserveNextTask(
   }
 
   for (const taskId of readyIds) {
+    if (options.excludeTaskIds?.has(taskId)) continue;
     const row = rows.find((candidate) => candidate.id === taskId)!;
     const scope = json<string[]>(row.scope_patterns, []);
     // A task this environment cannot do is held without a claim, a worktree or a worker.

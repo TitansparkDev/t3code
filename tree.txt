@@ -22809,6 +22809,7 @@ packages/agent-queue-core/src/contract.ts
 packages/agent-queue-core/src/db.ts
 packages/agent-queue-core/src/eventStream.ts
 packages/agent-queue-core/src/failures.ts
+packages/agent-queue-core/src/finalize.ts
 packages/agent-queue-core/src/hostCapacity.ts
 packages/agent-queue-core/src/index.ts
 packages/agent-queue-core/src/integration.ts

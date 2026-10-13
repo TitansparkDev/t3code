@@ -47,6 +47,7 @@ import {
   type ScopeRequest,
 } from "./scopeAudit.ts";
 import { attributeFailure } from "./baseline.ts";
+import { ResourceWaitError } from "./resourceRunner.ts";
 import { addFollowUpTask } from "./overseerRepairs.ts";
 import { ensureSlot, taskEnvironment } from "./taskEnvironment.ts";
 import { parseStoredSpec, runSpec, type SpecResult } from "./verificationSpec.ts";
@@ -578,6 +579,15 @@ export type SubmitOutcome =
       readonly paths: ReadonlyArray<string>;
       readonly waitsFor: ReadonlyArray<string>;
     }
+  | {
+      /**
+       * The checks could not run because a shared resource could not be had (the wait limit passed,
+       * or the request was cancelled). Nothing is wrong with the work; it is checked again later and
+       * no worker is involved.
+       */
+      readonly kind: "resource-wait";
+      readonly message: string;
+    }
   | { readonly kind: "claim-lost" };
 
 /**
@@ -773,7 +783,26 @@ export async function submitCandidate(
       spec.checks.map((check) => check.run),
     ),
   };
-  let receipt = await runSpec(input.taskId, input.worktreePath, spec, undefined, checkOptions);
+  let resourceProblem: ResourceWaitError | null = null;
+  const guarded = async (toRun: typeof spec): Promise<SpecResult> => {
+    try {
+      return await runSpec(input.taskId, input.worktreePath, toRun, undefined, checkOptions);
+    } catch (error) {
+      if (!(error instanceof ResourceWaitError)) throw error;
+      resourceProblem = error;
+      return {
+        state: "unverified",
+        source: toRun.source,
+        commit: "unknown",
+        checks: [],
+        exemptReason: null,
+        rejected: [],
+        verifiedAt: new Date().toISOString(),
+        summary: error.message,
+      };
+    }
+  };
+  let receipt = await guarded(spec);
   // A check that fails on the integration branch the worker started from, in the same way, is not
   // this worker's to repair: judge the rest, and keep the failure as its own blocking task.
   const planRow = db.prepare("SELECT plan_id FROM tasks WHERE id = ?").get(input.taskId) as
@@ -786,7 +815,12 @@ export async function submitCandidate(
     failing: ReadonlyArray<string>;
   }> = [];
   let remaining = [...spec.checks];
-  while (receipt.state === "failed" && planRow?.plan_id && remaining.length > 0) {
+  while (
+    receipt.state === "failed" &&
+    !resourceProblem &&
+    planRow?.plan_id &&
+    remaining.length > 0
+  ) {
     const failedResult = receipt.checks.find((entry) => !entry.passed);
     const failedCheck = failedResult
       ? remaining.find(
@@ -834,13 +868,17 @@ export async function submitCandidate(
             checks: [],
             summary: "Every check already fails on the integration branch.",
           }
-        : await runSpec(
-            input.taskId,
-            input.worktreePath,
-            { ...spec, checks: remaining },
-            undefined,
-            checkOptions,
-          );
+        : await guarded({ ...spec, checks: remaining });
+    if (resourceProblem) break;
+  }
+  if (resourceProblem) {
+    const problem: ResourceWaitError = resourceProblem;
+    if (problem.outcome === "unavailable") {
+      // The machine lacks the resource altogether: another worker would meet the same wall.
+      return fail("prerequisite", `${problem.message} The check cannot run on this machine.`, null);
+    }
+    recordEvent(db, input.taskId, "task_checks_waiting_for_resource", { message: problem.message });
+    return { kind: "resource-wait", message: problem.message };
   }
   if (baselineFailures.length > 0 && receipt.state === "passed") {
     receipt = {
@@ -1188,16 +1226,25 @@ export async function integrateCandidate(
             }
           ).scope_patterns || "[]",
         ) as string[];
-        const receipt = await runSpec(input.taskId, staging, spec, undefined, {
-          env: taskEnvironment({ taskId: input.taskId, slot, gitCommonDir: gitDir, contract })
-            .variables,
-          lockDir: NodePath.join(gitDir, "agentqueue", "locks"),
-          extraRequires: resourcesNeededBy(
-            contract,
-            taskScope,
-            spec.checks.map((check) => check.run),
-          ),
-        });
+        let receipt: SpecResult;
+        try {
+          receipt = await runSpec(input.taskId, staging, spec, undefined, {
+            env: taskEnvironment({ taskId: input.taskId, slot, gitCommonDir: gitDir, contract })
+              .variables,
+            lockDir: NodePath.join(gitDir, "agentqueue", "locks"),
+            extraRequires: resourcesNeededBy(
+              contract,
+              taskScope,
+              spec.checks.map((check) => check.run),
+            ),
+          });
+        } catch (error) {
+          if (!(error instanceof ResourceWaitError)) throw error;
+          // A busy or unavailable resource is not a verdict on the work: wait, with no model turn.
+          const reason = `Checks after merging could not run yet: ${error.message}`;
+          markDeferred(db, input.taskId, reason);
+          return { kind: "deferred", reason, files: [] };
+        }
         if (receipt.state === "failed" || receipt.state === "timed-out") {
           recordEvent(db, input.taskId, "task_verification_failed", {
             ...receipt,

@@ -19,6 +19,7 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import { matchesAny } from "./contract.ts";
+import { ResourceWaitError } from "./resourceRunner.ts";
 import { isBroadCheck, type PlanFinding } from "./planLint.ts";
 import type { PlanTaskDefinition } from "./planGraph.ts";
 import { runSpec, type CheckResult, type VerificationCheck } from "./verificationSpec.ts";

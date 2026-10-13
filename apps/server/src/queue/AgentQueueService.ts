@@ -179,6 +179,7 @@ export class AgentQueueService extends Context.Service<
     readonly reserveNext: (
       binding: QueueBinding,
       workerSessionId: string,
+      excludeTaskIds?: ReadonlySet<string>,
     ) => Effect.Effect<ReservedTask | null, AgentQueueError>;
     readonly heartbeat: (
       binding: QueueBinding,
@@ -532,7 +533,7 @@ const make = AgentQueueService.of({
       }),
     ),
 
-  reserveNext: (binding, workerSessionId) =>
+  reserveNext: (binding, workerSessionId, excludeTaskIds) =>
     runAsync("reserveNext", async () => {
       const db = openQueueDatabase({ gitCommonDir: binding.gitCommonDir });
       try {
@@ -543,6 +544,7 @@ const make = AgentQueueService.of({
           gitCommonDir: binding.gitCommonDir,
           planId: binding.planId,
           workerSessionId,
+          ...(excludeTaskIds && excludeTaskIds.size > 0 ? { excludeTaskIds } : {}),
           // This server owns every claim it makes and renews them while the chat runs.
           // A claim whose renewals stopped is abandoned even though the server is alive.
           isOwnerAlive: (pid, sessionId) =>

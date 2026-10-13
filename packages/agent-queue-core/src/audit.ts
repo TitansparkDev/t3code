@@ -17,6 +17,7 @@ import { recordEvent } from "./eventStream.ts";
 import { acquireLandingLock, prepareStagingWorktree } from "./integration.ts";
 import { addFollowUpTask } from "./overseerRepairs.ts";
 import { ensureSlot, taskEnvironment } from "./taskEnvironment.ts";
+import { ResourceWaitError } from "./resourceRunner.ts";
 import { parseStoredSpec, runSpec } from "./verificationSpec.ts";
 
 interface Landing {
@@ -203,20 +204,26 @@ export async function auditUnverifiedTasks(
           }
         ).scope_patterns || "[]",
       ) as string[];
-      const receipt = await runSpec(task.id, staging, spec, undefined, {
-        extraRequires: resourcesNeededBy(
-          loaded.contract,
-          scope,
-          spec.checks.map((check) => check.run),
-        ),
-        env: taskEnvironment({
-          taskId: task.id,
-          slot,
-          gitCommonDir: input.gitCommonDir,
-          contract: loaded.contract,
-        }).variables,
-        lockDir: NodePath.join(input.gitCommonDir, "agentqueue", "locks"),
-      });
+      let receipt: Awaited<ReturnType<typeof runSpec>>;
+      try {
+        receipt = await runSpec(task.id, staging, spec, undefined, {
+          extraRequires: resourcesNeededBy(
+            loaded.contract,
+            scope,
+            spec.checks.map((check) => check.run),
+          ),
+          env: taskEnvironment({
+            taskId: task.id,
+            slot,
+            gitCommonDir: input.gitCommonDir,
+            contract: loaded.contract,
+          }).variables,
+          lockDir: NodePath.join(input.gitCommonDir, "agentqueue", "locks"),
+        });
+      } catch (error) {
+        if (error instanceof ResourceWaitError) continue; // looked at again on the next pass
+        throw error;
+      }
       recordEvent(db, task.id, "task_audited", {
         state: receipt.state,
         commit: tip,

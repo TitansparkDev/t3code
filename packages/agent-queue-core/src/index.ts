@@ -33,3 +33,4 @@ export * from "./audit.ts";
 export * from "./baseline.ts";
 export * from "./taskOwner.ts";
 export * from "./planLint.ts";
+export * from "./finalize.ts";

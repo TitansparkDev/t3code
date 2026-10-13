@@ -759,6 +759,18 @@ export const make = Effect.gen(function* () {
       : undefined;
   };
 
+  /** Tasks whose owner is out for now, until when: they are not handed to a stranger meanwhile. */
+  const ownerWaits = new Map<string, number>();
+  const ownersWaitedFor = (goalId: GoalId) =>
+    Effect.map(nowMillis, (now) => {
+      const ids = new Set<string>();
+      for (const [key, until] of ownerWaits) {
+        if (until <= now) ownerWaits.delete(key);
+        else if (key.startsWith(`${goalId}:`)) ids.add(key.slice(goalId.length + 1));
+      }
+      return ids as ReadonlySet<string>;
+    });
+
   /** How many times one conversation is brought back onto a task before a fresh worker takes over. */
   const MAX_OWNER_RESUMES = 8;
 
@@ -800,6 +812,9 @@ export const make = Effect.gen(function* () {
       }),
       notes: task.notes,
       resources: task.resources,
+      ...(Number(process.env.T3_AGENTQUEUE_DEFER_AFTER_SECONDS) > 0
+        ? { deferAfterSeconds: Number(process.env.T3_AGENTQUEUE_DEFER_AFTER_SECONDS) }
+        : {}),
       ...(merge ? { repairMerge: merge } : {}),
     };
     return assignment;
@@ -818,16 +833,21 @@ export const make = Effect.gen(function* () {
     owner: GoalChat,
     text: string,
   ) {
-    if (owner.status === "running" || (owner.resumes ?? 0) >= MAX_OWNER_RESUMES) return false;
-    if (task.ownerTurns >= MAX_OWNER_RESUMES * 2) return false;
+    if (owner.status === "running" || (owner.resumes ?? 0) >= MAX_OWNER_RESUMES)
+      return "replace" as const;
+    if (task.ownerTurns >= MAX_OWNER_RESUMES * 2) return "replace" as const;
     const unavailable = yield* unavailableAgents(goal);
-    if (unavailable.has(owner.agentIndex)) return false;
+    const out = unavailable.get(owner.agentIndex);
+    // A provider that is only out for now (a usage limit, a back-off) is waited for: the task keeps
+    // its owner. A provider that is gone for good (not installed, signed out) hands the task over.
+    if (out?.until !== undefined) return { wait: out.until } as const;
+    if (out) return "replace" as const;
     const thread = yield* readThread(owner.threadId);
-    if (!thread || !(yield* workerQuiet(owner.threadId))) return false;
+    if (!thread || !(yield* workerQuiet(owner.threadId))) return "replace" as const;
     // One writer per worktree: nothing else may still be working where the owner is about to.
     yield* stopStaleWorkers(goal, task.worktreePath, task.claimToken);
     const sent = yield* continueChat(goal, owner, text);
-    if (!sent) return false;
+    if (!sent) return "replace" as const;
     yield* updateChat(goal.id, owner.threadId, {
       claimToken: task.claimToken,
       taskId: task.taskId,
@@ -851,7 +871,7 @@ export const make = Effect.gen(function* () {
       threadId: owner.threadId,
       resumes: (owner.resumes ?? 0) + 1,
     });
-    return true;
+    return "resumed" as const;
   });
 
   /**
@@ -878,10 +898,12 @@ export const make = Effect.gen(function* () {
     if (goal.hostBusy)
       yield* store.update(goal.id, (current) => ({ ...current, hostBusy: undefined }));
     const workerId = `goal-${goal.id}-agent-${agentIndex}-${yield* randomUUID}`;
-    const reserved = yield* queue.reserveNext(binding, workerId).pipe(
-      Effect.map((task) => ({ ok: true as const, task })),
-      Effect.catch((error) => Effect.succeed({ ok: false as const, error })),
-    );
+    const reserved = yield* queue
+      .reserveNext(binding, workerId, yield* ownersWaitedFor(goal.id))
+      .pipe(
+        Effect.map((task) => ({ ok: true as const, task })),
+        Effect.catch((error) => Effect.succeed({ ok: false as const, error })),
+      );
     if (!reserved.ok) {
       yield* queueFailed(goal.id, "reserve", reserved.error);
       return "failed" as const;
@@ -928,6 +950,12 @@ export const make = Effect.gen(function* () {
         }
         if (result.kind === "claim-lost") return "failed" as const;
         if (result.kind === "scope-wait") return "started" as const;
+        if (result.kind === "resource-wait") {
+          yield* queue
+            .release(binding, task.claimToken, "pending", result.message)
+            .pipe(Effect.catch(logQueueError("goals.agentqueue-release-failed")));
+          return "started" as const;
+        }
       }
     }
 
@@ -945,8 +973,23 @@ export const make = Effect.gen(function* () {
           : /-FU\d+$/u.test(task.taskId) && owner.taskId !== task.taskId
             ? { kind: "follow-up" }
             : { kind: "retry", failure: lastFailure };
-      if (yield* resumeOwner(goal, binding, task, owner, queueResumePrompt(assignment, reason))) {
-        return "started" as const;
+      const resumed = yield* resumeOwner(
+        goal,
+        binding,
+        task,
+        owner,
+        queueResumePrompt(assignment, reason),
+      );
+      if (resumed === "resumed") return "started" as const;
+      if (typeof resumed === "object") {
+        // Its provider is out until a known time: leave the task as it is (no penalty, no stranger)
+        // and carry on with other work. It is looked at again when the provider is back.
+        const now = yield* nowMillis;
+        ownerWaits.set(`${goal.id}:${task.taskId}`, Math.min(resumed.wait, now + 15 * 60_000));
+        yield* queue
+          .release(binding, task.claimToken, "pending", "Waiting for its owner's provider.")
+          .pipe(Effect.catch(logQueueError("goals.agentqueue-release-failed")));
+        return "skipped" as const;
       }
     }
 
@@ -1283,10 +1326,9 @@ export const make = Effect.gen(function* () {
    * task's check, record the candidate. Success settles the worker and starts the merge;
    * a failed check sends the worker back to fix it, up to twice.
    */
-  const submitFlow = Effect.fn("GoalService.submitFlow")(function* (
-    goalId: GoalId,
-    threadId: ThreadId,
-  ) {
+  const submitFlow: (goalId: GoalId, threadId: ThreadId) => Effect.Effect<void> = Effect.fn(
+    "GoalService.submitFlow",
+  )(function* (goalId: GoalId, threadId: ThreadId) {
     const goal = yield* currentGoal(goalId);
     const binding = goal?.agentQueue;
     const chat = goal?.chats.find((candidate) => candidate.threadId === threadId);
@@ -1382,6 +1424,22 @@ export const make = Effect.gen(function* () {
               taskOutcome: "returned",
             });
             return yield* fillLanes(goalId);
+          }
+          case "resource-wait": {
+            // The checks are waiting for a shared resource: not the worker's problem and not a
+            // model turn. The submission is looked at again later with the work untouched.
+            yield* Effect.logInfo("goals.agentqueue-checks-waiting-for-resource", {
+              goalId,
+              taskId: chat.taskId,
+              message: result.message,
+            });
+            yield* fork(
+              Effect.sleep("2 minutes").pipe(
+                Effect.andThen(submitFlow(goalId, threadId)),
+                Effect.catchCause(logFailure("goals.submit-retry-failed")),
+              ),
+            );
+            return;
           }
           case "scope-wait": {
             // Not a failure: a file the task needs is held by another running task. The task is parked
@@ -1666,6 +1724,7 @@ export const make = Effect.gen(function* () {
     }
     // The overseer is deciding how to go on: start nothing until it answers.
     if (first.chats.some((chat) => chat.overseer && chat.status === "running")) return;
+    let skips = 0;
     while (true) {
       const goal = yield* currentGoal(goalId);
       const unavailable = goal ? yield* unavailableAgents(goal) : undefined;
@@ -1674,7 +1733,9 @@ export const make = Effect.gen(function* () {
       const now = yield* nowMillis;
       const last = lastStart.get(goalId);
       if (spacing > 0 && last !== undefined && now - last < spacing) break;
-      if ((yield* startQueueChat(goal, binding, agentIndex)) !== "started") break;
+      const started = yield* startQueueChat(goal, binding, agentIndex);
+      if (started === "skipped" && skips++ < 8) continue;
+      if (started !== "started") break;
       lastStart.set(goalId, now);
     }
     yield* settleQueueIfIdle(goalId, binding);

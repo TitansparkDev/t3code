@@ -3,6 +3,7 @@ import {
   importPlanCommand,
   validatePlanCommand,
   lintPlanCommand,
+  finalizeTaskCommand,
   lintPlanWithBaselineCommand,
   listTasksCommand,
   claimTaskCommand,
@@ -201,6 +202,26 @@ export function runCli(
             break;
           }
 
+          case "finalize": {
+            const taskId = args.positional[0] || (args.flags.id as string);
+            if (!taskId)
+              throw new Error(
+                'Usage: agentq task finalize <task-id> [--request "SCOPE-REQUEST: path — reason"]',
+              );
+            result = finalizeTaskCommand(
+              taskId,
+              typeof args.flags.request === "string" ? args.flags.request : undefined,
+              { cwd, json: jsonMode },
+            );
+            if (result.ok === false) {
+              return {
+                exitCode: 3,
+                output: jsonMode ? JSON.stringify(result, null, 2) : String(result.message),
+              };
+            }
+            break;
+          }
+
           case "retry": {
             const taskId = args.positional[0] || (args.flags.id as string);
             if (!taskId) throw new Error("Usage: agentqueue task retry <task-id>");
@@ -287,6 +308,8 @@ function formatHumanOutput(
   if (command === "plan" && subcommand === "lint") {
     return `${data.report}\n${data.errors} error(s), ${data.warnings} warning(s) in ${data.planPath}.`;
   }
+
+  if (command === "task" && subcommand === "finalize") return String(data.message);
 
   if (command === "plan" && subcommand === "import") {
     return `Imported plan '${data.title}' (${data.planId}) with ${data.taskCount} tasks.`;
