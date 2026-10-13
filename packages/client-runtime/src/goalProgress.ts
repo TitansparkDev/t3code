@@ -6,6 +6,7 @@ export function describeGoalProgress(
 ): string {
   const submitted = goal.chats.filter((chat) => chat.taskOutcome === "submitted").length;
   const merged = goal.chats.filter((chat) => chat.taskOutcome === "integrated").length;
+  const parked = goal.chats.filter((chat) => chat.taskOutcome === "waiting").length;
   const running = goal.chats.filter((chat) => chat.status === "running");
   const waiting = running.filter((chat) => chat.waitingForLimit).length;
   const done = goal.chats.filter((chat) => chat.status === "completed").length;
@@ -17,6 +18,7 @@ export function describeGoalProgress(
     `${done} completed`,
     ...(merged > 0 ? [`${merged} merged`] : []),
     ...(submitted > 0 ? [`${submitted} waiting to merge`] : []),
+    ...(parked > 0 ? [`${parked} waiting for a busy tool`] : []),
     ...(attention > 0 ? [`${attention} need you`] : []),
     ...(failed > 0 ? [`${failed} failed`] : []),
     ...(stopped > 0 ? [`${stopped} stopped`] : []),

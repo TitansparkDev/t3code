@@ -175,6 +175,15 @@ Full glossary with file links: `docs/internals/glossary.md`
 
 ## Recent request log
 
+- 2026-10-13 — v0.0.69: autonomous AgentQueue lifecycle. A task keeps one conversation from first line
+  to verified integration (conflicts, retries, file waits and queued-command results are sent back to the same
+  thread; the server prepares the merge in its worktree); shared tools go through one fair machine-wide queue
+  (`agentq run`, broker + `agent-resources` lock files, capacities measured on this 25 GB / no-GPU VM) so a busy
+  resource never fails a task or burns a model turn; safe extra files are approved automatically and a held file
+  pauses the task; failures that already existed on the starting branch become their own task; `agentq plan lint
+[--baseline]` checks a plan against the repository before any worker starts, and the `autonomous-plan` skill
+  (Claude and Codex) drives it. Real Claude and Codex workers finished a 10-task plan in 9 sessions, including a
+  `kill -9` of the server mid-run. See `docs/agentqueue/ADR-0010-*.md`.
 - 2026-10-12 — v0.0.68: AgentQueue execution contract. Workers were dispatched into assignments the
   repository's own guards rejected (`agentqueue/*` branches, a hook rebuilding `tree.txt` on every task
   branch, a scope guard run against `main`, fixed test ports and containers), and each deterministic wall
