@@ -96,8 +96,21 @@ export function lockFilesFor(name: string, slot: number): string[] {
   return files;
 }
 
+let flockProbe: boolean | undefined;
+export function flockAvailable(): boolean {
+  if (flockProbe === undefined) {
+    flockProbe =
+      process.platform !== "win32" &&
+      NodeChildProcess.spawnSync("flock", ["--version"], { stdio: "ignore" }).status === 0;
+  }
+  return flockProbe;
+}
+
 /** Locks to take for a granted ticket, in a fixed order so two tickets cannot deadlock. */
 export function ticketLockFiles(ticket: Ticket): string[] {
+  // Without util-linux `flock` (Windows, a minimal image) the broker's own queue still keeps
+  // AgentQueue's users apart; only the interlock with older lock-file scripts is not available.
+  if (!flockAvailable()) return [];
   const files: string[] = [];
   for (const item of ticket.resources) {
     for (const slot of ticket.slots[item.name] ?? []) files.push(...lockFilesFor(item.name, slot));
