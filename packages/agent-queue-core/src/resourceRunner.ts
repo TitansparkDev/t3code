@@ -100,7 +100,6 @@ let flockProbe: boolean | undefined;
 export function flockAvailable(): boolean {
   if (flockProbe === undefined) {
     flockProbe =
-      process.platform !== "win32" &&
       NodeChildProcess.spawnSync("flock", ["--version"], { stdio: "ignore" }).status === 0;
   }
   return flockProbe;
