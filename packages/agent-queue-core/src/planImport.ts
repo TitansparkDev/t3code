@@ -3,7 +3,9 @@ import type * as NodeSqlite from "node:sqlite";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
-import { loadContract, toolAvailable } from "./contract.ts";
+import { capabilityAvailable, loadContract, toolAvailable } from "./contract.ts";
+import { formatFindings, lintPlan, type PlanFinding } from "./planLint.ts";
+import { probePlanBaseline } from "./baseline.ts";
 import { openQueueDatabase } from "./db.ts";
 import { assignabilityFindings, executablesOf, titleTags } from "./preflight.ts";
 import { NO_VERIFICATION, describeSpec, resolveDerivedDirectories } from "./verificationSpec.ts";
@@ -299,6 +301,101 @@ export function executionWarnings(input: {
     );
   }
   return warnings;
+}
+
+/**
+ * Lints a plan file against the repository and this machine (see planLint.ts). The branch the
+ * workers start from is read, so an uncommitted plan is judged against committed code.
+ */
+export function lintPlanFile(
+  repoRoot: string,
+  planPath?: string,
+  options: { readonly ref?: string } = {},
+): {
+  readonly planPath: string | null;
+  readonly findings: ReadonlyArray<PlanFinding>;
+  readonly report: string;
+} {
+  const repoGit = resolveRepoGit(repoRoot);
+  const preview = previewPlan(repoRoot, planPath);
+  const target = preview.planPath;
+  if (!repoGit || !target) {
+    const findings: PlanFinding[] = [
+      {
+        level: "error",
+        code: "no-plan",
+        taskId: null,
+        message: preview.errors[0] ?? "No plan was found.",
+      },
+    ];
+    return { planPath: target, findings, report: formatFindings(findings) };
+  }
+  const plan = readPlan(repoRoot, target);
+  if (!plan) {
+    const findings: PlanFinding[] = [
+      { level: "error", code: "unreadable", taskId: null, message: `${target} could not be read.` },
+    ];
+    return { planPath: target, findings, report: formatFindings(findings) };
+  }
+  const ref = options.ref ?? repoGit.baseBranch ?? "HEAD";
+  const loaded = loadContract({ repoRoot, gitCommonDir: repoGit.gitCommonDir, refs: [ref] });
+  const cache = new Map<string, boolean>();
+  const findings = [
+    ...preview.errors.map((message): PlanFinding => ({
+      level: "error",
+      code: "plan-invalid",
+      taskId: null,
+      message,
+    })),
+    ...lintPlan({
+      repoRoot,
+      ref,
+      tasks: plan.parsed.tasks.filter((task) => !task.checked),
+      doneTaskIds: plan.parsed.tasks.filter((task) => task.checked).map((task) => task.id),
+      contract: loaded.contract,
+      capabilityAvailable: (name) => {
+        if (!cache.has(name))
+          cache.set(name, capabilityAvailable(loaded.contract, name, repoRoot).available);
+        return cache.get(name)!;
+      },
+    }),
+  ];
+  return { planPath: target, findings, report: formatFindings(findings) };
+}
+
+/** `lintPlanFile` plus a probe of the plan's checks on the untouched branch (recorded for later attribution). */
+export async function lintPlanFileWithBaseline(
+  repoRoot: string,
+  planPath: string | undefined,
+  options: {
+    readonly ref?: string;
+    readonly baseline: "broad" | "all";
+    readonly env?: Record<string, string>;
+  },
+): Promise<{
+  readonly planPath: string | null;
+  readonly findings: ReadonlyArray<PlanFinding>;
+  readonly report: string;
+}> {
+  const base = lintPlanFile(repoRoot, planPath, options.ref ? { ref: options.ref } : {});
+  const repoGit = resolveRepoGit(repoRoot);
+  const plan = base.planPath ? readPlan(repoRoot, base.planPath) : null;
+  if (!repoGit || !plan) return base;
+  const db = openQueueDatabase({ gitCommonDir: repoGit.gitCommonDir });
+  try {
+    const probed = await probePlanBaseline(db, {
+      repoRoot,
+      ref: options.ref ?? repoGit.baseBranch ?? "HEAD",
+      planId: null,
+      tasks: plan.parsed.tasks.filter((task) => !task.checked),
+      only: options.baseline,
+      ...(options.env ? { env: options.env } : {}),
+    });
+    const findings = [...base.findings, ...probed];
+    return { planPath: base.planPath, findings, report: formatFindings(findings) };
+  } finally {
+    db.close();
+  }
 }
 
 export function previewPlan(repoRoot: string, planPath?: string): PlanPreview {

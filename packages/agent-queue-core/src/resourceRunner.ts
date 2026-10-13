@@ -41,7 +41,10 @@ const COMMAND_RULES: ReadonlyArray<readonly [RegExp, ReadonlyArray<string>]> = [
     /(^|[\s/;&|])(pnpm|npm|yarn|bun|vp)\s+(i|install|add|ci)(\s|$)|(^|[\s/;&|])(pip3?|uv)\s+(install|sync|pip install)|(^|[\s/;&|])cargo\s+fetch/,
     ["package_install"],
   ],
-  [/\b(nvidia-smi|cuda|torch\.cuda)\b|(^|\s)-m\s+gpu\b|--gpu\b|pytest[^|]*\bgpu\b/i, ["gpu"]],
+  [
+    /\b(nvidia-smi|cuda|torch\.cuda)\b|(^|\s)-m\s+["']?gpu\b|--gpu\b|pytest[^|]*(?<!not )\bgpu\b/i,
+    ["gpu"],
+  ],
 ];
 
 export function inferResources(

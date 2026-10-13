@@ -17,6 +17,8 @@ import {
   initRepo,
   doctorRepo,
   importPlanFile,
+  lintPlanFile,
+  lintPlanFileWithBaseline,
   previewPlan,
 } from "../../agent-queue-core/src/index.ts";
 import { resolveGitContext } from "./gitContext.ts";
@@ -79,6 +81,67 @@ export function validatePlanCommand(
       )
     : undefined;
   return { success: true, ...previewPlan(git.rootDir, rel) };
+}
+
+/**
+ * Checks a plan against the repository and this machine: work an agent cannot finish, live
+ * changes outside the release task, decisions left open, scopes that leave out what a task needs,
+ * checks that cannot run here. Exit status is the caller's: `ok` is false when any error remains.
+ */
+export function lintPlanCommand(
+  planFilePath: string | undefined,
+  options: CommandOptions & { readonly ref?: string } = {},
+): Record<string, unknown> {
+  const git = resolveGitContext(options.cwd);
+  const rel = planFilePath
+    ? NodePath.relative(
+        git.rootDir,
+        NodePath.isAbsolute(planFilePath)
+          ? planFilePath
+          : NodePath.resolve(options.cwd ?? process.cwd(), planFilePath),
+      )
+    : undefined;
+  const result = lintPlanFile(git.rootDir, rel, options.ref ? { ref: options.ref } : {});
+  const errors = result.findings.filter((finding) => finding.level === "error");
+  return {
+    success: true,
+    ok: errors.length === 0,
+    planPath: result.planPath,
+    errors: errors.length,
+    warnings: result.findings.length - errors.length,
+    findings: result.findings,
+    report: result.report,
+  };
+}
+
+/** `lintPlanCommand` plus the baseline probe; asynchronous because it runs the plan's checks. */
+export async function lintPlanWithBaselineCommand(
+  planFilePath: string | undefined,
+  options: CommandOptions & { readonly ref?: string; readonly baseline: "broad" | "all" },
+): Promise<Record<string, unknown>> {
+  const git = resolveGitContext(options.cwd);
+  const rel = planFilePath
+    ? NodePath.relative(
+        git.rootDir,
+        NodePath.isAbsolute(planFilePath)
+          ? planFilePath
+          : NodePath.resolve(options.cwd ?? process.cwd(), planFilePath),
+      )
+    : undefined;
+  const result = await lintPlanFileWithBaseline(git.rootDir, rel, {
+    baseline: options.baseline,
+    ...(options.ref ? { ref: options.ref } : {}),
+  });
+  const errors = result.findings.filter((finding) => finding.level === "error");
+  return {
+    success: true,
+    ok: errors.length === 0,
+    planPath: result.planPath,
+    errors: errors.length,
+    warnings: result.findings.length - errors.length,
+    findings: result.findings,
+    report: result.report,
+  };
 }
 
 /**

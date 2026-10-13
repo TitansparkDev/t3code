@@ -22818,6 +22818,7 @@ packages/agent-queue-core/src/migrations.ts
 packages/agent-queue-core/src/overseerRepairs.ts
 packages/agent-queue-core/src/planGraph.ts
 packages/agent-queue-core/src/planImport.ts
+packages/agent-queue-core/src/planLint.ts
 packages/agent-queue-core/src/preflight.ts
 packages/agent-queue-core/src/publication.ts
 packages/agent-queue-core/src/queueInspector.ts
@@ -22852,6 +22853,7 @@ packages/agent-queue-core/test/ownerLifecycle.test.ts
 packages/agent-queue-core/test/planExportImport.test.ts
 packages/agent-queue-core/test/planGraph.test.ts
 packages/agent-queue-core/test/planImportReservation.test.ts
+packages/agent-queue-core/test/planLint.test.ts
 packages/agent-queue-core/test/queueInspector.test.ts
 packages/agent-queue-core/test/realAgent/realAgentGoal.mts
 packages/agent-queue-core/test/repoManager.test.ts

@@ -2,6 +2,8 @@
 import {
   importPlanCommand,
   validatePlanCommand,
+  lintPlanCommand,
+  lintPlanWithBaselineCommand,
   listTasksCommand,
   claimTaskCommand,
   heartbeatCommand,
@@ -70,6 +72,24 @@ export async function runCliAsync(
   cwd: string = process.cwd(),
 ): Promise<{ exitCode: number; output: string; error?: string }> {
   try {
+    // `plan lint --baseline` runs the plan's checks on the untouched branch, so it waits.
+    if (
+      rawArgs[0] === "plan" &&
+      rawArgs[1] === "lint" &&
+      rawArgs.some((arg) => arg === "--baseline" || arg.startsWith("--baseline="))
+    ) {
+      const args = parseArgs(rawArgs);
+      const result = await lintPlanWithBaselineCommand(args.positional[0], {
+        cwd,
+        baseline: args.flags.baseline === "all" ? "all" : "broad",
+        ...(typeof args.flags.ref === "string" ? { ref: args.flags.ref } : {}),
+      });
+      const failed = args.flags.strict && result.ok === false;
+      const text = args.flags.json
+        ? JSON.stringify(result, null, 2)
+        : `${result.report}\n${result.errors} error(s), ${result.warnings} warning(s) in ${result.planPath}.`;
+      return failed ? { exitCode: 3, output: "", error: text } : { exitCode: 0, output: text };
+    }
     const handled = await runResourceCommand(rawArgs, cwd);
     if (handled) {
       return {
@@ -110,6 +130,18 @@ export function runCli(
           const filePath = args.positional[0] || (args.flags.file as string);
           if (!filePath) throw new Error("Usage: agentqueue plan import <plan-file>");
           result = importPlanCommand(filePath, { cwd, json: jsonMode });
+        } else if (args.subcommand === "lint") {
+          result = lintPlanCommand(args.positional[0] || (args.flags.file as string), {
+            cwd,
+            json: jsonMode,
+            ...(typeof args.flags.ref === "string" ? { ref: args.flags.ref } : {}),
+          });
+          if (args.flags.strict && result.ok === false) {
+            return {
+              exitCode: 3,
+              output: jsonMode ? JSON.stringify(result, null, 2) : String(result.report),
+            };
+          }
         } else if (args.subcommand === "validate") {
           result = validatePlanCommand(args.positional[0] || (args.flags.file as string), {
             cwd,
@@ -250,6 +282,10 @@ function formatHumanOutput(
       `Active Leases: ${snap.activeLeases.length}`,
       dl.isDeadlocked ? `DEADLOCK DETECTED: ${dl.reason}` : `Queue Healthy (no deadlock)`,
     ].join("\n");
+  }
+
+  if (command === "plan" && subcommand === "lint") {
+    return `${data.report}\n${data.errors} error(s), ${data.warnings} warning(s) in ${data.planPath}.`;
   }
 
   if (command === "plan" && subcommand === "import") {
