@@ -75,13 +75,14 @@ export function scopesIntersect(
 }
 
 /**
- * Determines whether a candidate task conflicts with any actively running tasks.
+ * The actively running tasks a candidate task conflicts with, in the order given.
  */
-export function hasScopeConflict(
+export function conflictingTasks(
   candidate: TaskScopeDescriptor,
   activeTasks: ReadonlyArray<TaskScopeDescriptor>,
-): boolean {
+): string[] {
   const candidateMode = candidate.conflictMode ?? "exclusive";
+  const conflicts: string[] = [];
 
   for (const active of activeTasks) {
     if (active.taskId === candidate.taskId) continue;
@@ -95,11 +96,21 @@ export function hasScopeConflict(
 
     // If either is exclusive and patterns intersect, conflict exists
     if (scopesIntersect(candidate.patterns, active.patterns)) {
-      return true;
+      conflicts.push(active.taskId);
     }
   }
 
-  return false;
+  return conflicts;
+}
+
+/**
+ * Determines whether a candidate task conflicts with any actively running tasks.
+ */
+export function hasScopeConflict(
+  candidate: TaskScopeDescriptor,
+  activeTasks: ReadonlyArray<TaskScopeDescriptor>,
+): boolean {
+  return conflictingTasks(candidate, activeTasks).length > 0;
 }
 
 /**

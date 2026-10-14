@@ -11,6 +11,7 @@ import type * as NodeSqlite from "node:sqlite";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import type { RepoContract } from "./contract.ts";
+import { repoRootOfGitDir, toolchainEnvironment } from "./toolchain.ts";
 
 const PORT_BASE = 21_000;
 const PORTS_PER_SLOT = 50;
@@ -90,7 +91,10 @@ export function taskEnvironment(input: {
   const extra = Object.fromEntries(
     Object.entries(input.contract.env).map(([key, value]) => [key, replace(value)]),
   );
-  return { slot: input.slot, variables: { ...own, ...extra } };
+  // What the machine provides but the server process may not export (the Android SDK), so a check
+  // run here does not depend on the shell the service was started from.
+  const toolchain = toolchainEnvironment({ repoRoot: repoRootOfGitDir(input.gitCommonDir) });
+  return { slot: input.slot, variables: { ...toolchain, ...own, ...extra } };
 }
 
 /** The lines a worker's prompt shows so it uses its own names. */

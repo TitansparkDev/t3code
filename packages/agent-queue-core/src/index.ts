@@ -34,3 +34,5 @@ export * from "./baseline.ts";
 export * from "./taskOwner.ts";
 export * from "./planLint.ts";
 export * from "./finalize.ts";
+export * from "./toolchain.ts";
+export * from "./followUpResolution.ts";

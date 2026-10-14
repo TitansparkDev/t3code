@@ -230,6 +230,18 @@ export const GoalQueueProgress = Schema.Struct({
     "idle",
   ]),
   note: Schema.optional(Schema.String),
+  /**
+   * Set while tasks are ready and agents have room, yet nothing can start: why, and since when.
+   * A separate field (not a phase) so a record written with it still reads on an older server.
+   */
+  stall: Schema.optional(
+    Schema.Struct({
+      since: IsoDateTime,
+      /** One line a person can act on: which tasks wait, for what, and who holds it. */
+      summary: Schema.String,
+      taskIds: Schema.Array(Schema.String),
+    }),
+  ),
   checkedAt: IsoDateTime,
 });
 export type GoalQueueProgress = typeof GoalQueueProgress.Type;

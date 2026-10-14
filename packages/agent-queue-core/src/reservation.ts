@@ -108,16 +108,8 @@ export type ReserveOutcome =
       readonly held: ReadonlyArray<{ readonly taskId: string; readonly reason: string }>;
     };
 
-export class WorktreeProvisionError extends Error {
-  readonly taskId: string;
-  constructor(taskId: string, cause: unknown) {
-    super(
-      `Could not prepare the worktree for ${taskId}: ${cause instanceof Error ? cause.message : String(cause)}`,
-    );
-    this.name = "WorktreeProvisionError";
-    this.taskId = taskId;
-  }
-}
+/** How long a task whose worktree could not be made waits before it is tried again. */
+const PROVISION_RETRY_MS = 30_000;
 
 interface Row {
   id: string;
@@ -273,6 +265,21 @@ export async function reserveNextTask(
 
   const skipped: Array<{ taskId: string; reason: string }> = [];
   const held: Array<{ taskId: string; reason: string }> = [];
+  const provisionCoolingDown = (taskId: string) => {
+    const failedAt = (
+      db
+        .prepare(
+          "SELECT created_at FROM task_events WHERE task_id = ? AND event_type = 'task_provision_failed' ORDER BY id DESC LIMIT 1",
+        )
+        .get(taskId) as { created_at: string } | undefined
+    )?.created_at;
+    return failedAt !== undefined && Date.now() - Date.parse(failedAt) < PROVISION_RETRY_MS;
+  };
+  const provisionFailed = (taskId: string, error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    recordEvent(db, taskId, "task_provision_failed", { error: message });
+    skipped.push({ taskId, reason: `WORKTREE_FAILED (${message.slice(0, 200)})` });
+  };
   const resourcesOf = (
     _taskId: string,
     scope: ReadonlyArray<string>,
@@ -520,6 +527,13 @@ export async function reserveNextTask(
   ).stdout.trim();
   for (const repair of repairs) {
     if (options.excludeTaskIds?.has(repair.id)) continue;
+    if (provisionCoolingDown(repair.id)) {
+      skipped.push({
+        taskId: repair.id,
+        reason: "WORKTREE_FAILED (its worktree could not be made; retrying)",
+      });
+      continue;
+    }
     // The integration branch moved since this failed (a follow-up landed, the other side of the
     // conflict changed): the same candidate may merge now. Try that first; it costs no model turn.
     const failedAt = (
@@ -613,7 +627,9 @@ export async function reserveNextTask(
         finalStatus: "pending",
         failureReason: error instanceof Error ? error.message : String(error),
       });
-      throw new WorktreeProvisionError(repair.id, error);
+      // A repair with a broken worktree must not block independent tasks behind it either.
+      provisionFailed(repair.id, error);
+      continue;
     }
   }
 
@@ -630,6 +646,14 @@ export async function reserveNextTask(
     });
     if (unassignable.length > 0) {
       holdForFindings(taskId, unassignable, false);
+      continue;
+    }
+    // A task whose worktree could not be made a moment ago is not retried on every pass.
+    if (provisionCoolingDown(taskId)) {
+      skipped.push({
+        taskId,
+        reason: "WORKTREE_FAILED (its worktree could not be made; retrying)",
+      });
       continue;
     }
     const planned = planWorktree(options.repoRoot, taskId, row.title, prefix);
@@ -690,10 +714,10 @@ export async function reserveNextTask(
         finalStatus: "pending",
         failureReason: error instanceof Error ? error.message : String(error),
       });
-      recordEvent(db, taskId, "task_provision_failed", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-      throw new WorktreeProvisionError(taskId, error);
+      // One task whose worktree cannot be made must not stop the independent tasks behind it. It is
+      // reported as skipped with the reason and tried again shortly.
+      provisionFailed(taskId, error);
+      continue;
     }
   }
   return { kind: "none", skipped, held };

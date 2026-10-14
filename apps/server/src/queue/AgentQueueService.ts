@@ -120,6 +120,15 @@ export interface QueueStatus {
 
 export type CandidateInfo = ReturnType<typeof listCandidates>[number];
 
+/** What one attempt to reserve a task found. */
+export interface ReserveNextResult {
+  readonly task: ReservedTask | null;
+  /** Ready tasks that could not be claimed, with the queue's reason for each. */
+  readonly skipped: ReadonlyArray<{ readonly taskId: string; readonly reason: string }>;
+  /** Tasks parked this pass because their assignment could not run. */
+  readonly held: ReadonlyArray<{ readonly taskId: string; readonly reason: string }>;
+}
+
 export interface ActiveClaim {
   readonly taskId: string;
   readonly claimToken: string;
@@ -175,12 +184,16 @@ export class AgentQueueService extends Context.Service<
       planPath?: string,
     ) => Effect.Effect<QueueBinding, AgentQueueError>;
     readonly status: (binding: QueueBinding) => Effect.Effect<QueueStatus, AgentQueueError>;
-    /** Claim the next ready task and prepare its worktree. Null when nothing is ready. */
+    /**
+     * Claim the next ready task and prepare its worktree. `task` is null when nothing can start;
+     * `skipped` then says why each ready task could not (for example `SCOPE_CONFLICT (held by X)`),
+     * and `held` lists tasks parked this pass because their assignment is not executable.
+     */
     readonly reserveNext: (
       binding: QueueBinding,
       workerSessionId: string,
       excludeTaskIds?: ReadonlySet<string>,
-    ) => Effect.Effect<ReservedTask | null, AgentQueueError>;
+    ) => Effect.Effect<ReserveNextResult, AgentQueueError>;
     readonly heartbeat: (
       binding: QueueBinding,
       claimToken: string,
@@ -550,7 +563,9 @@ const make = AgentQueueService.of({
           isOwnerAlive: (pid, sessionId) =>
             sessionId?.startsWith("goal-") ? false : isProcessAlive(pid),
         });
-        return outcome.kind === "reserved" ? outcome.task : null;
+        return outcome.kind === "reserved"
+          ? { task: outcome.task, skipped: [], held: [] }
+          : { task: null, skipped: outcome.skipped, held: outcome.held };
       } finally {
         db.close();
       }

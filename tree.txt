@@ -20392,6 +20392,8 @@ apps/server/src/goals/GoalBeads.ts
 apps/server/src/goals/GoalService.test.ts
 apps/server/src/goals/GoalService.ts
 apps/server/src/goals/GoalStore.ts
+apps/server/src/goals/supervise.test.ts
+apps/server/src/goals/supervise.ts
 apps/server/src/http.test.ts
 apps/server/src/http.ts
 apps/server/src/httpCors.ts
@@ -22529,6 +22531,7 @@ docs/agentqueue/ADR-0007-candidates-integration-and-completion.md
 docs/agentqueue/ADR-0008-verification-contract-and-worker-settlement.md
 docs/agentqueue/ADR-0009-execution-contract-and-failure-ledger.md
 docs/agentqueue/ADR-0010-owned-tasks-and-shared-resources.md
+docs/agentqueue/ADR-0011-stall-recovery-and-resolved-follow-ups.md
 docs/agentqueue/PLAN.md
 docs/agentqueue/README.md
 docs/internals/assistant-citations.md
@@ -22811,6 +22814,7 @@ packages/agent-queue-core/src/db.ts
 packages/agent-queue-core/src/eventStream.ts
 packages/agent-queue-core/src/failures.ts
 packages/agent-queue-core/src/finalize.ts
+packages/agent-queue-core/src/followUpResolution.ts
 packages/agent-queue-core/src/hostCapacity.ts
 packages/agent-queue-core/src/index.ts
 packages/agent-queue-core/src/integration.ts
@@ -22834,6 +22838,7 @@ packages/agent-queue-core/src/scopeManager.ts
 packages/agent-queue-core/src/stateMachine.ts
 packages/agent-queue-core/src/taskEnvironment.ts
 packages/agent-queue-core/src/taskOwner.ts
+packages/agent-queue-core/src/toolchain.ts
 packages/agent-queue-core/src/verificationSpec.ts
 packages/agent-queue-core/src/verifier.ts
 packages/agent-queue-core/src/worktreeManager.ts
@@ -22844,6 +22849,7 @@ packages/agent-queue-core/test/eventStream.test.ts
 packages/agent-queue-core/test/executionContract.test.ts
 packages/agent-queue-core/test/executionGoal.test.ts
 packages/agent-queue-core/test/executionLifecycle.test.ts
+packages/agent-queue-core/test/followUpResolution.test.ts
 packages/agent-queue-core/test/fullStressHarness.test.ts
 packages/agent-queue-core/test/harness/contractHarness.ts
 packages/agent-queue-core/test/harness/gitHarness.test.ts

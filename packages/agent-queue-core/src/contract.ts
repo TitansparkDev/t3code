@@ -14,6 +14,7 @@
  *
  * @module contract
  */
+import { toolchainFingerprint } from "./toolchain.ts";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
@@ -583,6 +584,8 @@ export function environmentFingerprint(input: {
     }
     parts.push(`${ref}:.githooks=${git(input.repoRoot, ["rev-parse", `${ref}:.githooks`]).stdout}`);
   }
+  // The machine's own toolchain (the Android SDK a build needs): fixing it releases what it held.
+  parts.push(`toolchain=${toolchainFingerprint({ repoRoot: input.repoRoot })}`);
   const names = new Set([...contract.tools.map((tool) => tool.name), ...(input.extraTools ?? [])]);
   for (const name of [...names].sort()) {
     const spec = contract.tools.find((tool) => tool.name === name) ?? {

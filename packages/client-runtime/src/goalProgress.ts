@@ -65,7 +65,7 @@ export function describeGoalQueue(
         : []),
       ...(progress.needsRepair > 0 ? [`${progress.needsRepair} need repair`] : []),
       `${progress.ready} ready · ${progress.waiting} waiting on others`,
-      PHASE_LABEL[progress.phase],
+      progress.stall ? `Stalled: ${progress.stall.summary}` : PHASE_LABEL[progress.phase],
       ...(progress.note ? [progress.note] : []),
     ].join(" · ");
   }

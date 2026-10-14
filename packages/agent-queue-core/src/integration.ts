@@ -49,6 +49,8 @@ import {
 import { attributeFailure } from "./baseline.ts";
 import { ResourceWaitError } from "./resourceRunner.ts";
 import { addFollowUpTask } from "./overseerRepairs.ts";
+import { settleUnchangedFollowUp } from "./followUpResolution.ts";
+import { environmentFailureOf, toolchainFingerprint } from "./toolchain.ts";
 import { ensureSlot, taskEnvironment } from "./taskEnvironment.ts";
 import { parseStoredSpec, runSpec, type SpecResult } from "./verificationSpec.ts";
 import { commitPendingChanges } from "./worktreeManager.ts";
@@ -557,6 +559,18 @@ export type SubmitOutcome =
     }
   | { readonly kind: "no-changes" }
   | {
+      /**
+       * A repair follow-up whose problem is already gone: the server ran its checks on the
+       * integration tip and they pass, so no commit is needed. The task is completed.
+       */
+      readonly kind: "resolved";
+      readonly tip: string;
+      readonly flaky: boolean;
+      readonly parentTaskId: string;
+      readonly parentRetried: boolean;
+      readonly receipt: SpecResult;
+    }
+  | {
       readonly kind: "verification-failed";
       readonly error: string;
       readonly receipt: SpecResult | null;
@@ -634,7 +648,70 @@ export async function submitCandidate(
     "--count",
     `refs/heads/${input.baseBranch}..${head}`,
   ]);
-  if (ahead.code !== 0 || ahead.stdout === "0") return { kind: "no-changes" };
+  if (ahead.code !== 0 || ahead.stdout === "0") {
+    // A repair follow-up may have nothing to commit because the failure is gone. The server
+    // decides that itself by running the follow-up's checks; the worker's word is not enough.
+    const settled = await settleUnchangedFollowUp(db, {
+      taskId: input.taskId,
+      claimToken: input.claimToken,
+      repoRoot: input.repoRoot,
+      gitCommonDir:
+        input.gitCommonDir ?? git(input.repoRoot, ["rev-parse", "--git-common-dir"]).stdout,
+      baseBranch: input.baseBranch,
+      targetBranch: input.targetBranch,
+      worktreePath: input.worktreePath,
+    });
+    switch (settled.kind) {
+      case "resolved":
+        return {
+          kind: "resolved",
+          tip: settled.tip,
+          flaky: settled.flaky,
+          parentTaskId: settled.parentTaskId,
+          parentRetried: settled.parentRetried,
+          receipt: settled.receipt,
+        };
+      case "claim-lost":
+        return { kind: "claim-lost" };
+      case "resource-wait":
+        recordEvent(db, input.taskId, "task_checks_waiting_for_resource", {
+          message: settled.message,
+        });
+        return { kind: "resource-wait", message: settled.message };
+      case "environment": {
+        const recorded = recordFailure(db, input.taskId, {
+          failureClass: "prerequisite",
+          message: settled.message,
+          headCommit: head,
+          evidence: settled.receipt,
+        });
+        return {
+          kind: "verification-failed",
+          receipt: settled.receipt,
+          error: settled.message.slice(0, 1500),
+          failureClass: "prerequisite",
+          decision: decideAfterFailure("prerequisite", recorded),
+        };
+      }
+      case "still-failing": {
+        const recorded = recordFailure(db, input.taskId, {
+          failureClass: "verification",
+          message: settled.message,
+          headCommit: head,
+          evidence: settled.receipt,
+        });
+        return {
+          kind: "verification-failed",
+          receipt: settled.receipt,
+          error: settled.message.slice(0, 1500),
+          failureClass: "verification",
+          decision: decideAfterFailure("verification", recorded),
+        };
+      }
+      case "not-applicable":
+        return { kind: "no-changes" };
+    }
+  }
 
   // The checks come from the queue's own record of the task, never from the caller: a
   // worker or a stale prompt cannot weaken them. The input command is only a legacy fallback.
@@ -828,6 +905,17 @@ export async function submitCandidate(
         )
       : undefined;
     if (!failedResult || !failedCheck) break;
+    // The machine cannot run this check at all: that is neither this commit's fault nor a defect
+    // on the integration branch, so no worker and no follow-up task can fix it. Hold for the machine.
+    const machine = environmentFailureOf(`${failedResult.stdoutTail}\n${failedResult.stderrTail}`);
+    if (machine) {
+      recordEvent(db, input.taskId, "task_failure_attributed", {
+        check: failedCheck.run,
+        origin: "environment",
+        reason: machine,
+      });
+      return fail("prerequisite", `The check cannot run on this machine: ${machine}`, receipt);
+    }
     const origin = await attributeFailure(db, {
       planId: planRow.plan_id,
       taskId: input.taskId,
@@ -973,6 +1061,14 @@ export async function submitCandidate(
 
 export type IntegrationOutcome =
   | { readonly kind: "landed"; readonly commit: string; readonly reconciled: boolean }
+  | {
+      /**
+       * The merge's checks cannot run on this machine (a missing SDK, no Java). No repair worker can
+       * help; the candidate waits, untouched, until the machine's toolchain changes or a while passes.
+       */
+      readonly kind: "environment-wait";
+      readonly reason: string;
+    }
   /** Safe to try again later; the candidate stays `pending`. */
   | { readonly kind: "deferred"; readonly reason: string; readonly files: ReadonlyArray<string> }
   /** A repair worker (or, after the budget, the overseer) must fix the candidate. */
@@ -994,6 +1090,23 @@ export interface IntegrateInput {
   readonly taskId: string;
   /** Automatic repair attempts before the candidate is handed to the overseer. */
   readonly maxRepairs?: number;
+}
+
+/** How long a candidate whose checks could not run on this machine waits before it is tried again. */
+const ENVIRONMENT_RETRY_MS = 10 * 60_000;
+const ENVIRONMENT_WAIT = "Waiting for the machine: ";
+
+function markEnvironmentWait(
+  db: NodeSqlite.DatabaseSync,
+  taskId: string,
+  reason: string,
+  fingerprint: string,
+): void {
+  const now = new Date().toISOString();
+  db.prepare(
+    "UPDATE tasks SET integration_error = ?, integration_updated_at = ?, unblock_fingerprint = ? WHERE id = ?",
+  ).run(`${ENVIRONMENT_WAIT}${reason}`.slice(0, 1000), now, fingerprint, taskId);
+  recordEvent(db, taskId, "task_integration_environment_wait", { reason: reason.slice(0, 500) });
 }
 
 function markDeferred(db: NodeSqlite.DatabaseSync, taskId: string, reason: string): void {
@@ -1067,7 +1180,7 @@ function markLanded(
     ).run(taskId, branch ?? "", baseBranch, commit, now, now, now);
     db.prepare(
       `UPDATE tasks SET status = 'completed', integration_state = NULL, integration_error = NULL,
-         integration_updated_at = ?, version = version + 1, updated_at = ? WHERE id = ?`,
+         unblock_fingerprint = NULL, integration_updated_at = ?, version = version + 1, updated_at = ? WHERE id = ?`,
     ).run(now, now, taskId);
     recordEvent(db, taskId, "task_landed", { landedCommit: commit, baseBranch, reconciled });
     db.exec("COMMIT;");
@@ -1102,6 +1215,24 @@ export async function integrateCandidate(
       }
     | undefined;
   if (!row?.candidate_commit) return { kind: "not-pending" };
+  // Checks that could not run here are not run again every time the scheduler looks: only when the
+  // machine's toolchain changed, or after a while.
+  const waiting = db
+    .prepare(
+      "SELECT integration_error, integration_updated_at, unblock_fingerprint FROM tasks WHERE id = ?",
+    )
+    .get(input.taskId) as {
+    integration_error: string | null;
+    integration_updated_at: string | null;
+    unblock_fingerprint: string | null;
+  };
+  if (
+    waiting.integration_error?.startsWith(ENVIRONMENT_WAIT) &&
+    waiting.unblock_fingerprint === toolchainFingerprint({ repoRoot: input.repoRoot }) &&
+    Date.now() - Date.parse(waiting.integration_updated_at ?? "") < ENVIRONMENT_RETRY_MS
+  ) {
+    return { kind: "environment-wait", reason: waiting.integration_error };
+  }
   const maxRepairs = input.maxRepairs ?? 3;
   const candidate = row.candidate_commit;
 
@@ -1251,6 +1382,23 @@ export async function integrateCandidate(
             ...receipt,
             phase: "after-merge",
           });
+          const machine = environmentFailureOf(
+            receipt.checks
+              .filter((check) => !check.passed)
+              .map((check) => `${check.stdoutTail}\n${check.stderrTail}`)
+              .join("\n"),
+          );
+          if (machine) {
+            // Not a conflict and not this work's defect: a repair worker would meet the same wall.
+            const reason = `After merging with ${goalBranch}, the checks cannot run on this machine: ${machine}`;
+            markEnvironmentWait(
+              db,
+              input.taskId,
+              reason,
+              toolchainFingerprint({ repoRoot: input.repoRoot }),
+            );
+            return { kind: "environment-wait", reason: `${ENVIRONMENT_WAIT}${reason}` };
+          }
           const reason = `After merging with ${goalBranch}, the checks failed: ${receipt.summary.slice(-600)}`;
           const { exhausted } = markNeedsRepair(db, input.taskId, reason, [], maxRepairs, tip);
           return { kind: "needs-repair", reason, files: [], exhausted };

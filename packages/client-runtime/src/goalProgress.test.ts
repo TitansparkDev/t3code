@@ -57,6 +57,45 @@ describe("describeGoalQueue", () => {
   });
 });
 
+describe("describeGoalQueue when ready tasks cannot start", () => {
+  const progress = {
+    total: 77,
+    completed: 67,
+    ready: 4,
+    waiting: 2,
+    running: 1,
+    awaitingIntegration: 1,
+    needsRepair: 0,
+    failed: 2,
+    phase: "implementing",
+    checkedAt: "2026-10-14T03:00:00Z",
+  } as const;
+  const agentQueue = { planPath: "PLAN.md", baseBranch: "main" } as never;
+
+  it("says what blocks them instead of that agents are working", () => {
+    const text = describeGoalQueue({
+      useBeads: false,
+      agentQueue,
+      queueProgress: {
+        ...progress,
+        stall: {
+          since: "2026-10-14T02:55:00Z",
+          summary: "NR1, NR3 waiting for files held by NR2-FU1",
+          taskIds: ["NR1", "NR3"],
+        },
+      },
+    });
+    expect(text).toContain("Stalled: NR1, NR3 waiting for files held by NR2-FU1");
+    expect(text).not.toContain("Agents are working");
+  });
+
+  it("is unchanged when nothing is blocked", () => {
+    expect(describeGoalQueue({ useBeads: false, agentQueue, queueProgress: progress })).toContain(
+      "Agents are working",
+    );
+  });
+});
+
 describe("describeGoalPauses", () => {
   it("lists providers still set aside, and drops the ones whose time has passed", () => {
     const goal = {

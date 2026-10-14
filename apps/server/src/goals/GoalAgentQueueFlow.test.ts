@@ -9,6 +9,7 @@
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
@@ -124,6 +125,8 @@ interface ThreadScript {
   busy?: boolean;
   /** Whether the last turn's checkpoint is saved; unset means the thread reports none at all. */
   checkpoint?: "saved" | "pending";
+  /** When the thread says its latest turn was requested / completed (for stale-turn cases). */
+  turn?: { requestedAt?: string; completedAt?: string };
 }
 
 const makeFlow = (
@@ -167,7 +170,7 @@ const makeFlow = (
     const thread = (id: string) => {
       const state = script(id);
       return {
-        latestTurn: { state: state.turnState, turnId: "turn-1" },
+        latestTurn: { state: state.turnState, turnId: "turn-1", ...state.turn },
         messages: state.reply === "" ? [] : [{ role: "assistant", text: state.reply }],
         activities: state.progress ? [{}] : [],
         ...(state.checkpoint
@@ -265,21 +268,6 @@ const makeFlow = (
         if (done(value)) return value;
         yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 50)));
       }
-      yield* Effect.logError(
-        "LASTSTATE",
-        what,
-        JSON.stringify(
-          ((v: any) =>
-            v && v.chats
-              ? {
-                  s: v.status,
-                  d: v.detail,
-                  q: v.queueProgress,
-                  c: v.chats.map((c: any) => [c.taskId, c.status, c.taskOutcome]),
-                }
-              : v)(yield* read),
-        ),
-      );
       return yield* Effect.die(new Error(`Timed out waiting for ${what}`));
     });
 
@@ -605,7 +593,9 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
         // Every task is done; the goal is waiting to publish, not finished, and holds no live worker.
         const waiting = yield* flow.eventually(
           flow.goalOf(service),
-          (g) => g.queueProgress?.phase === "waiting-publication",
+          (g) =>
+            g.queueProgress?.phase === "waiting-publication" &&
+            g.queueProgress.note?.includes("shared.txt") === true,
           "publication to wait",
         );
         expect(waiting.status).toBe("running");
@@ -1886,5 +1876,368 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
         expect(flow.log.filter((c) => c.type === "thread.create")).toHaveLength(1);
       }).pipe(Effect.scoped),
     60_000,
+  );
+  // ───────────── a stalled queue: stale chats, missed events, blocked tasks ─────────────
+
+  /** A check that fails with a named failing item until `open` exists in the folder. */
+  const gatedCheck = (dir: string) => {
+    const file = NodePath.join(dir, "gate.cjs");
+    NodeFS.writeFileSync(
+      file,
+      `const fs=require('fs');const path=require('path');if(!fs.existsSync(path.join(${JSON.stringify(dir)},'open'))){console.log('FAILED gate_check');process.exit(1)}\n`,
+    );
+    return `node ${file}`;
+  };
+
+  it.effect(
+    "a conversation that went quiet without its end being seen cannot hold files forever: independent tasks keep running, the held one is finished, and the goal says what blocked it",
+    () =>
+      Effect.gen(function* () {
+        const flow = yield* makeFlow(
+          planWith([
+            { id: "T1", scope: "shared/" },
+            { id: "T2", scope: "shared/" },
+            { id: "T3", scope: "other/" },
+          ]),
+        );
+        const service = yield* flow.startServer;
+        yield* Effect.forkScoped(service.loop);
+        yield* Effect.yieldNow;
+        const [created] = yield* service.create(settingsFor());
+        yield* flow.waitFor("thread.create", 2);
+
+        // T1 and T3 run; T2 is ready but waits for T1's files. The goal says so, with who holds them.
+        expect(created!.chats.map((chat) => chat.taskId).sort()).toEqual(["T1", "T3"]);
+        const blocked = yield* flow.goalOf(service);
+        expect(blocked.queueProgress?.ready).toBe(1);
+        expect(blocked.queueProgress?.stall).toMatchObject({ taskIds: ["T2"] });
+        expect(blocked.queueProgress?.stall?.summary).toContain("T2 waiting for files held by T1");
+        // Clicking "+3 agents" with room but nothing startable starts nothing and still says why.
+        const afterClick = yield* service.addAgents(blocked.id, 3);
+        expect(afterClick[0]?.queueProgress?.stall?.summary).toContain("held by T1");
+        yield* flow.drain;
+        expect(flow.log.filter((c) => c.type === "thread.create")).toHaveLength(2);
+
+        // T1's worker finishes, but the notification is lost: the thread is idle, the chat still "running".
+        // T3's worker is genuinely still working.
+        const t1 = flow.createdFor("T1")!;
+        const t3 = flow.createdFor("T3")!;
+        yield* Effect.promise(async () => {
+          await NodeFSP.mkdir(NodePath.join(t1.worktreePath!, "shared"), { recursive: true });
+          await NodeFSP.writeFile(NodePath.join(t1.worktreePath!, "shared/one.txt"), "1\n");
+          await execCommand("git", ["add", "-A"], t1.worktreePath!);
+          await execCommand("git", ["commit", "-qm", "T1: implement"], t1.worktreePath!);
+        });
+        flow.scripts.set(t3.threadId, {
+          reply: "",
+          turnState: "running",
+          progress: true,
+          lastError: null,
+          busy: true,
+        });
+
+        // Not yet: it only just stopped, and a lost event is not assumed on a hunch.
+        yield* TestClock.adjust(Duration.seconds(30));
+        yield* flow.drain;
+        expect(flow.log.filter((c) => c.type === "thread.create")).toHaveLength(2);
+
+        // The scheduler stops waiting for an event that is not coming, finishes the chat from the
+        // thread's own state, lands T1, frees its files, and T2 starts. T3 is never touched.
+        for (let round = 0; round < 40; round++) {
+          yield* TestClock.adjust(Duration.seconds(5));
+          yield* Effect.yieldNow;
+          yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 100)));
+          if ((yield* flow.drain).filter((c) => c.type === "thread.create").length >= 3) break;
+        }
+        const creates = flow.log.filter((c) => c.type === "thread.create");
+        expect(creates).toHaveLength(3);
+        expect(creates.some((c) => c.type === "thread.create" && c.title.includes("T2"))).toBe(
+          true,
+        );
+        expect(yield* flow.taskRow("T1")).toMatchObject({ status: "completed" });
+        const after = yield* flow.goalOf(service);
+        expect(after.chats.find((chat) => chat.taskId === "T1")?.status).toBe("completed");
+        expect(after.chats.find((chat) => chat.taskId === "T3")?.status).toBe("running");
+        // Nothing is blocked any more, and the goal stops saying so.
+        yield* flow.eventually(
+          flow.goalOf(service),
+          (g) => g.queueProgress?.stall === undefined,
+          "the stall note to clear",
+        );
+        expect(flow.log.filter((c) => c.type === "thread.session.stop")).toHaveLength(0);
+      }).pipe(Effect.scoped),
+    90_000,
+  );
+
+  it.effect(
+    "a repair follow-up whose owner finds nothing to fix completes without a commit, and the work waiting on it continues",
+    () =>
+      Effect.gen(function* () {
+        const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "goal-fu-"));
+        const flow = yield* makeFlow(
+          planWith([
+            { id: "T1", scope: "s/", verify: gatedCheck(dir) },
+            { id: "T2", scope: "other/" },
+            { id: "T3", deps: ["T1"], scope: "t/" },
+          ]),
+        );
+        const service = yield* flow.startServer;
+        yield* Effect.forkScoped(service.loop);
+        yield* Effect.yieldNow;
+        yield* service.create(settingsFor());
+        yield* flow.waitFor("thread.create", 2);
+
+        // T1 is submitted while its check fails the same way on the integration branch: the failure
+        // is tracked as its own blocking follow-up, and T1's own conversation is asked to look at it.
+        yield* flow.work("T1", { file: "s/one.txt", content: "1\n" });
+        const t1 = flow.createdFor("T1")!;
+        const resumed = yield* flow.eventually(
+          flow.goalOf(service),
+          (g) => g.chats.find((chat) => chat.taskId === "T1-FU1") !== undefined,
+          "T1's conversation to be sent the follow-up",
+        );
+        expect(resumed.chats.find((chat) => chat.threadId === t1.threadId)?.taskId).toBe("T1-FU1");
+        expect((yield* flow.taskRow("T1-FU1")).status).toBe("claimed");
+
+        // The follow-up's owner reruns the check, finds it passing (the gate has opened since) and has
+        // nothing to commit. Its turn ends. Even if the thread reports the turn as older than the resume.
+        NodeFS.writeFileSync(NodePath.join(dir, "open"), "yes\n");
+        flow.scripts.set(t1.threadId, {
+          reply: "I reran the check and it passes; there is nothing to change.",
+          turnState: "completed",
+          progress: true,
+          lastError: null,
+          turn: { requestedAt: "1969-12-31T00:00:00.000Z" },
+        });
+        yield* flow.sessionEvent(t1.threadId, { status: "running", activeTurnId: "again" });
+        yield* flow.sessionEvent(t1.threadId, { status: "ready", activeTurnId: null });
+
+        yield* flow.eventually(
+          flow.taskRow("T1-FU1"),
+          (row) => row.status === "completed",
+          "the follow-up to be resolved by the server's own check",
+        );
+        // No fake commit was demanded of the owner or made for it.
+        const turnTexts = flow.log
+          .filter((c) => c.type === "thread.turn.start")
+          .map((c) => (c.type === "thread.turn.start" ? c.message.text : ""));
+        expect(turnTexts.some((text) => text.includes("found no commit"))).toBe(false);
+        // The dependant that waited on the follow-up starts, in a new conversation, and nothing else is spawned for it.
+        yield* flow.waitFor("thread.create", 3);
+        expect(flow.createdFor("T3")).toBeDefined();
+        const done = yield* flow.goalOf(service);
+        expect(done.chats.filter((chat) => chat.taskId === "T1-FU1")).toHaveLength(1);
+        expect(done.chats.find((chat) => chat.threadId === t1.threadId)?.status).toBe("completed");
+      }).pipe(Effect.scoped),
+    120_000,
+  );
+
+  it.effect("clicking +N agents with several ready tasks and room starts them all at once", () =>
+    Effect.gen(function* () {
+      const flow = yield* makeFlow(
+        planWith([{ id: "T1" }, { id: "T2" }, { id: "T3" }, { id: "T4" }]),
+      );
+      const service = yield* flow.startServer;
+      const [goal] = yield* service.create(settingsFor({ concurrency: 1, maxChats: null }));
+      expect(goal?.chats).toHaveLength(1);
+      const after = yield* service.addAgents(goal!.id, 3);
+      expect(after[0]?.chats).toHaveLength(4);
+      expect(after[0]?.concurrency).toBe(4);
+      expect(after[0]?.queueProgress?.stall).toBeUndefined();
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "a transient queue error loses no work: scheduling resumes by itself once the queue is readable again",
+    () =>
+      Effect.gen(function* () {
+        const flow = yield* makeFlow(planWith([{ id: "T1" }, { id: "T2", deps: ["T1"] }]));
+        const service = yield* flow.startServer;
+        yield* Effect.forkScoped(service.loop);
+        yield* Effect.yieldNow;
+        yield* service.create(settingsFor());
+        yield* flow.waitFor("thread.create", 1);
+        const dbFile = NodePath.join(flow.repo.gitCommonDir, "agentqueue", "queue.sqlite");
+        const hidden = `${dbFile}.away`;
+        // The queue database is unreadable for a moment (a disk hiccup, a restore in progress).
+        NodeFS.renameSync(dbFile, hidden);
+        NodeFS.mkdirSync(dbFile);
+        yield* tickOnce;
+        yield* tickOnce;
+        NodeFS.rmdirSync(dbFile);
+        NodeFS.renameSync(hidden, dbFile);
+        const goal = yield* flow.goalOf(service);
+        expect(goal.status).toBe("running");
+        // Work carries on and finishes as if nothing happened.
+        yield* flow.work("T1");
+        yield* flow.waitFor("thread.create", 2);
+        yield* flow.work("T2");
+        const done = yield* flow.eventually(
+          flow.goalOf(service),
+          (g) => g.status === "complete",
+          "the goal to complete after the queue came back",
+        );
+        expect(done.queueErrors ?? 0).toBe(0);
+      }).pipe(Effect.scoped),
+    90_000,
+  );
+
+  it.effect(
+    "an outage that really lasts still stops the goal, with the reason, rather than looping forever",
+    () =>
+      Effect.gen(function* () {
+        const flow = yield* makeFlow(planWith([{ id: "T1" }, { id: "T2", deps: ["T1"] }]));
+        const service = yield* flow.startServer;
+        yield* Effect.forkScoped(service.loop);
+        yield* Effect.yieldNow;
+        yield* service.create(settingsFor());
+        yield* flow.waitFor("thread.create", 1);
+        const dbFile = NodePath.join(flow.repo.gitCommonDir, "agentqueue", "queue.sqlite");
+        NodeFS.renameSync(dbFile, `${dbFile}.away`);
+        NodeFS.mkdirSync(dbFile);
+        for (let round = 0; round < 50; round++) yield* tickOnce;
+        const goal = yield* flow.goalOf(service);
+        expect(goal.status).toBe("failed");
+        expect(goal.detail).toContain("kept failing");
+        NodeFS.rmdirSync(dbFile);
+        NodeFS.renameSync(`${dbFile}.away`, dbFile);
+      }).pipe(Effect.scoped),
+    60_000,
+  );
+
+  it.effect(
+    "after a restart, a conversation that is already quiet no longer holds its files: its work is merged and the task that waited starts",
+    () =>
+      Effect.gen(function* () {
+        const flow = yield* makeFlow(
+          planWith([
+            { id: "T1", scope: "shared/" },
+            { id: "T2", scope: "shared/" },
+          ]),
+        );
+        // The first server never sees the worker's end; it is gone before it could.
+        const first = yield* flow.startServer;
+        yield* first.create(settingsFor());
+        const created = (yield* flow.waitFor("thread.create", 1))[0]!;
+        yield* Effect.promise(async () => {
+          const cwd = created.worktreePath!;
+          await NodeFSP.mkdir(NodePath.join(cwd, "shared"), { recursive: true });
+          await NodeFSP.writeFile(NodePath.join(cwd, "shared/one.txt"), "1\n");
+          await execCommand("git", ["add", "-A"], cwd);
+          await execCommand("git", ["commit", "-qm", "T1: implement"], cwd);
+        });
+        const second = yield* flow.startServer;
+        yield* Effect.forkScoped(second.loop);
+        yield* Effect.yieldNow;
+        yield* flow.eventually(
+          flow.taskRow("T1"),
+          (row) => row.status === "completed",
+          "T1 to merge after the restart",
+        );
+        yield* flow.waitFor("thread.create", 2);
+        expect(flow.createdFor("T2")).toBeDefined();
+      }).pipe(Effect.scoped),
+    60_000,
+  );
+  it.effect(
+    "a realistic multi-worker goal: independent tasks keep launching and merging while one task's follow-up is repaired, and everything finishes",
+    () =>
+      Effect.gen(function* () {
+        const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "goal-real-"));
+        const flow = yield* makeFlow(
+          planWith([
+            { id: "N2", scope: "db/", verify: gatedCheck(dir) },
+            { id: "N1", scope: "db/" },
+            { id: "N3", scope: "audio/" },
+            { id: "N4", scope: "server/" },
+            { id: "N8", deps: ["N1", "N2", "N3", "N4"] },
+          ]),
+        );
+        const service = yield* flow.startServer;
+        yield* Effect.forkScoped(service.loop);
+        yield* Effect.yieldNow;
+        yield* service.create(settingsFor({ concurrency: 4 }));
+
+        // N2, N3, N4 run side by side; N1 shares N2's files, and the goal says exactly that.
+        yield* flow.waitFor("thread.create", 3);
+        const first = yield* flow.goalOf(service);
+        expect(first.chats.map((chat) => chat.taskId).sort()).toEqual(["N2", "N3", "N4"]);
+        expect(first.queueProgress?.stall?.summary).toContain("N1 waiting for files held by N2");
+
+        // N2 finishes first. Its check fails the same way on the integration branch: the failure is
+        // tracked as a follow-up and N2's own conversation looks at it, holding db/ meanwhile.
+        yield* flow.work("N2", { file: "db/schema.txt", content: "n2\n" });
+        yield* flow.eventually(
+          flow.taskRow("N2-FU1"),
+          (row) => (row as { status?: string } | undefined)?.status === "claimed",
+          "the follow-up to be handed to N2's conversation",
+        );
+        yield* flow.eventually(
+          flow.taskRow("N2"),
+          (row) => row.status === "completed",
+          "N2 to merge",
+        );
+        const blocked = yield* flow.eventually(
+          flow.goalOf(service),
+          (g) =>
+            g.queueProgress?.stall?.summary.includes("N1 waiting for files held by N2-FU1") ===
+            true,
+          "the goal to name the follow-up as what holds N1",
+        );
+        expect(blocked.status).toBe("running");
+
+        // While that is being repaired, the independent tasks finish and merge: nothing waits for it.
+        yield* flow.work("N3", { file: "audio/a.txt", content: "n3\n" });
+        yield* flow.work("N4", { file: "server/s.txt", content: "n4\n" });
+        yield* flow.eventually(
+          flow.taskRow("N3"),
+          (row) => row.status === "completed",
+          "N3 to merge while the follow-up is open",
+        );
+        yield* flow.eventually(
+          flow.taskRow("N4"),
+          (row) => row.status === "completed",
+          "N4 to merge while the follow-up is open",
+        );
+        expect((yield* flow.taskRow("N2-FU1")).status).toBe("claimed");
+        expect(flow.createdFor("N1")).toBeUndefined();
+
+        // The follow-up's owner finds the check passing and has nothing to commit.
+        NodeFS.writeFileSync(NodePath.join(dir, "open"), "yes\n");
+        const n2 = flow.createdFor("N2")!.threadId;
+        flow.scripts.set(n2, {
+          reply: "Checked again: it passes, nothing to change.",
+          turnState: "completed",
+          progress: true,
+          lastError: null,
+        });
+        yield* flow.sessionEvent(n2, { status: "running", activeTurnId: "fu" });
+        yield* flow.sessionEvent(n2, { status: "ready", activeTurnId: null });
+
+        // N1 starts by itself the moment the files are free, then N8 once everything it needs is done.
+        yield* flow.waitFor("thread.create", 4);
+        expect(flow.createdFor("N1")).toBeDefined();
+        yield* flow.work("N1", { file: "db/n1.txt", content: "n1\n" });
+        yield* flow.waitFor("thread.create", 5);
+        yield* flow.work("N8");
+        const done = yield* flow.eventually(
+          flow.goalOf(service),
+          (g) => g.status === "complete",
+          "the goal to complete",
+        );
+        // One conversation per task, the follow-up never got a worker of its own, nobody was asked
+        // for a commit that does not exist, and every task is merged exactly once.
+        expect(done.chats).toHaveLength(5);
+        const texts = flow.log
+          .filter((c) => c.type === "thread.turn.start")
+          .map((c) => (c.type === "thread.turn.start" ? c.message.text : ""));
+        expect(texts.some((text) => text.includes("found no commit"))).toBe(false);
+        for (const id of ["N1", "N2", "N3", "N4", "N8"]) {
+          expect(yield* flow.taskRow(id)).toMatchObject({ status: "completed" });
+          expect(yield* flow.landings(id)).toBe(1);
+        }
+        expect(yield* flow.taskRow("N2-FU1")).toMatchObject({ status: "completed" });
+      }).pipe(Effect.scoped),
+    180_000,
   );
 });

@@ -41,7 +41,7 @@ const RULES: ReadonlyArray<readonly [RegExp, FailureClass]> = [
     "configuration",
   ],
   [
-    /command not found|not installed|executable .{0,40}(missing|not found)|ENOENT.{0,80}\b(spawn|exec)|no such (command|tool)|missing (tool|prerequisite|dependency)/i,
+    /command not found|not installed|executable .{0,40}(missing|not found)|ENOENT.{0,80}\b(spawn|exec)|no such (command|tool)|missing (tool|prerequisite|dependency)|SDK location not found|JAVA_HOME is not set|Unable to locate a Java Runtime/i,
     "prerequisite",
   ],
   [

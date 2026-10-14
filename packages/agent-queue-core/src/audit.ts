@@ -8,6 +8,7 @@
  *
  * @module audit
  */
+import { environmentFailureOf } from "./toolchain.ts";
 import type * as NodeSqlite from "node:sqlite";
 import * as NodeChildProcess from "node:child_process";
 import * as NodePath from "node:path";
@@ -245,6 +246,21 @@ export async function auditUnverifiedTasks(
       } catch (error) {
         if (error instanceof ResourceWaitError) continue; // looked at again on the next pass
         throw error;
+      }
+      const machine =
+        receipt.state === "failed" || receipt.state === "timed-out"
+          ? environmentFailureOf(
+              receipt.checks
+                .filter((check) => !check.passed)
+                .map((check) => `${check.stdoutTail}\n${check.stderrTail}`)
+                .join("\n"),
+            )
+          : null;
+      if (machine) {
+        // The machine cannot run this check: that says nothing about the code, and a repair task
+        // could not fix it. It is audited again when the toolchain is there.
+        recordEvent(db, task.id, "task_audit_environment_wait", { commit: tip, reason: machine });
+        continue;
       }
       recordEvent(db, task.id, "task_audited", {
         state: receipt.state,

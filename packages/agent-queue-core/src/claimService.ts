@@ -1,7 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off preferSchemaOverJson:off
 import type * as NodeSqlite from "node:sqlite";
 import * as NodeCrypto from "node:crypto";
-import { hasScopeConflict } from "./scopeManager.ts";
+import { conflictingTasks } from "./scopeManager.ts";
 import {
   classifyReason,
   decideAfterFailure,
@@ -114,9 +114,14 @@ export function claimTask(db: NodeSqlite.DatabaseSync, req: ClaimRequest): Claim
         patterns: JSON.parse(at.scope_patterns || "[]") as string[],
       }));
 
-      if (hasScopeConflict({ taskId: task.id, patterns: candidateScopes }, activeDescriptors)) {
+      const holders = conflictingTasks(
+        { taskId: task.id, patterns: candidateScopes },
+        activeDescriptors,
+      );
+      if (holders.length > 0) {
         db.exec("ROLLBACK;");
-        return { success: false, reason: "SCOPE_CONFLICT" };
+        // Who holds the files is the whole diagnosis: say it, so nobody has to guess.
+        return { success: false, reason: `SCOPE_CONFLICT (held by ${holders.join(", ")})` };
       }
     }
 

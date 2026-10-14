@@ -126,7 +126,7 @@ export function sameFailure(
   );
 }
 
-const DEPENDENCY_DIRS = [
+export const DEPENDENCY_DIRS = [
   "node_modules",
   ".venv",
   "venv",
