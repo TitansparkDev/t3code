@@ -115,13 +115,21 @@ export function reconcileExpiredLeases(
       continue;
     }
 
-    // 2. Worker is dead: Preserve any uncommitted files in worktree
-    const preservation = preserveWorktreeChanges(claim.worktree_path, claim.task_id);
-
-    // 3. CAS state recovery
+    // Recheck under the write lock before touching files: another process may have renewed
+    // this lease after the expired-claim snapshot was read.
     db.exec("BEGIN IMMEDIATE;");
     let committed = false;
     try {
+      const current = db
+        .prepare(`SELECT c.id FROM task_claims c JOIN tasks t ON t.id = c.task_id
+        WHERE c.id = ? AND c.released_at IS NULL AND c.expires_at <= ? AND t.version = ?
+        AND t.status IN ('claimed', 'running', 'verifying')`)
+        .get(claim.id, now, claim.task_version);
+      if (!current || isAlive(claim.worker_pid, claim.worker_session_id)) {
+        db.exec("ROLLBACK;");
+        continue;
+      }
+      const preservation = preserveWorktreeChanges(claim.worktree_path, claim.task_id);
       // Mark claim released
       db.prepare("UPDATE task_claims SET released_at = ? WHERE id = ?").run(now, claim.id);
 

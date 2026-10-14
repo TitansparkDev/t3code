@@ -127,6 +127,7 @@ interface ThreadScript {
   checkpoint?: "saved" | "pending";
   /** When the thread says its latest turn was requested / completed (for stale-turn cases). */
   turn?: { requestedAt?: string; completedAt?: string };
+  livenessReadFails?: boolean;
 }
 
 const makeFlow = (
@@ -220,11 +221,13 @@ const makeFlow = (
               : [],
           ),
         getThreadShellById: (threadId) =>
-          Effect.succeed(
-            liveness.has(threadId)
-              ? Option.some({ backgroundLiveness: liveness.get(threadId) } as never)
-              : Option.none(),
-          ),
+          script(threadId).livenessReadFails
+            ? Effect.die("liveness unavailable")
+            : Effect.succeed(
+                liveness.has(threadId)
+                  ? Option.some({ backgroundLiveness: liveness.get(threadId) } as never)
+                  : Option.none(),
+              ),
         getThreadDetailById: (threadId) => Effect.succeed(Option.some(thread(threadId))),
       }),
     ).pipe(
@@ -1111,6 +1114,23 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
         expect((yield* flow.goalOf(service)).chats[0]?.status).toBe("running");
         expect(NodeFS.existsSync(worktree)).toBe(true);
 
+        // Safety review of the October 14 stall: neither a slow-pass deadline nor elapsed
+        // background-work time permits the scheduler to terminate a real command.
+        yield* TestClock.adjust(Duration.hours(4));
+        yield* flow.drain;
+        expect((yield* flow.taskRow("T1")).status).toBe("claimed");
+        expect(
+          flow.log.filter((c) => c.type === "thread.settle" || c.type === "thread.session.stop"),
+        ).toHaveLength(0);
+
+        // A failed liveness read is unknown activity, never evidence that it is safe to settle.
+        flow.liveness.delete(threadId);
+        flow.scripts.set(threadId, { ...flow.scripts.get(threadId)!, livenessReadFails: true });
+        yield* tickOnce;
+        yield* flow.drain;
+        expect((yield* flow.taskRow("T1")).status).toBe("claimed");
+        flow.scripts.set(threadId, { ...flow.scripts.get(threadId)!, livenessReadFails: false });
+
         // The suite ends but the worker was woken by it and is writing again: still not done.
         flow.liveness.delete(threadId);
         flow.scripts.set(threadId, { ...flow.scripts.get(threadId)!, busy: true });
@@ -1123,7 +1143,7 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
         flow.scripts.set(threadId, { ...flow.scripts.get(threadId)!, busy: false });
         yield* tickOnce;
         yield* flow.eventually(
-          flow.taskRow("T1"),
+          tickOnce.pipe(Effect.andThen(flow.taskRow("T1"))),
           (row) => row.status === "completed",
           "T1 to merge once it is really finished",
         );
@@ -1954,7 +1974,11 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
         expect(creates.some((c) => c.type === "thread.create" && c.title.includes("T2"))).toBe(
           true,
         );
-        expect(yield* flow.taskRow("T1")).toMatchObject({ status: "completed" });
+        yield* flow.eventually(
+          flow.taskRow("T1"),
+          (row) => row.status === "completed",
+          "T1 to finish integration after releasing its scope",
+        );
         const after = yield* flow.goalOf(service);
         expect(after.chats.find((chat) => chat.taskId === "T1")?.status).toBe("completed");
         expect(after.chats.find((chat) => chat.taskId === "T3")?.status).toBe("running");

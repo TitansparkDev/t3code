@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import { openQueueDatabase } from "../src/db.ts";
+import { claimTask, renewLease } from "../src/claimService.ts";
 import {
   reconcileExpiredLeases,
   isProcessAlive,
@@ -11,6 +12,71 @@ import {
 import { createTestGitRepo, createTestWorktree, execCommand } from "./harness/gitHarness.ts";
 
 describe("AgentQueue Lease Expiration & Recovery (AQ-012)", () => {
+  it("a live expired owner retains its files and prevents an overlapping claim", async () => {
+    const repo = await createTestGitRepo("aq-retained-scope-");
+    const db = openQueueDatabase({ gitCommonDir: repo.gitCommonDir });
+    try {
+      const now = new Date().toISOString();
+      for (const id of ["A", "B"])
+        db.prepare(`INSERT INTO tasks
+        (id,title,status,version,scope_patterns,created_at,updated_at)
+        VALUES (?,?,'pending',1,'["shared/"]',?,?)`).run(id, id, now, now);
+      const owner = claimTask(db, {
+        taskId: "A",
+        workerPid: process.pid,
+        worktreePath: repo.rootDir,
+        branch: "agent/a",
+      });
+      expect(owner.success).toBe(true);
+      db.prepare("UPDATE task_claims SET expires_at = '2000-01-01T00:00:00Z'").run();
+      expect(reconcileExpiredLeases(db)[0]?.action).toBe("retained_alive");
+      expect(
+        claimTask(db, {
+          taskId: "B",
+          workerPid: process.pid,
+          worktreePath: repo.rootDir + "-b",
+          branch: "agent/b",
+        }),
+      ).toMatchObject({
+        success: false,
+        reason: "SCOPE_CONFLICT (held by A)",
+      });
+    } finally {
+      db.close();
+      await repo.cleanup();
+    }
+  });
+
+  it("a lease renewed after the expired snapshot is not recovered", async () => {
+    const repo = await createTestGitRepo("aq-renew-race-");
+    const db = openQueueDatabase({ gitCommonDir: repo.gitCommonDir });
+    try {
+      const now = new Date().toISOString();
+      db.prepare(`INSERT INTO tasks (id,title,status,version,created_at,updated_at)
+        VALUES ('A','A','pending',1,?,?)`).run(now, now);
+      const owner = claimTask(db, {
+        taskId: "A",
+        workerPid: 99999999,
+        worktreePath: repo.rootDir,
+        branch: "agent/a",
+      });
+      if (!owner.success) throw new Error(owner.reason);
+      db.prepare("UPDATE task_claims SET expires_at = '2000-01-01T00:00:00Z'").run();
+      const results = reconcileExpiredLeases(db, {
+        isOwnerAlive: () => {
+          renewLease(db, owner.claim.ownerToken, 300);
+          return false;
+        },
+      });
+      expect(results).toEqual([]);
+      expect(db.prepare("SELECT status FROM tasks WHERE id='A'").get()).toMatchObject({
+        status: "claimed",
+      });
+    } finally {
+      db.close();
+      await repo.cleanup();
+    }
+  });
   it("accurately detects process liveness", () => {
     // Current process is alive
     expect(isProcessAlive(process.pid)).toBe(true);

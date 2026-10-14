@@ -130,6 +130,7 @@ export interface ReserveNextResult {
 }
 
 export interface ActiveClaim {
+  readonly workerAlive: boolean;
   readonly taskId: string;
   readonly claimToken: string;
   readonly workerSessionId: string | null;
@@ -157,7 +158,9 @@ const run = <A>(operation: string, body: () => A) =>
   Effect.try({ try: body, catch: (cause) => fail(operation, cause) });
 
 const runAsync = <A>(operation: string, body: () => Promise<A>) =>
-  Effect.tryPromise({ try: body, catch: (cause) => fail(operation, cause) });
+  Effect.tryPromise({ try: body, catch: (cause) => fail(operation, cause) }).pipe(
+    Effect.uninterruptible,
+  );
 
 /** Opens the repository's queue, runs `body`, and always closes it. */
 function withDb<A>(binding: Pick<QueueBinding, "gitCommonDir">, body: (db: Db) => A): A {
@@ -558,10 +561,9 @@ const make = AgentQueueService.of({
           planId: binding.planId,
           workerSessionId,
           ...(excludeTaskIds && excludeTaskIds.size > 0 ? { excludeTaskIds } : {}),
-          // This server owns every claim it makes and renews them while the chat runs.
-          // A claim whose renewals stopped is abandoned even though the server is alive.
-          isOwnerAlive: (pid, sessionId) =>
-            sessionId?.startsWith("goal-") ? false : isProcessAlive(pid),
+          // An expired heartbeat is not evidence that a live server's worker stopped.
+          // GoalService reconciles quiet threads explicitly; process death permits core recovery.
+          isOwnerAlive: (pid) => isProcessAlive(pid),
         });
         return outcome.kind === "reserved"
           ? { task: outcome.task, skipped: [], held: [] }
@@ -580,7 +582,7 @@ const make = AgentQueueService.of({
         (
           db
             .prepare(
-              `SELECT c.task_id, c.owner_token, c.worker_session_id, c.worktree_path, c.branch
+              `SELECT c.task_id, c.owner_token, c.worker_session_id, c.worker_pid, c.worktree_path, c.branch
                FROM task_claims c JOIN tasks t ON t.id = c.task_id
                WHERE c.released_at IS NULL AND t.plan_id = ?`,
             )
@@ -588,6 +590,7 @@ const make = AgentQueueService.of({
             task_id: string;
             owner_token: string;
             worker_session_id: string | null;
+            worker_pid: number | null;
             worktree_path: string;
             branch: string;
           }>
@@ -595,6 +598,7 @@ const make = AgentQueueService.of({
           taskId: row.task_id,
           claimToken: row.owner_token,
           workerSessionId: row.worker_session_id,
+          workerAlive: row.worker_pid === null || isProcessAlive(row.worker_pid),
           worktreePath: row.worktree_path,
           branch: row.branch,
         })),

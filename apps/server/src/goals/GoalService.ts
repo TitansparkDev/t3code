@@ -118,14 +118,12 @@ export const StartSpacingMillis = Context.Reference<number>("t3/goals/StartSpaci
 /** How often running goals look for room to start another chat. */
 const TICK_INTERVAL = "5 seconds";
 const TICK_MILLIS = 5_000;
-/** How long a finished turn's background commands are waited for before they are stopped on purpose. */
-const BACKGROUND_WAIT_MILLIS = 3 * 60 * 60_000;
 /**
  * How long a chat whose turn has ended and whose session is idle may stay "running" before the
  * scheduler stops waiting for an event that never came and finishes it from the thread's state.
  */
 const IDLE_CHAT_GRACE_MILLIS = 90_000;
-/** The longest one scheduler pass may take before it is abandoned and the next one runs. */
+/** Report a slow scheduler pass without interrupting operations it still owns. */
 const SCHEDULER_PASS_TIMEOUT = "10 minutes";
 /** How long the AgentQueue must keep failing, in a row, before a goal is stopped because of it. */
 const QUEUE_OUTAGE_MILLIS = 3 * 60_000;
@@ -375,13 +373,14 @@ export const make = Effect.gen(function* () {
           onSome: (shell) => shell.backgroundLiveness ?? null,
         }),
       ),
-      Effect.catchCause(() => Effect.succeed(null)),
+      // Missing liveness evidence must not authorize stopping a worker or removing its files.
+      Effect.catchCause(() => Effect.succeed("working" as const)),
     );
 
   /** Whether a model turn is running or about to (a settled worker woken by its own background job). */
   const sessionBusy = (thread: OrchestrationThread | undefined) =>
     thread?.session != null &&
-    (thread.session.activeTurnId !== null ||
+    (thread.session.activeTurnId != null ||
       thread.session.status === "starting" ||
       thread.session.status === "running");
 
@@ -389,7 +388,12 @@ export const make = Effect.gen(function* () {
   const workerQuiet = (threadId: ThreadId) =>
     Effect.gen(function* () {
       const [thread, background] = [yield* readThread(threadId), yield* backgroundWorkOf(threadId)];
-      return !sessionBusy(thread) && background === null;
+      return (
+        thread !== undefined &&
+        !sessionBusy(thread) &&
+        (thread.latestTurn?.state !== "running" || thread.session?.status === "error") &&
+        background === null
+      );
     });
 
   /** Stop a thread's provider session. Used only on purpose, never to make a chat look finished. */
@@ -720,9 +724,16 @@ export const make = Effect.gen(function* () {
       const updated = yield* store.update(goalId, (goal) => ({
         ...goal,
         queueErrors: (goal.queueErrors ?? 0) + 1,
-        detail: `AgentQueue ${operation} failed: ${error.message}`.slice(0, 500) as never,
+        detail:
+          goal.status === "running"
+            ? (`AgentQueue ${operation} failed: ${error.message}`.slice(0, 500) as never)
+            : goal.detail,
       }));
-      if ((updated?.queueErrors ?? 0) >= 3 && now - since >= QUEUE_OUTAGE_MILLIS) {
+      if (
+        updated?.status === "running" &&
+        (updated.queueErrors ?? 0) >= 3 &&
+        now - since >= QUEUE_OUTAGE_MILLIS
+      ) {
         yield* setStatus(
           goalId,
           "failed",
@@ -1847,13 +1858,7 @@ export const make = Effect.gen(function* () {
     );
   });
 
-  /** When a chat last did anything we know of: it started, was resumed, or finished a turn. */
-  const lastActivityOf = (chat: GoalChat, thread: OrchestrationThread | undefined) =>
-    Math.max(
-      Date.parse(chat.startedAt) || 0,
-      Date.parse(chat.resumedAt ?? "") || 0,
-      Date.parse(thread?.latestTurn?.completedAt ?? "") || 0,
-    );
+  const quietSince = new Map<ThreadId, { identity: string; since: number }>();
 
   /**
    * Whether a chat recorded as running is really still working: a model turn is running, its
@@ -1862,11 +1867,25 @@ export const make = Effect.gen(function* () {
   const chatAlive = (chat: GoalChat, grace = IDLE_CHAT_GRACE_MILLIS) =>
     Effect.gen(function* () {
       const thread = yield* readThread(chat.threadId);
-      if (!thread) return false;
-      if (sessionBusy(thread)) return true;
-      if ((yield* backgroundWorkOf(chat.threadId)) !== null) return true;
-      if (chat.waitingForLimit) return true;
-      return (yield* nowMillis) - lastActivityOf(chat, thread) < grace;
+      if (
+        !thread ||
+        sessionBusy(thread) ||
+        chat.waitingForLimit ||
+        !thread.latestTurn ||
+        !["completed", "interrupted", "error"].includes(thread.latestTurn.state) ||
+        (yield* backgroundWorkOf(chat.threadId)) !== null
+      ) {
+        quietSince.delete(chat.threadId);
+        return true;
+      }
+      const now = yield* nowMillis;
+      const identity = `${thread.latestTurn.turnId}:${chat.resumedAt ?? chat.startedAt}`;
+      const observed = quietSince.get(chat.threadId);
+      if (observed?.identity !== identity) {
+        quietSince.set(chat.threadId, { identity, since: now });
+        return true;
+      }
+      return now - observed.since < grace;
     });
 
   /**
@@ -1880,6 +1899,7 @@ export const make = Effect.gen(function* () {
       if (!goal || goal.status !== "running") return;
       for (const chat of goal.chats) {
         if (chat.status !== "running" || chat.overseer || !chat.claimToken) continue;
+        if (submitting.has(chat.claimToken)) continue;
         // Chats waiting on background commands are finished by their own watcher.
         if (deferred.has(chat.threadId)) continue;
         if (yield* chatAlive(chat, grace)) continue;
@@ -1920,7 +1940,7 @@ export const make = Effect.gen(function* () {
         since: info.since,
         summary: info.summary,
       });
-      yield* sweepIdleChats(goalId, 30_000);
+      yield* sweepIdleChats(goalId);
       yield* Effect.gen(function* () {
         const goal = yield* currentGoal(goalId);
         if (goal?.agentQueue) yield* reconcileQueueGoal(goal, goal.agentQueue);
@@ -2135,6 +2155,8 @@ export const make = Effect.gen(function* () {
           submitting.has(claim.claimToken));
       const waitingSubmit = owner?.status === "completed" && owner.taskOutcome === undefined;
       if (alive || waitingSubmit) continue;
+      // An ended chat can still own a background command; missing liveness is not proof of death.
+      if (owner ? !(yield* workerQuiet(owner.threadId)) : claim.workerAlive) continue;
       yield* Effect.logWarning("goals.agentqueue-orphan-claim", {
         goalId: goal.id,
         taskId: claim.taskId,
@@ -2543,6 +2565,16 @@ export const make = Effect.gen(function* () {
     if (!before || !chat) {
       return;
     }
+    // A delayed session event must not finish a newer model turn or an unknown thread.
+    if (
+      !thread ||
+      sessionBusy(thread) ||
+      (thread.latestTurn?.state === "running" && thread.session?.status !== "error") ||
+      (chat.claimToken && submitting.has(chat.claimToken))
+    ) {
+      watching.set(threadId, { goalId, seenRunning: true });
+      return;
+    }
     if (chat.overseer) {
       yield* finishOverseer(before, thread, threadId);
       return;
@@ -2569,18 +2601,12 @@ export const make = Effect.gen(function* () {
     if (knownLimit === undefined && (yield* backgroundWorkOf(threadId)) !== null) {
       const now = yield* nowMillis;
       const since = deferred.get(threadId)?.since ?? now;
-      if (now - since < BACKGROUND_WAIT_MILLIS) {
-        deferred.set(threadId, { goalId, since });
-        watching.set(threadId, { goalId, seenRunning: true });
-        if (since === now) {
-          yield* Effect.logInfo("goals.finish-deferred-background-work", { goalId, threadId });
-        }
-        return;
+      deferred.set(threadId, { goalId, since });
+      watching.set(threadId, { goalId, seenRunning: true });
+      if (since === now) {
+        yield* Effect.logInfo("goals.finish-deferred-background-work", { goalId, threadId });
       }
-      // Still running after hours: stop it explicitly. The work is then judged by its commits
-      // and the task's own check, never by the fact that the turn ended.
-      yield* Effect.logWarning("goals.background-work-stopped", { goalId, threadId });
-      yield* stopSession(threadId);
+      return;
     }
     deferred.delete(threadId);
     if (chat.claimToken && before.agentQueue) {
@@ -2751,14 +2777,12 @@ export const make = Effect.gen(function* () {
       }
       const thread = yield* readThread(threadId);
       if (sessionBusy(thread)) continue;
-      const now = yield* nowMillis;
-      if (
-        (yield* backgroundWorkOf(threadId)) !== null &&
-        now - entry.since < BACKGROUND_WAIT_MILLIS
-      ) {
+      if ((yield* backgroundWorkOf(threadId)) !== null) {
         continue;
       }
-      yield* finishChat(entry.goalId, threadId).pipe(lock.withPermits(1));
+      yield* finishChat(entry.goalId, threadId, undefined, { vouched: true }).pipe(
+        lock.withPermits(1),
+      );
     }
   }).pipe(Effect.catchCause(logFailure("goals.finish-deferred-failed")));
 
@@ -2929,8 +2953,7 @@ export const make = Effect.gen(function* () {
       const watchingNow = (yield* store.list).some(
         (goal) => goal.status === "running" && goal.agentQueue !== undefined,
       );
-      // One pass may fail or hang; neither may end scheduling. A pass that fails is logged and the
-      // next one runs; a pass that hangs (a command that never returns) is abandoned after a while.
+      // A failed pass is logged and retried. A slow pass keeps ownership of its operations.
       yield* Effect.gen(function* () {
         if (watchingNow) yield* pollQueueEvents;
         const now = yield* nowMillis;
@@ -2939,17 +2962,28 @@ export const make = Effect.gen(function* () {
           yield* tick;
         }
       }).pipe(
-        Effect.timeoutOption(SCHEDULER_PASS_TIMEOUT),
-        Effect.flatMap(
-          Option.match({
-            onNone: () =>
-              Effect.logWarning("goals.scheduler-pass-timed-out", {
-                after: SCHEDULER_PASS_TIMEOUT,
-              }),
-            onSome: () => Effect.void,
-          }),
+        // Queue APIs return promises that may still own subprocesses and database writes.
+        // Observe a slow pass; never abandon it and begin a competing operation.
+        (pass) =>
+          Effect.scoped(
+            Effect.gen(function* () {
+              yield* Effect.forkScoped(
+                Effect.sleep(SCHEDULER_PASS_TIMEOUT).pipe(
+                  Effect.andThen(
+                    Effect.logWarning("goals.scheduler-pass-slow", {
+                      after: SCHEDULER_PASS_TIMEOUT,
+                    }),
+                  ),
+                ),
+              );
+              yield* pass;
+            }),
+          ),
+        Effect.catchCause((cause) =>
+          Cause.hasInterruptsOnly(cause)
+            ? Effect.interrupt
+            : logFailure("goals.scheduler-pass-failed")(cause),
         ),
-        Effect.catchCause(logFailure("goals.scheduler-pass-failed")),
       );
     }
   });

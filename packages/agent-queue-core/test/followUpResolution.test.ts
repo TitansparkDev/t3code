@@ -249,7 +249,11 @@ describe("a repair follow-up whose problem is already gone", () => {
       // Whatever made it fail is gone (here: the gate opened). The follow-up's owner has nothing to commit.
       await NodeFSP.writeFile(gate, "open\n");
 
-      const outcome = await submitFollowUp(t, claim);
+      // Concurrent completion attempts verify in separate worktrees and only one owns completion.
+      const outcomes = await Promise.all([submitFollowUp(t, claim), submitFollowUp(t, claim)]);
+      expect(outcomes.filter((result) => result.kind === "resolved")).toHaveLength(1);
+      expect(outcomes.some((result) => result.kind === "claim-lost")).toBe(true);
+      const outcome = outcomes.find((result) => result.kind === "resolved");
 
       expect(outcome).toMatchObject({
         kind: "resolved",

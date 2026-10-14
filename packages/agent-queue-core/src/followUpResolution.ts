@@ -17,6 +17,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import { DEPENDENCY_DIRS } from "./baseline.ts";
+import { renewLease } from "./claimService.ts";
 import { loadContract, resourcesNeededBy } from "./contract.ts";
 import { recordEvent } from "./eventStream.ts";
 import { ResourceWaitError } from "./resourceRunner.ts";
@@ -92,6 +93,13 @@ export async function settleUnchangedFollowUp(
     readonly attempts?: number;
   },
 ): Promise<UnchangedFollowUpOutcome> {
+  const ownsClaim = () =>
+    db
+      .prepare(
+        "SELECT id FROM task_claims WHERE owner_token = ? AND task_id = ? AND released_at IS NULL",
+      )
+      .get(input.claimToken, input.taskId) as { id: number } | undefined;
+  if (!ownsClaim()) return { kind: "claim-lost" };
   const followUp = repairFollowUpOf(db, input.taskId);
   if (!followUp) return { kind: "not-applicable" };
   const stored = db
@@ -138,21 +146,32 @@ export async function settleUnchangedFollowUp(
   let flaky = false;
   // A private worktree of its own, not the shared staging one: a long check must not hold the
   // landing lock that every other task's merge needs.
-  const probe = NodePath.join(
-    input.repoRoot,
-    ".worktrees",
-    `agentqueue-followup-${input.taskId.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
+  const probeRoot = NodePath.join(input.repoRoot, ".worktrees");
+  NodeFS.mkdirSync(probeRoot, { recursive: true });
+  // Each verification owns only its own directory, including concurrent processes and retries.
+  const probe = NodeFS.mkdtempSync(
+    NodePath.join(
+      probeRoot,
+      `agentqueue-followup-${input.taskId.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-`,
+    ),
   );
-  git(input.repoRoot, ["worktree", "prune"]);
-  if (NodeFS.existsSync(probe)) git(input.repoRoot, ["worktree", "remove", "--force", probe]);
-  NodeFS.mkdirSync(NodePath.dirname(probe), { recursive: true });
   const added = git(input.repoRoot, ["worktree", "add", "--detach", probe, tip]);
   if (added.code !== 0) {
+    NodeFS.rmdirSync(probe);
     return {
       kind: "resource-wait",
       message: `Could not check out ${tip.slice(0, 9)}: ${added.stderr}`,
     };
   }
+  renewLease(db, input.claimToken, 1800);
+  const renewal = setInterval(() => {
+    try {
+      renewLease(db, input.claimToken, 1800);
+    } catch {
+      /* A database outage cannot authorize completing the task; ownership is rechecked below. */
+    }
+  }, 60_000);
+  renewal.unref();
   try {
     for (const name of DEPENDENCY_DIRS) {
       const source = input.worktreePath ? NodePath.join(input.worktreePath, name) : "";
@@ -168,6 +187,7 @@ export async function settleUnchangedFollowUp(
     for (let attempt = 1; attempt <= attempts; attempt++) {
       try {
         receipt = await runSpec(input.taskId, probe, spec, undefined, options);
+        if (!ownsClaim()) return { kind: "claim-lost" };
       } catch (error) {
         if (!(error instanceof ResourceWaitError)) throw error;
         return { kind: "resource-wait", message: error.message };
@@ -189,6 +209,7 @@ export async function settleUnchangedFollowUp(
       if (receipt.state === "timed-out") break;
     }
   } finally {
+    clearInterval(renewal);
     git(input.repoRoot, ["worktree", "remove", "--force", probe]);
   }
   if (!receipt || receipt.state !== "passed") {
@@ -211,12 +232,23 @@ export async function settleUnchangedFollowUp(
   const now = new Date().toISOString();
   db.exec("BEGIN IMMEDIATE;");
   try {
-    const active = db
-      .prepare("SELECT id FROM task_claims WHERE owner_token = ? AND released_at IS NULL")
-      .get(input.claimToken) as { id: number } | undefined;
+    const active = ownsClaim();
     if (!active) {
       db.exec("ROLLBACK;");
       return { kind: "claim-lost" };
+    }
+    const currentTip = NodeChildProcess.spawnSync(
+      "git",
+      ["rev-parse", `refs/heads/${input.baseBranch}`],
+      { cwd: input.repoRoot, encoding: "utf8" },
+    ).stdout.trim();
+    if (currentTip !== tip) {
+      db.exec("ROLLBACK;");
+      return {
+        kind: "resource-wait",
+        message:
+          "The integration branch moved during the check; verify its current tip before resolving.",
+      };
     }
     db.prepare("UPDATE task_claims SET released_at = ? WHERE id = ?").run(now, active.id);
     const summary = `No change was needed: the task's check passes on ${input.baseBranch} at ${tip.slice(0, 9)}${flaky ? " (it failed once and passed on a rerun)" : ""}.`;

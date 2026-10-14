@@ -105,9 +105,9 @@ export function claimTask(db: NodeSqlite.DatabaseSync, req: ClaimRequest): Claim
           SELECT t.id, t.scope_patterns
           FROM tasks t
           JOIN task_claims c ON t.id = c.task_id
-          WHERE c.released_at IS NULL AND c.expires_at > ?
+          WHERE c.released_at IS NULL
         `)
-        .all(now) as Array<{ id: string; scope_patterns: string }>;
+        .all() as Array<{ id: string; scope_patterns: string }>;
 
       const activeDescriptors = activeTasks.map((at) => ({
         taskId: at.id,

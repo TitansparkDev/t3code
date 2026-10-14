@@ -4,8 +4,7 @@ Status: accepted (0.0.70). Follows ADR-0007 to ADR-0010.
 
 ## What went wrong
 
-A live Goal stopped launching agents with four tasks ready and nine configured slots. Four separate
-faults chained together; none was memory pressure.
+A live Goal stopped launching agents with four tasks ready and nine configured slots. The recorded sequence was:
 
 1. **The server's own checks had no Android SDK.** The service runs without a login shell, so a
    Gradle check the server ran (after a submit, after a merge, in an audit) failed with
@@ -13,16 +12,15 @@ faults chained together; none was memory pressure.
    read as "an old defect", and a repair follow-up (`NR2-FU1`) was created for code that was fine.
 2. **A follow-up with nothing to commit was refused.** The owner reran the check, it passed, and
    there was nothing to change. The server answered "no commit, commit something".
-3. **That owner's end of turn was ignored, and its lease kept being renewed.** The thread read model
-   still reported the previous turn when the session event arrived, so the new turn's end looked
-   older than the resume and was dropped as stale. The chat stayed `running`, the scheduler kept
-   renewing its claim, and the claim held `android/core/database/`, which every ready task also
-   needed. Each reservation attempt answered `SCOPE_CONFLICT` and the only record of that was a
-   discarded return value.
-4. **The scheduler fiber could end without a trace.** `GoalService.loop` was forked once, with no
-   supervision. A fiber that dies is not reported, so one defect ended scheduling and session-event
-   handling for every goal until the process restarted. Live, the loop stopped ticking while a
-   worker was still building.
+3. **The quiet owner still held the files.** The saved thread completed at 02:55:41, but
+   the Goal retained a `running` FU1 chat. Its claim held the database scope needed by the
+   four ready tasks. Reservation failures were discarded, and no periodic quiet-chat
+   reconciliation corrected the stale record. The retained event history proves the ended
+   thread and blocked scopes; it does not prove which transient event/read-model race left
+   that record behind.
+4. **The Goal was subsequently stopped by the owner.** It must be resumed through the existing
+   Goal rather than replaced. No scheduler crash is established by the surviving logs.
+   Scheduler/event-stream supervision is defensive protection, not the diagnosed stall cause.
 
 ## What changed
 
@@ -32,9 +30,9 @@ faults chained together; none was memory pressure.
   the machine cannot run the build at all. It is deliberately narrow: a test that prints
   "permission denied" is a test.
 - **Machine failures never become code work.** In `submitCandidate`, `integrateCandidate` and the
-  audit, such a failure holds the task (or leaves the candidate waiting, `environment-wait`) with
-  the toolchain fingerprint. It is tried again when the fingerprint changes, or after ten minutes,
-  with no retry spent, no follow-up task and no repair worker.
+  audit, such a failure creates no repair follow-up. Submission holds and integration waits carry
+  the toolchain fingerprint and retry when it changes or after ten minutes, without spending a
+  worker retry. Audits report environment waiting and check again on a later audit pass.
 - **A repair follow-up can resolve without a commit** (`followUpResolution.ts`). When the worker of
   a repair follow-up has no commit, the server runs the follow-up's stored checks on the current
   integration tip in a private worktree (not the shared staging one, so the landing lock is not held
@@ -46,14 +44,15 @@ faults chained together; none was memory pressure.
 - **A turn end seen after a resume is trusted** (`finishChat(..., { vouched: true })`), and a turn
   that completed after the resume is never "older than the resume".
 - **Idle sweep.** A chat recorded `running` whose session is idle, with no background work, for
-  longer than ninety seconds is finished from the thread's own state. Leases are renewed only for
-  chats that are really alive, so a zombie record cannot hold files: its lease runs out.
+  longer than ninety seconds is finished from the thread's own state. Leases are renewed for
+  active or unconfirmed chats. Unknown liveness and background work keep the lease protected.
+  A live process with an expired heartbeat retains its scope until explicit safe reconciliation.
 - **Stall diagnostics.** `reserveNext` returns why each ready task was skipped. The goal shows
   `queueProgress.stall` (`NR3, NR4 waiting for files held by NR1`) instead of "Agents are working",
   also right after "+N agents". After two minutes the scheduler recovers on its own: it finishes
-  quiet chats, gives back claims nobody works on, and schedules. It never starts workers itself.
+  quiet chats, gives back claims nobody works on, and schedules. It uses the ordinary lane scheduler.
 - **Supervision.** The session-event listener and the scheduler restart after a failure; a
-  scheduler pass that hangs is abandoned after ten minutes.
+  scheduler pass exceeding ten minutes is reported without abandoning its database or subprocess operations.
 - **Queue outages.** Three failures in a row no longer fail a goal within seconds: the failures
   must also last three minutes.
 
