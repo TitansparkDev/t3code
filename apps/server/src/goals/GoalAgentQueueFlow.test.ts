@@ -20,6 +20,7 @@ import {
 import {
   EventId,
   ProjectId,
+  ThreadId,
   ProviderInstanceId,
   type OrchestrationCommand,
   type OrchestrationEvent,
@@ -50,7 +51,11 @@ import * as ServerConfig from "../config.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
-import { AgentQueueServiceLive } from "../queue/AgentQueueService.ts";
+import {
+  AgentQueueError,
+  AgentQueueService,
+  AgentQueueServiceLive,
+} from "../queue/AgentQueueService.ts";
 import { GoalBeads } from "./GoalBeads.ts";
 import * as GoalService from "./GoalService.ts";
 import * as GoalStore from "./GoalStore.ts";
@@ -132,7 +137,11 @@ interface ThreadScript {
 
 const makeFlow = (
   plan: string,
-  options: { readonly extraFiles?: Record<string, string>; readonly spacingMillis?: number } = {},
+  options: {
+    readonly extraFiles?: Record<string, string>;
+    readonly spacingMillis?: number;
+    readonly queueFaults?: { claims?: boolean; release?: boolean };
+  } = {},
 ) =>
   Effect.gen(function* () {
     const repo = yield* Effect.promise(() => createTestGitRepo("goal-flow-"));
@@ -189,9 +198,34 @@ const makeFlow = (
       } as unknown as OrchestrationThread;
     };
 
+    const queueLayer = options.queueFaults
+      ? Layer.effect(
+          AgentQueueService,
+          Effect.map(AgentQueueService, (base) =>
+            AgentQueueService.of({
+              ...base,
+              activeClaims: (binding) =>
+                options.queueFaults?.claims
+                  ? Effect.fail(
+                      new AgentQueueError({
+                        operation: "activeClaims",
+                        message: "test queue outage",
+                      }),
+                    )
+                  : base.activeClaims(binding),
+              release: (...args) =>
+                options.queueFaults?.release
+                  ? Effect.fail(
+                      new AgentQueueError({ operation: "release", message: "test release outage" }),
+                    )
+                  : base.release(...args),
+            }),
+          ),
+        ).pipe(Layer.provide(AgentQueueServiceLive))
+      : AgentQueueServiceLive;
     const depsLayer = Layer.mergeAll(
       GoalStore.layer,
-      AgentQueueServiceLive,
+      queueLayer,
       Layer.succeed(GoalService.StartSpacingMillis, options.spacingMillis ?? 0),
       Layer.succeed(
         GoalBeads,
@@ -239,6 +273,7 @@ const makeFlow = (
     /** Build the dependencies once; each "server" is a new GoalService over the same store. */
     const deps = yield* Layer.build(depsLayer);
     const startServer = Effect.provideContext(GoalService.make, deps);
+    const goalStore = yield* GoalStore.GoalStore.pipe(Effect.provideContext(deps));
 
     const drain = Effect.gen(function* () {
       log.push(...(yield* Queue.clear(commands)));
@@ -391,6 +426,7 @@ const makeFlow = (
       liveness,
       providers,
       startServer,
+      goalStore,
       deps,
       drain,
       commandsOf,
@@ -1153,10 +1189,142 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
   );
 
   it.effect(
-    "a worktree stays while the last turn's checkpoint is unsaved, then is removed once, with no worker left behind",
+    "a usage limit cannot release or salvage files while background work runs, and a failed release keeps them intact",
+    () =>
+      Effect.gen(function* () {
+        const faults = { release: false };
+        const flow = yield* makeFlow(planWith([{ id: "T1" }]), { queueFaults: faults });
+        const service = yield* flow.startServer;
+        yield* Effect.forkScoped(service.loop);
+        yield* Effect.yieldNow;
+        yield* service.create(settingsFor({ autoResume: false }));
+        yield* flow.waitFor("thread.create", 1);
+        const created = flow.createdFor("T1")!;
+        flow.liveness.set(created.threadId, "working");
+        yield* flow.work("T1");
+        NodeFS.writeFileSync(
+          NodePath.join(created.worktreePath!, "still-working.txt"),
+          "preserve me",
+        );
+        yield* flow.sessionEvent(created.threadId, {
+          status: "error",
+          activeTurnId: null,
+          lastErrorClass: "usage_limit",
+        });
+        for (let round = 0; round < 3; round++) yield* tickOnce;
+        yield* flow.drain;
+        expect((yield* flow.taskRow("T1")).status).toBe("claimed");
+        expect(
+          flow.log.filter(
+            (c) =>
+              c.type === "thread.delete" ||
+              c.type === "thread.settle" ||
+              c.type === "thread.session.stop",
+          ),
+        ).toHaveLength(0);
+        faults.release = true;
+        flow.liveness.delete(created.threadId);
+        yield* flow.eventually(
+          tickOnce.pipe(Effect.andThen(flow.goalOf(service))),
+          (g) => g.chats[0]?.taskOutcome === "returned",
+          "the deferred usage limit to be processed",
+        );
+        expect((yield* flow.taskRow("T1")).status).toBe("claimed");
+        expect(NodeFS.existsSync(created.worktreePath!)).toBe(true);
+        const status = yield* Effect.promise(() =>
+          execCommand("git", ["status", "--porcelain"], created.worktreePath!),
+        );
+        expect(status.code).toBe(0);
+        expect(status.stdout).toContain("?? still-working.txt");
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "a replaced claim cannot authorize stopping an earlier active writer on the same worktree",
     () =>
       Effect.gen(function* () {
         const flow = yield* makeFlow(planWith([{ id: "T1" }]));
+        const service = yield* flow.startServer;
+        yield* service.create(settingsFor());
+        yield* flow.waitFor("thread.create", 1);
+        const goal = yield* flow.goalOf(service);
+        const original = goal.chats[0]!;
+        const earlierId = ThreadId.make("earlier-active-writer");
+        flow.scripts.set(original.threadId, {
+          reply: "Waiting",
+          turnState: "completed",
+          progress: false,
+          lastError: null,
+        });
+        flow.scripts.set(earlierId, {
+          reply: "Still working",
+          turnState: "running",
+          progress: true,
+          lastError: null,
+          busy: true,
+        });
+        yield* flow.goalStore.update(goal.id, (current) => ({
+          ...current,
+          chats: [
+            {
+              ...original,
+              threadId: earlierId,
+              taskId: "OLDER",
+              claimToken: "released-earlier-token",
+            },
+            { ...original, status: "completed", taskOutcome: "returned" },
+          ],
+        }));
+        const db = openQueueDatabase({ gitCommonDir: flow.repo.gitCommonDir });
+        try {
+          releaseClaim(db, { ownerToken: original.claimToken!, finalStatus: "pending" });
+        } finally {
+          db.close();
+        }
+        yield* service.addAgents(goal.id, 1);
+        yield* flow.drain;
+        expect(flow.log.filter((c) => c.type === "thread.session.stop")).toHaveLength(0);
+        expect(flow.log.filter((c) => c.type === "thread.turn.start")).toHaveLength(1);
+        expect(NodeFS.existsSync(original.worktreePath!)).toBe(true);
+        expect((yield* flow.taskRow("T1")).status).toBe("pending");
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("the queue teardown boundary refuses to touch any claimed worktree", () =>
+    Effect.gen(function* () {
+      const flow = yield* makeFlow(planWith([{ id: "T1" }]));
+      const service = yield* flow.startServer;
+      yield* service.create(settingsFor());
+      yield* flow.waitFor("thread.create", 1);
+      const created = flow.createdFor("T1")!;
+      const goal = yield* flow.goalOf(service);
+      const queue = yield* AgentQueueService.pipe(Effect.provide(AgentQueueServiceLive));
+      NodeFS.writeFileSync(NodePath.join(created.worktreePath!, "owned.txt"), "active edits");
+      for (const landed of [false, true]) {
+        const outcome = yield* queue.teardown(
+          goal.agentQueue!,
+          created.worktreePath!,
+          goal.chats[0]!.branch!,
+          landed,
+        );
+        expect(outcome.preserved).toBe(true);
+      }
+      expect(NodeFS.existsSync(created.worktreePath!)).toBe(true);
+      expect((yield* flow.taskRow("T1")).status).toBe("claimed");
+      const status = yield* Effect.promise(() =>
+        execCommand("git", ["status", "--porcelain"], created.worktreePath!),
+      );
+      expect(status.code).toBe(0);
+      expect(status.stdout).toContain("?? owned.txt");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "a worktree stays while the last turn's checkpoint is unsaved, then is removed once, with no worker left behind",
+    () =>
+      Effect.gen(function* () {
+        const faults = { claims: false };
+        const flow = yield* makeFlow(planWith([{ id: "T1" }]), { queueFaults: faults });
         const service = yield* flow.startServer;
         yield* Effect.forkScoped(service.loop);
         yield* Effect.yieldNow;
@@ -1172,13 +1340,18 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
         yield* tickOnce;
         expect(NodeFS.existsSync(created.worktreePath!)).toBe(true);
 
+        faults.claims = true;
         flow.scripts.set(created.threadId, {
           ...flow.scripts.get(created.threadId)!,
           checkpoint: "saved",
         });
         yield* tickOnce;
+        expect(NodeFS.existsSync(created.worktreePath!)).toBe(true);
+        faults.claims = false;
         yield* flow.eventually(
-          Effect.sync(() => NodeFS.existsSync(created.worktreePath!)),
+          tickOnce.pipe(
+            Effect.andThen(Effect.sync(() => NodeFS.existsSync(created.worktreePath!))),
+          ),
           (exists) => !exists,
           "the worktree to be removed after its checkpoint was saved",
         );
@@ -2119,8 +2292,17 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
         const dbFile = NodePath.join(flow.repo.gitCommonDir, "agentqueue", "queue.sqlite");
         NodeFS.renameSync(dbFile, `${dbFile}.away`);
         NodeFS.mkdirSync(dbFile);
-        for (let round = 0; round < 50; round++) yield* tickOnce;
-        const goal = yield* flow.goalOf(service);
+        yield* flow.eventually(
+          tickOnce.pipe(Effect.andThen(flow.goalOf(service))),
+          (g) => (g.queueErrors ?? 0) > 0,
+          "the outage to be observed before advancing its duration",
+        );
+        yield* TestClock.adjust(Duration.minutes(4));
+        const goal = yield* flow.eventually(
+          tickOnce.pipe(Effect.andThen(flow.goalOf(service))),
+          (g) => g.status === "failed",
+          "the sustained outage to stop the goal",
+        );
         expect(goal.status).toBe("failed");
         expect(goal.detail).toContain("kept failing");
         NodeFS.rmdirSync(dbFile);

@@ -3,17 +3,47 @@ import { describe, expect, it } from "vite-plus/test";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import { openQueueDatabase } from "../src/db.ts";
-import {
-  provisionWorktree,
-  rebaseOntoBase,
-  teardownWorktree,
-  sanitizeBranchName,
-} from "../src/worktreeManager.ts";
+import { provisionWorktree, teardownWorktree, sanitizeBranchName } from "../src/worktreeManager.ts";
 import { runVerification } from "../src/verifier.ts";
-import { landCandidate, acquireLegacyLandingLock } from "../src/landingQueue.ts";
+import { landCandidate } from "../src/landingQueue.ts";
 import { createTestGitRepo, execCommand } from "./harness/gitHarness.ts";
 
 describe("AgentQueue Worktrees, Verification & Landing (AQ-019 - AQ-028)", () => {
+  it("preserves a landed worktree when its git status cannot be read", async () => {
+    const repo = await createTestGitRepo("unreadable-teardown-");
+    let marker: string | undefined;
+    let original: string | undefined;
+    try {
+      const { worktreePath, branch } = await provisionWorktree(
+        repo.rootDir,
+        "STATUS",
+        "main",
+        "Status unavailable",
+      );
+      marker = NodePath.join(worktreePath, ".git");
+      original = await NodeFSP.readFile(marker, "utf8");
+      await NodeFSP.writeFile(marker, "gitdir: /nonexistent-agentqueue-status-probe\n");
+      const result = await teardownWorktree(repo.rootDir, worktreePath, branch, {
+        isSuccess: true,
+        keepIfDirty: true,
+        deleteBranch: true,
+      });
+      expect(result.preserved).toBe(true);
+      expect(await NodeFSP.readFile(marker, "utf8")).toContain(
+        "nonexistent-agentqueue-status-probe",
+      );
+      const branchResult = await execCommand(
+        "git",
+        ["show-ref", "--verify", `refs/heads/${branch}`],
+        repo.rootDir,
+      );
+      expect(branchResult.code).toBe(0);
+    } finally {
+      if (marker && original) await NodeFSP.writeFile(marker, original);
+      await repo.cleanup();
+    }
+  });
+
   it("sanitizes branch names cleanly", () => {
     expect(sanitizeBranchName("AQ-019", "Safe Worktree Provisioning")).toBe(
       "agentqueue/AQ-019-safe-worktree-provisioning",

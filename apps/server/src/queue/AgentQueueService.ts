@@ -734,13 +734,27 @@ const make = AgentQueueService.of({
 
   teardown: (binding, worktreePath, branch, landed) =>
     runAsync("teardown", async () => {
-      return await teardownWorktree(binding.repoRoot, worktreePath, branch, {
-        isSuccess: landed,
-        deleteBranch: landed,
-        keepIfDirty: landed,
-        preserveWorktreeOnFailure: !landed,
-        emptyBaseRef: goalBranchOf(binding),
-      });
+      const db = openQueueDatabase({ gitCommonDir: binding.gitCommonDir });
+      try {
+        // Keep claim grants serialized with the file operation, including external queue actors.
+        db.exec("BEGIN IMMEDIATE");
+        const owned = db
+          .prepare(
+            "SELECT 1 FROM task_claims WHERE released_at IS NULL AND worktree_path = ? LIMIT 1",
+          )
+          .get(worktreePath);
+        if (owned) return { preserved: true };
+        return await teardownWorktree(binding.repoRoot, worktreePath, branch, {
+          isSuccess: landed,
+          deleteBranch: landed,
+          keepIfDirty: landed,
+          preserveWorktreeOnFailure: !landed,
+          emptyBaseRef: goalBranchOf(binding),
+        });
+      } finally {
+        if (db.isTransaction) db.exec("ROLLBACK");
+        db.close();
+      }
     }),
 
   events: (binding, cursor) =>

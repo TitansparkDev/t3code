@@ -47,6 +47,10 @@ A live Goal stopped launching agents with four tasks ready and nine configured s
   longer than ninety seconds is finished from the thread's own state. Leases are renewed for
   active or unconfirmed chats. Unknown liveness and background work keep the lease protected.
   A live process with an expired heartbeat retains its scope until explicit safe reconciliation.
+  Usage-limit events also defer while background commands run. Cleanup requires a successful
+  release and readable ownership evidence; the queue serializes teardown with claim grants.
+  An unreadable Git status preserves the worktree. A replaced claim never authorizes stopping
+  an earlier active writer: the new reservation waits without touching that worker.
 - **Stall diagnostics.** `reserveNext` returns why each ready task was skipped. The goal shows
   `queueProgress.stall` (`NR3, NR4 waiting for files held by NR1`) instead of "Agents are working",
   also right after "+N agents". After two minutes the scheduler recovers on its own: it finishes

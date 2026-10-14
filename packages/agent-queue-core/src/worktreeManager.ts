@@ -333,7 +333,7 @@ export async function teardownWorktree(
   if (NodeFS.existsSync(worktreePath)) {
     if (options.isSuccess && options.keepIfDirty) {
       const dirty = execGit(["status", "--porcelain"], worktreePath);
-      if (dirty.code === 0 && dirty.stdout !== "") return { preserved: true };
+      if (dirty.code !== 0 || dirty.stdout !== "") return { preserved: true };
     }
     execGit(["worktree", "remove", "--force", worktreePath], repoRoot);
     if (NodeFS.existsSync(worktreePath)) {

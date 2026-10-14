@@ -351,7 +351,15 @@ export const make = Effect.gen(function* () {
   /** Why each goal was stuck when its overseer was asked, for the failure message. */
   const stuckReasons = new Map<GoalId, string>();
   /** Chats whose turn ended while background commands still ran, and since when. */
-  const deferred = new Map<ThreadId, { goalId: GoalId; since: number }>();
+  const deferred = new Map<
+    ThreadId,
+    {
+      goalId: GoalId;
+      since: number;
+      knownLimit?: UsageLimitHit | undefined;
+      turnId?: string | undefined;
+    }
+  >();
 
   const logFailure = (message: string) => (cause: Cause.Cause<unknown>) =>
     Cause.hasInterruptsOnly(cause)
@@ -394,19 +402,6 @@ export const make = Effect.gen(function* () {
         (thread.latestTurn?.state !== "running" || thread.session?.status === "error") &&
         background === null
       );
-    });
-
-  /** Stop a thread's provider session. Used only on purpose, never to make a chat look finished. */
-  const stopSession = (threadId: ThreadId) =>
-    Effect.gen(function* () {
-      yield* engine
-        .dispatch({
-          type: "thread.session.stop",
-          commandId: CommandId.make(`goal-stop:${threadId}:${yield* randomUUID}`),
-          threadId,
-          createdAt: yield* nowIso,
-        })
-        .pipe(Effect.ignoreCause({ log: true }));
     });
 
   const addChat = (goalId: GoalId, chat: GoalChat) =>
@@ -774,36 +769,32 @@ export const make = Effect.gen(function* () {
     reason: string,
   ) =>
     Effect.gen(function* () {
-      yield* queue
+      const released = yield* queue
         .release(binding, claimToken, "pending", reason)
-        .pipe(Effect.catch(logQueueError("goals.agentqueue-release-failed")));
+        .pipe(
+          Effect.catch((error) =>
+            logQueueError("goals.agentqueue-release-failed")(error).pipe(Effect.as(false)),
+          ),
+        );
+      if (!released) return;
       yield* queue
         .teardown(binding, worktreePath, branch, false)
         .pipe(Effect.catch(logQueueError("goals.agentqueue-teardown-failed")));
     });
 
-  /**
-   * Stops every earlier chat on this worktree that is not quiet. The queue hands a task out
-   * again only once the previous claim is gone, so any chat still working there lost its claim.
-   */
-  const stopStaleWorkers = Effect.fn("GoalService.stopStaleWorkers")(function* (
+  /** A lost claim does not prove its earlier writer has stopped using the worktree. */
+  const worktreeWritersQuiet = Effect.fn("GoalService.worktreeWritersQuiet")(function* (
     goal: Goal,
     worktreePath: string,
     claimToken: string,
-    /** The task's owner is not a stray writer: it is the one that will continue, once it is quiet. */
     except?: ThreadId | undefined,
   ) {
     for (const earlier of goal.chats) {
       if (earlier.worktreePath !== worktreePath || earlier.claimToken === claimToken) continue;
       if (except !== undefined && earlier.threadId === except) continue;
-      if (!(yield* workerQuiet(earlier.threadId))) {
-        yield* Effect.logWarning("goals.stopping-stale-worker", {
-          goalId: goal.id,
-          threadId: earlier.threadId,
-        });
-        yield* stopSession(earlier.threadId);
-      }
+      if (!(yield* workerQuiet(earlier.threadId))) return false;
     }
+    return true;
   });
 
   /** The conversation accountable for a task: the latest worker chat that worked on it. */
@@ -907,7 +898,8 @@ export const make = Effect.gen(function* () {
     if (!thread) return "replace" as const;
     if (!(yield* workerQuiet(owner.threadId))) return { wait: soon } as const;
     // One writer per worktree: nothing else may still be working where the owner is about to.
-    yield* stopStaleWorkers(goal, task.worktreePath, task.claimToken, owner.threadId);
+    if (!(yield* worktreeWritersQuiet(goal, task.worktreePath, task.claimToken, owner.threadId)))
+      return { wait: soon } as const;
     const sent = yield* continueChat(goal, owner, text);
     if (!sent) return "replace" as const;
     yield* updateChat(goal.id, owner.threadId, {
@@ -1036,12 +1028,19 @@ export const make = Effect.gen(function* () {
       return "skipped" as const;
     }
 
+    if (!(yield* worktreeWritersQuiet(goal, task.worktreePath, task.claimToken, owner?.threadId))) {
+      ownerWaits.set(`${goal.id}:${task.taskId}`, (yield* nowMillis) + 20_000);
+      yield* queue
+        .release(binding, task.claimToken, "pending", "An earlier worker still uses this worktree.")
+        .pipe(Effect.catch(logQueueError("goals.agentqueue-release-failed")));
+      return "skipped" as const;
+    }
+
     // A task attempted before whose branch already holds commits is not redone: the server
     // runs its checks on those commits first. If they pass, the work is submitted without a
     // worker. If they fail, the worker is told exactly what failed instead of starting over.
     let lastFailure = task.lastFailure;
     if (task.retryCount > 0 && task.existingCommits.length > 0 && task.repair === null) {
-      yield* stopStaleWorkers(goal, task.worktreePath, task.claimToken, owner?.threadId);
       const early = yield* queue
         .submit(binding, {
           taskId: task.taskId,
@@ -1082,10 +1081,6 @@ export const make = Effect.gen(function* () {
         }
       }
     }
-
-    // A worktree has one writer. An earlier worker for this task that a background job woke
-    // up again must stop before the next one starts in the same directory.
-    yield* stopStaleWorkers(goal, task.worktreePath, task.claimToken, owner?.threadId);
 
     const assignment = assignmentOf(binding, task, lastFailure);
     if (owner) {
@@ -1293,10 +1288,12 @@ export const make = Effect.gen(function* () {
   ) {
     const binding = goal.agentQueue;
     if (binding) {
-      const claims = yield* queue
-        .activeClaims(binding)
-        .pipe(Effect.catch(() => Effect.succeed([] as const)));
-      if (claims.some((claim) => claim.worktreePath === worktreePath)) return false;
+      const claims = yield* queue.activeClaims(binding).pipe(Effect.option);
+      if (
+        Option.isNone(claims) ||
+        claims.value.some((claim) => claim.worktreePath === worktreePath)
+      )
+        return false;
     }
     const now = yield* nowMillis;
     for (const chat of goal.chats) {
@@ -1441,9 +1438,14 @@ export const make = Effect.gen(function* () {
     options?: { readonly record?: boolean },
   ) {
     if (!chat.claimToken) return;
-    yield* queue
+    const released = yield* queue
       .release(binding, chat.claimToken, how, reason, options)
-      .pipe(Effect.catch(logQueueError("goals.agentqueue-release-failed")));
+      .pipe(
+        Effect.catch((error) =>
+          logQueueError("goals.agentqueue-release-failed")(error).pipe(Effect.as(false)),
+        ),
+      );
+    if (!released) return;
     if (chat.worktreePath && chat.branch) {
       yield* queue
         .teardown(binding, chat.worktreePath, chat.branch, false)
@@ -1724,10 +1726,18 @@ export const make = Effect.gen(function* () {
     const info = chat.taskId
       ? yield* queue.taskInfo(binding, chat.taskId).pipe(Effect.catch(() => Effect.succeed(null)))
       : null;
-    const claims = yield* queue
-      .activeClaims(binding)
-      .pipe(Effect.catch(() => Effect.succeed([] as const)));
-    const holdsClaim = claims.some((claim) => claim.claimToken === token);
+    const claims = yield* queue.activeClaims(binding).pipe(Effect.option);
+    if (Option.isNone(claims)) {
+      deferred.set(threadId, {
+        goalId,
+        since: yield* nowMillis,
+        knownLimit,
+        turnId: thread?.latestTurn?.turnId,
+      });
+      watching.set(threadId, { goalId, seenRunning: true });
+      return;
+    }
+    const holdsClaim = claims.value.some((claim) => claim.claimToken === token);
     if (info?.status === "completed") {
       yield* updateChat(goalId, threadId, {
         status: "completed",
@@ -2161,14 +2171,19 @@ export const make = Effect.gen(function* () {
         goalId: goal.id,
         taskId: claim.taskId,
       });
-      yield* queue
+      const released = yield* queue
         .release(
           binding,
           claim.claimToken,
           "pending",
           "The worker ended without handing the task back.",
         )
-        .pipe(Effect.catch(logQueueError("goals.agentqueue-release-failed")));
+        .pipe(
+          Effect.catch((error) =>
+            logQueueError("goals.agentqueue-release-failed")(error).pipe(Effect.as(false)),
+          ),
+        );
+      if (!released) continue;
       yield* queue
         .teardown(binding, claim.worktreePath, claim.branch, false)
         .pipe(Effect.catch(logQueueError("goals.agentqueue-teardown-failed")));
@@ -2598,10 +2613,18 @@ export const make = Effect.gen(function* () {
     // A turn that ended while its background commands (tests, watchers) still run is a pause,
     // not a finish: settling now would stop the session and kill them. The chat stays working
     // until they end; the tick looks again, and a wake-up turn is handled like any other.
-    if (knownLimit === undefined && (yield* backgroundWorkOf(threadId)) !== null) {
+    if ((yield* backgroundWorkOf(threadId)) !== null) {
       const now = yield* nowMillis;
-      const since = deferred.get(threadId)?.since ?? now;
-      deferred.set(threadId, { goalId, since });
+      const previous = deferred.get(threadId);
+      const since = previous?.since ?? now;
+      deferred.set(threadId, {
+        goalId,
+        since,
+        turnId: thread.latestTurn?.turnId,
+        knownLimit:
+          knownLimit ??
+          (previous?.turnId === thread.latestTurn?.turnId ? previous?.knownLimit : undefined),
+      });
       watching.set(threadId, { goalId, seenRunning: true });
       if (since === now) {
         yield* Effect.logInfo("goals.finish-deferred-background-work", { goalId, threadId });
@@ -2780,9 +2803,8 @@ export const make = Effect.gen(function* () {
       if ((yield* backgroundWorkOf(threadId)) !== null) {
         continue;
       }
-      yield* finishChat(entry.goalId, threadId, undefined, { vouched: true }).pipe(
-        lock.withPermits(1),
-      );
+      const limit = entry.turnId === thread?.latestTurn?.turnId ? entry.knownLimit : undefined;
+      yield* finishChat(entry.goalId, threadId, limit, { vouched: true }).pipe(lock.withPermits(1));
     }
   }).pipe(Effect.catchCause(logFailure("goals.finish-deferred-failed")));
 
