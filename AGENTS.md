@@ -175,6 +175,15 @@ Full glossary with file links: `docs/internals/glossary.md`
 
 ## Recent request log
 
+- 2026-10-14 — v0.0.71: hardened Agent Q manual dispatch & MCP header negotiation, upgraded Serena Kotlin
+  LSP to 263.6379.0. Agent Q supports reliable goal-less manual task reservation ("Use Agent Q and take a
+  task from the plan") without requiring active T3 Goals, non-destructive MCP Accept header negotiation
+  preserves client SSE streaming without dropping metadata, Serena upgraded to official JetBrains Kotlin
+  LSP 263.6379.0 with bytecode bypass expunged, and ownership-aware stale-lock recovery protects concurrent
+  language server instances.
+- 2026-10-14 — v0.0.70: safe AgentQueue Goal stall recovery. Supervised scheduler and session-event loops,
+  quiet chat and stalled reservation recovery, idle writer verification and ownership proof before worktree
+  cleanup. See docs/agentqueue/ADR-0011-*.md.
 - 2026-10-13 — v0.0.69: autonomous AgentQueue lifecycle. A task keeps one conversation from first line
   to verified integration (conflicts, retries, file waits and queued-command results are sent back to the same
   thread; the server prepares the merge in its worktree); shared tools go through one fair machine-wide queue
