@@ -51,9 +51,9 @@ export function describeGoalMode(
   return goal.queueReason ? `Standard mode · ${goal.queueReason}` : "Standard mode";
 }
 
-/** The task queue at the last check: AgentQueue progress, or the historical Beads counts. */
+/** The task queue at the last check, from AgentQueue progress. */
 export function describeGoalQueue(
-  goal: Pick<Goal, "queue" | "useBeads" | "agentQueue" | "queueProgress">,
+  goal: Pick<Goal, "agentQueue" | "queueProgress">,
 ): string | undefined {
   const progress = goal.queueProgress;
   if (goal.agentQueue && progress) {
@@ -69,9 +69,7 @@ export function describeGoalQueue(
       ...(progress.note ? [progress.note] : []),
     ].join(" · ");
   }
-  const queue = goal.queue;
-  if (!goal.useBeads || !queue) return undefined;
-  return `Beads: ${queue.ready} ready · ${queue.working} in progress · ${queue.blocked} blocked · ${queue.done} done`;
+  return undefined;
 }
 
 /**

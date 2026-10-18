@@ -131,9 +131,9 @@ export function ConnectionEnvironmentRow(props: {
           ) : null}
         </View>
 
+        {/* Stays live while unsupported: switching on checks the server again. */}
         <ThemedSwitch
           style={{ alignSelf: "center" }}
-          disabled={unsupported}
           onValueChange={(next) => props.onSetEnabled(props.environment.environmentId, next)}
           value={enabled}
         />

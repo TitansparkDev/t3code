@@ -1019,19 +1019,22 @@ export const make = Effect.gen(function* () {
       environmentId,
       Effect.gen(function* () {
         const entry = yield* getEntry(environmentId);
-        if (enabled && entry.unsupportedReason !== undefined) {
-          return yield* new ConnectionBlockedError({
-            reason: "unsupported",
-            detail: entry.unsupportedReason,
-          });
-        }
-        if (entry.enabled === enabled) {
+        // Switching back on is how a person asks to check again after updating
+        // the server, so the old verdict is dropped and the connection decides;
+        // a host that is still incompatible blocks it again.
+        const { unsupportedReason, serverUpdateRequired: _update, ...compatible } = entry;
+        if (entry.enabled === enabled && (!enabled || unsupportedReason === undefined)) {
           return;
         }
-        if (!(yield* Ref.get(platformEnvironmentIds)).has(environmentId)) {
+        if (
+          entry.enabled !== enabled &&
+          !(yield* Ref.get(platformEnvironmentIds)).has(environmentId)
+        ) {
           yield* registrations.setEnabled(environmentId, enabled);
         }
-        const next: ConnectionCatalogEntry = { ...entry, enabled };
+        const next: ConnectionCatalogEntry = enabled
+          ? { ...compatible, enabled }
+          : { ...entry, enabled };
         // Update the lease in place so the supervisor keeps its generation and
         // durable streams; `installEntryLocked` would tear it down instead.
         const lease = (yield* SubscriptionRef.get(serviceScopes)).get(environmentId);

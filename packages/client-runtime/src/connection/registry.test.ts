@@ -973,7 +973,7 @@ describe("EnvironmentRegistry", () => {
     }),
   );
 
-  it.effect("discovery keeps unsupported environments off until compatibility changes", () =>
+  it.effect("switching an unsupported environment back on checks it again", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness([RELAY_TARGET], [], [], {
         initialDisabled: [RELAY_TARGET.environmentId],
@@ -990,15 +990,17 @@ describe("EnvironmentRegistry", () => {
           RELAY_TARGET.environmentId,
         );
         expect(entry).toMatchObject({ enabled: false, unsupportedReason: error.message });
-        expect(
-          yield* Effect.flip(registry.setEnabled(RELAY_TARGET.environmentId, true)),
-        ).toMatchObject({ reason: "unsupported" });
         expect(yield* Ref.get(harness.sessions)).toHaveLength(0);
-        yield* registry.setCompatibility(RELAY_TARGET.environmentId, null);
-        expect(
-          (yield* SubscriptionRef.get(registry.entries)).get(RELAY_TARGET.environmentId)?.enabled,
-        ).toBe(false);
+        // The server was updated since the verdict; switching on must not be refused.
         yield* registry.setEnabled(RELAY_TARGET.environmentId, true);
+        const enabled = (yield* SubscriptionRef.get(registry.entries)).get(
+          RELAY_TARGET.environmentId,
+        );
+        expect(enabled?.enabled).toBe(true);
+        expect(enabled?.unsupportedReason).toBeUndefined();
+        expect((yield* Ref.get(harness.storedDisabled)).has(RELAY_TARGET.environmentId)).toBe(
+          false,
+        );
         yield* awaitConnectionState(
           registry,
           RELAY_TARGET.environmentId,

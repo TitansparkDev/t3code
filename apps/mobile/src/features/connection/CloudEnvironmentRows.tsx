@@ -210,7 +210,6 @@ function ConnectedCloudEnvironmentRow(props: {
         )}
         onValueChange={props.onSetEnabled}
         onToggleError={props.onToggleError}
-        disabled={unsupported}
         {...(enabled || unsupported ? {} : { statusText: "Off" })}
         value={enabled}
       />

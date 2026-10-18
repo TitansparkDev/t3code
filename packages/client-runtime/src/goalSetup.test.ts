@@ -40,15 +40,10 @@ describe("goal setup", () => {
     });
   });
 
-  it("keeps the name and the agent instructions apart, and the Beads choices", () => {
-    expect(
-      goalSetupToSettings({ ...ready, prompt: " Work PLAN.md ", beadsScope: " plan-1 " }),
-    ).toMatchObject({
-      name: "Finish PLAN.md",
-      prompt: "Work PLAN.md",
-      beadsScope: "plan-1",
-      useBeads: true,
-    });
+  it("keeps the name and the agent instructions apart", () => {
+    const settings = goalSetupToSettings({ ...ready, prompt: " Work PLAN.md " });
+    expect(settings).toMatchObject({ name: "Finish PLAN.md", prompt: "Work PLAN.md" });
+    expect(settings).not.toHaveProperty("useBeads");
   });
 
   it("allows more than sixteen agents at once", () => {
@@ -61,7 +56,6 @@ describe("goal setup", () => {
     const settings = goalSetupToSettings({
       ...ready,
       prompt: "Go",
-      beadsScope: "e-1",
       stopAfterProblems: 5,
     })!;
     const form = goalToSetup({ ...settings, id: "g", status: "running", chats: [] } as never);

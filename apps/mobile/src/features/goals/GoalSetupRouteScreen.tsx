@@ -565,21 +565,6 @@ export function GoalForm(props: {
               value={current.autoResume}
             />
             <SwitchRow
-              label="Take work from Beads: start an agent only when a chunk is ready"
-              onChange={(useBeads) => patch({ useBeads })}
-              value={current.useBeads}
-            />
-            {current.useBeads ? (
-              <Field label="Only this Beads epic or plan (optional)">
-                <TextInput
-                  autoCapitalize="none"
-                  className="h-12 min-h-12 rounded-[24px] px-4 py-0 text-base leading-snug"
-                  onChangeText={(beadsScope) => patch({ beadsScope })}
-                  value={current.beadsScope}
-                />
-              </Field>
-            ) : null}
-            <SwitchRow
               label="When the goal gets stuck, ask an overseer agent what to do before stopping"
               onChange={(overseer) => patch({ overseer })}
               value={current.overseer}

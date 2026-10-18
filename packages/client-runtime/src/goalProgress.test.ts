@@ -42,18 +42,8 @@ describe("describeGoalProgress", () => {
 });
 
 describe("describeGoalQueue", () => {
-  it("shows what Beads has ready and blocked", () => {
-    const queue = {
-      ready: 3,
-      working: 14,
-      blocked: 21,
-      done: 26,
-      checkedAt: "2026-10-04T12:00:00Z",
-    };
-    expect(describeGoalQueue({ useBeads: true, queue })).toBe(
-      "Beads: 3 ready · 14 in progress · 21 blocked · 26 done",
-    );
-    expect(describeGoalQueue({ useBeads: false, queue })).toBeUndefined();
+  it("says nothing without AgentQueue progress", () => {
+    expect(describeGoalQueue({})).toBeUndefined();
   });
 });
 
@@ -74,7 +64,6 @@ describe("describeGoalQueue when ready tasks cannot start", () => {
 
   it("says what blocks them instead of that agents are working", () => {
     const text = describeGoalQueue({
-      useBeads: false,
       agentQueue,
       queueProgress: {
         ...progress,
@@ -90,7 +79,7 @@ describe("describeGoalQueue when ready tasks cannot start", () => {
   });
 
   it("is unchanged when nothing is blocked", () => {
-    expect(describeGoalQueue({ useBeads: false, agentQueue, queueProgress: progress })).toContain(
+    expect(describeGoalQueue({ agentQueue, queueProgress: progress })).toContain(
       "Agents are working",
     );
   });

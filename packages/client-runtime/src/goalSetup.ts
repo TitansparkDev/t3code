@@ -44,9 +44,6 @@ export interface GoalSetupForm {
   readonly runtimeMode: RuntimeMode;
   readonly autoResume: boolean;
   readonly standardRules: boolean;
-  readonly useBeads: boolean;
-  /** A Beads epic or plan id, or empty for the whole queue. */
-  readonly beadsScope: string;
   readonly stopAfterProblems: number;
   /** Ask an overseer agent what to do when the goal gets stuck, before giving up. */
   readonly overseer: boolean;
@@ -84,8 +81,6 @@ export function defaultGoalSetup(input: {
     runtimeMode: input.runtimeMode,
     autoResume: true,
     standardRules: true,
-    useBeads: true,
-    beadsScope: "",
     stopAfterProblems: DEFAULT_GOAL_STOP_AFTER_PROBLEMS,
     overseer: true,
     queueMode: "auto",
@@ -111,8 +106,6 @@ export function goalToSetup(goal: Goal): GoalSetupForm {
     runtimeMode: goal.runtimeMode,
     autoResume: goal.autoResume,
     standardRules: goal.standardRules,
-    useBeads: goal.useBeads ?? false,
-    beadsScope: goal.beadsScope ?? "",
     stopAfterProblems: goal.stopAfterProblems ?? DEFAULT_GOAL_STOP_AFTER_PROBLEMS,
     overseer: goal.overseer !== false,
     // Goals saved before AgentQueue existed keep running the way they always did.
@@ -176,8 +169,6 @@ export function goalSetupToSettings(form: GoalSetupForm): GoalSettings | undefin
     runtimeMode: form.runtimeMode,
     autoResume: form.autoResume,
     standardRules: form.standardRules,
-    useBeads: form.useBeads,
-    beadsScope: form.beadsScope.trim(),
     stopAfterProblems: whole(form.stopAfterProblems),
     overseer: form.overseer,
     queueMode: form.queueMode,
@@ -212,8 +203,6 @@ export function goalSetupToDraftSettings(form: GoalSetupForm): GoalSettings | un
     runtimeMode: form.runtimeMode,
     autoResume: form.autoResume,
     standardRules: form.standardRules,
-    useBeads: form.useBeads,
-    beadsScope: form.beadsScope.trim(),
     stopAfterProblems: clamp(form.stopAfterProblems, MAX_GOAL_STOP_AFTER_PROBLEMS),
     overseer: form.overseer,
     queueMode: form.queueMode,
