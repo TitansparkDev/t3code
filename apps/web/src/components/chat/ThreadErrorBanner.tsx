@@ -1,6 +1,5 @@
+import type { OrchestrationV2ProviderFailureClass } from "@t3tools/contracts";
 import { memo } from "react";
-import type { ThreadUsageLimitResume } from "@t3tools/contracts";
-import { isProviderRateLimitFailure } from "@t3tools/shared/providerRateLimit";
 import { Alert, AlertAction, AlertDescription } from "../ui/alert";
 import { Button } from "../ui/button";
 import { CircleAlertIcon, XIcon } from "lucide-react";
@@ -20,11 +19,6 @@ export function shouldShowThreadErrorBanner(
   return getThreadErrorBannerKey(threadKey, error) !== null && !isDismissed;
 }
 
-// Session-scoped (module-level so it survives ChatView remounts, e.g. route
-// changes between threads). Mirrors the branch-mismatch banner: a dismissal
-// is remembered per thread key plus message, so navigating away to a thread
-// with no error cannot resurrect the banner, while a different error message
-// on the same thread still appears.
 const sessionDismissedThreadErrorBannerKeys = new Set<string>();
 
 export function dismissThreadErrorBannerForSession(bannerKey: string | null): void {
@@ -37,34 +31,22 @@ export function isThreadErrorBannerDismissedForSession(bannerKey: string | null)
   return bannerKey !== null && sessionDismissedThreadErrorBannerKeys.has(bannerKey);
 }
 
-export function isProviderRateLimitError(error: string): boolean {
-  return isProviderRateLimitFailure(error);
-}
-
 export const ThreadErrorBanner = memo(function ThreadErrorBanner({
   error,
   onDismiss,
-  usageLimitResume,
-  onScheduleUsageLimitResume,
-  onResumeNowUsageLimit,
-  onCancelUsageLimitResume,
-  usageLimitResumePending,
+  errorClass,
   chatGptUsageLimit = false,
 }: {
   error: string | null;
-  onDismiss?: (() => void) | undefined;
-  usageLimitResume?: ThreadUsageLimitResume | null | undefined;
-  onScheduleUsageLimitResume?: (() => void) | undefined;
-  onResumeNowUsageLimit?: (() => void) | undefined;
-  onCancelUsageLimitResume?: (() => void) | undefined;
-  usageLimitResumePending?: boolean | undefined;
+  errorClass?: OrchestrationV2ProviderFailureClass | null;
+  onDismiss?: () => void;
   chatGptUsageLimit?: boolean;
 }) {
   if (!error) return null;
-  const showUsageLimitResume = isProviderRateLimitError(error) || usageLimitResume !== undefined;
+  const variant = errorClass === "usage_limit" ? "warning" : "error";
   return (
     <div className="pointer-events-auto mx-auto w-fit max-w-[min(48rem,calc(100%-2rem))] pt-3">
-      <Alert variant="error" surface="glass" controlAlignment="first-line">
+      <Alert variant={variant} surface="glass" controlAlignment="first-line" data-variant={variant}>
         {chatGptUsageLimit ? (
           <OpenAI className="size-4 text-foreground!" aria-hidden="true" />
         ) : (
@@ -84,72 +66,15 @@ export const ThreadErrorBanner = memo(function ThreadErrorBanner({
               </TooltipPopup>
             </Tooltip>
           )}
-          {showUsageLimitResume && (
-            <div className="mt-1 text-xs text-muted-foreground">
-              {usageLimitResume?.nextAttemptAt === null
-                ? "Resuming automatically…"
-                : usageLimitResume?.nextAttemptAt !== undefined
-                  ? `Will resume at ${new Date(usageLimitResume.nextAttemptAt).toLocaleTimeString(
-                      [],
-                      {
-                        hour: "numeric",
-                        minute: "2-digit",
-                      },
-                    )}.`
-                  : "Resume automatically after the provider reset window."}
-            </div>
-          )}
         </AlertDescription>
-        {(chatGptUsageLimit ||
-          onScheduleUsageLimitResume ||
-          onResumeNowUsageLimit ||
-          onCancelUsageLimitResume ||
-          onDismiss) && (
+        {(chatGptUsageLimit || onDismiss) && (
           <AlertAction>
             {chatGptUsageLimit ? <ChatGptUsageButton variant="default" size="sm" /> : null}
-            {usageLimitResume?.nextAttemptAt === null ? null : (
-              <>
-                {onResumeNowUsageLimit && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    aria-label="Resume now"
-                    disabled={usageLimitResumePending}
-                    onClick={onResumeNowUsageLimit}
-                  >
-                    Resume now
-                  </Button>
-                )}
-                {usageLimitResume?.nextAttemptAt
-                  ? onCancelUsageLimitResume && (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        aria-label="Cancel automatic resume"
-                        disabled={usageLimitResumePending}
-                        onClick={onCancelUsageLimitResume}
-                      >
-                        Cancel
-                      </Button>
-                    )
-                  : onScheduleUsageLimitResume && (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        aria-label="Resume automatically"
-                        disabled={usageLimitResumePending}
-                        onClick={onScheduleUsageLimitResume}
-                      >
-                        Resume automatically
-                      </Button>
-                    )}
-              </>
-            )}
-            {onDismiss && (
+            {onDismiss ? (
               <Button variant="ghost" size="icon-xs" aria-label="Dismiss error" onClick={onDismiss}>
-                <XIcon className="text-destructive" />
+                <XIcon />
               </Button>
-            )}
+            ) : null}
           </AlertAction>
         )}
       </Alert>

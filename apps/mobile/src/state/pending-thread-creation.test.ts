@@ -10,7 +10,6 @@ import {
 import { describe, expect, it } from "vite-plus/test";
 
 import {
-  blocksFollowUpForPendingCreation,
   isPendingThreadCreationVisible,
   pendingThreadCreationMessage,
   pendingThreadCreationShell,
@@ -68,7 +67,6 @@ describe("resolvePendingThreadCreation", () => {
     });
     expect(previous).toBe(pending);
 
-    // The user message arrives before the provider publishes a timed turn.
     previous = resolvePendingThreadCreation({
       threadKey,
       pending,
@@ -77,8 +75,6 @@ describe("resolvePendingThreadCreation", () => {
     });
     expect(previous).toBe(pending);
 
-    // The shell stream may observe the turn and collect the global outcome
-    // before this screen's detail stream catches up.
     previous = resolvePendingThreadCreation({
       threadKey,
       pending: null,
@@ -170,8 +166,8 @@ describe("pendingThreadCreationShell", () => {
       interactionMode: "default",
       branch: "main",
       worktreePath: null,
-      latestTurn: null,
-      session: null,
+      latestRun: null,
+      runtime: null,
       latestUserMessageAt: creation.createdAt,
     });
   });
@@ -195,42 +191,6 @@ describe("pendingThreadCreationShell", () => {
   });
 });
 
-describe("blocksFollowUpForPendingCreation", () => {
-  it("blocks a follow-up only while thread creation has not been delivered", () => {
-    expect(
-      blocksFollowUpForPendingCreation({
-        creation: { message: creation, outcome: null },
-        hasLatestTurn: false,
-        messageCount: 0,
-      }),
-    ).toBe(true);
-    expect(
-      blocksFollowUpForPendingCreation({
-        creation: { message: creation, outcome: { kind: "delivered", message: creation } },
-        hasLatestTurn: false,
-        messageCount: 0,
-      }),
-    ).toBe(false);
-  });
-
-  it("allows follow-ups once the real thread detail has arrived", () => {
-    expect(
-      blocksFollowUpForPendingCreation({
-        creation: { message: creation, outcome: null },
-        hasLatestTurn: true,
-        messageCount: 0,
-      }),
-    ).toBe(false);
-    expect(
-      blocksFollowUpForPendingCreation({
-        creation: { message: creation, outcome: null },
-        hasLatestTurn: false,
-        messageCount: 1,
-      }),
-    ).toBe(false);
-  });
-});
-
 describe("isPendingThreadCreationVisible", () => {
   const creationMessageId = String(creation.messageId);
 
@@ -240,10 +200,6 @@ describe("isPendingThreadCreationVisible", () => {
     );
   });
 
-  // The regression: the server creates the thread, THEN builds the worktree,
-  // then starts the turn. The shell and an empty detail arrive seconds before
-  // the prompt, and keying on the shell left the thread empty for that whole
-  // window.
   it("keeps standing in while the created thread has no messages yet", () => {
     expect(isPendingThreadCreationVisible({ creationMessageId, loadedMessageIds: [] })).toBe(true);
   });
@@ -285,15 +241,12 @@ describe("pendingThreadCreationMessage", () => {
       id: creation.messageId,
       role: "user",
       text: creation.text,
-      turnId: null,
       streaming: false,
       createdAt: creation.createdAt,
       updatedAt: creation.createdAt,
     });
   });
 
-  // Draft attachment ids are local; the feed resolves attachment rows against
-  // the server and would spin forever on them.
   it("omits the queued attachments rather than passing local draft ids to the feed", () => {
     expect(pendingThreadCreationMessage(creation)).not.toHaveProperty("attachments");
   });

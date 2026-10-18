@@ -7,14 +7,14 @@ import {
 } from "@t3tools/client-runtime/goal-progress";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { goalTitle, type Goal } from "@t3tools/contracts/goals";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { useEffect } from "react";
 import { Alert, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { AppText as Text } from "../../components/AppText";
-import { MaterialButton } from "../../components/MaterialButton";
-import { ScreenScrollView as ScrollView } from "../../components/ScreenScrollView";
+import { AppText as Text } from "../../components/ui/AppText";
+import { Button } from "../../components/ui/Button";
+import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
 import { useEnvironments } from "../../state/environments";
 import { useServerConfigs } from "../../state/entities";
 import { useEnvironmentQuery } from "../../state/query";
@@ -98,15 +98,15 @@ function GoalCard(props: {
       </View>
       <View className="flex-row flex-wrap gap-2">
         {running ? (
-          <MaterialButton label="Stop" onPress={() => void run(stopGoal)} />
+          <Button label="Stop" onPress={() => void run(stopGoal)} />
         ) : (
-          <MaterialButton
+          <Button
             label={goal.status === "draft" ? "Start" : "Start again"}
             onPress={() => void run(restartGoal)}
           />
         )}
         {goal.status !== "draft" ? (
-          <MaterialButton
+          <Button
             label="+3 agents"
             onPress={() =>
               void (async () => {
@@ -122,7 +122,7 @@ function GoalCard(props: {
             }
           />
         ) : null}
-        <MaterialButton
+        <Button
           label="Edit"
           onPress={() =>
             navigation.navigate("SettingsSheet", {
@@ -131,7 +131,7 @@ function GoalCard(props: {
             })
           }
         />
-        <MaterialButton
+        <Button
           label="Delete"
           onPress={() =>
             Alert.alert("Delete this goal?", "Its chats stay as normal threads and keep running.", [
@@ -197,7 +197,7 @@ export function GoalsRouteScreen() {
           Start a goal here or from New thread with the Goal switch on. It keeps agents working
           until nothing is left. A goal you set up but did not start is kept as a draft.
         </Text>
-        <MaterialButton
+        <Button
           label="New goal"
           onPress={() =>
             navigation.navigate("SettingsSheet", {

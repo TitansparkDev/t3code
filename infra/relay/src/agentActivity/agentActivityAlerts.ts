@@ -5,7 +5,6 @@ import type {
 } from "@t3tools/contracts/relay";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
-import { notificationForActivity } from "./agentActivityPayloads.ts";
 
 export interface AgentActivityAlert {
   readonly title: string;
@@ -68,8 +67,6 @@ export function attentionTransitionRows(input: TransitionInput) {
   );
 }
 
-// Reconciliation uses only observed transitions. Event-driven delivery can
-// include fresh completions whose running update never reached the device.
 export function newlyTerminalRows(
   previousAggregate: RelayAgentActivityAggregateState | null,
   nextAggregate: RelayAgentActivityAggregateState,
@@ -111,8 +108,7 @@ export function alertForActivityRows(
   const first = rows[0];
   if (!first) return null;
   if (rows.length === 1) {
-    const { title, body } = notificationForActivity(first);
-    return { title, body };
+    return { title: first.threadTitle, body: `${first.status}: ${first.projectTitle}` };
   }
   return {
     title: `${rows.length} agents ${isAttentionPhase(first.phase) ? "need attention" : "finished"}`,

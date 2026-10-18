@@ -10,7 +10,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as EffectAcpErrors from "effect-acp/errors";
-import type * as EffectAcpSchema from "effect-acp/schema";
+import type * as EffectAcpSchema from "effect-acp/compat";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import {
@@ -35,22 +35,13 @@ function makeModelRuntime(
   failure?: EffectAcpErrors.AcpError,
 ) {
   const selections: string[] = [];
-  const configuredOptions: Record<string, string | boolean> = {};
   const setModel = Effect.fn("AntigravityAcpSupportTest.setModel")(function* (model: string) {
     if (failure) return yield* failure;
     selections.push(model);
   });
-  const setConfigOption = Effect.fn("AntigravityAcpSupportTest.setConfigOption")(function* (
-    configId: string,
-    value: string | boolean,
-  ) {
-    if (failure) return yield* failure;
-    configuredOptions[configId] = value;
-  });
   return {
-    runtime: { getConfigOptions: Effect.succeed(configOptions), setModel, setConfigOption },
+    runtime: { getConfigOptions: Effect.succeed(configOptions), setModel },
     selections,
-    configuredOptions,
   };
 }
 
@@ -125,81 +116,6 @@ describe("applyAntigravityAcpModelSelection", () => {
     }),
   );
 
-  it.effect("applies thinking/effort options via setConfigOption", () =>
-    Effect.gen(function* () {
-      const { runtime, configuredOptions } = makeModelRuntime([
-        modelConfig,
-        {
-          id: "thought_level",
-          name: "Thought Level",
-          type: "select",
-          currentValue: "medium",
-          options: [
-            { value: "low", name: "Low" },
-            { value: "medium", name: "Medium" },
-            { value: "high", name: "High" },
-          ],
-        },
-      ]);
-      yield* applyAntigravityAcpModelSelection({
-        runtime,
-        model: "gemini-default",
-        options: { effort: "high" },
-        mapError: (cause) => cause,
-      });
-
-      expect(configuredOptions).toEqual({ thought_level: "high" });
-    }),
-  );
-
-  it.effect.each([
-    "claude-sonnet-4-6",
-    "claude-opus-4-6-thinking",
-    "gpt-oss-120b-medium",
-    "claude-opus-4-5-thinking",
-  ])("selects user-facing multi-model ID %s with exact provider ID", (targetModel) =>
-    Effect.gen(function* () {
-      const configWithOptions: EffectAcpSchema.SessionConfigOption = {
-        ...modelConfig,
-        options: [...modelConfig.options, { value: targetModel, name: targetModel }],
-      };
-      const { runtime, selections } = makeModelRuntime([configWithOptions]);
-      const model = yield* applyAntigravityAcpModelSelection({
-        runtime,
-        model: targetModel,
-        mapError: (cause) => cause,
-      });
-
-      expect(model).toBe(targetModel);
-      expect(selections).toEqual([targetModel]);
-    }),
-  );
-
-  it.effect("rejects explicitly internal models even if returned in configOptions", () =>
-    Effect.gen(function* () {
-      const configWithInternal: EffectAcpSchema.SessionConfigOption = {
-        ...modelConfig,
-        options: [
-          ...modelConfig.options,
-          { value: "internal-debug-model", name: "Internal Debug Model" },
-        ],
-      };
-      const { runtime, selections } = makeModelRuntime([configWithInternal]);
-      const error = yield* applyAntigravityAcpModelSelection({
-        runtime,
-        model: "internal-debug-model",
-        mapError: (cause) => cause,
-      }).pipe(Effect.flip);
-
-      expect(error).toMatchObject({
-        _tag: "AcpRequestError",
-        code: -32602,
-        errorMessage: expect.stringContaining("'internal-debug-model' is unavailable"),
-      });
-      expect(selections).toEqual([]);
-    }),
-  );
-
   it.effect.each(["gemini-removed", "Gemini saved", "gemini-saved[reasoning=high]"])(
     "rejects unavailable or non-native model ID %s without selecting a fallback",
     (model) =>
@@ -225,7 +141,7 @@ describe("applyAntigravityAcpModelSelection", () => {
       const { runtime, selections } = makeModelRuntime([
         {
           ...modelConfig,
-          options: [{ group: "gemini", name: "Gemini", options: modelConfig.options }],
+          options: [{ groupId: "gemini", name: "Gemini", options: modelConfig.options }],
         },
       ]);
       const model = yield* applyAntigravityAcpModelSelection({
@@ -250,29 +166,6 @@ describe("applyAntigravityAcpModelSelection", () => {
       }).pipe(Effect.flip);
 
       expect(error).toEqual({ operation: "select-model", cause: nativeError });
-    }),
-  );
-
-  it.effect.each([
-    ["claude-sonnet-4-6", "Claude Sonnet 4.6 (Thinking)"],
-    ["claude-opus-4-6-thinking", "Claude Opus 4.6 (Thinking)"],
-    ["gpt-oss-120b-medium", "GPT-OSS 120B (Medium)"],
-  ] as const)("accepts and selects live non-Gemini model ID %s", ([modelId, modelName]) =>
-    Effect.gen(function* () {
-      const { runtime, selections } = makeModelRuntime([
-        {
-          ...modelConfig,
-          options: [...modelConfig.options, { value: modelId, name: modelName }],
-        },
-      ]);
-      const selected = yield* applyAntigravityAcpModelSelection({
-        runtime,
-        model: modelId,
-        mapError: (cause) => cause,
-      });
-
-      expect(selected).toBe(modelId);
-      expect(selections).toEqual([modelId]);
     }),
   );
 });

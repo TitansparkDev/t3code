@@ -2,10 +2,7 @@ import type { DesktopUpdateActionResult, DesktopUpdateState } from "@t3tools/con
 
 export type DesktopUpdateButtonAction = "download" | "install" | "none";
 
-const DESKTOP_UPDATE_REPOSITORY =
-  (import.meta.env.VITE_T3CODE_DESKTOP_UPDATE_REPOSITORY as string | undefined)?.trim() ||
-  "pingdotgg/t3code";
-const DESKTOP_RELEASE_HISTORY_URL = `https://github.com/${DESKTOP_UPDATE_REPOSITORY}/releases`;
+const DESKTOP_RELEASE_HISTORY_URL = "https://github.com/pingdotgg/t3code/releases";
 const DESKTOP_RELEASE_TAG_URL = `${DESKTOP_RELEASE_HISTORY_URL}/tag`;
 
 /**
@@ -17,19 +14,10 @@ export function getDesktopUpdateDownloadedVersion(state: DesktopUpdateState): st
   return state.downloadedVersion ?? state.availableVersion;
 }
 
-/** Release notes for an exact downloaded build; nightly suffixes are part of the tag. */
-export function getDesktopUpdateReleaseUrl(
-  version: string | null,
-  repository = DESKTOP_UPDATE_REPOSITORY,
-): string | null {
+export function getDesktopUpdateReleaseUrl(version: string | null): string | null {
   const normalizedVersion = version?.trim();
   if (!normalizedVersion) return null;
-  const normalizedRepository = repository.trim() || DESKTOP_UPDATE_REPOSITORY;
-  const releaseTagUrl =
-    normalizedRepository === DESKTOP_UPDATE_REPOSITORY
-      ? DESKTOP_RELEASE_TAG_URL
-      : `https://github.com/${normalizedRepository}/releases/tag`;
-  return `${releaseTagUrl}/v${encodeURIComponent(normalizedVersion)}`;
+  return `${DESKTOP_RELEASE_TAG_URL}/v${encodeURIComponent(normalizedVersion)}`;
 }
 
 export function getDesktopUpdateReleaseHistoryUrl(): string {
@@ -82,6 +70,13 @@ export function getArm64IntelBuildWarningDescription(state: DesktopUpdateState):
 }
 
 export function getDesktopUpdateButtonTooltip(state: DesktopUpdateState): string {
+  if (
+    state.notAppliedVersion !== undefined &&
+    (state.status === "available" || state.status === "downloaded") &&
+    getDesktopUpdateDownloadedVersion(state) === state.notAppliedVersion
+  ) {
+    return `Update ${state.notAppliedVersion} did not apply. Click to retry.`;
+  }
   if (state.status === "available") {
     return `Update ${state.availableVersion ?? "available"} ready to download`;
   }

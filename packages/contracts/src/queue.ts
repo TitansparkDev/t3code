@@ -8,13 +8,10 @@
  */
 import * as Schema from "effect/Schema";
 
-import { IsoDateTime, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { IsoDateTime, PlanId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 
 export const TaskId = Schema.String.pipe(Schema.brand("TaskId"));
 export type TaskId = typeof TaskId.Type;
-
-export const PlanId = Schema.String.pipe(Schema.brand("PlanId"));
-export type PlanId = typeof PlanId.Type;
 
 export const ClaimToken = Schema.String.pipe(Schema.brand("ClaimToken"));
 export type ClaimToken = typeof ClaimToken.Type;

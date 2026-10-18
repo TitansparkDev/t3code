@@ -3,12 +3,10 @@ import type {
   RelayAgentActivityAggregateState,
   RelayAgentActivityState,
 } from "@t3tools/contracts/relay";
-import { markdownPlainText } from "@t3tools/client-runtime/markdown-plain-text";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 
 import type { ApnsNotificationPayload } from "./apnsDeliveryJobs.ts";
-import { fitNotificationText, jsonByteLength } from "./notificationText.ts";
 
 export function isTerminalPhase(state: RelayAgentActivityState): boolean {
   return state.phase === "completed" || state.phase === "failed";
@@ -16,11 +14,7 @@ export function isTerminalPhase(state: RelayAgentActivityState): boolean {
 
 // Rows are only removed when their environment publishes a terminal state. An
 // environment that dies mid-run (machine off, process killed) never does, so
-// without an age cutoff its threads inflate activeCount forever. Actively
-// running phases expire quickly; waiting phases can legitimately sit for hours
-// while a user ignores an approval prompt, so they get a longer window. The
-// underlying database row is left in place: a late publish for the thread
-// refreshes updatedAt and the row becomes visible again.
+// without an age cutoff its threads inflate activeCount forever.
 const RUNNING_AGENT_ACTIVITY_ROW_TTL_MS = 2 * 60 * 60 * 1_000;
 const WAITING_AGENT_ACTIVITY_ROW_TTL_MS = 24 * 60 * 60 * 1_000;
 
@@ -104,29 +98,18 @@ export function sanitizeApnsNotificationPayload(
   return {
     ...notification,
     title: truncateText(notification.title, MAX_SUMMARY_TEXT_LENGTH),
-    body: notification.body.trim(),
+    body: truncateText(notification.body, MAX_SUMMARY_TEXT_LENGTH),
     deepLink: sanitizeDeepLink(notification.deepLink),
   };
 }
 
-export function completionBodyForResponse(response: string | undefined): string {
-  return fitNotificationText(
-    markdownPlainText(response ?? ""),
-    (body) => jsonByteLength(body) <= 4096,
-  );
-}
-
 export function notificationForActivity(
-  row: RelayAgentActivityAggregateRow & Pick<RelayAgentActivityState, "completionResponse">,
+  row: RelayAgentActivityAggregateRow,
 ): ApnsNotificationPayload {
   const activity = sanitizeAgentActivityAggregateRow(row);
   return sanitizeApnsNotificationPayload({
     title: activity.threadTitle,
-    body:
-      (activity.phase === "completed"
-        ? activity.completionBody?.trim() || completionBodyForResponse(row.completionResponse)
-        : "") ||
-      truncateText(`${activity.status}: ${activity.projectTitle}`, MAX_SUMMARY_TEXT_LENGTH),
+    body: `${activity.status}: ${activity.projectTitle}`,
     environmentId: activity.environmentId,
     threadId: activity.threadId,
     deepLink: activity.deepLink,

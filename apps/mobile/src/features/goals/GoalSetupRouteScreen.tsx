@@ -16,18 +16,18 @@ import {
 } from "@t3tools/contracts/goals";
 import { getProviderOptionCurrentValue, getProviderOptionDescriptors } from "@t3tools/shared/model";
 import * as Cause from "effect/Cause";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Alert, Pressable, View } from "react-native";
+import { Alert, Platform, Pressable, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { AppText as Text, AppTextInput as TextInput } from "../../components/AppText";
-import { MaterialButton } from "../../components/MaterialButton";
-import { MaterialListRow } from "../../components/MaterialListRow";
-import { MaterialScreenContent } from "../../components/MaterialScreenContent";
-import { ScreenHeader } from "../../components/ScreenHeader";
-import { ScreenScrollView as ScrollView } from "../../components/ScreenScrollView";
-import { ThemedSwitch } from "../../components/ThemedSwitch";
+import { AppText as Text, AppTextInput as TextInput } from "../../components/ui/AppText";
+import { Button } from "../../components/ui/Button";
+import { ListRow } from "../../components/ui/ListRow";
+import { AndroidScreenHeader } from "../../components/ui/AndroidScreenHeader";
+import { NativeStackScreenOptions } from "../../native/StackHeader";
+import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
+import { ThemedSwitch } from "../../components/ui/ThemedSwitch";
 import { cn } from "../../lib/cn";
 import { buildModelOptions, type ModelOption } from "../../lib/modelOptions";
 import { useServerConfigs } from "../../state/entities";
@@ -171,7 +171,7 @@ function PlanPanel(props: {
       <Text className="text-sm text-foreground-muted">How agents get their work</Text>
       <View className="flex-row flex-wrap gap-2">
         {QUEUE_MODES.map((option) => (
-          <MaterialButton
+          <Button
             key={option.mode}
             label={option.label}
             onPress={() => props.onChange({ queueMode: option.mode })}
@@ -182,7 +182,7 @@ function PlanPanel(props: {
       {preview && preview.candidates.length > 1 ? (
         <View className="flex-row flex-wrap gap-2">
           {preview.candidates.map((candidate) => (
-            <MaterialButton
+            <Button
               key={candidate.path}
               label={`${candidate.path} (${candidate.unfinishedCount}/${candidate.taskCount})`}
               onPress={() => props.onChange({ planPath: candidate.path })}
@@ -276,14 +276,14 @@ function AgentCard(props: {
       {picking ? (
         <View className="overflow-hidden rounded-[20px]">
           {props.options.map((option) => (
-            <MaterialListRow
+            <ListRow
               key={option.key}
               onPress={() => {
                 props.onChange(agentFromOption(option, props.agent.count));
                 setPicking(false);
               }}
-              subtitle={option.providerLabel}
-              title={option.label}
+              description={option.providerLabel}
+              label={option.label}
             />
           ))}
         </View>
@@ -341,9 +341,7 @@ function AgentCard(props: {
             value={props.agent.count}
           />
         </Field>
-        {props.canRemove ? (
-          <MaterialButton label="Remove" onPress={props.onRemove} tone="text" />
-        ) : null}
+        {props.canRemove ? <Button label="Remove" onPress={props.onRemove} tone="text" /> : null}
       </View>
     </View>
   );
@@ -377,7 +375,8 @@ export function GoalForm(props: {
   const insets = useSafeAreaInsets();
   const config = useServerConfigs().get(props.environmentId);
   const modelOptions = useMemo(
-    () => buildModelOptions(config, null).filter((option) => !option.isUnavailable),
+    () =>
+      buildModelOptions(config, null, undefined, null).filter((option) => !option.isUnavailable),
     [config],
   );
   const defaultOption = modelOptions.find((option) => option.isDefault) ?? modelOptions[0];
@@ -443,14 +442,15 @@ export function GoalForm(props: {
 
   return (
     <View collapsable={false} className="flex-1 bg-sheet">
-      <ScreenHeader
-        title={props.title}
-        subtitle={props.subtitle}
-        sidebar={false}
-        hideBottomBorder
-        onBack={() => navigation.goBack()}
-      />
-      <MaterialScreenContent>
+      {Platform.OS === "android" ? (
+        <>
+          <NativeStackScreenOptions options={{ headerShown: false }} />
+          <AndroidScreenHeader title={props.title} onBack={() => navigation.goBack()} />
+        </>
+      ) : (
+        <NativeStackScreenOptions options={{ title: props.title }} />
+      )}
+      <>
         <ScrollView
           contentInsetAdjustmentBehavior="automatic"
           showsVerticalScrollIndicator={false}
@@ -541,7 +541,7 @@ export function GoalForm(props: {
                 options={modelOptions}
               />
             ))}
-            <MaterialButton
+            <Button
               disabled={modelOptions.length === 0}
               label="Add a model"
               onPress={() => {
@@ -637,7 +637,7 @@ export function GoalForm(props: {
           ) : draftSaved ? (
             <Text className="text-sm text-foreground-muted">Draft saved.</Text>
           ) : null}
-          <MaterialButton
+          <Button
             disabled={problem !== undefined || planBlocked}
             fullWidth
             label={starting ? props.busyLabel : props.submitLabel}
@@ -646,7 +646,7 @@ export function GoalForm(props: {
             tone="primary"
           />
           {props.secondary ? (
-            <MaterialButton
+            <Button
               disabled={problem !== undefined || starting || planBlocked}
               fullWidth
               label={props.secondary.label}
@@ -654,7 +654,7 @@ export function GoalForm(props: {
             />
           ) : null}
         </ScrollView>
-      </MaterialScreenContent>
+      </>
     </View>
   );
 }
@@ -673,7 +673,9 @@ export function CreateGoalScreen(props: {
   const { environmentId, projectId } = props;
   const config = useServerConfigs().get(environmentId);
   const defaultOption = useMemo(() => {
-    const options = buildModelOptions(config, null).filter((option) => !option.isUnavailable);
+    const options = buildModelOptions(config, null, undefined, null).filter(
+      (option) => !option.isUnavailable,
+    );
     return options.find((option) => option.isDefault) ?? options[0];
   }, [config]);
   const createGoal = useAtomCommand(serverEnvironment.createGoal, { reportFailure: false });

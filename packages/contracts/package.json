@@ -1,6 +1,6 @@
 {
   "name": "@t3tools/contracts",
-  "version": "0.0.71",
+  "version": "0.1.0",
   "private": true,
   "files": [
     "dist"
@@ -19,18 +19,6 @@
       "types": "./src/relay.ts",
       "import": "./src/relay.ts"
     },
-    "./quota": {
-      "types": "./src/quota.ts",
-      "import": "./src/quota.ts"
-    },
-    "./antigravity": {
-      "types": "./src/antigravity.ts",
-      "import": "./src/antigravity.ts"
-    },
-    "./scheduledTasks": {
-      "types": "./src/scheduledTasks.ts",
-      "import": "./src/scheduledTasks.ts"
-    },
     "./goals": {
       "types": "./src/goals.ts",
       "import": "./src/goals.ts"
@@ -41,7 +29,7 @@
     }
   },
   "scripts": {
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc-rs --noEmit",
     "test": "vp test run --config ../../vite.config.ts --dir ."
   },
   "dependencies": {

@@ -1,5 +1,4 @@
 import { ProviderInteractionMode, RuntimeMode } from "@t3tools/contracts";
-import { ALL_RUNTIME_MODES, RUNTIME_MODE_LABELS } from "@t3tools/shared/providerCapabilities";
 import { memo, type ReactNode } from "react";
 import { EllipsisIcon } from "lucide-react";
 import {
@@ -14,14 +13,14 @@ import { ComposerControl, ComposerControlIcon } from "./ComposerControl";
 import { useComposerMenuProps } from "./composerEventScope";
 import { useComposerMenuState } from "./useComposerMenuState";
 
-const RUNTIME_MODE_LABELS_ORDER = ALL_RUNTIME_MODES;
-
 export const CompactComposerControlsMenu = memo(function CompactComposerControlsMenu(props: {
   interactionMode: ProviderInteractionMode;
   runtimeMode: RuntimeMode;
+  runtimeModeOptions: ReadonlyArray<{
+    readonly mode: RuntimeMode;
+    readonly label: string;
+  }>;
   showInteractionModeToggle: boolean;
-  /** Access modes the selected provider can actually enforce. */
-  supportedRuntimeModes?: ReadonlyArray<RuntimeMode>;
   traitsMenuContent?: ReactNode;
   size?: "sm" | "xs";
   /**
@@ -36,14 +35,6 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
   const composerFloatingLayerProps = useComposerMenuProps();
   const size = props.size ?? "sm";
   const [open, setOpen] = useComposerMenuState(props.hidden);
-  const offeredRuntimeModes = RUNTIME_MODE_LABELS_ORDER.filter((mode) =>
-    (props.supportedRuntimeModes ?? RUNTIME_MODE_LABELS_ORDER).includes(mode),
-  );
-  // A thread can sit in a mode the selected provider cannot enforce. Dropping
-  // it from the list would leave the trigger naming a value the menu cannot
-  // offer, hiding the very reason Send is blocked, so it stays listed as
-  // unavailable.
-  const currentModeIsUnsupported = !offeredRuntimeModes.includes(props.runtimeMode);
 
   return (
     <Menu open={open} onOpenChange={setOpen}>
@@ -92,16 +83,11 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
             props.onRuntimeModeChange(value as RuntimeMode);
           }}
         >
-          {offeredRuntimeModes.map((mode) => (
-            <MenuRadioItem key={mode} value={mode}>
-              {RUNTIME_MODE_LABELS[mode]}
+          {props.runtimeModeOptions.map((option) => (
+            <MenuRadioItem key={option.mode} value={option.mode}>
+              {option.label}
             </MenuRadioItem>
           ))}
-          {currentModeIsUnsupported ? (
-            <MenuRadioItem value={props.runtimeMode} disabled>
-              {RUNTIME_MODE_LABELS[props.runtimeMode]} (unsupported)
-            </MenuRadioItem>
-          ) : null}
         </MenuRadioGroup>
       </MenuPopup>
     </Menu>

@@ -1,13 +1,7 @@
-export const BUILT_IN_THEME_IDS = ["t3-chat", "grove", "ocean", "ember", "iris", "omni"] as const;
+export const BUILT_IN_THEME_IDS = ["t3-chat", "grove", "ocean", "ember", "iris"] as const;
 
-/** The standard T3 Code palette, kept separate from the optional built-in theme library. */
 export const MOBILE_DEFAULT_THEME_ID = "t3-code";
 
-/**
- * Every palette the mobile app can render. Declared here so host-side tooling
- * (the app-store screenshot harness) can validate a requested theme without
- * importing React Native application code.
- */
 export const MOBILE_THEME_IDS = [MOBILE_DEFAULT_THEME_ID, ...BUILT_IN_THEME_IDS] as const;
 
 /**
@@ -43,7 +37,6 @@ export type BuiltInThemeId = (typeof BUILT_IN_THEME_IDS)[number];
 export type MobileThemeId = (typeof MOBILE_THEME_IDS)[number];
 export type ThemeAppearance = "light" | "dark";
 
-/** Product roles shared by web CSS, React Native tokens, and native surfaces. */
 export const THEME_COLOR_ROLES = [
   "canvas",
   "chrome",
@@ -88,6 +81,10 @@ export const THEME_COLOR_ROLES = [
   "messageActionHover",
   "codeBackground",
   "codeForeground",
+  "searchMatchBackground",
+  "searchMatchForeground",
+  "searchMatchActiveBackground",
+  "searchMatchActiveForeground",
   "sidebar",
   "sidebarForeground",
   "sidebarMutedForeground",
@@ -113,22 +110,16 @@ export type ThemeDefinition = Readonly<{
   appearance: ThemeAppearance;
   colors: ThemeColors;
   variants?: ThemeVariants;
-  /** Groups related imported variants into one library card. */
   collection?: Readonly<{ id: string; label: string }>;
-  /** Allows reviewed built-ins to render product artwork over their sidebar. */
   sidebarArtwork?: boolean;
-  /** Generated from the guided editor's canvas and accent roles. */
   managed?: boolean;
 }>;
 
-/**
- * The palette T3 Code wears with no theme installed, captured from the app's
- * stock tokens (index.css) so a draft seeded from the default look paints the
- * pixels the user is already seeing. Alpha-bearing tokens are flattened over
- * their real backdrops (canvas, or the sidebar for its rows) because theme
- * colors are stored as opaque OKLCH tokens.
- */
 export const T3_CODE_LIGHT_THEME_COLORS: ThemeColors = {
+  searchMatchBackground: "#ffde8b",
+  searchMatchForeground: "#21180a",
+  searchMatchActiveBackground: "#eea52b",
+  searchMatchActiveForeground: "#21180a",
   canvas: "#fcfcfc",
   chrome: "#fcfcfc",
   toolbar: "#fcfcfc",
@@ -189,6 +180,10 @@ export const T3_CODE_LIGHT_THEME_COLORS: ThemeColors = {
 };
 
 export const T3_CODE_DARK_THEME_COLORS: ThemeColors = {
+  searchMatchBackground: "#8c6c1f",
+  searchMatchForeground: "#f5f5f5",
+  searchMatchActiveBackground: "#eea52b",
+  searchMatchActiveForeground: "#21180a",
   canvas: "#0a0a0a",
   chrome: "#0a0a0a",
   toolbar: "#0a0a0a",
@@ -296,6 +291,10 @@ export const T3_CHAT_THEME: ThemeDefinition = {
     messageActionHover: "oklch(0.539042 0.197866 0.305)",
     codeBackground: "oklch(0.953855 0.019695 315.668)",
     codeForeground: "oklch(0.445128 0.13005 307.026)",
+    searchMatchBackground: "oklch(0.915 0.11 85)",
+    searchMatchForeground: "oklch(0.216164 0.028283 77.423)",
+    searchMatchActiveBackground: "oklch(0.774202 0.151946 74.331)",
+    searchMatchActiveForeground: "oklch(0.216164 0.028283 77.423)",
     sidebar: "oklch(0.928886 0.031178 322.592)",
     sidebarForeground: "oklch(0.396296 0.025134 285.196)",
     sidebarMutedForeground: "oklch(0.494754 0.190937 354.544)",
@@ -356,6 +355,10 @@ export const T3_CHAT_THEME: ThemeDefinition = {
       messageActionHover: "oklch(0.458754 0.184639 3.857)",
       codeBackground: "oklch(0.22813 0.020366 307.469)",
       codeForeground: "oklch(0.848703 0.064239 306.645)",
+      searchMatchBackground: "oklch(0.55 0.1 85)",
+      searchMatchForeground: "oklch(0.970151 0 0)",
+      searchMatchActiveBackground: "oklch(0.774202 0.151946 74.331)",
+      searchMatchActiveForeground: "oklch(0.216164 0.028283 77.423)",
       sidebar: "oklch(0.185778 0.019368 322.159)",
       sidebarForeground: "oklch(0.967434 0.001326 286.375)",
       sidebarMutedForeground: "oklch(0.880303 0.03077 342.696)",
@@ -423,6 +426,10 @@ export const GROVE_THEME: ThemeDefinition = {
     messageActionHover: "oklch(0.488753 0.096536 77.829)",
     codeBackground: "oklch(0.955888 0.004783 158.391)",
     codeForeground: "oklch(0.222003 0.03479 328.979)",
+    searchMatchBackground: "oklch(0.915 0.11 85)",
+    searchMatchForeground: "oklch(0.216164 0.028283 77.423)",
+    searchMatchActiveBackground: "oklch(0.774202 0.151946 74.331)",
+    searchMatchActiveForeground: "oklch(0.216164 0.028283 77.423)",
     sidebar: "oklch(0.936464 0.014601 163.554)",
     sidebarForeground: "oklch(0.222003 0.03479 328.979)",
     sidebarMutedForeground: "oklch(0.515606 0.011938 318.897)",
@@ -483,6 +490,10 @@ export const GROVE_THEME: ThemeDefinition = {
       messageActionHover: "oklch(0.815227 0.117902 84.21)",
       codeBackground: "oklch(0.312979 0.018942 164.082)",
       codeForeground: "oklch(0.990339 0.008411 325.64)",
+      searchMatchBackground: "oklch(0.55 0.1 85)",
+      searchMatchForeground: "oklch(0.970151 0 0)",
+      searchMatchActiveBackground: "oklch(0.774202 0.151946 74.331)",
+      searchMatchActiveForeground: "oklch(0.216164 0.028283 77.423)",
       sidebar: "oklch(0.309925 0.032827 160.944)",
       sidebarForeground: "oklch(0.990339 0.008411 325.64)",
       sidebarMutedForeground: "oklch(0.711387 0.007643 175.89)",
@@ -550,6 +561,10 @@ export const OCEAN_THEME: ThemeDefinition = {
     messageActionHover: "oklch(0.45151 0.074407 201.516)",
     codeBackground: "oklch(0.957684 0.002906 253.68)",
     codeForeground: "oklch(0.222003 0.03479 328.979)",
+    searchMatchBackground: "oklch(0.915 0.11 85)",
+    searchMatchForeground: "oklch(0.216164 0.028283 77.423)",
+    searchMatchActiveBackground: "oklch(0.774202 0.151946 74.331)",
+    searchMatchActiveForeground: "oklch(0.216164 0.028283 77.423)",
     sidebar: "oklch(0.939254 0.01193 241.729)",
     sidebarForeground: "oklch(0.222003 0.03479 328.979)",
     sidebarMutedForeground: "oklch(0.517366 0.018944 311.433)",
@@ -610,6 +625,10 @@ export const OCEAN_THEME: ThemeDefinition = {
       messageActionHover: "oklch(0.815308 0.096174 199.862)",
       codeBackground: "oklch(0.29661 0.021883 251.968)",
       codeForeground: "oklch(0.990339 0.008411 325.64)",
+      searchMatchBackground: "oklch(0.55 0.1 85)",
+      searchMatchForeground: "oklch(0.970151 0 0)",
+      searchMatchActiveBackground: "oklch(0.774202 0.151946 74.331)",
+      searchMatchActiveForeground: "oklch(0.216164 0.028283 77.423)",
       sidebar: "oklch(0.290387 0.032043 247.274)",
       sidebarForeground: "oklch(0.990339 0.008411 325.64)",
       sidebarMutedForeground: "oklch(0.69099 0.01395 266.424)",
@@ -677,6 +696,10 @@ export const EMBER_THEME: ThemeDefinition = {
     messageActionHover: "oklch(0.471223 0.145843 24.688)",
     codeBackground: "oklch(0.959965 0.002668 47.512)",
     codeForeground: "oklch(0.222003 0.03479 328.979)",
+    searchMatchBackground: "oklch(0.915 0.11 85)",
+    searchMatchForeground: "oklch(0.216164 0.028283 77.423)",
+    searchMatchActiveBackground: "oklch(0.774202 0.151946 74.331)",
+    searchMatchActiveForeground: "oklch(0.216164 0.028283 77.423)",
     sidebar: "oklch(0.942267 0.01151 50.785)",
     sidebarForeground: "oklch(0.222003 0.03479 328.979)",
     sidebarMutedForeground: "oklch(0.519146 0.019214 343.427)",
@@ -737,6 +760,10 @@ export const EMBER_THEME: ThemeDefinition = {
       messageActionHover: "oklch(0.775116 0.117953 29.014)",
       codeBackground: "oklch(0.299662 0.017229 39.973)",
       codeForeground: "oklch(0.990339 0.008411 325.64)",
+      searchMatchBackground: "oklch(0.55 0.1 85)",
+      searchMatchForeground: "oklch(0.970151 0 0)",
+      searchMatchActiveBackground: "oklch(0.774202 0.151946 74.331)",
+      searchMatchActiveForeground: "oklch(0.216164 0.028283 77.423)",
       sidebar: "oklch(0.293349 0.029554 46.882)",
       sidebarForeground: "oklch(0.990339 0.008411 325.64)",
       sidebarMutedForeground: "oklch(0.691874 0.012538 24.638)",
@@ -804,6 +831,10 @@ export const IRIS_THEME: ThemeDefinition = {
     messageActionHover: "oklch(0.471003 0.16748 340.687)",
     codeBackground: "oklch(0.95997 0.004338 306.542)",
     codeForeground: "oklch(0.222003 0.03479 328.979)",
+    searchMatchBackground: "oklch(0.915 0.11 85)",
+    searchMatchForeground: "oklch(0.216164 0.028283 77.423)",
+    searchMatchActiveBackground: "oklch(0.774202 0.151946 74.331)",
+    searchMatchActiveForeground: "oklch(0.216164 0.028283 77.423)",
     sidebar: "oklch(0.941387 0.014687 300.474)",
     sidebarForeground: "oklch(0.222003 0.03479 328.979)",
     sidebarMutedForeground: "oklch(0.518417 0.023683 320.681)",
@@ -864,6 +895,10 @@ export const IRIS_THEME: ThemeDefinition = {
       messageActionHover: "oklch(0.813537 0.114101 337.23)",
       codeBackground: "oklch(0.281873 0.028308 295.193)",
       codeForeground: "oklch(0.990339 0.008411 325.64)",
+      searchMatchBackground: "oklch(0.55 0.1 85)",
+      searchMatchForeground: "oklch(0.970151 0 0)",
+      searchMatchActiveBackground: "oklch(0.774202 0.151946 74.331)",
+      searchMatchActiveForeground: "oklch(0.216164 0.028283 77.423)",
       sidebar: "oklch(0.266743 0.044689 294.138)",
       sidebarForeground: "oklch(0.990339 0.008411 325.64)",
       sidebarMutedForeground: "oklch(0.668773 0.021522 302.949)",
@@ -883,142 +918,12 @@ export const IRIS_THEME: ThemeDefinition = {
   sidebarArtwork: true,
 };
 
-const OMNI_THEME_LIGHT_COLORS: ThemeColors = {
-  canvas: "oklch(0.974715 0.005132 247.877)",
-  chrome: "oklch(0.959257 0.00687 247.897)",
-  toolbar: "oklch(0.959257 0.00687 247.897)",
-  toolbarForeground: "oklch(0.275201 0.024097 246.247)",
-  toolbarBorder: "oklch(0.899457 0.015707 248.002)",
-  toolbarControl: "oklch(0.984152 0.003413 247.858)",
-  toolbarControlForeground: "oklch(0.318272 0.029919 246.889)",
-  toolbarControlHover: "oklch(0.936794 0.012093 247.956)",
-  surface: "oklch(0.984152 0.003413 247.858)",
-  surfaceRaised: "oklch(1 0 0)",
-  surfaceOverlay: "oklch(1 0 0)",
-  text: "oklch(0.275201 0.024097 246.247)",
-  textMuted: "oklch(0.485623 0.030431 248.454)",
-  border: "oklch(0.899457 0.015707 248.002)",
-  input: "oklch(0.846305 0.019489 248.058)",
-  focus: "oklch(0.536348 0.085364 214.324)",
-  accent: "oklch(0.536348 0.085364 214.324)",
-  accentForeground: "oklch(1 0 0)",
-  secondary: "oklch(0.942539 0.01105 243.657)",
-  secondaryForeground: "oklch(0.3141 0.032192 247.139)",
-  muted: "oklch(0.958507 0.007586 241.664)",
-  mutedForeground: "oklch(0.515795 0.031462 245.089)",
-  placeholder: "oklch(0.54087 0.030372 246.665)",
-  secondaryLabel: "oklch(0.485623 0.030431 248.454)",
-  iconMuted: "oklch(0.485623 0.030431 248.454)",
-  error: "oklch(0.566552 0.176788 19.031)",
-  errorForeground: "oklch(0.463445 0.157152 20.51)",
-  errorSurface: "oklch(0.955489 0.016456 8.169)",
-  warning: "oklch(0.600699 0.136719 63.258)",
-  warningForeground: "oklch(0.481353 0.106314 67.084)",
-  warningSurface: "oklch(0.970226 0.030007 83.635)",
-  update: "oklch(0.494921 0.124372 253.152)",
-  updateForeground: "oklch(0.446328 0.108685 251.659)",
-  updateSurface: "oklch(0.950853 0.01829 250.591)",
-  accentSurface: "oklch(0.932052 0.017489 210.189)",
-  accentSurfaceForeground: "oklch(0.342113 0.050715 215.39)",
-  messageSurface: "oklch(0.942539 0.01105 243.657)",
-  messageForeground: "oklch(0.300529 0.030479 241.415)",
-  messageAction: "oklch(0.488276 0.079413 215.087)",
-  messageActionForeground: "oklch(1 0 0)",
-  messageActionHover: "oklch(0.438617 0.07267 214.85)",
-  codeBackground: "oklch(0.943742 0.008622 247.917)",
-  codeForeground: "oklch(0.307021 0.025736 246.413)",
-  sidebar: "oklch(0.949023 0.009317 242.84)",
-  sidebarForeground: "oklch(0.300529 0.030479 241.415)",
-  sidebarMutedForeground: "oklch(0.540119 0.031124 245.044)",
-  sidebarControlSurface: "oklch(0.917426 0.014586 244.727)",
-  sidebarRowHover: "oklch(0.922758 0.015297 241.781)",
-  sidebarRowActive: "oklch(0.899138 0.020381 238.689)",
-  sidebarRowSelected: "oklch(0.879845 0.026307 231.657)",
-  sidebarBorder: "oklch(0.863371 0.020799 243.453)",
-  terminalBackground: "oklch(0.242972 0.023967 248.842)",
-  terminalForeground: "oklch(0.949366 0.013402 233.746)",
-  terminalCursor: "oklch(0.777537 0.085462 209.069)",
-  terminalSelection: "oklch(0.438789 0.052285 234.782)",
-  terminalScrollbar: "oklch(0.507549 0.035316 235.116)",
-  terminalScrollbarHover: "oklch(0.619206 0.036525 234.511)",
-};
-
-const OMNI_THEME_DARK_COLORS: ThemeColors = {
-  canvas: "oklch(0.219716 0.014003 253.124)",
-  chrome: "oklch(0.240663 0.016096 252.442)",
-  toolbar: "oklch(0.240663 0.016096 252.442)",
-  toolbarForeground: "oklch(0.943742 0.008622 247.917)",
-  toolbarBorder: "oklch(0.354238 0.026297 248.573)",
-  toolbarControl: "oklch(0.292549 0.0207 248.537)",
-  toolbarControlForeground: "oklch(0.943742 0.008622 247.917)",
-  toolbarControlHover: "oklch(0.330596 0.025308 246.316)",
-  surface: "oklch(0.273616 0.021834 254.191)",
-  surfaceRaised: "oklch(0.311779 0.024864 248.632)",
-  surfaceOverlay: "oklch(0.350401 0.026364 248.584)",
-  text: "oklch(0.943742 0.008622 247.917)",
-  textMuted: "oklch(0.724764 0.024634 246.15)",
-  border: "oklch(0.368697 0.026817 246.452)",
-  input: "oklch(0.406625 0.027551 248.506)",
-  focus: "oklch(0.778073 0.083657 208.385)",
-  accent: "oklch(0.778073 0.083657 208.385)",
-  accentForeground: "oklch(0.23803 0.01872 241.944)",
-  secondary: "oklch(0.323586 0.024649 248.594)",
-  secondaryForeground: "oklch(0.943742 0.008622 247.917)",
-  muted: "oklch(0.296203 0.022905 248.606)",
-  mutedForeground: "oklch(0.724764 0.024634 246.15)",
-  placeholder: "oklch(0.717572 0.025423 244.265)",
-  secondaryLabel: "oklch(0.724764 0.024634 246.15)",
-  iconMuted: "oklch(0.698149 0.025593 244.281)",
-  error: "oklch(0.695398 0.163916 16.87)",
-  errorForeground: "oklch(0.797835 0.117217 14.777)",
-  errorSurface: "oklch(0.305508 0.046178 7.23)",
-  warning: "oklch(0.766265 0.130845 69.778)",
-  warningForeground: "oklch(0.887382 0.101149 77.933)",
-  warningSurface: "oklch(0.340242 0.037339 72.616)",
-  update: "oklch(0.754406 0.092211 250.085)",
-  updateForeground: "oklch(0.850082 0.076682 251.089)",
-  updateSurface: "oklch(0.334167 0.048956 251.574)",
-  accentSurface: "oklch(0.360791 0.031607 225.407)",
-  accentSurfaceForeground: "oklch(0.950804 0.029495 204.501)",
-  messageSurface: "oklch(0.336508 0.028982 242.834)",
-  messageForeground: "oklch(0.963479 0.007569 228.853)",
-  messageAction: "oklch(0.820376 0.072244 207.045)",
-  messageActionForeground: "oklch(0.248494 0.019226 232.371)",
-  messageActionHover: "oklch(0.868303 0.061548 205.109)",
-  codeBackground: "oklch(0.259932 0.021281 248.655)",
-  codeForeground: "oklch(0.943742 0.008622 247.917)",
-  sidebar: "oklch(0.259932 0.021281 248.655)",
-  sidebarForeground: "oklch(0.963479 0.007569 228.853)",
-  sidebarMutedForeground: "oklch(0.724764 0.024634 246.15)",
-  sidebarControlSurface: "oklch(0.318073 0.026339 244.278)",
-  sidebarRowHover: "oklch(0.314139 0.02641 244.298)",
-  sidebarRowActive: "oklch(0.348071 0.028775 242.773)",
-  sidebarRowSelected: "oklch(0.371772 0.031752 236.461)",
-  sidebarBorder: "oklch(0.401701 0.027077 244.393)",
-  terminalBackground: "oklch(0.196883 0.01522 248.606)",
-  terminalForeground: "oklch(0.924023 0.016006 233.033)",
-  terminalCursor: "oklch(0.820376 0.072244 207.045)",
-  terminalSelection: "oklch(0.374322 0.041492 231.083)",
-  terminalScrollbar: "oklch(0.4786 0.029317 237.42)",
-  terminalScrollbarHover: "oklch(0.600139 0.034106 234.858)",
-};
-
-/** OmniCode's quiet slate/cyan palette keeps long coding sessions low-contrast without hiding state. */
-export const OMNI_THEME: ThemeDefinition = {
-  id: "omni",
-  label: "OmniCode",
-  appearance: "dark",
-  colors: OMNI_THEME_DARK_COLORS,
-  variants: { light: OMNI_THEME_LIGHT_COLORS },
-};
-
 export const BUILT_IN_THEMES: ReadonlyArray<ThemeDefinition> = [
   T3_CHAT_THEME,
   GROVE_THEME,
   OCEAN_THEME,
   EMBER_THEME,
   IRIS_THEME,
-  OMNI_THEME,
 ];
 
 export function getThemeColorsForAppearance(

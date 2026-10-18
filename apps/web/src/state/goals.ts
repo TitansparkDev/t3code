@@ -13,7 +13,7 @@ import type { EnvironmentId, ProjectId } from "@t3tools/contracts";
 import type { Goal, GoalId, GoalPlanPreview, GoalSettings } from "@t3tools/contracts/goals";
 import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
-import { AsyncResult, Atom } from "effect/unstable/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
 import { useCallback, useEffect, useMemo } from "react";
 
 import { appAtomRegistry } from "../rpc/atomRegistry";

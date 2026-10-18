@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
+import { PlanId } from "./baseSchemas.ts";
 import {
   TaskId,
-  PlanId,
   ClaimToken,
   Task,
   Plan,

@@ -4,15 +4,7 @@ import {
   TERMINAL_AGENT_ACTIVITY_DISPLAY_TTL_MS,
 } from "./agentActivityAggregate.ts";
 import { agentActivityExpiresAt } from "./agentActivityPayloads.ts";
-import { fitNotificationText } from "./notificationText.ts";
 
-export function androidActivityHero(aggregate: RelayAgentActivityAggregateState) {
-  return [...aggregate.activities].sort(
-    (a, b) => activityPhasePriority(a.phase) - activityPhasePriority(b.phase),
-  )[0];
-}
-
-/** Android focuses the priority thread while retaining rows for older clients. */
 export function androidActivityData(aggregate: RelayAgentActivityAggregateState | null) {
   const rows = [...(aggregate?.activities ?? [])].sort(
     (a, b) => activityPhasePriority(a.phase) - activityPhasePriority(b.phase),
@@ -41,8 +33,6 @@ export function androidActivityData(aggregate: RelayAgentActivityAggregateState 
   );
   return {
     active: String(activeCount > 0),
-    // Keep the status bar chip short enough to display alongside the app icon.
-
     activity_chip: activeCount > 0 ? (attentionCount > 0 ? "Review" : "Active") : "",
     activity_title: title,
     activity_phase: hero?.phase ?? "",
@@ -51,7 +41,6 @@ export function androidActivityData(aggregate: RelayAgentActivityAggregateState 
     activity_body: hero
       ? `${hero.status}: ${clean(hero.threadTitle)} · ${clean(hero.projectTitle)}`
       : "",
-    // Separate keys avoid double JSON encoding and preserve each expanded row when bounding the payload.
     ...Object.fromEntries(lines.map((line, index) => [`activity_line_${index}`, line])),
     activity_path: rows[0]?.deepLink ?? "/",
     activity_expires_at: String(expiresAt),
@@ -66,21 +55,10 @@ export function fitFcmData(input: Readonly<Record<string, string>>): Record<stri
     (key) => key.endsWith("_body") || key.endsWith("_title") || key.startsWith("activity_line_"),
   );
   while (encoder.encode(JSON.stringify(data)).length > 3800) {
-    const key = textKeys
-      .filter(
-        (key) =>
-          key !== "alert_body" ||
-          encoder.encode(JSON.stringify({ ...data, alert_body: "…" })).length <= 3800,
-      )
-      .sort((a, b) => encoder.encode(data[b]!).length - encoder.encode(data[a]!).length)[0];
+    const key = textKeys.sort(
+      (a, b) => encoder.encode(data[b]!).length - encoder.encode(data[a]!).length,
+    )[0];
     if (!key) break;
-    if (key === "alert_body") {
-      data[key] = fitNotificationText(
-        data[key]!,
-        (body) => encoder.encode(JSON.stringify({ ...data, alert_body: body })).length <= 3800,
-      );
-      continue;
-    }
     if (data[key]!.length <= 8) {
       textKeys.splice(textKeys.indexOf(key), 1);
       continue;

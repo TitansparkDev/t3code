@@ -3,7 +3,6 @@ import {
   type AntigravityAuthMethod,
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
-  type ProviderOptionSelection,
   type ProviderSendTurnInput,
   type RuntimeMode,
 } from "@t3tools/contracts";
@@ -14,21 +13,22 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
-import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
+import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as EffectAcpErrors from "effect-acp/errors";
-import type * as EffectAcpSchema from "effect-acp/schema";
+import type * as EffectAcpSchema from "effect-acp/compat";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import {
   makeAntigravityStderrHandler,
   makeAntigravityStdoutTransform,
 } from "../antigravityAuthSupport.ts";
-import * as AcpSessionRuntime from "./AcpSessionRuntime.ts";
+import * as AcpSessionRuntime from "@t3tools/provider-acp/server/AcpSessionRuntime";
 import { normalizeAntigravitySessionUpdate } from "./AntigravityProtocol.ts";
 
 export interface AntigravityAcpRuntimeInput extends Omit<
   AcpSessionRuntime.AcpSessionRuntimeOptions,
   | "authMethodId"
+  | "authenticateEagerly"
   | "cancelBehavior"
   | "clientCapabilities"
   | "onStderr"
@@ -36,23 +36,13 @@ export interface AntigravityAcpRuntimeInput extends Omit<
   | "transformSessionUpdate"
   | "transformStdout"
 > {
-  /** Device CLI environment supplied for this provider session. */
   readonly agentDeviceEnvironment?: Readonly<Record<string, string>>;
   readonly childProcessSpawner: ChildProcessSpawner.ChildProcessSpawner["Service"];
   readonly onAuthorizationUrl?: (url: string) => Effect.Effect<void, EffectAcpErrors.AcpError>;
-  /**
-   * Advertise `fs.readTextFile` and `fs.writeTextFile`. The agent then routes
-   * workspace reads and writes through T3, which turns each edit into a
-   * `session/request_permission` with the file content, instead of writing
-   * through its own tools. Chat sessions turn this on. Setup, probe, and text
-   * generation helpers leave it off so they never touch a workspace.
-   */
   readonly clientFileSystem?: boolean;
-  /** ACP `authenticate` method id. Defaults to the personal Google account flow. */
   readonly authMethod?: AntigravityAuthMethod;
 }
 
-/** Normal launches reject browser login; only the auth flow supplies `onAuthorizationUrl`. */
 export const makeAntigravityAcpRuntime = Effect.fn("makeAntigravityAcpRuntime")(function* (
   input: AntigravityAcpRuntimeInput,
 ): Effect.fn.Return<
@@ -64,13 +54,9 @@ export const makeAntigravityAcpRuntime = Effect.fn("makeAntigravityAcpRuntime")(
     AcpSessionRuntime.layer({
       ...input,
       authMethodId: input.authMethod ?? "oauth-personal",
+      authenticateEagerly: true,
       resumeMethod: "resume",
-      // Antigravity's native ACP process does not consistently settle the
-      // prompt response after session/cancel. Waiting for that response makes
-      // a normal Stop turn into a 15-second transport error and can retire a
-      // healthy login. Interrupt T3's request fiber immediately; the native
-      // process still receives the best-effort ACP cancel notification.
-      cancelBehavior: "interrupt",
+      cancelBehavior: "wait-for-prompt",
       clientCapabilities: {
         fs: {
           readTextFile: input.clientFileSystem === true,
@@ -106,133 +92,26 @@ export function antigravityPermissionMode(runtimeMode: RuntimeMode): string {
   }
 }
 
-export function isInternalAntigravityModel(value: string, name?: string): boolean {
-  const slug = value.trim().toLowerCase();
-  const displayName = name?.trim().toLowerCase() ?? "";
-  if (!slug) return true;
-  if (/^internal[-_:]|[-_:]internal(?:[-_:]|$)|^internal$/i.test(slug)) return true;
-  if (/^experimental[-_:]internal/i.test(slug)) return true;
-  if (/\[internal\]|\(internal\)/i.test(displayName)) return true;
-  return false;
-}
-
-export function antigravityModelOptions(
+function antigravityModelOptions(
   configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption>,
 ) {
   const model = configOptions.find((option) => option.id === "model");
   if (model?.type !== "select") return [];
-  const entries = model.options.flatMap((entry) => ("value" in entry ? [entry] : entry.options));
-  return entries.filter((entry) => !isInternalAntigravityModel(entry.value, entry.name));
+  return model.options.flatMap((entry) => ("value" in entry ? [entry] : entry.options));
 }
 
-function extractOptionValue(
-  options: ReadonlyArray<ProviderOptionSelection> | Readonly<Record<string, unknown>> | undefined,
-  key: string,
-): string | boolean | undefined {
-  if (!options) return undefined;
-  if (Array.isArray(options)) {
-    const found = options.find((item) => item.id === key);
-    return found?.value;
-  }
-  return (options as Record<string, unknown>)[key] as string | boolean | undefined;
-}
-
-function extractEffort(
-  options: ReadonlyArray<ProviderOptionSelection> | Readonly<Record<string, unknown>> | undefined,
-): string | undefined {
-  const effort =
-    extractOptionValue(options, "effort") ??
-    extractOptionValue(options, "thought_level") ??
-    extractOptionValue(options, "reasoningEffort") ??
-    extractOptionValue(options, "reasoning") ??
-    extractOptionValue(options, "thinking");
-  return typeof effort === "string" ? effort.trim().toLowerCase() : undefined;
-}
-
-/**
- * Resolves the model a turn should run on. A saved selection is reapplied
- * as-is. The provider default alias resolves to `defaultModel` when the
- * account offers it, so T3 can pick a newer model than the one Google marks
- * current. Otherwise the agent's current selection stands.
- */
-export function resolveAntigravityModel(input: {
+function resolveAntigravityModel(input: {
   readonly configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption>;
   readonly model: string | null | undefined;
-  readonly options?:
-    | ReadonlyArray<ProviderOptionSelection>
-    | Readonly<Record<string, unknown>>
-    | undefined;
   readonly defaultModel?: string | undefined;
 }): string | undefined {
   const modelConfig = input.configOptions.find((option) => option.id === "model");
   const current = modelConfig?.type === "select" ? modelConfig.currentValue : undefined;
-  const available = antigravityModelOptions(input.configOptions);
-
-  let candidate = input.model?.trim();
-  if (!candidate || candidate === ANTIGRAVITY_DEFAULT_MODEL) {
-    if (
-      input.defaultModel &&
-      (available.length === 0 || available.some((opt) => opt.value === input.defaultModel))
-    ) {
-      candidate = input.defaultModel;
-    } else if (current) {
-      return current;
-    } else {
-      candidate = "gemini-3.8-flash";
-    }
-  }
-
-  // Handle Gemini 3.8 Flash + effort mapping
-  if (
-    candidate === "gemini-3.8-flash" ||
-    candidate === "gemini-3.8-flash-high" ||
-    candidate === "gemini-3.8-flash-medium" ||
-    candidate === "gemini-3.8-flash-low"
-  ) {
-    let effort = extractEffort(input.options);
-    if (!effort) {
-      if (candidate === "gemini-3.8-flash-low") effort = "low";
-      else if (candidate === "gemini-3.8-flash-medium") effort = "medium";
-      else effort = "high";
-    }
-    const targetSlug = `gemini-3.8-flash-${effort}`;
-    if (available.some((opt) => opt.value === targetSlug)) {
-      return targetSlug;
-    }
-    if (available.some((opt) => opt.value === "gemini-3.8-flash")) {
-      return "gemini-3.8-flash";
-    }
-    const anyFlash38 = available.find((opt) => opt.value.startsWith("gemini-3.8-flash"));
-    if (anyFlash38) {
-      return anyFlash38.value;
-    }
-    return targetSlug;
-  }
-
-  if (available.some((opt) => opt.value === candidate)) {
-    return candidate;
-  }
-
-  const aliases: Record<string, string[]> = {
-    "claude-opus-4-6": ["claude-opus-4-6-thinking"],
-    "claude-opus-4-6-thinking": ["claude-opus-4-6"],
-    "claude-sonnet-4-6": ["claude-sonnet-4-6-thinking"],
-    "claude-sonnet-4-6-thinking": ["claude-sonnet-4-6"],
-    "gpt-oss-120b": ["gpt-oss-120b-medium"],
-    "gpt-oss-120b-medium": ["gpt-oss-120b"],
-    "gemini-3-pro": ["gemini-3.0-pro"],
-    "gemini-3.0-pro": ["gemini-3-pro"],
-    "gemini-3.1-pro": ["gemini-pro-agent", "gemini-3.1-pro-high"],
-    "gemini-pro-agent": ["gemini-3.1-pro", "gemini-3.1-pro-high"],
-  };
-  const candAliases = aliases[candidate] ?? [];
-  for (const alias of candAliases) {
-    if (available.some((opt) => opt.value === alias)) {
-      return alias;
-    }
-  }
-
-  return candidate;
+  if (input.model && input.model !== ANTIGRAVITY_DEFAULT_MODEL) return input.model;
+  const options = antigravityModelOptions(input.configOptions);
+  return input.defaultModel && options.some((option) => option.value === input.defaultModel)
+    ? input.defaultModel
+    : current;
 }
 
 /** Never replace a saved selection with the default returned by a cold resume. */
@@ -241,18 +120,8 @@ export const applyAntigravityAcpModelSelection = Effect.fn("applyAntigravityAcpM
     readonly runtime: Pick<
       AcpSessionRuntime.AcpSessionRuntime["Service"],
       "getConfigOptions" | "setModel"
-    > & {
-      readonly setConfigOption?: (
-        configId: string,
-        value: string | boolean,
-      ) => Effect.Effect<unknown, EffectAcpErrors.AcpError>;
-    };
+    >;
     readonly model: string | null | undefined;
-    readonly options?:
-      | ReadonlyArray<ProviderOptionSelection>
-      | Readonly<Record<string, unknown>>
-      | undefined;
-    /** Model to select for the provider default alias. See `resolveAntigravityModel`. */
     readonly defaultModel?: string | undefined;
     readonly mapError: (cause: EffectAcpErrors.AcpError) => E;
   }): Effect.fn.Return<string | undefined, E> {
@@ -262,65 +131,26 @@ export const applyAntigravityAcpModelSelection = Effect.fn("applyAntigravityAcpM
     const resolved = resolveAntigravityModel({
       configOptions,
       model: input.model,
-      options: input.options,
       defaultModel: input.defaultModel,
     });
-    // The default alias never sends an internal ID. It selects the manifest
-    // default when that differs from the agent's current model, and otherwise
-    // leaves the agent's choice alone.
     const explicit = Boolean(input.model) && input.model !== ANTIGRAVITY_DEFAULT_MODEL;
-    if (resolved !== undefined && (explicit || resolved !== current)) {
-      const options = antigravityModelOptions(configOptions);
-      if (options.length > 0 && !options.some((option) => option.value === resolved)) {
-        return yield* Effect.fail(
-          input.mapError(
-            EffectAcpErrors.AcpRequestError.invalidParams(
-              `Antigravity model '${input.model ?? resolved}' is unavailable for this Google account. Select an available model.`,
-            ),
+    if (resolved === undefined || (!explicit && resolved === current)) return current;
+    const options = antigravityModelOptions(configOptions);
+    if (!options.some((option) => option.value === resolved)) {
+      return yield* Effect.fail(
+        input.mapError(
+          EffectAcpErrors.AcpRequestError.invalidParams(
+            `Antigravity model '${resolved}' is unavailable for this Google account. Select an available model.`,
           ),
-        );
-      }
-      yield* input.runtime.setModel(resolved).pipe(Effect.mapError(input.mapError));
+        ),
+      );
     }
-
-    if (input.options && input.runtime.setConfigOption) {
-      const optionEntries: Array<[string, unknown]> = Array.isArray(input.options)
-        ? input.options.map((opt) => [opt.id, opt.value])
-        : Object.entries(input.options);
-
-      for (const [key, val] of optionEntries) {
-        if (typeof val !== "string" && typeof val !== "boolean") continue;
-        const optionConfig = configOptions.find(
-          (opt) =>
-            opt.id === key ||
-            opt.category === key ||
-            ((key === "effort" ||
-              key === "thought_level" ||
-              key === "reasoning" ||
-              key === "reasoningEffort" ||
-              key === "thinking") &&
-              (opt.id === "thought_level" ||
-                opt.category === "thought_level" ||
-                opt.id === "thinking" ||
-                opt.id === "reasoning" ||
-                opt.id === "effort")),
-        );
-        if (optionConfig) {
-          yield* input.runtime
-            .setConfigOption(optionConfig.id, val)
-            .pipe(Effect.mapError(input.mapError));
-        }
-      }
-    }
-
-    return input.model && input.model !== ANTIGRAVITY_DEFAULT_MODEL
-      ? input.model
-      : (resolved ?? current);
+    yield* input.runtime.setModel(resolved).pipe(Effect.mapError(input.mapError));
+    return resolved;
   },
 );
 
 const IMAGE_MIME_TYPES = new Set(["image/bmp", "image/jpeg", "image/png", "image/webp"]);
-// Formats the bundled SDK's Audio type accepts. Anything else is rejected up front.
 const AUDIO_MIME_TYPES = new Set([
   "audio/aac",
   "audio/flac",
@@ -397,11 +227,6 @@ const TEXT_FILE_EXTENSIONS = new Set([
 const ANTIGRAVITY_MAX_TEXT_ATTACHMENT_BYTES = 1024 * 1024;
 const MAX_TOTAL_ATTACHMENT_BYTES = PROVIDER_SEND_TURN_MAX_FILE_BYTES;
 
-/**
- * Sends supported uploads as native ACP content. Other files, and native
- * candidates over their limits, reach the agent through the saved path
- * ProviderService puts in the text block.
- */
 export const buildAntigravityPrompt = Effect.fn("buildAntigravityPrompt")(function* (input: {
   readonly input: ProviderSendTurnInput["input"];
   readonly attachments: ProviderSendTurnInput["attachments"];

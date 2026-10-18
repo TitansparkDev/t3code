@@ -22,10 +22,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isElectron } from "../../env";
 import { deriveProviderInstanceEntries } from "../../providerInstances";
 import { useProjects } from "../../state/entities";
-import { useEnvironments } from "../../state/environments";
+import { useEnvironmentProviders, useEnvironments } from "../../state/environments";
 import { useGoals } from "../../state/goals";
 import { runtimeModeConfig, runtimeModeOptions } from "../chat/runtimeModeConfig";
-import { ProviderOptionsPicker } from "../settings/ScheduledTasksSettings";
+import { ProviderOptionsPicker } from "./ProviderOptionsPicker";
 import { GoalPlanPanel } from "./GoalPlanPanel";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
@@ -106,13 +106,13 @@ export function GoalSetupPage({
   const project = projects.find(
     (candidate) => candidate.environmentId === environmentId && candidate.id === projectId,
   );
+  const providersByEnvironment = useEnvironmentProviders();
   const instances = useMemo(
     () =>
       deriveProviderInstanceEntries(
-        environments.find((candidate) => candidate.environmentId === environmentId)?.serverConfig
-          ?.providers ?? [],
+        environmentId ? (providersByEnvironment.get(environmentId) ?? []) : [],
       ),
-    [environments, environmentId],
+    [providersByEnvironment, environmentId],
   );
   const [form, setForm] = useState<GoalSetupForm>(() =>
     goal

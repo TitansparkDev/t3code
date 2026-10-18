@@ -4,14 +4,13 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import * as Headers from "effect/unstable/http/Headers";
-import * as HttpClient from "effect/unstable/http/HttpClient";
-import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
-import { ApnsEnvironment as ApnsEnvironmentSchema, type ApnsCredentials } from "../Config.ts";
+import * as Headers from "effect/http/Headers";
+import * as HttpClient from "effect/http/HttpClient";
+import * as HttpClientRequest from "effect/http/HttpClientRequest";
+import { ApnsEnvironment, type ApnsCredentials } from "../Config.ts";
 import type { ApnsLiveActivityAlert, ApnsNotificationPayload } from "./apnsDeliveryJobs.ts";
 import type { ApnsJwtEncodingError, ApnsJwtSigningError } from "./apnsJwt.ts";
 import * as ApnsProviderTokens from "./ApnsProviderTokens.ts";
-import { fitNotificationText, jsonByteLength } from "./notificationText.ts";
 
 export { ApnsJwtEncodingError, ApnsJwtSigningError } from "./apnsJwt.ts";
 
@@ -19,9 +18,7 @@ const LIVE_ACTIVITY_NAME = "AgentActivity";
 // Bound sending and reading separately so neither stage can hold a batch open.
 const APNS_HTTP_STAGE_TIMEOUT = "10 seconds";
 // Updates only flow on domain events, so a healthy agent can be silent for
-// minutes (long tool calls, pending approvals). Two minutes made iOS dim
-// perfectly healthy activities; ten minutes still bounds how long a dead
-// environment can look alive.
+// minutes (long tool calls, pending approvals).
 const STALE_AFTER_SECONDS = 10 * 60;
 const DISMISS_AFTER_SECONDS = 5 * 60;
 // An end without a final content-state leaves whatever the card last showed
@@ -59,7 +56,7 @@ export class ApnsHttpRequestError extends Schema.TaggedError<ApnsHttpRequestErro
   {
     requestKind: ApnsRequestKindSchema,
     event: Schema.NullOr(ApnsLiveActivityEventSchema),
-    environment: ApnsEnvironmentSchema,
+    environment: ApnsEnvironment,
     bundleId: Schema.String,
     tokenSuffix: Schema.String,
     stage: Schema.Literals(["send", "read-response"]),
@@ -82,33 +79,12 @@ const decodeApnsErrorResponseJson = Schema.decodeUnknownOption(
   ),
 );
 function contentState(state: RelayAgentActivityAggregateState) {
-  const activities = state.activities.map(({ completionBody: _body, ...row }) => row);
-  const content = () => ({
-    name: LIVE_ACTIVITY_NAME,
-    props: JSON.stringify({ ...state, activities }),
-  });
-  while (activities.length > 1 && jsonByteLength(content()) > 3000) activities.pop();
-  return content();
-}
-
-function fitApnsPayload<T extends { aps: { alert?: { title: string; body: string } } }>(
-  payload: T,
-): T {
-  const alert = payload.aps.alert;
-  if (!alert) return payload;
-  const body = fitNotificationText(
-    alert.body,
-    (candidate) =>
-      jsonByteLength({
-        ...payload,
-        aps: { ...payload.aps, alert: { ...alert, body: candidate } },
-      }) <= 4096,
-  );
   return {
-    ...payload,
-    aps: { ...payload.aps, alert: { ...alert, body } },
+    name: LIVE_ACTIVITY_NAME,
+    props: JSON.stringify(state),
   };
 }
+
 interface LiveActivityRequestBase {
   readonly token: string;
   readonly nowEpochSeconds: number;
@@ -147,7 +123,7 @@ function makeLiveActivityRequest(input: MakeLiveActivityRequestInput): ApnsLiveA
       token: input.token,
       event: input.event,
       priority: "10",
-      payload: fitApnsPayload({
+      payload: {
         aps: {
           timestamp,
           event: "end",
@@ -156,7 +132,7 @@ function makeLiveActivityRequest(input: MakeLiveActivityRequestInput): ApnsLiveA
           "dismissal-date":
             timestamp + (input.state ? DISMISS_AFTER_SECONDS : CONTENTLESS_DISMISS_AFTER_SECONDS),
         },
-      }),
+      },
     };
   }
 
@@ -164,10 +140,8 @@ function makeLiveActivityRequest(input: MakeLiveActivityRequestInput): ApnsLiveA
   return {
     token: input.token,
     event: input.event,
-    // Alerting updates must land immediately; routine redraws stay at the
-    // budget-friendly low priority.
     priority: input.event === "update" && !input.alert ? "5" : "10",
-    payload: fitApnsPayload({
+    payload: {
       aps: {
         timestamp,
         event: input.event,
@@ -186,7 +160,7 @@ function makeLiveActivityRequest(input: MakeLiveActivityRequestInput): ApnsLiveA
         "content-state": contentState(state),
         "stale-date": timestamp + STALE_AFTER_SECONDS,
       },
-    }),
+    },
   };
 }
 
@@ -203,21 +177,19 @@ function makePushNotificationRequest(input: {
   return {
     token: input.token,
     priority: "10",
-    payload: fitApnsPayload({
+    payload: {
       aps: {
         alert: {
           title: input.notification.title,
           body: input.notification.body,
         },
         sound: "default",
-        // Notification Center stacks alerts by thread so a chatty thread does
-        // not bury the others; a grouped alert for several threads stays alone.
         "thread-id": notificationThreadId(input.notification),
       },
       environmentId: input.notification.environmentId,
       threadId: input.notification.threadId,
       deepLink: input.notification.deepLink,
-    }),
+    },
   };
 }
 

@@ -22,9 +22,6 @@ import {
   ProjectId,
   ThreadId,
   ProviderInstanceId,
-  type OrchestrationCommand,
-  type OrchestrationEvent,
-  type OrchestrationThread,
   type ServerProvider,
 } from "@t3tools/contracts";
 import type { Goal, GoalSettings } from "@t3tools/contracts/goals";
@@ -36,7 +33,6 @@ import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
-import * as Stream from "effect/Stream";
 import {
   openBroker,
   openQueueDatabase,
@@ -48,9 +44,13 @@ import {
 } from "../../../../packages/agent-queue-core/test/harness/gitHarness.ts";
 
 import * as ServerConfig from "../config.ts";
-import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
-import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
-import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
+import { ProviderRegistry } from "../provider/ProviderRegistry.ts";
+import {
+  layerFromLegacyHarness,
+  type OrchestrationCommand,
+  type OrchestrationEvent,
+  type OrchestrationThread,
+} from "./GoalThreads.testkit.ts";
 import {
   AgentQueueError,
   AgentQueueService,
@@ -238,32 +238,25 @@ const makeFlow = (
           release: () => Effect.void,
         }),
       ),
-      Layer.mock(OrchestrationEngineService)({
+      layerFromLegacyHarness({
         dispatch: (command) => {
           if (command.type === "thread.create")
             selections.set(command.threadId, command.modelSelection);
-          return Queue.offer(commands, command).pipe(Effect.as({ sequence: 1 }));
+          return Queue.offer(commands, command);
         },
-        streamDomainEvents: Stream.fromSubscription(subscription),
-      }),
-      Layer.mock(ProviderRegistry)({ getProviders: Ref.get(providers) }),
-      Layer.mock(ProjectionSnapshotQuery)({
-        getProjectShells: (ids) =>
-          Effect.succeed(
-            (ids ?? []).includes(PROJECT)
-              ? [{ id: PROJECT, workspaceRoot: repo.rootDir } as never]
-              : [],
-          ),
-        getThreadShellById: (threadId) =>
+        events: subscription,
+        detail: (threadId) => Effect.succeed(Option.some(thread(threadId))),
+        shell: (threadId) =>
           script(threadId).livenessReadFails
             ? Effect.die("liveness unavailable")
             : Effect.succeed(
                 liveness.has(threadId)
-                  ? Option.some({ backgroundLiveness: liveness.get(threadId) } as never)
+                  ? Option.some({ backgroundLiveness: liveness.get(threadId) })
                   : Option.none(),
               ),
-        getThreadDetailById: (threadId) => Effect.succeed(Option.some(thread(threadId))),
+        projectRoot: (projectId) => (projectId === PROJECT ? repo.rootDir : undefined),
       }),
+      Layer.mock(ProviderRegistry)({ getProviders: Ref.get(providers) }),
     ).pipe(
       Layer.provideMerge(
         Layer.fresh(ServerConfig.layerTest(repo.rootDir, { prefix: "t3code-goals-flow-" })),

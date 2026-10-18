@@ -15,7 +15,8 @@
 import * as Schema from "effect/Schema";
 
 import { IsoDateTime, ProjectId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
-import { ModelSelection, RuntimeMode } from "./orchestration.ts";
+import { ModelSelection } from "./modelSelection.ts";
+import { RuntimeMode } from "./providerPolicy.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 
 export const GoalId = Schema.String.pipe(Schema.brand("GoalId"));

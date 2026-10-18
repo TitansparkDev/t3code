@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 
 import { isElectron } from "../../env";
-import { useEnvironments } from "../../state/environments";
+import { useEnvironmentProviders, useEnvironments } from "../../state/environments";
 import { useGoals } from "../../state/goals";
 import { Button } from "../ui/button";
 import { toastManager } from "../ui/toast";
@@ -193,12 +193,12 @@ const ADD_AGENTS_COUNT = 3;
 
 export function GoalsPage() {
   const { environments: presentations } = useEnvironments();
+  const providersByEnvironment = useEnvironmentProviders();
   const { environments, stop, restart, addAgents, remove } = useGoals();
   const nameFor = (environmentId: EnvironmentId) => (instanceId: string) =>
-    presentations
-      .find((candidate) => candidate.environmentId === environmentId)
-      ?.serverConfig?.providers.find((provider) => provider.instanceId === instanceId)
-      ?.displayName ?? instanceId;
+    providersByEnvironment
+      .get(environmentId)
+      ?.find((provider) => provider.instanceId === instanceId)?.displayName ?? instanceId;
   const labelFor = (environmentId: EnvironmentId) =>
     presentations.find((candidate) => candidate.environmentId === environmentId)?.label ??
     "Environment";

@@ -18,11 +18,6 @@ import { AppState } from "react-native";
 
 import * as MobileStorage from "../persistence/mobile-storage";
 import {
-  configureAndroidBackgroundConnection,
-  shouldEnableAndroidBackgroundConnection,
-  subscribeAndroidBackgroundConnectionWake,
-} from "./android-background";
-import {
   observeMobileBackgroundActivitySubscription,
   onRetainedMobileBackgroundScopesChange,
   retainedMobileBackgroundScopes,
@@ -41,16 +36,16 @@ function normalizeAppState(
   return "unknown";
 }
 
-export const mobileBackgroundActivityObserverLayer = Layer.succeed(
+export const layerObserver = Layer.succeed(
   EnvironmentRpcSubscriptionObserver,
   EnvironmentRpcSubscriptionObserver.of({
     observe: observeMobileBackgroundActivitySubscription,
   }),
 );
 
-export const mobileBackgroundActivityReporterLayer = Layer.effectDiscard(
+export const layerReporter = Layer.effectDiscard(
   Effect.gen(function* () {
-    const registry = yield* EnvironmentRegistry;
+    const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
     const storage = yield* MobileStorage.MobileStorage;
     const clientId = yield* storage.loadOrCreateAgentAwarenessDeviceId.pipe(
       Effect.map((deviceId) => `mobile-${deviceId}`),
@@ -59,22 +54,11 @@ export const mobileBackgroundActivityReporterLayer = Layer.effectDiscard(
     const reportRequests = yield* Queue.sliding<void>(1);
     const requestReport = () => Queue.offerUnsafe(reportRequests, undefined);
     let appState = AppState.currentState;
-    // Null forces the first report to reconcile a service left behind by a
-    // previous process, such as after a device restart or a cold start.
-    let backgroundServiceEnabled: boolean | null = null;
 
     const report = Effect.gen(function* () {
       const observedAtMs = yield* Clock.currentTimeMillis;
       const active = appState === "active";
       const entries = yield* SubscriptionRef.get(registry.entries);
-      const shouldEnableBackgroundService = shouldEnableAndroidBackgroundConnection(
-        normalizeAppState(appState),
-        entries.size,
-      );
-      if (shouldEnableBackgroundService !== backgroundServiceEnabled) {
-        backgroundServiceEnabled = shouldEnableBackgroundService;
-        configureAndroidBackgroundConnection(shouldEnableBackgroundService);
-      }
       yield* Effect.forEach(
         entries.keys(),
         (environmentId) =>
@@ -109,18 +93,12 @@ export const mobileBackgroundActivityReporterLayer = Layer.effectDiscard(
           appState = nextState;
           requestReport();
         });
-        const removeNativeWakeListener = subscribeAndroidBackgroundConnectionWake(requestReport);
-        return { removeNativeWakeListener, removeScopeListener, subscription };
+        return { removeScopeListener, subscription };
       }),
-      ({ removeNativeWakeListener, removeScopeListener, subscription }) =>
+      ({ removeScopeListener, subscription }) =>
         Effect.sync(() => {
-          removeNativeWakeListener();
           removeScopeListener();
           subscription.remove();
-          if (backgroundServiceEnabled !== false) {
-            backgroundServiceEnabled = false;
-            configureAndroidBackgroundConnection(false);
-          }
         }),
     );
     yield* SubscriptionRef.changes(registry.entries).pipe(

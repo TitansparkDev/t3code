@@ -10,7 +10,6 @@ interface ImportMetaEnv {
   readonly VITE_CLERK_PUBLISHABLE_KEY: string;
   readonly VITE_CLERK_JWT_TEMPLATE: string;
   readonly VITE_CLERK_CLI_OAUTH_CLIENT_ID: string;
-  readonly VITE_T3CODE_DESKTOP_UPDATE_REPOSITORY: string;
   readonly VITE_RELAY_OTLP_TRACES_URL: string;
   readonly VITE_RELAY_OTLP_TRACES_DATASET: string;
   readonly VITE_RELAY_OTLP_TRACES_TOKEN: string;

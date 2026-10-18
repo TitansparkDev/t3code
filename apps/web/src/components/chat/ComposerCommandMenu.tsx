@@ -1,5 +1,5 @@
+import { formatProviderSkillDisplayName } from "@t3tools/shared/inlineSkills";
 import {
-  formatProviderSkillDisplayName,
   resolveProviderSkillSourceKind,
   type ProviderSkillSourceKind,
 } from "@t3tools/client-runtime/providerSkills";
@@ -7,12 +7,14 @@ import {
   type ProjectEntry,
   type ProviderDriverKind,
   type PullRequestContextMetadata,
+  type ScopedThreadRef,
   type ServerProviderSkill,
   type ServerProviderSlashCommand,
 } from "@t3tools/contracts";
 import {
   BlocksIcon,
   FolderIcon,
+  MessagesSquareIcon,
   PackageIcon,
   SettingsIcon,
   UserRoundIcon,
@@ -66,6 +68,13 @@ export type ComposerCommandItem =
       pullRequest: PullRequestContextMetadata;
       label: string;
       description: string;
+    }
+  | {
+      id: string;
+      type: "thread";
+      thread: ScopedThreadRef;
+      label: string;
+      description: string;
     };
 
 export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
@@ -101,7 +110,7 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
     >
       <ComposerBanner.Surface
         ref={listRef}
-        className="flex min-h-0 w-full flex-col overflow-hidden pb-(--chat-composer-attachment-overlap) **:data-[slot=scroll-area-scrollbar]:data-[orientation=vertical]:my-4"
+        className="flex min-h-0 w-full flex-col overflow-hidden pb-(--chat-composer-attachment-overlap) **:data-[slot=command-item]:rounded-lg **:data-[slot=scroll-area-scrollbar]:data-[orientation=vertical]:my-4"
         data-composer-command-drawer="true"
       >
         {props.items.length > 0 ? (
@@ -161,8 +170,6 @@ const ComposerCommandMenuItem = memo(function ComposerCommandMenuItem(props: {
     props.item.type === "skill" ? resolveProviderSkillSourceKind(props.item.skill) : null;
   const isSlashSkill =
     props.triggerKind === "slash-command" && props.item.type === "skill" ? props.item.skill : null;
-  const providerCommand = props.item.type === "provider-slash-command" ? props.item.command : null;
-  const providerCommandUnavailable = providerCommand?.support === "unsupported";
   const pullRequestPresentation =
     props.item.type === "pull-request" ? resolvePullRequestState(props.item.pullRequest) : null;
 
@@ -171,11 +178,8 @@ const ComposerCommandMenuItem = memo(function ComposerCommandMenuItem(props: {
       render={<div id={props.optionId} />}
       aria-selected={props.isActive}
       value={props.item.id}
-      disabled={providerCommandUnavailable}
-      title={providerCommand?.supportNote ?? providerCommand?.sideEffects}
       data-composer-item-id={props.item.id}
       active={props.isActive}
-      className={providerCommandUnavailable ? "cursor-not-allowed opacity-55" : undefined}
       onMouseMove={() => {
         if (!props.isActive) props.onHighlight(props.item.id);
       }}
@@ -183,7 +187,6 @@ const ComposerCommandMenuItem = memo(function ComposerCommandMenuItem(props: {
         event.preventDefault();
       }}
       onClick={() => {
-        if (providerCommandUnavailable) return;
         props.onSelect(props.item);
       }}
     >
@@ -193,6 +196,9 @@ const ComposerCommandMenuItem = memo(function ComposerCommandMenuItem(props: {
           kind={props.item.pathKind}
           theme={props.resolvedTheme}
         />
+      ) : null}
+      {props.item.type === "thread" ? (
+        <MessagesSquareIcon aria-hidden="true" className="size-4 shrink-0 text-secondary-label" />
       ) : null}
       {pullRequestPresentation ? (
         <pullRequestPresentation.Icon
@@ -220,11 +226,6 @@ const ComposerCommandMenuItem = memo(function ComposerCommandMenuItem(props: {
             kind={skillSourceKind}
             showSkillSuffix={props.triggerKind === "skill"}
           />
-        ) : null}
-        {providerCommandUnavailable ? (
-          <Badge className="ms-auto" variant="secondary">
-            Unsupported
-          </Badge>
         ) : null}
       </span>
     </CommandItem>

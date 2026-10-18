@@ -45,9 +45,9 @@ export function HostCapacityChip() {
   const workingAgents = useThreadShells().filter(
     (thread) =>
       thread.environmentId === environmentId &&
-      (thread.session?.activeTurnId != null ||
-        thread.session?.status === "starting" ||
-        thread.session?.status === "running"),
+      (thread.source.activeRunId !== null ||
+        thread.source.status === "starting" ||
+        thread.source.status === "running"),
   ).length;
 
   // A start or finish changes memory soon after; the second read catches the process settling.

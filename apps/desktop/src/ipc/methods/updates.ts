@@ -60,13 +60,3 @@ export const checkForUpdate = DesktopIpc.makeIpcMethod({
     return yield* updates.check("web-ui");
   }),
 });
-
-export const setAgentActivity = DesktopIpc.makeIpcMethod({
-  channel: IpcChannels.UPDATE_AGENT_ACTIVITY_CHANNEL,
-  payload: Schema.Boolean,
-  result: Schema.Void,
-  handler: Effect.fn("desktop.ipc.updates.setAgentActivity")(function* (active) {
-    const updates = yield* DesktopUpdates.DesktopUpdates;
-    yield* updates.setAgentActivity(active);
-  }),
-});

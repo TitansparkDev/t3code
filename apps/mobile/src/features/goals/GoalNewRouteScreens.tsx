@@ -3,9 +3,9 @@ import type { EnvironmentId, ProjectId } from "@t3tools/contracts";
 import { View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { AppText as Text } from "../../components/AppText";
-import { MaterialButton } from "../../components/MaterialButton";
-import { ScreenScrollView as ScrollView } from "../../components/ScreenScrollView";
+import { AppText as Text } from "../../components/ui/AppText";
+import { Button } from "../../components/ui/Button";
+import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
 import { useProjects } from "../../state/entities";
 import { SettingsScreen } from "../settings/components/SettingsScreen";
 import { CreateGoalScreen } from "./GoalSetupRouteScreen";
@@ -31,7 +31,7 @@ export function GoalProjectRouteScreen() {
           </View>
         ) : (
           projects.map((project) => (
-            <MaterialButton
+            <Button
               fullWidth
               key={`${project.environmentId}:${project.id}`}
               label={project.title}

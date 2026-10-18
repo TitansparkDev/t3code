@@ -1,14 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
-import {
-  EventId,
-  ProjectId,
-  ProviderInstanceId,
-  type OrchestrationCommand,
-  type OrchestrationEvent,
-  type OrchestrationThread,
-  type ServerProvider,
-} from "@t3tools/contracts";
+import { EventId, ProjectId, ProviderInstanceId, type ServerProvider } from "@t3tools/contracts";
 import type { GoalSettings } from "@t3tools/contracts/goals";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -16,13 +8,16 @@ import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
-import * as Stream from "effect/Stream";
 import { TestClock } from "effect/testing";
 
 import * as ServerConfig from "../config.ts";
-import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
-import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
-import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ProviderRegistry } from "../provider/ProviderRegistry.ts";
+import {
+  layerFromLegacyHarness,
+  type OrchestrationCommand,
+  type OrchestrationEvent,
+  type OrchestrationThread,
+} from "./GoalThreads.testkit.ts";
 import { GoalBeads, GoalBeadsError, summarizeBeads } from "./GoalBeads.ts";
 import * as GoalService from "./GoalService.ts";
 import * as GoalStore from "./GoalStore.ts";
@@ -126,29 +121,15 @@ const makeHarnessWith = (spacing: number) =>
       ),
       Layer.provideMerge(
         Layer.mergeAll(
-          Layer.mock(OrchestrationEngineService)({
-            dispatch: (command) => Queue.offer(commands, command).pipe(Effect.as({ sequence: 1 })),
-            streamDomainEvents: Stream.fromSubscription(subscription),
+          layerFromLegacyHarness({
+            dispatch: (command) => Queue.offer(commands, command),
+            events: subscription,
+            detail: () =>
+              Ref.get(threadState).pipe(Effect.map((state) => Option.some(thread(state)))),
+            shell: () => Effect.succeed(Option.none()),
+            projectRoot: (projectId) => (projectId === PROJECT ? "/work" : undefined),
           }),
           Layer.mock(ProviderRegistry)({ getProviders: Ref.get(providers) }),
-          Layer.mock(ProjectionSnapshotQuery)({
-            getProjectShells: (ids) =>
-              Effect.succeed(
-                (ids ?? []).includes(PROJECT)
-                  ? [{ id: PROJECT, workspaceRoot: "/work" } as never]
-                  : [],
-              ),
-            getThreadShellById: () =>
-              Ref.get(hasResume).pipe(
-                Effect.map((resume) =>
-                  Option.some({
-                    usageLimitResume: resume ? { nextAttemptAt: null } : null,
-                  } as never),
-                ),
-              ),
-            getThreadDetailById: () =>
-              Ref.get(threadState).pipe(Effect.map((state) => Option.some(thread(state)))),
-          }),
           Layer.fresh(ServerConfig.layerTest(process.cwd(), { prefix: "t3code-goals-test-" })),
         ),
       ),
@@ -416,13 +397,16 @@ it.layer(NodeServices.layer)("GoalService", (it) => {
           status: "rate-limited",
           activeTurnId: null,
           lastErrorClass: "usage_limit",
-          retryAt: "2099-01-01T00:00:00.000Z",
+          retryAt: "1970-01-01T01:00:00.000Z",
         });
-        yield* harness.waitFor("thread.usage-limit-resume.schedule", 1);
+        while (!(yield* service.list)[0]?.chats[0]?.waitingForLimit) yield* Effect.yieldNow;
         expect(
           (yield* harness.drain).filter((command) => command.type === "thread.archive"),
         ).toEqual([]);
-        // After the limit resets the chat works again and finishes successfully.
+        // After the limit resets the goal continues the chat, which works again and finishes.
+        for (let step = 0; step < 30; step++) yield* TestClock.adjust("5 minutes");
+        const resumed = yield* harness.waitFor("thread.turn.start", 2);
+        expect(textOf(resumed[1])).toContain("Continue where you left off");
         yield* harness.runAndFinish(threadId);
         while ((yield* service.list)[0]?.chats[0]?.status === "running") yield* Effect.yieldNow;
         expect((yield* service.list)[0]?.chats[0]?.status).toBe("completed");
@@ -448,13 +432,19 @@ it.layer(NodeServices.layer)("GoalService", (it) => {
           status: "rate-limited",
           activeTurnId: null,
           lastErrorClass: "usage_limit",
-          retryAt: "2099-01-01T00:00:00.000Z",
+          retryAt: "1970-01-01T01:00:00.000Z",
         });
-        const [resume] = yield* harness.waitFor("thread.usage-limit-resume.schedule", 1);
-        expect(resume).toMatchObject({ threadId, resumeAt: "2099-01-01T00:00:02.000Z" });
+        while (!(yield* service.list)[0]?.chats[0]?.waitingForLimit) yield* Effect.yieldNow;
         const [goal] = yield* service.list;
         expect(goal?.status).toBe("running");
         expect(goal?.chats[0]).toMatchObject({ status: "running", waitingForLimit: true });
+        // Nothing continues the chat before the provider is back.
+        yield* TestClock.adjust("30 minutes");
+        expect(
+          (yield* harness.drain).filter((command) => command.type === "thread.turn.start"),
+        ).toHaveLength(1);
+        yield* TestClock.adjust("2 hours");
+        yield* harness.waitFor("thread.turn.start", 2);
 
         // When the chat picks the work back up it is no longer waiting.
         yield* harness.sessionEvent(threadId, { status: "running", activeTurnId: "turn-2" });

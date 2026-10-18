@@ -1,21 +1,20 @@
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { TextInputWrapper } from "expo-paste-input";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Platform, Pressable, ScrollView, View, useWindowDimensions } from "react-native";
 import { KeyboardAvoidingView, KeyboardStickyView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { FilePreviewModal, type FilePreviewSource } from "../../components/FilePreviewModal";
 
-import { AppText as Text, AppTextInput as TextInput } from "../../components/AppText";
-import { SymbolView } from "../../components/AppSymbol";
+import { AppText as Text, AppTextInput as TextInput } from "../../components/ui/AppText";
+import { SymbolView } from "../../components/ui/AppSymbol";
 import { ComposerAttachmentStrip } from "../../components/ComposerAttachmentStrip";
-import { ControlPill } from "../../components/ControlPill";
+import { ControlPill } from "../../components/ui/ControlPill";
 import { cn } from "../../lib/cn";
 import type { DraftComposerImageAttachment } from "../../lib/composerImages";
 import { convertPastedImagesToAttachments, pickComposerImages } from "../../lib/composerImages";
 import { useNativePaste } from "../../lib/useNativePaste";
-import { scheduleUnusedComposerAttachmentCleanup } from "../../state/use-composer-drafts";
 import { setPendingConnectionError } from "../../state/use-remote-environment-registry";
 import { appendReviewCommentToDraft } from "../../state/use-thread-composer-state";
 import {
@@ -54,30 +53,6 @@ export function ReviewCommentComposerSheet(props: ReviewCommentComposerSheetProp
     Record<string, ReadonlyArray<ReviewHighlightedToken>>
   >({});
   const [attachments, setAttachments] = useState<ReadonlyArray<DraftComposerImageAttachment>>([]);
-  const attachmentsRef = useRef(attachments);
-  const isMountedRef = useRef(true);
-  const replaceAttachments = useCallback((next: ReadonlyArray<DraftComposerImageAttachment>) => {
-    attachmentsRef.current = next;
-    setAttachments(next);
-  }, []);
-
-  useEffect(() => {
-    isMountedRef.current = true;
-    return () => {
-      isMountedRef.current = false;
-      scheduleUnusedComposerAttachmentCleanup(attachmentsRef.current);
-    };
-  }, []);
-
-  function appendImages(images: ReadonlyArray<DraftComposerImageAttachment>): void {
-    if (!isMountedRef.current) {
-      scheduleUnusedComposerAttachmentCleanup(images);
-      return;
-    }
-    if (images.length > 0) {
-      replaceAttachments([...attachmentsRef.current, ...images]);
-    }
-  }
   const [previewFile, setPreviewFile] = useState<FilePreviewSource | null>(null);
 
   const selectedLines = useMemo(
@@ -112,9 +87,11 @@ export function ReviewCommentComposerSheet(props: ReviewCommentComposerSheetProp
       try {
         const images = await convertPastedImagesToAttachments({
           uris,
-          existingCount: attachmentsRef.current.length,
+          existingCount: attachments.length,
         });
-        appendImages(images);
+        if (images.length > 0) {
+          setAttachments((current) => [...current, ...images]);
+        }
       } catch (error) {
         console.error("[review comment] error converting pasted images", error);
       }
@@ -150,9 +127,11 @@ export function ReviewCommentComposerSheet(props: ReviewCommentComposerSheetProp
   }, [selectedLines, selectedTheme, target]);
 
   async function handlePickImages(): Promise<void> {
-    const result = await pickComposerImages({ existingCount: attachmentsRef.current.length });
-    appendImages(result.images);
-    if (result.error && isMountedRef.current) {
+    const result = await pickComposerImages({ existingCount: attachments.length });
+    if (result.images.length > 0) {
+      setAttachments((current) => [...current, ...result.images]);
+    }
+    if (result.error) {
       setPendingConnectionError(result.error);
     }
   }
@@ -166,11 +145,11 @@ export function ReviewCommentComposerSheet(props: ReviewCommentComposerSheetProp
       environmentId,
       threadId,
       text: formatReviewCommentContext(target, commentText),
-      attachments: attachmentsRef.current,
+      attachments,
     });
-    replaceAttachments([]);
+    setAttachments([]);
     dismissComposer();
-  }, [commentText, dismissComposer, environmentId, replaceAttachments, target, threadId]);
+  }, [attachments, commentText, dismissComposer, environmentId, target, threadId]);
 
   return (
     <View className="flex-1 bg-sheet">
@@ -296,12 +275,9 @@ export function ReviewCommentComposerSheet(props: ReviewCommentComposerSheetProp
                         onPressPreview={setPreviewFile}
                         removeButtonPlacement="gutter"
                         onRemove={(imageId) => {
-                          const current = attachmentsRef.current;
-                          const removed = current.find((image) => image.id === imageId);
-                          replaceAttachments(current.filter((image) => image.id !== imageId));
-                          if (removed) {
-                            scheduleUnusedComposerAttachmentCleanup([removed]);
-                          }
+                          setAttachments((current) =>
+                            current.filter((image) => image.id !== imageId),
+                          );
                         }}
                       />
                     </View>
