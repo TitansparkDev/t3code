@@ -2147,7 +2147,9 @@ export const make = Effect.gen(function* () {
     );
     for (const provider of providers) {
       const model = provider.models[0]?.slug;
-      if (provider.driver !== "chatAgents" || !model) continue;
+      // Chat Agents is a local ACP command now, so it is known by its instance id.
+      if ((provider.driver !== "chatAgents" && provider.instanceId !== "chatAgents") || !model)
+        continue;
       if (providerBlock(provider, model, now)) continue;
       // A provider that just failed to run an overseer (a locked keyring, a login) is left alone.
       if (

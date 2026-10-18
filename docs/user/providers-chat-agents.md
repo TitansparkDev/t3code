@@ -6,9 +6,11 @@ service uses, so it needs W installed on that machine and its ChatGPT desktop ap
 
 ## Turn it on
 
-Open **Settings → Providers → Chat Agents** and switch it on. The paths already point at W's
-install, so nothing else is needed. The status shows **Ready** when the worker and the ChatGPT
-desktop app answer.
+Chat Agents runs as a local ACP command, `t3 chat-agents-acp`, shown in **Settings → Providers**
+as **Chat Agents**. A Chat Agents provider saved by an earlier version is converted when the
+server starts, keeping its worker settings, and the command follows the server when it updates.
+The defaults point at W's install, so nothing else is needed. The status shows **Ready** when the
+worker and the ChatGPT desktop app answer.
 
 Pick **Chat Agents** from the model picker, or use it in a goal, like any other provider.
 

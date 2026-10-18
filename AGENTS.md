@@ -167,6 +167,15 @@ Architecture and its constraints: `docs/internals/overview.md`. Glossary: `docs/
 
 ## Recent request log
 
+- 2026-10-18 — v0.1.1: merged upstream's orchestration v2 (1,500+ commits; protocol 2, so web, desktop and
+  mobile must all be new builds; mobile is 2.0.0). Goals and AgentQueue run on v2 through the `GoalThreads` port
+  (`apps/server/src/goals/GoalThreads.ts`); a goal now continues a usage-limited chat itself when the limit
+  resets. A database holding the fork's migrations 55/56 upgrades (`reconcileForkMigrations.ts`), tested against
+  a copy of the live 3.4 GB database. Dropped in favour of upstream's own: the quota panel, thread forking,
+  per-model auto-resume rules (turned into upstream's single switch), the fork's scheduled tasks, file
+  attachments, independent desktop windows. Chat Agents is now the local ACP command `t3 chat-agents-acp`
+  (saved instances convert on startup); Cline is added through the ACP Registry. Includes the 2026-10-17
+  AgentQueue review fixes (retry guard, shared baseline repairs, emulator boot, linear branches).
 - 2026-10-17 — AgentQueue review of 190 goal-worker chats (Overseer's SA/NR/RP plans: 40 of 98 tasks were
   follow-ups). A held task cannot be retried on an unchanged failing commit without `--force` (SA8 re-ran a
   4-minute red gate four times); a "check that already failed" repair is judged by that one check and one open
@@ -174,7 +183,7 @@ Architecture and its constraints: `docs/internals/overview.md`. Glossary: `docs/
   SA8-FU1/2/3/8/10-FU1 chains); a granted `android` slot now boots its emulator (`emulator-5554 not found`);
   worker branches with a merge of the base are rebased linear before the guards; `agentq plan lint` warns
   `fixed-test-infrastructure` for tests with fixed ports/containers; the `autonomous-plan` skill gained
-  split-gate and per-task-test-infrastructure rules. Not released yet.
+  split-gate and per-task-test-infrastructure rules. Released in v0.1.1.
 - 2026-10-14 — v0.0.71: hardened Agent Q manual dispatch & MCP header negotiation, upgraded Serena Kotlin
   LSP to 263.6379.0. Agent Q supports reliable goal-less manual task reservation ("Use Agent Q and take a
   task from the plan") without requiring active T3 Goals, non-destructive MCP Accept header negotiation

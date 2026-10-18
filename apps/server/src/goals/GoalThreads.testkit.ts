@@ -33,17 +33,13 @@ export type OrchestrationCommand =
       readonly modelSelection: ModelSelection;
       readonly runtimeMode?: string;
     }
-  | {
-      readonly type:
-        | "thread.delete"
-        | "thread.settle"
-        | "thread.turn.interrupt"
-        // Never sent now; kept so tests can assert that the runner does not.
-        | "thread.archive"
-        | "thread.session.stop"
-        | "thread.usage-limit-resume.schedule";
-      readonly threadId: ThreadId;
-    };
+  | { readonly type: "thread.delete"; readonly threadId: ThreadId }
+  | { readonly type: "thread.settle"; readonly threadId: ThreadId }
+  | { readonly type: "thread.turn.interrupt"; readonly threadId: ThreadId }
+  // Never sent now; kept so tests can assert that the runner does not.
+  | { readonly type: "thread.archive"; readonly threadId: ThreadId }
+  | { readonly type: "thread.session.stop"; readonly threadId: ThreadId }
+  | { readonly type: "thread.usage-limit-resume.schedule"; readonly threadId: ThreadId };
 
 export interface OrchestrationThread {
   readonly latestTurn: {

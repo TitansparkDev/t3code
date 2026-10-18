@@ -1097,6 +1097,75 @@ it.layer(NodeServices.layer)("server settings", (it) => {
     }).pipe(Effect.provide(layerServerSettings())),
   );
 
+  it("turns a saved Chat Agents provider into a local ACP command that follows the build", () => {
+    const base = { driver: "chatAgents", enabled: true } as const;
+    const settings = {
+      providerInstances: {
+        chatAgents: {
+          ...base,
+          config: { workerPath: "/w/worker.py", turnTimeoutMinutes: "30", runtimeRoot: "" },
+        },
+      },
+    } as unknown as ServerSettings;
+
+    const migrated = ServerSettingsModule.reconcileChatAgentsInstances(settings, {
+      command: "/t3/0.1.1/t3",
+      entrypoint: undefined,
+    });
+    const instance = migrated.providerInstances[ProviderInstanceId.make("chatAgents")]!;
+    assert.strictEqual(instance.driver, "acpRegistry");
+    assert.deepEqual(instance.config, {
+      source: "local",
+      commandPath: "/t3/0.1.1/t3",
+      commandArgs: ["chat-agents-acp", "--worker-path", "/w/worker.py", "--timeout-minutes", "30"],
+    });
+
+    const updated = ServerSettingsModule.reconcileChatAgentsInstances(migrated, {
+      command: "/t3/0.1.2/t3",
+      entrypoint: undefined,
+    });
+    const next = updated.providerInstances[ProviderInstanceId.make("chatAgents")]!;
+    assert.strictEqual((next.config as { commandPath: string }).commandPath, "/t3/0.1.2/t3");
+    assert.strictEqual(
+      ServerSettingsModule.reconcileChatAgentsInstances(updated, {
+        command: "/t3/0.1.2/t3",
+        entrypoint: undefined,
+      }),
+      updated,
+    );
+  });
+
+  it.effect("turns the fork's per-model auto-resume rules into the single switch", () =>
+    Effect.gen(function* () {
+      const serverConfig = yield* ServerConfig.ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
+      yield* fileSystem.writeFileString(
+        serverConfig.settingsPath,
+        JSON.stringify({ usageLimitAutoResume: [{ instanceId: "codex", model: "*" }] }),
+      );
+
+      assert.isTrue((yield* serverSettings.getSettings).autoResumeLimitedThreads);
+    }).pipe(Effect.provide(layerServerSettings())),
+  );
+
+  it.effect("keeps an explicit auto-resume choice over the fork's rules", () =>
+    Effect.gen(function* () {
+      const serverConfig = yield* ServerConfig.ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
+      yield* fileSystem.writeFileString(
+        serverConfig.settingsPath,
+        JSON.stringify({
+          usageLimitAutoResume: [{ instanceId: "codex", model: "*" }],
+          autoResumeLimitedThreads: false,
+        }),
+      );
+
+      assert.isFalse((yield* serverSettings.getSettings).autoResumeLimitedThreads);
+    }).pipe(Effect.provide(layerServerSettings())),
+  );
+
   it.effect("enables previously used optional providers while migrating legacy settings", () =>
     Effect.gen(function* () {
       const serverConfig = yield* ServerConfig.ServerConfig;

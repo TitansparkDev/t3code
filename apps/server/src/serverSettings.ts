@@ -42,6 +42,11 @@ import * as ServerConfig from "./config.ts";
 import { type DeepPartial, deepMerge } from "@t3tools/shared/Struct";
 import { fromJsonStringPretty, fromLenientJson } from "@t3tools/shared/schemaJson";
 import {
+  resolveSelfInvocation,
+  selfInvocationArgs,
+  type SelfInvocation,
+} from "@t3tools/shared/nodeRuntime";
+import {
   applyServerSettingsPatch,
   deriveLegacyProjectOverrides,
   fallbackTextGenerationModelSelection,
@@ -298,6 +303,9 @@ const LegacyProviderSettingsJson = fromLenientJson(
     providers: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
     bitbucket: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
     github: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
+    // The fork's per-model auto-resume rules. Any rule meant "resume on its own"; V2 has one switch.
+    usageLimitAutoResume: Schema.optionalKey(Schema.Array(Schema.Unknown)),
+    autoResumeLimitedThreads: Schema.optionalKey(Schema.Boolean),
   }),
 );
 const decodeLegacyProviderSettingsJsonExit = Schema.decodeUnknownExit(LegacyProviderSettingsJson);
@@ -409,6 +417,69 @@ function migrateLegacyProviderSettings(
 }
 
 const ACP_REGISTRY_DRIVER = ProviderDriverKind.make("acpRegistry");
+const CHAT_AGENTS_LEGACY_DRIVER = ProviderDriverKind.make("chatAgents");
+const CHAT_AGENTS_COMMAND = "chat-agents-acp";
+
+const CHAT_AGENTS_FLAGS: ReadonlyArray<readonly [setting: string, flag: string]> = [
+  ["workerPath", "--worker-path"],
+  ["pythonPath", "--python-path"],
+  ["runtimeRoot", "--runtime-root"],
+  ["turnTimeoutMinutes", "--timeout-minutes"],
+];
+
+/**
+ * Chat Agents is a local ACP command now (`t3 chat-agents-acp`, see provider/chatAgentsAcp.ts), so
+ * a saved `chatAgents` instance becomes one, and the command's path follows the running build:
+ * a self-update installs `t3` under a new version folder.
+ */
+export function reconcileChatAgentsInstances(
+  settings: ServerSettings,
+  self: SelfInvocation,
+): ServerSettings {
+  let changed = false;
+  const providerInstances = Object.fromEntries(
+    Object.entries(settings.providerInstances).map(([id, instance]) => {
+      const config = (instance.config ?? {}) as Record<string, unknown>;
+      if (instance.driver === CHAT_AGENTS_LEGACY_DRIVER) {
+        changed = true;
+        const flags = CHAT_AGENTS_FLAGS.flatMap(([setting, flag]) => {
+          const value = config[setting];
+          return typeof value === "string" && value.trim() !== "" ? [flag, value.trim()] : [];
+        });
+        return [
+          id,
+          {
+            ...instance,
+            driver: ACP_REGISTRY_DRIVER,
+            displayName: instance.displayName ?? "Chat Agents",
+            config: {
+              source: "local",
+              commandPath: self.command,
+              commandArgs: [...selfInvocationArgs(self, [CHAT_AGENTS_COMMAND]), ...flags],
+            },
+          },
+        ];
+      }
+      const args = Array.isArray(config.commandArgs) ? (config.commandArgs as string[]) : [];
+      const at = args.indexOf(CHAT_AGENTS_COMMAND);
+      if (instance.driver !== ACP_REGISTRY_DRIVER || at < 0) return [id, instance];
+      const commandArgs = [
+        ...selfInvocationArgs(self, [CHAT_AGENTS_COMMAND]),
+        ...args.slice(at + 1),
+      ];
+      if (
+        config.commandPath === self.command &&
+        commandArgs.length === args.length &&
+        commandArgs.every((arg, index) => arg === args[index])
+      ) {
+        return [id, instance];
+      }
+      changed = true;
+      return [id, { ...instance, config: { ...config, commandPath: self.command, commandArgs } }];
+    }),
+  );
+  return changed ? { ...settings, providerInstances } : settings;
+}
 
 function selectionSupportsTextGeneration(
   settings: ServerSettings,
@@ -687,6 +758,13 @@ const make = Effect.gen(function* () {
         }
       } else {
         settings = decoded.value;
+        if (
+          legacySettings._tag === "Success" &&
+          (legacySettings.value.usageLimitAutoResume?.length ?? 0) > 0 &&
+          legacySettings.value.autoResumeLimitedThreads === undefined
+        ) {
+          settings = { ...settings, autoResumeLimitedThreads: true };
+        }
       }
     }
 
@@ -739,10 +817,14 @@ const make = Effect.gen(function* () {
             ),
           );
 
-    const loaded = foldProviderInstanceEnabledFlags(
-      legacyProviders === undefined
-        ? settings
-        : migrateLegacyProviderSettings(settings, legacyProviders, providerHistory),
+    const self = yield* resolveSelfInvocation().pipe(Effect.provide(Path.layer));
+    const loaded = reconcileChatAgentsInstances(
+      foldProviderInstanceEnabledFlags(
+        legacyProviders === undefined
+          ? settings
+          : migrateLegacyProviderSettings(settings, legacyProviders, providerHistory),
+      ),
+      self,
     );
     const folded = settingsFileTrusted
       ? foldLegacyProjectSettings(loaded, legacyProjectRows)

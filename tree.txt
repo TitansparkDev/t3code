@@ -22554,6 +22554,7 @@ apps/mobile/scripts/fixtures/PermissionsServiceRegression.m
 apps/mobile/scripts/generate-device-stream.mts
 apps/mobile/scripts/generate-uniwind-themes.mts
 apps/mobile/scripts/generate-uniwind-themes.test.ts
+apps/mobile/scripts/measure-renders.mts
 apps/mobile/scripts/notification-center-manager.test.ts
 apps/mobile/scripts/permissions-service.test.ts
 apps/mobile/scripts/sync-pierre-file-icons.mjs
@@ -22781,6 +22782,8 @@ apps/mobile/src/features/connection/useConnectionController.ts
 apps/mobile/src/features/development/ComponentCatalogScreen.tsx
 apps/mobile/src/features/development/NativeAppBarExample.android.tsx
 apps/mobile/src/features/development/NativeAppBarExample.tsx
+apps/mobile/src/features/development/render-counter-entry.ts
+apps/mobile/src/features/development/render-counter.ts
 apps/mobile/src/features/devices/DevicePreviewRouteScreen.tsx
 apps/mobile/src/features/devices/DeviceStreamWebView.tsx
 apps/mobile/src/features/devices/device-preview-button.tsx
@@ -22957,6 +22960,7 @@ apps/mobile/src/features/pull-requests/pullRequestEnvironmentFallback.test.ts
 apps/mobile/src/features/pull-requests/pullRequestEnvironmentFallback.ts
 apps/mobile/src/features/pull-requests/pullRequestFileFilters.test.ts
 apps/mobile/src/features/pull-requests/pullRequestFileFilters.ts
+apps/mobile/src/features/pull-requests/pullRequestGlyphs.ts
 apps/mobile/src/features/pull-requests/pullRequestList.test.ts
 apps/mobile/src/features/pull-requests/pullRequestList.ts
 apps/mobile/src/features/pull-requests/pullRequestMediaSource.test.ts
@@ -23171,6 +23175,7 @@ apps/mobile/src/features/threads/CustomSnoozeSheet.shared.tsx
 apps/mobile/src/features/threads/CustomSnoozeSheet.tsx
 apps/mobile/src/features/threads/GitActionProgressOverlay.tsx
 apps/mobile/src/features/threads/HtmlRenderWebView.tsx
+apps/mobile/src/features/threads/LinkedPullRequestList.tsx
 apps/mobile/src/features/threads/McpAppFullscreenScreen.tsx
 apps/mobile/src/features/threads/McpAppWebView.tsx
 apps/mobile/src/features/threads/NewTaskContextPickerScreens.tsx
@@ -23200,6 +23205,7 @@ apps/mobile/src/features/threads/ThreadHeader.tsx
 apps/mobile/src/features/threads/ThreadMarkdownImage.tsx
 apps/mobile/src/features/threads/ThreadMarkdownVideo.tsx
 apps/mobile/src/features/threads/ThreadNavigationSidebar.tsx
+apps/mobile/src/features/threads/ThreadPullRequestsSheet.tsx
 apps/mobile/src/features/threads/ThreadQueueControl.tsx
 apps/mobile/src/features/threads/ThreadRouteScreen.tsx
 apps/mobile/src/features/threads/ThreadSettingsRows.android.tsx
@@ -23304,12 +23310,14 @@ apps/mobile/src/features/threads/threadQueueControlPresentation.ts
 apps/mobile/src/features/threads/use-composer-command-menu.test.ts
 apps/mobile/src/features/threads/use-composer-command-menu.ts
 apps/mobile/src/features/threads/use-legacy-plan-mode-enabled.ts
+apps/mobile/src/features/threads/use-open-thread-pull-requests.ts
 apps/mobile/src/features/threads/use-thread-list-v2-shelf-preferences.ts
 apps/mobile/src/features/threads/use-thread-settings-sheet-presentation.ts
 apps/mobile/src/features/threads/use-visible-second-clock.test.tsx
 apps/mobile/src/features/threads/use-visible-second-clock.ts
 apps/mobile/src/features/threads/use-worktree-setup.ts
 apps/mobile/src/features/threads/useFileChipShare.ts
+apps/mobile/src/features/threads/useLinkedPullRequestActions.ts
 apps/mobile/src/features/threads/useThreadHeaderOptions.android.ts
 apps/mobile/src/features/threads/useThreadHeaderOptions.test.tsx
 apps/mobile/src/features/threads/useThreadHeaderOptions.tsx
@@ -23551,6 +23559,7 @@ apps/mobile/src/native/T3ComposerEditor.types.ts
 apps/mobile/src/native/T3KeyboardCommands.android.tsx
 apps/mobile/src/native/T3KeyboardCommands.ios.tsx
 apps/mobile/src/native/T3KeyboardCommands.tsx
+apps/mobile/src/native/ThemedScreenStack.tsx
 apps/mobile/src/native/V5StackHeader.ios.tsx
 apps/mobile/src/native/composerEditorRevision.test.ts
 apps/mobile/src/native/composerEditorRevision.ts
@@ -24894,6 +24903,8 @@ apps/server/src/provider/antigravityUsageLimits.test.ts
 apps/server/src/provider/antigravityUsageLimits.ts
 apps/server/src/provider/builtInDrivers.ts
 apps/server/src/provider/builtInProviderCatalog.ts
+apps/server/src/provider/chatAgentsAcp.test.ts
+apps/server/src/provider/chatAgentsAcp.ts
 apps/server/src/provider/claudeResetCredits.test.ts
 apps/server/src/provider/claudeResetCredits.ts
 apps/server/src/provider/claudeUsageLimits.test.ts
@@ -25786,7 +25797,6 @@ apps/web/src/components/promptLinks/NewThreadLinkView.tsx
 apps/web/src/components/promptLinks/ThreadLinkPrompt.tsx
 apps/web/src/components/promptLinks/copyPromptLink.ts
 apps/web/src/components/promptLinks/linkedPrompt.ts
-apps/web/src/components/pullRequest/LinkPullRequestDialog.logic.test.ts
 apps/web/src/components/pullRequest/LinkPullRequestDialog.tsx
 apps/web/src/components/pullRequest/PullRequestActivityUnavailableState.tsx
 apps/web/src/components/pullRequest/PullRequestCandidatePicker.tsx
@@ -25854,8 +25864,6 @@ apps/web/src/components/pullRequest/pullRequestIcons.tsx
 apps/web/src/components/pullRequest/pullRequestLinkContextMenu.ts
 apps/web/src/components/pullRequest/pullRequestList.logic.test.ts
 apps/web/src/components/pullRequest/pullRequestList.logic.ts
-apps/web/src/components/pullRequest/pullRequestListLines.test.ts
-apps/web/src/components/pullRequest/pullRequestListLines.ts
 apps/web/src/components/pullRequest/pullRequestListPreferences.ts
 apps/web/src/components/pullRequest/pullRequestMarkdown.logic.ts
 apps/web/src/components/pullRequest/pullRequestPresentation.test.ts
@@ -26493,8 +26501,6 @@ apps/web/src/providerSkillSearch.test.ts
 apps/web/src/providerSkillSearch.ts
 apps/web/src/providerUpdateDismissal.test.ts
 apps/web/src/providerUpdateDismissal.ts
-apps/web/src/pullRequestReference.test.ts
-apps/web/src/pullRequestReference.ts
 apps/web/src/questionAttachments.test.ts
 apps/web/src/questionAttachments.ts
 apps/web/src/reactCompilerCoverage.test.ts
@@ -27023,6 +27029,8 @@ oxlint-plugin-t3code/rules/no-manual-effect-runtime-in-tests.test.ts
 oxlint-plugin-t3code/rules/no-manual-effect-runtime-in-tests.ts
 oxlint-plugin-t3code/rules/no-manual-memo.test.ts
 oxlint-plugin-t3code/rules/no-manual-memo.ts
+oxlint-plugin-t3code/rules/no-mobile-pull-request-glyph-literals.test.ts
+oxlint-plugin-t3code/rules/no-mobile-pull-request-glyph-literals.ts
 oxlint-plugin-t3code/rules/no-mobile-uniwind-theme-escape-hatches.test.ts
 oxlint-plugin-t3code/rules/no-mobile-uniwind-theme-escape-hatches.ts
 oxlint-plugin-t3code/rules/no-native-title-tooltip.test.ts
@@ -27273,6 +27281,8 @@ packages/client-runtime/src/providerSkills.test.ts
 packages/client-runtime/src/providerSkills.ts
 packages/client-runtime/src/providerUpdateRequiredModels.test.ts
 packages/client-runtime/src/providerUpdateRequiredModels.ts
+packages/client-runtime/src/pullRequestLinkInput.test.ts
+packages/client-runtime/src/pullRequestLinkInput.ts
 packages/client-runtime/src/pullRequestMarkdown.test.ts
 packages/client-runtime/src/pullRequestMarkdown.ts
 packages/client-runtime/src/pullRequestQuery.test.ts
@@ -28061,8 +28071,6 @@ packages/shared/src/proposedPlanText.test.ts
 packages/shared/src/proposedPlanText.ts
 packages/shared/src/providerAuthReturnUrl.test.ts
 packages/shared/src/providerAuthReturnUrl.ts
-packages/shared/src/providerCapabilities.test.ts
-packages/shared/src/providerCapabilities.ts
 packages/shared/src/providerRateLimit.test.ts
 packages/shared/src/providerRateLimit.ts
 packages/shared/src/qrCode.ts
@@ -28114,6 +28122,7 @@ packages/shared/src/threadFindText.test.ts
 packages/shared/src/threadFindText.ts
 packages/shared/src/threadLinks.test.ts
 packages/shared/src/threadLinks.ts
+packages/shared/src/threadPullRequestListLines.test.ts
 packages/shared/src/threadPullRequests.test.ts
 packages/shared/src/threadPullRequests.ts
 packages/shared/src/threadReference.test.ts

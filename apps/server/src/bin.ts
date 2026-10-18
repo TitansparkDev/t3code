@@ -14,7 +14,11 @@ if (
   })
 ) {
   const command = process.argv[2];
-  if (command === "acp-mcp-bridge" || command === "acp-mcp-call") {
+  if (command === "chat-agents-acp") {
+    // An ACP agent the server runs as a local command: stdout carries only protocol messages.
+    const { runChatAgentsAcp } = await import("./provider/chatAgentsAcp.ts");
+    await runChatAgentsAcp(process.argv.slice(3));
+  } else if (command === "acp-mcp-bridge" || command === "acp-mcp-call") {
     const { runAcpMcpCliFastPath } = await import("./mcp/AcpMcpStdioBridge.ts");
     await runAcpMcpCliFastPath(command, process.argv.slice(3));
   } else {
