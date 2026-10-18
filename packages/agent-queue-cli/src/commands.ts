@@ -18,6 +18,7 @@ import {
   reconcileExpiredLeases,
   initRepo,
   doctorRepo,
+  unchangedHeldFailure,
   importPlanFile,
   lintPlanFile,
   lintPlanFileWithBaseline,
@@ -402,11 +403,20 @@ export function abortTaskCommand(
  */
 export function retryTaskCommand(
   taskId: string,
-  options: CommandOptions = {},
+  options: CommandOptions & { readonly force?: boolean } = {},
 ): Record<string, unknown> {
   const git = resolveGitContext(options.cwd);
   const db = openQueueDatabase({ gitCommonDir: git.gitCommonDir });
   try {
+    if (!options.force) {
+      const unchanged = unchangedHeldFailure(db, taskId);
+      if (unchanged) {
+        throw new Error(
+          `Task ${taskId} is held: the same failure (${unchanged.signature}) repeated on commit ` +
+            `${unchanged.headCommit ?? "(none)"} with no change. Fix the cause first or pass --force.`,
+        );
+      }
+    }
     const now = new Date().toISOString();
     db.exec("BEGIN IMMEDIATE;");
     try {

@@ -135,6 +135,30 @@ export function recordFailure(
   return { signature, repeats, repeatsWithoutChange };
 }
 
+/**
+ * A held task whose last two recorded failures are the same failure on the same commit.
+ * Retrying it as it stands only repeats the work (SA8 re-ran a 4 minute red gate on
+ * `c933f7e8f` four times), so a manual retry must come with a change or an explicit force.
+ */
+export function unchangedHeldFailure(
+  db: NodeSqlite.DatabaseSync,
+  taskId: string,
+): { readonly signature: string; readonly headCommit: string | null } | null {
+  const task = db.prepare("SELECT status FROM tasks WHERE id = ?").get(taskId) as
+    | { status: string }
+    | undefined;
+  if (task?.status !== "blocked") return null;
+  const rows = db
+    .prepare(
+      "SELECT signature, head_commit FROM task_failures WHERE task_id = ? ORDER BY id DESC LIMIT 2",
+    )
+    .all(taskId) as Array<{ signature: string; head_commit: string | null }>;
+  const [a, b] = rows;
+  if (!a || !b || a.signature !== b.signature) return null;
+  if ((a.head_commit ?? null) !== (b.head_commit ?? null)) return null;
+  return { signature: a.signature, headCommit: a.head_commit ?? null };
+}
+
 export type FailureDecision =
   | { readonly action: "retry" }
   /** Do not send another worker; keep the evidence and wait for `unblock_fingerprint` to change. */

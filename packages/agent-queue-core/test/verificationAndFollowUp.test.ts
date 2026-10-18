@@ -141,6 +141,53 @@ describe("follow-up tasks", () => {
   });
 });
 
+describe("baseline-repair follow-ups", () => {
+  it("judges the repair by its own check and shares one open repair across parents", async () => {
+    const repo = await createTestGitRepo("aq-followup-dedupe-");
+    try {
+      await NodeFSP.writeFile(
+        NodePath.join(repo.rootDir, "PLAN.md"),
+        "# P\n\n- [ ] **RP1 — A.**\n  - Depends on: none.\n  - Scope: a/.\n  - Checks:\n    - `true` (cwd: `.`, timeout: 60s, expect: exit 0)\n- [ ] **RP2 — B.**\n  - Depends on: none.\n  - Scope: b/.\n  - Checks:\n    - `true` (cwd: `.`, timeout: 60s, expect: exit 0)\n- [ ] **RP3 — C.**\n  - Depends on: RP1, RP2.\n  - Scope: c/.\n",
+      );
+      await execCommand("git", ["add", "PLAN.md"], repo.rootDir);
+      await execCommand("git", ["commit", "-m", "plan"], repo.rootDir);
+      const imported = importPlanFile(repo.rootDir, "PLAN.md");
+      const db = openQueueDatabase({ gitCommonDir: repo.gitCommonDir });
+      const red = {
+        run: "gradle connected",
+        cwd: ".",
+        timeoutSeconds: 60,
+        requires: [],
+        expectExitCode: 0,
+      };
+      const input = {
+        planId: imported.planId,
+        kind: "repair" as const,
+        blocking: true,
+        title: "Fix a check that already failed",
+        note: "It fails on the integration branch.",
+        checks: [red],
+        dedupeKey: "baseline-check:abc",
+      };
+      const first = addFollowUpTask(db, { ...input, parentTaskId: "RP1" });
+      const second = addFollowUpTask(db, { ...input, parentTaskId: "RP2" });
+      expect(first.created).toBe(true);
+      expect(second).toEqual({ taskId: first.taskId, created: false });
+      const rp3 = db.prepare("SELECT dependencies FROM tasks WHERE id = 'RP3'").get() as {
+        dependencies: string;
+      };
+      expect(JSON.parse(rp3.dependencies)).toContain(first.taskId);
+      const spec = db
+        .prepare("SELECT verification_spec FROM tasks WHERE id = ?")
+        .get(first.taskId) as { verification_spec: string };
+      expect(JSON.parse(spec.verification_spec).checks).toEqual([red]);
+      db.close();
+    } finally {
+      await repo.cleanup();
+    }
+  });
+});
+
 describe("landed worktree removal", () => {
   it("keeps a worktree that still has uncommitted changes", async () => {
     const repo = await createTestGitRepo("aq-teardown-");

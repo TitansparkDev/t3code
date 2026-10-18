@@ -46,13 +46,19 @@ import {
   type AmendmentOutcome,
   type ScopeRequest,
 } from "./scopeAudit.ts";
-import { attributeFailure } from "./baseline.ts";
+import { attributeFailure, checkKey } from "./baseline.ts";
 import { ResourceWaitError } from "./resourceRunner.ts";
 import { addFollowUpTask } from "./overseerRepairs.ts";
+import { linearizeBranch } from "./linearize.ts";
 import { settleUnchangedFollowUp } from "./followUpResolution.ts";
 import { environmentFailureOf, toolchainFingerprint } from "./toolchain.ts";
 import { ensureSlot, taskEnvironment } from "./taskEnvironment.ts";
-import { parseStoredSpec, runSpec, type SpecResult } from "./verificationSpec.ts";
+import {
+  parseStoredSpec,
+  runSpec,
+  type SpecResult,
+  type VerificationCheck,
+} from "./verificationSpec.ts";
 import { commitPendingChanges } from "./worktreeManager.ts";
 
 interface GitResult {
@@ -642,6 +648,11 @@ export async function submitCandidate(
     };
   }
   commitPendingChanges(input.worktreePath, `${input.taskId}: commit changes left uncommitted`);
+  // A merge of the base into the branch is not work; the guards want a linear branch.
+  const linear = linearizeBranch(input.worktreePath, `refs/heads/${input.baseBranch}`);
+  if (linear.outcome === "rebased") {
+    recordEvent(db, input.taskId, "task_branch_linearized", { note: linear.note });
+  }
   const head = git(input.worktreePath, ["rev-parse", "HEAD"]).stdout;
   const ahead = git(input.repoRoot, [
     "rev-list",
@@ -890,6 +901,7 @@ export async function submitCandidate(
     cwd: string;
     reason: string;
     failing: ReadonlyArray<string>;
+    verification: VerificationCheck;
   }> = [];
   let remaining = [...spec.checks];
   while (
@@ -946,6 +958,7 @@ export async function submitCandidate(
       cwd: failedCheck.cwd ?? ".",
       reason: origin.reason,
       failing: origin.failing.slice(0, 20),
+      verification: failedCheck,
     });
     remaining = remaining.filter((check) => check !== failedCheck);
     receipt =
@@ -1043,6 +1056,10 @@ export async function submitCandidate(
         kind: "repair",
         blocking: true,
         title: `Fix a check that already failed: ${entry.check}`.slice(0, 120),
+        // The repair is judged by the check it repairs, not by the parent's whole gate, and one
+        // open repair per check serves every task that meets the same red check.
+        checks: [entry.verification],
+        dedupeKey: `baseline-check:${checkKey(entry.verification)}`,
         note: `While ${input.taskId} was checked, \`${entry.check}\` (in ${entry.cwd}) failed, and it fails the same way on the integration branch without ${input.taskId}'s changes. ${entry.reason}${entry.failing.length > 0 ? `\nFailing: ${entry.failing.join("; ")}` : ""}\nFix the cause so the check passes. Do not weaken, skip or delete the check.`,
       });
     }

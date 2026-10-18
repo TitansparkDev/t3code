@@ -649,6 +649,44 @@ export function lintPlan(input: PlanLintInput): PlanFinding[] {
       }
     }
   }
+
+  // Tests that bind a fixed port or name a fixed container make parallel workers collide: the
+  // queue hands each task its own AGENTQUEUE_PORT_BASE / AGENTQUEUE_DB_NAME, and tests must use them.
+  const testsTouched = tasks.some((task) =>
+    (task.scopePatterns ?? []).some((pattern) =>
+      /(^|\/)(tests?|__tests__|spec)(\/|$)|\.test\./.test(pattern),
+    ),
+  );
+  if (testsTouched) {
+    const fixed = git(repoRoot, [
+      "grep",
+      "-l",
+      "-E",
+      "(docker[\"', ]+(run|rm|exec)[^\\n]*(--name|-f)[\"', ]+[a-z][a-z0-9_-]{5,}|(PORT|port)[A-Za-z_]*[ =:(\"',]+(5432|5433|5443|6379|8080|9000)\\b)",
+      ref,
+      "--",
+      "**/test_*.py",
+      "**/*_test.py",
+      "**/conftest.py",
+      "**/*.test.ts",
+      "**/*Test.kt",
+    ])
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => line.replace(`${ref}:`, ""));
+    const aware = git(repoRoot, ["grep", "-l", "AGENTQUEUE_", ref, "--", "*test*", "conftest.py"])
+      .split("\n")
+      .filter(Boolean);
+    if (fixed.length > 0 && aware.length === 0) {
+      add({
+        level: "warning",
+        code: "fixed-test-infrastructure",
+        taskId: null,
+        message: `${fixed.length} test file(s) bind a fixed port or name a fixed container (e.g. ${fixed.slice(0, 3).join(", ")}) and none read AGENTQUEUE_PORT_BASE or AGENTQUEUE_DB_NAME. Parallel workers and the server's check runs will collide on them and fail with errors that are not about the task.`,
+        fix: "Add a first task that derives the port, database name and container name from AGENTQUEUE_PORT_BASE / AGENTQUEUE_DB_NAME / AGENTQUEUE_TASK_ID (falling back to today's values), and make test-running tasks depend on it.",
+      });
+    }
+  }
   return findings;
 }
 

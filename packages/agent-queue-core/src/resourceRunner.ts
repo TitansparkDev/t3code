@@ -11,6 +11,7 @@
  *
  * @module resourceRunner
  */
+import { ensureEmulator } from "./emulatorProvision.ts";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
@@ -272,6 +273,7 @@ export async function runGranted(
     while (tailBytes > TAIL_BYTES * 2 && tail.length > 1)
       tailBytes -= Buffer.byteLength(tail.shift()!);
   };
+  await ensureEmulator(ticketEnv(ticket), { repo: ticket.repo ?? null });
   const child = NodeChildProcess.spawn(full[0]!, full.slice(1), {
     cwd: command.cwd,
     env: { ...process.env, ...command.env, ...ticketEnv(ticket) },
@@ -539,7 +541,9 @@ export async function withBrokerResources<A>(
     release = await holdLocks(ticketLockFiles(granted), 1800);
     broker.markRunning(ticket.id, null);
     beat = setInterval(() => broker.heartbeat(ticket.id), 10_000);
-    return await body(ticketEnv(granted));
+    const grantedEnv = ticketEnv(granted);
+    await ensureEmulator(grantedEnv, { repo: granted.repo ?? null });
+    return await body(grantedEnv);
   } finally {
     if (beat) clearInterval(beat);
     release();

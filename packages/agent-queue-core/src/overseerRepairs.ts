@@ -1,8 +1,9 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off preferSchemaOverJson:off
 import type * as NodeSqlite from "node:sqlite";
 import { validatePlanDag, type PlanTaskDefinition } from "./planGraph.ts";
+import type { VerificationCheck, VerificationSpec } from "./verificationSpec.ts";
 import { recordEvent } from "./eventStream.ts";
-import type { FailureClass } from "./failures.ts";
+import { unchangedHeldFailure, type FailureClass } from "./failures.ts";
 import { reconcileExpiredLeases } from "./leaseRecovery.ts";
 import { getQueueSnapshot, evaluateDeadlock } from "./queueInspector.ts";
 
@@ -32,7 +33,18 @@ export function retryTask(
   db: NodeSqlite.DatabaseSync,
   taskId: string,
   maxRetries = 3,
+  options: { readonly force?: boolean } = {},
 ): OverseerRepairResult {
+  if (!options.force) {
+    const unchanged = unchangedHeldFailure(db, taskId);
+    if (unchanged) {
+      throw new Error(
+        `Task ${taskId} is held: the same failure (${unchanged.signature}) repeated on commit ` +
+          `${unchanged.headCommit ?? "(none)"} with no change. Fix the cause first (a repair task, ` +
+          `a base-branch fix or a changed check) or retry with --force.`,
+      );
+    }
+  }
   db.exec("BEGIN IMMEDIATE;");
   try {
     const task = db
@@ -366,6 +378,13 @@ export interface FollowUpInput {
   readonly failureClass?: FailureClass;
   /** The environment it was seen in: the follow-up is revalidated when this changes. */
   readonly fingerprint?: string | null;
+  /** Judge the follow-up by these checks alone instead of the parent's whole verification. */
+  readonly checks?: ReadonlyArray<VerificationCheck>;
+  /**
+   * Plan-wide identity of the problem. While an unfinished follow-up with the same key exists,
+   * no second one is made; the tasks that waited on the parent wait on it instead.
+   */
+  readonly dedupeKey?: string;
 }
 
 /**
@@ -392,7 +411,8 @@ export function addFollowUpTask(
         }
       | undefined;
     if (!parent) throw new Error(`Task ${input.parentTaskId} not found`);
-    const note = input.note.trim().slice(0, 4000);
+    const dedupeMarker = input.dedupeKey ? `\n[${input.dedupeKey}]` : "";
+    const note = `${input.note.trim().slice(0, 4000 - dedupeMarker.length)}${dedupeMarker}`;
     const siblings = db
       .prepare("SELECT id, description FROM tasks WHERE plan_id = ? AND id LIKE ? ESCAPE '\\'")
       .all(input.planId, `${input.parentTaskId.replace(/[\\%_]/g, "\\$&")}-FU%`) as Array<{
@@ -404,8 +424,45 @@ export function addFollowUpTask(
       db.exec("COMMIT;");
       return { taskId: existing.id, created: false };
     }
-    const taskId = `${input.parentTaskId}-FU${siblings.length + 1}`;
     const now = new Date().toISOString();
+    const rewire = (followUpId: string): string[] => {
+      const rewired: string[] = [];
+      if (!input.blocking) return rewired;
+      const waiting = db
+        .prepare(
+          "SELECT id, dependencies FROM tasks WHERE plan_id = ? AND status IN ('pending', 'blocked')",
+        )
+        .all(input.planId) as Array<{ id: string; dependencies: string }>;
+      for (const task of waiting) {
+        if (task.id === followUpId) continue;
+        const dependencies = JSON.parse(task.dependencies || "[]") as string[];
+        if (!dependencies.includes(input.parentTaskId) || dependencies.includes(followUpId)) {
+          continue;
+        }
+        db.prepare("UPDATE tasks SET dependencies = ?, updated_at = ? WHERE id = ?").run(
+          JSON.stringify([...dependencies, followUpId]),
+          now,
+          task.id,
+        );
+        rewired.push(task.id);
+      }
+      return rewired;
+    };
+    if (input.dedupeKey) {
+      const open = db
+        .prepare(
+          "SELECT id FROM tasks WHERE plan_id = ? AND status != 'completed' AND description LIKE ? ESCAPE '\\' ORDER BY created_at LIMIT 1",
+        )
+        .get(input.planId, `%\n[${input.dedupeKey.replace(/[\\%_]/g, "\\$&")}]`) as
+        | { id: string }
+        | undefined;
+      if (open) {
+        rewire(open.id);
+        db.exec("COMMIT;");
+        return { taskId: open.id, created: false };
+      }
+    }
+    const taskId = `${input.parentTaskId}-FU${siblings.length + 1}`;
     db.prepare(
       `INSERT INTO tasks (id, plan_id, title, description, status, priority, scope_patterns,
          dependencies, verification_command, verification_spec, failure_reason, failure_class,
@@ -420,8 +477,15 @@ export function addFollowUpTask(
       input.blocking ? 200 : 50,
       parent.scope_patterns,
       JSON.stringify([]),
-      parent.verification_command,
-      parent.verification_spec,
+      input.checks ? null : parent.verification_command,
+      input.checks
+        ? JSON.stringify({
+            source: "declared",
+            checks: input.checks,
+            exemptReason: null,
+            rejected: [],
+          } satisfies VerificationSpec)
+        : parent.verification_spec,
       input.kind === "decision" ? note.slice(0, 500) : null,
       input.kind === "decision" ? (input.failureClass ?? null) : null,
       input.kind === "decision" ? (input.fingerprint ?? null) : null,
@@ -429,24 +493,7 @@ export function addFollowUpTask(
       now,
       input.parentTaskId,
     );
-    let rewired: string[] = [];
-    if (input.blocking) {
-      const waiting = db
-        .prepare(
-          "SELECT id, dependencies FROM tasks WHERE plan_id = ? AND status IN ('pending', 'blocked')",
-        )
-        .all(input.planId) as Array<{ id: string; dependencies: string }>;
-      for (const task of waiting) {
-        const dependencies = JSON.parse(task.dependencies || "[]") as string[];
-        if (!dependencies.includes(input.parentTaskId) || dependencies.includes(taskId)) continue;
-        db.prepare("UPDATE tasks SET dependencies = ?, updated_at = ? WHERE id = ?").run(
-          JSON.stringify([...dependencies, taskId]),
-          now,
-          task.id,
-        );
-        rewired.push(task.id);
-      }
-    }
+    const rewired = rewire(taskId);
     recordEvent(db, taskId, "task_followup_created", {
       parentTaskId: input.parentTaskId,
       kind: input.kind,

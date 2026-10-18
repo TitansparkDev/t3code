@@ -13,6 +13,35 @@ import { DependencyCycleError } from "../src/planGraph.ts";
 import { createTestGitRepo } from "./harness/gitHarness.ts";
 
 describe("Phase 5: Structured Overseer & Autonomous Recovery (AQ-039 - AQ-041, Gate G5)", () => {
+  it("refuses to retry a held task whose failure repeated on an unchanged commit unless forced", async () => {
+    const repo = await createTestGitRepo("overseer-retry-unchanged-");
+    try {
+      const db = openQueueDatabase({ gitCommonDir: repo.gitCommonDir });
+      const now = new Date().toISOString();
+      db.prepare(
+        `INSERT INTO tasks (id, title, status, retry_count, dependencies, created_at, updated_at)
+         VALUES ('HELD-1', 'Held', 'blocked', 0, '[]', ?, ?)`,
+      ).run(now, now);
+      const failure = db.prepare(
+        `INSERT INTO task_failures (task_id, class, signature, message, head_commit, evidence_json, created_at)
+         VALUES ('HELD-1', 'verification', 'sig', 'red', ?, '{}', ?)`,
+      );
+      failure.run("aaa", now);
+      failure.run("aaa", now);
+
+      expect(() => retryTask(db, "HELD-1", 3)).toThrow(/same failure/);
+      expect(retryTask(db, "HELD-1", 3, { force: true }).success).toBe(true);
+
+      // A new commit between the two failures means the worker did change something.
+      db.prepare("UPDATE tasks SET status = 'blocked' WHERE id = 'HELD-1'").run();
+      failure.run("bbb", now);
+      expect(retryTask(db, "HELD-1", 3).success).toBe(true);
+      db.close();
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
   it("enforces failure budgets and quarantines poison tasks without stopping other branches (AQ-041)", async () => {
     const repo = await createTestGitRepo("overseer-recovery-budget-");
     try {

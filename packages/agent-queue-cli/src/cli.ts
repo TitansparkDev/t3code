@@ -224,8 +224,12 @@ export function runCli(
 
           case "retry": {
             const taskId = args.positional[0] || (args.flags.id as string);
-            if (!taskId) throw new Error("Usage: agentqueue task retry <task-id>");
-            result = retryTaskCommand(taskId, { cwd, json: jsonMode });
+            if (!taskId) throw new Error("Usage: agentqueue task retry <task-id> [--force]");
+            result = retryTaskCommand(taskId, {
+              cwd,
+              json: jsonMode,
+              force: args.flags.force === true,
+            });
             break;
           }
 

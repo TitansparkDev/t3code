@@ -22811,6 +22811,7 @@ packages/agent-queue-core/src/claimService.ts
 packages/agent-queue-core/src/completion.ts
 packages/agent-queue-core/src/contract.ts
 packages/agent-queue-core/src/db.ts
+packages/agent-queue-core/src/emulatorProvision.ts
 packages/agent-queue-core/src/eventStream.ts
 packages/agent-queue-core/src/failures.ts
 packages/agent-queue-core/src/finalize.ts
@@ -22820,6 +22821,7 @@ packages/agent-queue-core/src/index.ts
 packages/agent-queue-core/src/integration.ts
 packages/agent-queue-core/src/landingQueue.ts
 packages/agent-queue-core/src/leaseRecovery.ts
+packages/agent-queue-core/src/linearize.ts
 packages/agent-queue-core/src/migrations.ts
 packages/agent-queue-core/src/overseerRepairs.ts
 packages/agent-queue-core/src/planGraph.ts
@@ -22845,6 +22847,7 @@ packages/agent-queue-core/src/worktreeManager.ts
 packages/agent-queue-core/test/claimService.test.ts
 packages/agent-queue-core/test/concurrencyChaos.test.ts
 packages/agent-queue-core/test/db.test.ts
+packages/agent-queue-core/test/emulatorProvision.test.ts
 packages/agent-queue-core/test/eventStream.test.ts
 packages/agent-queue-core/test/executionContract.test.ts
 packages/agent-queue-core/test/executionGoal.test.ts
@@ -22856,6 +22859,7 @@ packages/agent-queue-core/test/harness/gitHarness.test.ts
 packages/agent-queue-core/test/harness/gitHarness.ts
 packages/agent-queue-core/test/integration.test.ts
 packages/agent-queue-core/test/leaseRecovery.test.ts
+packages/agent-queue-core/test/linearize.test.ts
 packages/agent-queue-core/test/overseerRepairs.test.ts
 packages/agent-queue-core/test/ownerLifecycle.test.ts
 packages/agent-queue-core/test/planExportImport.test.ts

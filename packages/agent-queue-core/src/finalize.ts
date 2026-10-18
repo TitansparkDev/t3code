@@ -7,6 +7,7 @@
  *
  * @module finalize
  */
+import { linearizeBranch } from "./linearize.ts";
 import type * as NodeSqlite from "node:sqlite";
 import * as NodeChildProcess from "node:child_process";
 import { expandCommand, loadContract, runShell } from "./contract.ts";
@@ -85,6 +86,7 @@ export function finalizeTask(
       ),
     ];
   }
+  const linearized = linearizeBranch(input.worktree, `refs/heads/${base}`);
   const slot = ensureSlot(db, input.taskId);
   const env = taskEnvironment({
     taskId: input.taskId,
@@ -116,6 +118,11 @@ export function finalizeTask(
         output: ran.output.slice(-800),
       };
     });
+  if (linearized.outcome === "failed") {
+    problems.push(
+      `the branch holds merge commits and replaying it onto ${base} conflicted (${linearized.note}); rebase it yourself and resolve the conflicts`,
+    );
+  }
   const ok = problems.length === 0 && guards.every((guard) => guard.ok);
   return {
     ok,
