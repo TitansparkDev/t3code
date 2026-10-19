@@ -22065,6 +22065,8 @@ apps/desktop/src/preload.ts
 apps/desktop/src/preview-pick-preload.ts
 apps/desktop/src/preview-pip-preload.ts
 apps/desktop/src/preview/Annotation.css
+apps/desktop/src/preview/AnnotationIds.test.ts
+apps/desktop/src/preview/AnnotationIds.ts
 apps/desktop/src/preview/AnnotationKeyboard.test.ts
 apps/desktop/src/preview/AnnotationKeyboard.ts
 apps/desktop/src/preview/AnnotationStyles.generated.ts
@@ -22539,6 +22541,8 @@ apps/mobile/modules/t3-widget-expiry/expo-module.config.json
 apps/mobile/package.json
 apps/mobile/plugins/lib/addWidgetAssetCatalog.cjs
 apps/mobile/plugins/withAndroidCleartextTraffic.cjs
+apps/mobile/plugins/withAndroidFbjniVersion.cjs
+apps/mobile/plugins/withAndroidFbjniVersion.test.mjs
 apps/mobile/plugins/withAndroidGradleHeap.cjs
 apps/mobile/plugins/withAndroidInputBackground.cjs
 apps/mobile/plugins/withAndroidModernAlertDialog.cjs
@@ -22961,6 +22965,7 @@ apps/mobile/src/features/pull-requests/pullRequestEnvironmentFallback.ts
 apps/mobile/src/features/pull-requests/pullRequestFileFilters.test.ts
 apps/mobile/src/features/pull-requests/pullRequestFileFilters.ts
 apps/mobile/src/features/pull-requests/pullRequestGlyphs.ts
+apps/mobile/src/features/pull-requests/pullRequestLink.ts
 apps/mobile/src/features/pull-requests/pullRequestList.test.ts
 apps/mobile/src/features/pull-requests/pullRequestList.ts
 apps/mobile/src/features/pull-requests/pullRequestMediaSource.test.ts
@@ -23056,6 +23061,7 @@ apps/mobile/src/features/settings/SettingsRouteScreen.logic.test.ts
 apps/mobile/src/features/settings/SettingsRouteScreen.logic.ts
 apps/mobile/src/features/settings/SettingsRouteScreen.tsx
 apps/mobile/src/features/settings/SettingsScheduledTasksRouteScreen.tsx
+apps/mobile/src/features/settings/SettingsServerControlsRouteScreen.test.tsx
 apps/mobile/src/features/settings/SettingsServerControlsRouteScreen.tsx
 apps/mobile/src/features/settings/SettingsThreadsRouteScreen.tsx
 apps/mobile/src/features/settings/appearance/AppearancePreferencesProvider.tsx
@@ -23070,6 +23076,7 @@ apps/mobile/src/features/settings/appearance/useScaledTextRole.ts
 apps/mobile/src/features/settings/autoSettleSettingsSync.test.ts
 apps/mobile/src/features/settings/autoSettleSettingsSync.ts
 apps/mobile/src/features/settings/components/AutoSettleDaysField.tsx
+apps/mobile/src/features/settings/components/BranchNamingSettings.test.tsx
 apps/mobile/src/features/settings/components/BranchNamingSettings.tsx
 apps/mobile/src/features/settings/components/DatabaseStorageNotice.tsx
 apps/mobile/src/features/settings/components/ScheduledTaskPromptField.tsx
@@ -23291,6 +23298,7 @@ apps/mobile/src/features/threads/thread-title-regeneration-menu.ts
 apps/mobile/src/features/threads/thread-title-rename.test.ts
 apps/mobile/src/features/threads/thread-title-rename.ts
 apps/mobile/src/features/threads/thread-work-log.tsx
+apps/mobile/src/features/threads/thread-workflow-opening.tsx
 apps/mobile/src/features/threads/threadActivityFileNavigation.test.ts
 apps/mobile/src/features/threads/threadActivityFileNavigation.ts
 apps/mobile/src/features/threads/threadAgentsPresentation.test.ts
@@ -23389,6 +23397,7 @@ apps/mobile/src/lib/appearancePreferences.test.ts
 apps/mobile/src/lib/appearancePreferences.ts
 apps/mobile/src/lib/assetImageSource.test.ts
 apps/mobile/src/lib/assetImageSource.ts
+apps/mobile/src/lib/atomic-file.test.ts
 apps/mobile/src/lib/atomic-file.ts
 apps/mobile/src/lib/attachmentDocument.ts
 apps/mobile/src/lib/attachmentDocumentPresentation.test.ts
@@ -23435,6 +23444,7 @@ apps/mobile/src/lib/filePreview.ts
 apps/mobile/src/lib/filePreviewGallery.test.ts
 apps/mobile/src/lib/filePreviewGallery.ts
 apps/mobile/src/lib/followUpBehavior.ts
+apps/mobile/src/lib/fontFamilies.ts
 apps/mobile/src/lib/foreground-handoff.test.ts
 apps/mobile/src/lib/foreground-handoff.ts
 apps/mobile/src/lib/foundation-fast-refresh.ts
@@ -23522,7 +23532,6 @@ apps/mobile/src/lib/uniwind-dev-refresh.test.ts
 apps/mobile/src/lib/uniwind-platform-variants.fixture.cjs
 apps/mobile/src/lib/uniwind-platform-variants.test.ts
 apps/mobile/src/lib/useDelayedStatus.ts
-apps/mobile/src/lib/useFontFamily.ts
 apps/mobile/src/lib/useHoverGesture.ts
 apps/mobile/src/lib/useMobileNavigationTheme.ts
 apps/mobile/src/lib/useNativePaste.ts
@@ -23588,6 +23597,7 @@ apps/mobile/src/persistence/mobile-database.test.ts
 apps/mobile/src/persistence/mobile-database.ts
 apps/mobile/src/persistence/mobile-preferences.ts
 apps/mobile/src/persistence/mobile-secure-storage.ts
+apps/mobile/src/persistence/mobile-storage.test.ts
 apps/mobile/src/persistence/mobile-storage.ts
 apps/mobile/src/reactCompilerCoverage.test.ts
 apps/mobile/src/state/acknowledged-thread-messages.ts
@@ -23599,6 +23609,7 @@ apps/mobile/src/state/atom-registry.ts
 apps/mobile/src/state/attachments.test.ts
 apps/mobile/src/state/attachments.ts
 apps/mobile/src/state/client-cache-state.ts
+apps/mobile/src/state/composer-attachment-uploads.test.ts
 apps/mobile/src/state/composer-attachment-uploads.ts
 apps/mobile/src/state/device.ts
 apps/mobile/src/state/edit-pending-thread-message.test.ts
@@ -23822,6 +23833,7 @@ apps/server/src/cli/app.test.ts
 apps/server/src/cli/app.ts
 apps/server/src/cli/auth.ts
 apps/server/src/cli/authScopes.ts
+apps/server/src/cli/browser.test.ts
 apps/server/src/cli/browser.ts
 apps/server/src/cli/claudeHistory.ts
 apps/server/src/cli/config.test.ts
@@ -23988,6 +24000,8 @@ apps/server/src/imageMime.test.ts
 apps/server/src/imageMime.ts
 apps/server/src/keybindings.test.ts
 apps/server/src/keybindings.ts
+apps/server/src/launcherWatch.test.ts
+apps/server/src/launcherWatch.ts
 apps/server/src/mcp/AcpMcpStdioBridge.test.ts
 apps/server/src/mcp/AcpMcpStdioBridge.ts
 apps/server/src/mcp/McpDeviceToolkit.test.ts
@@ -24184,6 +24198,7 @@ apps/server/src/orchestration-v2/RestartContinuation.ts
 apps/server/src/orchestration-v2/RunCompletionReads.test.ts
 apps/server/src/orchestration-v2/RunExecutionService.test.ts
 apps/server/src/orchestration-v2/RunExecutionService.ts
+apps/server/src/orchestration-v2/RunFinalizationQueue.test.ts
 apps/server/src/orchestration-v2/RunFinalizationService.test.ts
 apps/server/src/orchestration-v2/RunFinalizationService.ts
 apps/server/src/orchestration-v2/RuntimePolicy.test.ts
@@ -24243,6 +24258,7 @@ apps/server/src/orchestration-v2/http.ts
 apps/server/src/orchestration-v2/legacy/LegacyV1Cutover.integration.test.ts
 apps/server/src/orchestration-v2/legacy/LegacyV1ThreadImporter.test.ts
 apps/server/src/orchestration-v2/legacy/LegacyV1ThreadImporter.ts
+apps/server/src/orchestration-v2/pullRequestWatch.forgejoComments.test.ts
 apps/server/src/orchestration-v2/pullRequestWatch.test.ts
 apps/server/src/orchestration-v2/pullRequestWatch.ts
 apps/server/src/orchestration-v2/runtimeLayer.test.ts
@@ -24605,8 +24621,8 @@ apps/server/src/orchestration-v2/threadHistoryPaging.ts
 apps/server/src/orchestration-v2/toolOutputImageBytes.test.ts
 apps/server/src/orchestration-v2/toolOutputImageBytes.ts
 apps/server/src/orchestration-v2/unknownField.ts
-apps/server/src/orchestration-v2/workflowAgentAnswers.test.ts
-apps/server/src/orchestration-v2/workflowAgentAnswers.ts
+apps/server/src/orchestration-v2/workflowAgentTranscript.test.ts
+apps/server/src/orchestration-v2/workflowAgentTranscript.ts
 apps/server/src/orchestration-v2/workflowFileRead.ts
 apps/server/src/orchestration-v2/workflowScriptQuery.test.ts
 apps/server/src/orchestration-v2/workflowScriptQuery.ts
@@ -24711,6 +24727,8 @@ apps/server/src/persistence/Migrations/061_PullRequestReviewGuides.ts
 apps/server/src/persistence/Migrations/062_ThreadFailureLookupIndex.ts
 apps/server/src/persistence/Migrations/063_DropUnusedV1Projections.test.ts
 apps/server/src/persistence/Migrations/063_DropUnusedV1Projections.ts
+apps/server/src/persistence/Migrations/064_CanonicalizeThreadPullRequestLinks.test.ts
+apps/server/src/persistence/Migrations/064_CanonicalizeThreadPullRequestLinks.ts
 apps/server/src/persistence/Migrations/OrchestrationV2/ApplicationEventSequenceIndexes.ts
 apps/server/src/persistence/Migrations/OrchestrationV2/ApplicationEventSource.ts
 apps/server/src/persistence/Migrations/OrchestrationV2/EffectCancellation.ts
@@ -24981,6 +24999,7 @@ apps/server/src/rpcInitialItems.ts
 apps/server/src/scheduledTasks/RelayDeliveryProof.ts
 apps/server/src/scheduledTasks/Schedule.test.ts
 apps/server/src/scheduledTasks/Schedule.ts
+apps/server/src/scheduledTasks/ScheduledTaskService.interval.test.ts
 apps/server/src/scheduledTasks/ScheduledTaskService.schedule.test.ts
 apps/server/src/scheduledTasks/ScheduledTaskService.test.ts
 apps/server/src/scheduledTasks/ScheduledTaskService.ts
@@ -25243,6 +25262,7 @@ apps/web/src/components/ChatView.logic.test.ts
 apps/web/src/components/ChatView.logic.ts
 apps/web/src/components/ChatView.tsx
 apps/web/src/components/CommandBlock.tsx
+apps/web/src/components/CommandPalette.focus.browser.test.tsx
 apps/web/src/components/CommandPalette.logic.test.ts
 apps/web/src/components/CommandPalette.logic.ts
 apps/web/src/components/CommandPalette.tsx
@@ -25251,6 +25271,7 @@ apps/web/src/components/CommandPaletteResults.tsx
 apps/web/src/components/ComposerContextLabel.tsx
 apps/web/src/components/ComposerPromptEditor.tsx
 apps/web/src/components/ComposerPromptEditorTiptap.citationDraft.browser.test.tsx
+apps/web/src/components/ComposerPromptEditorTiptap.input.browser.test.tsx
 apps/web/src/components/ComposerPromptEditorTiptap.navigation.browser.test.tsx
 apps/web/src/components/ComposerPromptEditorTiptap.tsx
 apps/web/src/components/ConfirmDialogHost.tsx
@@ -25394,6 +25415,7 @@ apps/web/src/components/chat/ComposerPromptLengthValidation.tsx
 apps/web/src/components/chat/ComposerServerUpdateStatus.tsx
 apps/web/src/components/chat/ComposerStashBadge.tsx
 apps/web/src/components/chat/ComposerStashMenu.tsx
+apps/web/src/components/chat/ComposerSurface.browser.test.tsx
 apps/web/src/components/chat/ComposerSurface.tsx
 apps/web/src/components/chat/ComposerTasksBadge.tsx
 apps/web/src/components/chat/ComposerUsageLimits.tsx
@@ -25402,6 +25424,9 @@ apps/web/src/components/chat/ContextWindowMeter.logic.ts
 apps/web/src/components/chat/ContextWindowMeter.tsx
 apps/web/src/components/chat/DiffStatLabel.tsx
 apps/web/src/components/chat/DraftHeroHeadline.tsx
+apps/web/src/components/chat/DraftProjectName.logic.test.ts
+apps/web/src/components/chat/DraftProjectName.logic.ts
+apps/web/src/components/chat/DraftProjectName.tsx
 apps/web/src/components/chat/ExpandedImageDialog.browser.test.tsx
 apps/web/src/components/chat/ExpandedImageDialog.tsx
 apps/web/src/components/chat/ExpandedImagePreview.test.ts
@@ -25416,6 +25441,7 @@ apps/web/src/components/chat/HtmlRenderDialog.tsx
 apps/web/src/components/chat/HtmlRenderFrame.tsx
 apps/web/src/components/chat/MarkdownThreadLink.tsx
 apps/web/src/components/chat/McpAppFrame.tsx
+apps/web/src/components/chat/MermaidDiagram.browser.test.tsx
 apps/web/src/components/chat/MermaidDiagram.tsx
 apps/web/src/components/chat/MessageCopyButton.tsx
 apps/web/src/components/chat/MessagesTimeline.active-tools.test.ts
@@ -25483,9 +25509,13 @@ apps/web/src/components/chat/TraitsPicker.tsx
 apps/web/src/components/chat/TraitsSpeed.tsx
 apps/web/src/components/chat/UsageLimitRecoveryBanner.tsx
 apps/web/src/components/chat/V2ItemInspector.tsx
+apps/web/src/components/chat/V2LifecycleRow.logic.test.ts
+apps/web/src/components/chat/V2LifecycleRow.logic.ts
 apps/web/src/components/chat/V2LifecycleRow.tsx
 apps/web/src/components/chat/WorkLog.browser.test.tsx
 apps/web/src/components/chat/WorkLog.tsx
+apps/web/src/components/chat/WorkflowOpeningBlock.browser.test.tsx
+apps/web/src/components/chat/WorkflowOpeningBlock.tsx
 apps/web/src/components/chat/WorkspaceEntryIcon.tsx
 apps/web/src/components/chat/WorktreeSetupCard.tsx
 apps/web/src/components/chat/ZoomableImage.tsx
@@ -25497,6 +25527,8 @@ apps/web/src/components/chat/chatCanvasLayout.test.ts
 apps/web/src/components/chat/chatCanvasLayout.ts
 apps/web/src/components/chat/composerAttachmentFiles.test.ts
 apps/web/src/components/chat/composerAttachmentFiles.ts
+apps/web/src/components/chat/composerAttachmentReferences.test.ts
+apps/web/src/components/chat/composerAttachmentReferences.ts
 apps/web/src/components/chat/composerContextUndo.test.ts
 apps/web/src/components/chat/composerContextUndo.ts
 apps/web/src/components/chat/composerEventScope.browser.test.tsx
@@ -25546,6 +25578,7 @@ apps/web/src/components/chat/queuedMessageEdit.ts
 apps/web/src/components/chat/restingComposerControlsMeasurement.test.ts
 apps/web/src/components/chat/restingComposerControlsMeasurement.ts
 apps/web/src/components/chat/runtimeModeConfig.ts
+apps/web/src/components/chat/threadContextDrag.browser.test.tsx
 apps/web/src/components/chat/threadContextDrag.ts
 apps/web/src/components/chat/threadDetailsCardLayout.test.ts
 apps/web/src/components/chat/threadDetailsCardLayout.ts
@@ -25690,6 +25723,7 @@ apps/web/src/components/files/AudioPreview.tsx
 apps/web/src/components/files/BrowserDocumentFrame.tsx
 apps/web/src/components/files/DelimitedTablePreview.tsx
 apps/web/src/components/files/FileBreadcrumbs.tsx
+apps/web/src/components/files/FileBrowserPanel.browser.test.tsx
 apps/web/src/components/files/FileBrowserPanel.tsx
 apps/web/src/components/files/FileMarkdownPreview.tsx
 apps/web/src/components/files/FilePreviewPanel.test.ts
@@ -25717,6 +25751,8 @@ apps/web/src/components/files/fileTreeExpansion.test.ts
 apps/web/src/components/files/fileTreeExpansion.ts
 apps/web/src/components/files/fileTreePathReconciliation.test.ts
 apps/web/src/components/files/fileTreePathReconciliation.ts
+apps/web/src/components/files/loadFileAncestors.test.ts
+apps/web/src/components/files/loadFileAncestors.ts
 apps/web/src/components/files/projectFilesQueryState.test.ts
 apps/web/src/components/files/projectFilesQueryState.test.tsx
 apps/web/src/components/files/projectFilesQueryState.ts
@@ -25727,6 +25763,8 @@ apps/web/src/components/goals/GoalPlanPanel.tsx
 apps/web/src/components/goals/GoalSetupPage.tsx
 apps/web/src/components/goals/GoalsPage.tsx
 apps/web/src/components/goals/ProviderOptionsPicker.tsx
+apps/web/src/components/media/AttachmentImage.browser.test.tsx
+apps/web/src/components/media/AttachmentImage.tsx
 apps/web/src/components/media/MediaActions.test.tsx
 apps/web/src/components/media/MediaActions.tsx
 apps/web/src/components/media/MediaVideoPlayer.tsx
@@ -25750,6 +25788,7 @@ apps/web/src/components/preview/PreviewFaviconIcon.tsx
 apps/web/src/components/preview/PreviewLocalServerCard.tsx
 apps/web/src/components/preview/PreviewMoreMenu.tsx
 apps/web/src/components/preview/PreviewPanel.tsx
+apps/web/src/components/preview/PreviewPanelShell.a11y.browser.test.tsx
 apps/web/src/components/preview/PreviewPanelShell.test.ts
 apps/web/src/components/preview/PreviewPanelShell.tsx
 apps/web/src/components/preview/PreviewRecentUrlCard.tsx
@@ -25780,6 +25819,7 @@ apps/web/src/components/preview/previewEmptyStateLogic.test.ts
 apps/web/src/components/preview/previewEmptyStateLogic.ts
 apps/web/src/components/preview/previewMiniPlayerLayout.test.ts
 apps/web/src/components/preview/previewMiniPlayerLayout.ts
+apps/web/src/components/preview/previewSessionSync.browser.test.ts
 apps/web/src/components/preview/previewViewportRollback.test.ts
 apps/web/src/components/preview/previewViewportRollback.ts
 apps/web/src/components/preview/showPreviewPopup.ts
@@ -25799,6 +25839,7 @@ apps/web/src/components/promptLinks/copyPromptLink.ts
 apps/web/src/components/promptLinks/linkedPrompt.ts
 apps/web/src/components/pullRequest/LinkPullRequestDialog.tsx
 apps/web/src/components/pullRequest/PullRequestActivityUnavailableState.tsx
+apps/web/src/components/pullRequest/PullRequestCandidatePicker.browser.test.tsx
 apps/web/src/components/pullRequest/PullRequestCandidatePicker.tsx
 apps/web/src/components/pullRequest/PullRequestChecksPopover.tsx
 apps/web/src/components/pullRequest/PullRequestCodeTab.tsx
@@ -25809,6 +25850,7 @@ apps/web/src/components/pullRequest/PullRequestCopyableCode.tsx
 apps/web/src/components/pullRequest/PullRequestDetailLayout.tsx
 apps/web/src/components/pullRequest/PullRequestDetailPanel.browser.test.tsx
 apps/web/src/components/pullRequest/PullRequestDetailPanel.tsx
+apps/web/src/components/pullRequest/PullRequestDiffUnavailableState.tsx
 apps/web/src/components/pullRequest/PullRequestEditButton.tsx
 apps/web/src/components/pullRequest/PullRequestGhosts.tsx
 apps/web/src/components/pullRequest/PullRequestGuideTab.tsx
@@ -25854,6 +25896,8 @@ apps/web/src/components/pullRequest/pullRequestDetail.logic.test.ts
 apps/web/src/components/pullRequest/pullRequestDetail.logic.ts
 apps/web/src/components/pullRequest/pullRequestDiff.logic.test.ts
 apps/web/src/components/pullRequest/pullRequestDiff.logic.ts
+apps/web/src/components/pullRequest/pullRequestDiffError.test.ts
+apps/web/src/components/pullRequest/pullRequestDiffError.ts
 apps/web/src/components/pullRequest/pullRequestEditing.logic.test.ts
 apps/web/src/components/pullRequest/pullRequestEditing.logic.ts
 apps/web/src/components/pullRequest/pullRequestFileOrder.logic.test.ts
@@ -25922,6 +25966,7 @@ apps/web/src/components/settings/CustomModelEditor.tsx
 apps/web/src/components/settings/DatabaseStorageNotice.tsx
 apps/web/src/components/settings/DeviceHostEditor.tsx
 apps/web/src/components/settings/DeviceHostsSettings.tsx
+apps/web/src/components/settings/DeviceToolUpdate.browser.test.tsx
 apps/web/src/components/settings/DiagnosticsSettings.tsx
 apps/web/src/components/settings/EnvironmentIconPicker.test.ts
 apps/web/src/components/settings/EnvironmentIconPicker.tsx
@@ -25929,6 +25974,7 @@ apps/web/src/components/settings/EnvironmentRoutesList.tsx
 apps/web/src/components/settings/EnvironmentRow.tsx
 apps/web/src/components/settings/ExpandableText.tsx
 apps/web/src/components/settings/FoldedSettingsSection.tsx
+apps/web/src/components/settings/FontFamilyPicker.browser.test.tsx
 apps/web/src/components/settings/FontFamilyPicker.tsx
 apps/web/src/components/settings/GitHubAccountSettings.logic.test.ts
 apps/web/src/components/settings/GitHubAccountSettings.logic.ts
@@ -26152,6 +26198,7 @@ apps/web/src/components/ui/toggle.tsx
 apps/web/src/components/ui/tooltip.tsx
 apps/web/src/components/ui/wizard.tsx
 apps/web/src/components/usage/UsageLimits.tsx
+apps/web/src/components/usage/UsageLimitsPooled.browser.test.tsx
 apps/web/src/components/usage/UsageLimitsPooled.tsx
 apps/web/src/components/usage/UsageModelDialog.tsx
 apps/web/src/components/usage/UsagePage.browser.test.tsx
@@ -26277,6 +26324,7 @@ apps/web/src/hooks/useMediaQuery.ts
 apps/web/src/hooks/useNavigateBack.ts
 apps/web/src/hooks/useNewProject.ts
 apps/web/src/hooks/useNowMinute.ts
+apps/web/src/hooks/useNowSecond.ts
 apps/web/src/hooks/useOpenPanelPullRequestUrl.ts
 apps/web/src/hooks/usePreviewPanelInlineSize.ts
 apps/web/src/hooks/useProactivePanels.ts
@@ -26653,6 +26701,7 @@ apps/web/src/test-fixtures.ts
 apps/web/src/themeBoot.test.ts
 apps/web/src/themePalette.test.ts
 apps/web/src/themePalette.ts
+apps/web/src/threadNotifications.test.ts
 apps/web/src/threadNotifications.ts
 apps/web/src/threadRoutes.test.ts
 apps/web/src/threadRoutes.ts
@@ -27022,6 +27071,8 @@ oxlint-plugin-t3code/rules/no-global-process-runtime.test.ts
 oxlint-plugin-t3code/rules/no-global-process-runtime.ts
 oxlint-plugin-t3code/rules/no-hermes-unsupported-apis.test.ts
 oxlint-plugin-t3code/rules/no-hermes-unsupported-apis.ts
+oxlint-plugin-t3code/rules/no-hookless-use-function.test.ts
+oxlint-plugin-t3code/rules/no-hookless-use-function.ts
 oxlint-plugin-t3code/rules/no-inline-schema-compile.test.ts
 oxlint-plugin-t3code/rules/no-inline-schema-compile.ts
 oxlint-plugin-t3code/rules/no-low-value-comments.ts
@@ -27749,6 +27800,7 @@ packages/provider-core/src/server/textGenerationOperations.ts
 packages/provider-core/src/server/textGenerationPolicy.ts
 packages/provider-core/src/server/textGenerationPrompts.test.ts
 packages/provider-core/src/server/textGenerationPrompts.ts
+packages/provider-core/src/server/textGenerationUtils.test.ts
 packages/provider-core/src/server/textGenerationUtils.ts
 packages/provider-core/src/server/threadTitleContext.test.ts
 packages/provider-core/src/server/threadTitleContext.ts
@@ -27841,6 +27893,8 @@ packages/provider-muse/src/server/status.test.ts
 packages/provider-muse/src/server/status.ts
 packages/provider-muse/src/server/textGeneration.test.ts
 packages/provider-muse/src/server/textGeneration.ts
+packages/provider-muse/src/server/usageLimits.test.ts
+packages/provider-muse/src/server/usageLimits.ts
 packages/provider-muse/src/settings.ts
 packages/provider-muse/src/testing.ts
 packages/provider-muse/tsconfig.json
@@ -28268,6 +28322,7 @@ packages/source-control-gitlab/package.json
 packages/source-control-gitlab/src/client/definition.ts
 packages/source-control-gitlab/src/server/GitLabCli.test.ts
 packages/source-control-gitlab/src/server/GitLabCli.ts
+packages/source-control-gitlab/src/server/GitLabPullRequestCli.legacy.test.ts
 packages/source-control-gitlab/src/server/GitLabPullRequestCli.test.ts
 packages/source-control-gitlab/src/server/GitLabPullRequestCli.ts
 packages/source-control-gitlab/src/server/GitLabPullRequestProvider.test.ts
@@ -28371,6 +28426,7 @@ scripts/lib/third-party-licenses.ts
 scripts/lib/update-manifest.ts
 scripts/merge-update-manifests.test.ts
 scripts/merge-update-manifests.ts
+scripts/mobile-native-client.test.ts
 scripts/mobile-native-client.ts
 scripts/mobile-native-static-check.test.ts
 scripts/mobile-native-static-check.ts
