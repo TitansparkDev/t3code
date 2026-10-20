@@ -95,6 +95,7 @@ import { isSnoozed } from "../orchestration-v2/ThreadSettlementService.ts";
 import { userFacingDispatchErrorMessage } from "../orchestration-v2/UserFacingErrors.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
+import { providerBlock, providerUsageReport } from "../provider/providerUsageBlock.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import {
@@ -1913,6 +1914,7 @@ const make = Effect.gen(function* () {
           Effect.map((settings) => settings.providerModelPreferences ?? {}),
           Effect.mapError(() => failure("orchestration_error", "Unable to read server settings.")),
         );
+        const nowMs = yield* Clock.currentTimeMillis;
         return {
           parentThreadId: parent?.thread.id ?? null,
           inheritedProviderInstanceId: parent?.thread.modelSelection.instanceId ?? null,
@@ -1935,13 +1937,22 @@ const make = Effect.gen(function* () {
                       model.isCustom ||
                       !modelPreferences[provider.instanceId]?.hiddenModels.includes(model.slug),
                   )
-                  .map((model) => ({
-                    id: model.slug,
-                    label: model.name ?? null,
-                    ...(model.capabilities?.optionDescriptors === undefined
-                      ? {}
-                      : { options: model.capabilities.optionDescriptors }),
-                  })) ?? [],
+                  .map((model) => {
+                    const block = providerBlock(provider, model.slug, nowMs);
+                    return {
+                      id: model.slug,
+                      label: model.name ?? null,
+                      ...(model.capabilities?.optionDescriptors === undefined
+                        ? {}
+                        : { options: model.capabilities.optionDescriptors }),
+                      ...(block?.until === undefined
+                        ? {}
+                        : {
+                            limitedUntil: DateTime.formatIso(DateTime.makeUnsafe(block.until)),
+                            limitedReason: block.reason,
+                          }),
+                    };
+                  }) ?? [],
               ...(provider.supportedRuntimeModes === undefined ||
               provider.supportedRuntimeModes.length === 0
                 ? {}
@@ -1949,6 +1960,7 @@ const make = Effect.gen(function* () {
               canRunChildTask: constraints.length === 0,
               canRunCrossProviderChildTask: constraints.length === 0,
               constraints: [...constraints],
+              usage: providerUsageReport(provider, nowMs),
             };
           }),
           features: {

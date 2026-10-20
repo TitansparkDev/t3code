@@ -98,6 +98,7 @@ import * as Stream from "effect/Stream";
 
 import * as ProviderRegistryModule from "../provider/ProviderRegistry.ts";
 import { GoalThreads, type GoalThreadView } from "./GoalThreads.ts";
+import { providerBlock } from "../provider/providerUsageBlock.ts";
 import { nextUsageLimitRetryAt, providerUsageLimitFromError } from "./usageLimitText.ts";
 import { GoalBeads } from "./GoalBeads.ts";
 import { GoalStore } from "./GoalStore.ts";
@@ -207,79 +208,6 @@ export function nextAgentIndex(
     if (!best || load < best.load) best = { index, load };
   });
   return best?.index;
-}
-
-/** Words in a usage window's name that say nothing about which models it covers. */
-const GENERIC_WINDOW_WORDS = new Set([
-  "weekly",
-  "daily",
-  "monthly",
-  "session",
-  "hour",
-  "hours",
-  "day",
-  "days",
-  "week",
-  "month",
-  "limit",
-  "limits",
-  "usage",
-  "quota",
-  "five",
-  "seven",
-  "thirty",
-  "primary",
-  "secondary",
-  "window",
-  "rolling",
-  "spend",
-  "credits",
-]);
-
-/**
- * Whether a usage window covers `model`. A window named for a model family
- * (Claude's `seven_day_opus`, Antigravity's "Gemini 3 Flash") covers only models
- * that carry all of those words; a plain session or weekly window covers every model.
- */
-function windowCoversModel(
-  window: { readonly id: string; readonly label: string },
-  model: string,
-): boolean {
-  const words = `${window.id} ${window.label}`
-    .toLowerCase()
-    .split(/[^a-z0-9]+/u)
-    .filter((word) => word.length >= 3 && !/^\d+$/u.test(word) && !GENERIC_WINDOW_WORDS.has(word));
-  const slug = model.toLowerCase();
-  return words.every((word) => slug.includes(word));
-}
-
-/** A usage window counts as used up from this percentage. */
-const WINDOW_FULL_PERCENT = 99.5;
-
-/**
- * Why a provider cannot take new chats for `model` right now, or undefined. Looks
- * at the provider's own report: not installed, switched off, signed out, or a
- * usage window used up that has not reset yet.
- */
-export function providerBlock(
-  provider: ServerProvider | undefined,
-  model: string,
-  nowMs: number,
-): { readonly until?: number; readonly reason: string } | undefined {
-  if (!provider) return { reason: "is not set up" };
-  if (!provider.enabled) return { reason: "is switched off" };
-  if (provider.availability === "unavailable" || !provider.installed) {
-    return { reason: "is not installed" };
-  }
-  if (provider.auth.status === "unauthenticated") return { reason: "is signed out" };
-  let until: number | undefined;
-  for (const window of provider.usageLimits?.windows ?? []) {
-    if (window.usedPercent < WINDOW_FULL_PERCENT || window.resetsAt === undefined) continue;
-    const resetsAt = Date.parse(window.resetsAt);
-    if (!(resetsAt > nowMs) || !windowCoversModel(window, model)) continue;
-    until = Math.max(until ?? 0, resetsAt);
-  }
-  return until === undefined ? undefined : { until, reason: "is out of usage" };
 }
 
 /** Minutes a provider is left alone after failures in a row, growing to an hour. */

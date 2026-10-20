@@ -24943,6 +24943,8 @@ apps/server/src/provider/providerMaintenanceRunner.test.ts
 apps/server/src/provider/providerMaintenanceRunner.ts
 apps/server/src/provider/providerStatusCache.test.ts
 apps/server/src/provider/providerStatusCache.ts
+apps/server/src/provider/providerUsageBlock.test.ts
+apps/server/src/provider/providerUsageBlock.ts
 apps/server/src/provider/resetCreditCoordinator.test.ts
 apps/server/src/provider/resetCreditCoordinator.ts
 apps/server/src/provider/testFixtures/codexCollabMockPeer.mjs

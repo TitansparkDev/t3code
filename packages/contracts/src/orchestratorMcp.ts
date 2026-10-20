@@ -492,6 +492,22 @@ export const OrchestratorMcpThreadInterruptResult = Schema.Struct({
 });
 export type OrchestratorMcpThreadInterruptResult = typeof OrchestratorMcpThreadInterruptResult.Type;
 
+export const OrchestratorMcpProviderUsage = Schema.Struct({
+  checkedAt: Schema.optional(IsoDateTime),
+  windows: Schema.Array(
+    Schema.Struct({
+      label: Schema.String,
+      kind: Schema.Literals(["session", "weekly", "monthly", "other"]),
+      usedPercent: Schema.Number,
+      resetsAt: Schema.optional(Schema.String),
+    }),
+  ),
+  status: Schema.Literals(["available", "limited", "unknown"]),
+  limitedUntil: Schema.optional(Schema.String),
+  reason: Schema.optional(Schema.String),
+});
+export type OrchestratorMcpProviderUsage = typeof OrchestratorMcpProviderUsage.Type;
+
 export const OrchestratorMcpProviderCapability = Schema.Struct({
   providerInstanceId: ProviderInstanceId,
   driverKind: ProviderDriverKind,
@@ -501,12 +517,15 @@ export const OrchestratorMcpProviderCapability = Schema.Struct({
       id: Schema.String,
       label: Schema.NullOr(Schema.String),
       options: Schema.optional(Schema.Array(ProviderOptionDescriptor)),
+      limitedUntil: Schema.optional(Schema.String),
+      limitedReason: Schema.optional(Schema.String),
     }),
   ),
   runtimeModes: Schema.optional(Schema.Array(RuntimeMode)),
   canRunChildTask: Schema.Boolean,
   canRunCrossProviderChildTask: Schema.Boolean,
   constraints: Schema.Array(Schema.String),
+  usage: Schema.optional(OrchestratorMcpProviderUsage),
 });
 export type OrchestratorMcpProviderCapability = typeof OrchestratorMcpProviderCapability.Type;
 
