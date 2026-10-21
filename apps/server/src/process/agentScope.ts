@@ -7,6 +7,7 @@ import {
   agentScopeCommand,
   type AgentScopeShape,
   type AgentSystemdScope,
+  PRIVATE_AGENT_MEMORY_LIMIT_MB,
 } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { resolveCommandPath } from "@t3tools/shared/shell";
@@ -15,6 +16,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 
+import { readHost } from "../../../../packages/agent-queue-core/src/hostCapacity.ts";
 import * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
 
@@ -38,6 +40,12 @@ export function agentSliceMemoryLimits(totalBytes: number) {
     high: Math.max(totalBytes - 6 * GiB, Math.floor(totalBytes / 2)),
     max: Math.max(totalBytes - 4 * GiB, Math.floor(totalBytes * 0.75)),
   };
+}
+
+export function privateAgentMemoryLimitMb(totalBytes: number, reservationMb = 0): number {
+  const hostCeilingMb = Math.floor(agentSliceMemoryLimits(totalBytes).max / (1024 * 1024));
+  const reservation = Number.isFinite(reservationMb) ? Math.max(0, reservationMb) : 0;
+  return Math.min(hostCeilingMb, PRIVATE_AGENT_MEMORY_LIMIT_MB + reservation);
 }
 
 export interface ScopeState {
@@ -93,7 +101,12 @@ const MAX_TRACKED_THREADS = 500;
 
 export const make = Effect.gen(function* () {
   const platform = yield* HostProcess.Platform;
-  if (platform !== "linux") return AgentScope.defaultValue();
+  if (platform !== "linux") {
+    yield* Effect.logWarning("Agent memory limits are reduced: cgroups are unavailable", {
+      platform,
+    });
+    return AgentScope.defaultValue();
+  }
 
   const runner = yield* ProcessRunner.ProcessRunner;
   const fileSystem = yield* FileSystem.FileSystem;
@@ -101,6 +114,7 @@ export const make = Effect.gen(function* () {
   const hostEnvironment = yield* HostProcess.Environment;
   const { stateDir } = yield* ServerConfig.ServerConfig;
   const ownedSlice = ownedAgentSlice(stateDir);
+  const effectiveTotalBytes = Math.min(NodeOS.totalmem(), readHost().totalMb * 1024 ** 2);
   const layerScope = yield* Effect.scope;
 
   const resolve = (command: string, env: NodeJS.ProcessEnv) =>
@@ -150,7 +164,12 @@ export const make = Effect.gen(function* () {
   const systemd = yield* Effect.cached(
     Effect.gen(function* () {
       const runtimeDir = hostEnvironment.XDG_RUNTIME_DIR;
-      if (runtimeDir === undefined || runtimeDir.length === 0) return undefined;
+      if (runtimeDir === undefined || runtimeDir.length === 0) {
+        yield* Effect.logWarning(
+          "Agent memory limits are reduced: no systemd user runtime is available",
+        );
+        return undefined;
+      }
       const systemdRun = yield* resolve("systemd-run", hostEnvironment);
       const systemctl = yield* resolve("systemctl", hostEnvironment);
       if (systemdRun === null || systemctl === null) return undefined;
@@ -177,20 +196,21 @@ export const make = Effect.gen(function* () {
           ? stopOptions
           : undefined;
       if (scopeOptions === undefined) {
-        yield* Effect.logInfo("Agent scopes are off: no systemd user manager");
+        yield* Effect.logWarning("Agent memory limits are reduced: no systemd user manager");
         return undefined;
       }
-      const limits = agentSliceMemoryLimits(NodeOS.totalmem());
+      const limits = agentSliceMemoryLimits(effectiveTotalBytes);
+      // Keep the operator's parent slice settings intact; this child is ours to bound.
       const limited = yield* run(systemctl, [
         "--user",
         "set-property",
         "--runtime",
-        AGENT_SLICE,
+        ownedSlice,
         `MemoryHigh=${limits.high}`,
         `MemoryMax=${limits.max}`,
       ]);
       if (limited._tag === "None" || limited.value.code !== 0) {
-        yield* Effect.logWarning("Could not set memory limits on the agents slice", {
+        yield* Effect.logWarning("Could not set memory limits on the owned agents slice", {
           stderr: limited._tag === "Some" ? limited.value.stderr.trim() : undefined,
         });
       }
@@ -318,6 +338,7 @@ export const make = Effect.gen(function* () {
       threadId,
       env,
       survivesRestart,
+      reservationMb,
     }) {
       const resolved = yield* resolve(command, env ?? hostEnvironment);
       if (resolved === null) return { command, args };
@@ -330,6 +351,11 @@ export const make = Effect.gen(function* () {
         runtimeDir: scope.runtimeDir,
         slice: survivesRestart === true ? AGENT_SLICE : ownedSlice,
         unit,
+        ...(threadId === undefined
+          ? {}
+          : {
+              memoryLimitMb: privateAgentMemoryLimitMb(effectiveTotalBytes, reservationMb),
+            }),
         // Without a thread nothing reads the result, so let systemd unload
         // the unit even when it fails.
         options: threadId === undefined ? [...scope.scopeOptions, "--collect"] : scope.scopeOptions,

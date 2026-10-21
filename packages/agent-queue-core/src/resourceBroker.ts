@@ -389,11 +389,6 @@ CREATE TABLE IF NOT EXISTS resource_hints (
 export const STARVATION_MS = 30_000;
 /** A holder that has not heartbeated for this long is torn down and its units are freed. */
 export const LEASE_MS = 120_000;
-/**
- * With nothing of ours running, a request that has waited this long for memory runs anyway: the
- * pressure comes from outside the queue and waiting longer would never end.
- */
-export const IDLE_MEMORY_OVERRIDE_MS = 5 * 60_000;
 /** Memory of a fresh grant keeps counting against headroom for this long, until it shows in MemAvailable. */
 export const RAMP_MS = 90_000;
 /** Finished tickets are kept this long for status and for owners to read results. */
@@ -875,12 +870,8 @@ export class ResourceBroker {
           slotsFor[item.name] = free.slice(0, item.units);
         }
         const memoryMb = this.memoryOf(needs, config);
-        // Nothing of ours is running, so the shortage is not ours to wait out forever.
-        const idle =
-          active.length === 0 &&
-          granted.length === 0 &&
-          now - row.enqueued_at >= IDLE_MEMORY_OVERRIDE_MS;
-        const memoryFits = memoryMb === 0 || idle || freeMb >= memoryMb;
+        const pressure = (host.memoryPressure ?? 0) >= 10 || host.swapPressure === true;
+        const memoryFits = memoryMb === 0 || (!pressure && freeMb >= memoryMb);
         if (fits && memoryFits) {
           this.db
             .prepare(

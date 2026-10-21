@@ -14,6 +14,8 @@ export interface AgentScopeShape {
      * killed server left running before it resumes their sessions.
      */
     readonly survivesRestart?: boolean | undefined;
+    /** Extra memory already reserved for a child resource job; it raises this private scope's ceiling. */
+    readonly reservationMb?: number | undefined;
   }) => Effect.Effect<AgentScopeCommand>;
   readonly oomKilled: (threadId: string) => Effect.Effect<boolean>;
   /**
@@ -43,6 +45,7 @@ export const AgentScopeThreadId = Context.Reference<string | undefined>(
 );
 
 export const AGENT_OOM_SCORE_ADJ = 800;
+export const PRIVATE_AGENT_MEMORY_LIMIT_MB = 8192;
 
 export const RAISE_OOM_SCORE_LINE = `{ echo ${AGENT_OOM_SCORE_ADJ} >/proc/self/oom_score_adj; } 2>/dev/null`;
 
@@ -64,6 +67,7 @@ export interface AgentSystemdScope {
   readonly unit: string;
   readonly runtimeDir: string;
   readonly options: ReadonlyArray<string>;
+  readonly memoryLimitMb?: number | undefined;
 }
 
 /**
@@ -94,6 +98,9 @@ export function agentScopeCommand(input: {
       `--slice=${scope.slice}`,
       `--unit=${scope.unit}`,
       ...scope.options,
+      ...(scope.memoryLimitMb === undefined
+        ? []
+        : [`--property=MemoryMax=${scope.memoryLimitMb * 1024 * 1024}`]),
       "--",
       command,
       ...args,

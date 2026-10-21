@@ -27183,6 +27183,7 @@ packages/agent-queue-core/test/fullStressHarness.test.ts
 packages/agent-queue-core/test/harness/contractHarness.ts
 packages/agent-queue-core/test/harness/gitHarness.test.ts
 packages/agent-queue-core/test/harness/gitHarness.ts
+packages/agent-queue-core/test/hostCapacity.test.ts
 packages/agent-queue-core/test/integration.test.ts
 packages/agent-queue-core/test/leaseRecovery.test.ts
 packages/agent-queue-core/test/linearize.test.ts

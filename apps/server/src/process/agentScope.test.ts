@@ -12,11 +12,13 @@ import { ChildProcessSpawner } from "effect/process";
 
 import * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
+import { readHost } from "../../../../packages/agent-queue-core/src/hostCapacity.ts";
 import {
   agentSliceMemoryLimits,
   classifyScope,
   make,
   ownedAgentSlice,
+  privateAgentMemoryLimitMb,
   type ScopeState,
 } from "./agentScope.ts";
 
@@ -58,6 +60,17 @@ describe("agentSliceMemoryLimits", () => {
 
   it("still gives agents most of a small machine", () => {
     expect(agentSliceMemoryLimits(8 * GiB)).toEqual({ high: 4 * GiB, max: 6 * GiB });
+  });
+});
+
+describe("privateAgentMemoryLimitMb", () => {
+  it("starts at 8192 MiB and includes an admitted child reservation within the host ceiling", () => {
+    expect(privateAgentMemoryLimitMb(64 * GiB)).toBe(8192);
+    expect(privateAgentMemoryLimitMb(64 * GiB, 2048)).toBe(10240);
+  });
+
+  it("caps small hosts at the host-derived agent ceiling", () => {
+    expect(privateAgentMemoryLimitMb(8 * GiB, 8192)).toBe(6144);
   });
 });
 
@@ -169,6 +182,7 @@ describe("AgentScope service", () => {
         expect(stops).toEqual([["--user", "stop", ownedAgentSlice(stateDir)]]);
         expect(sliceOf(agent)).toBe(ownedAgentSlice(stateDir));
         expect(agent.args).toContain("--property=TimeoutStopSec=10s");
+        expect(agent.args).toContain(`--property=MemoryMax=${8192 * 1024 * 1024}`);
         const terminal = yield* scope.wrap({
           command: "agent",
           args: [],
@@ -177,6 +191,14 @@ describe("AgentScope service", () => {
         });
         expect(sliceOf(terminal)).toBe("app-t3code-agents.slice");
         expect(calls.filter(([, verb]) => verb === "stop")).toHaveLength(1);
+        expect(calls).toContainEqual([
+          "--user",
+          "set-property",
+          "--runtime",
+          ownedAgentSlice(stateDir),
+          `MemoryHigh=${agentSliceMemoryLimits(readHost().totalMb * 1024 ** 2).high}`,
+          `MemoryMax=${agentSliceMemoryLimits(readHost().totalMb * 1024 ** 2).max}`,
+        ]);
       }),
     ),
   );
