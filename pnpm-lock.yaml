@@ -1375,9 +1375,15 @@ importers:
       effect:
         specifier: 4.0.5
         version: 4.0.5
+      remark-parse:
+        specifier: 'catalog:'
+        version: 11.0.0(supports-color@8.1.1)
       three:
         specifier: 0.180.0
         version: 0.180.0
+      unified:
+        specifier: 'catalog:'
+        version: 11.0.5
     devDependencies:
       '@effect/vitest':
         specifier: 4.0.5

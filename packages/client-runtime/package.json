@@ -472,7 +472,9 @@
     "@t3tools/source-control-github": "workspace:*",
     "@t3tools/source-control-gitlab": "workspace:*",
     "effect": "catalog:",
-    "three": "0.180.0"
+    "remark-parse": "catalog:",
+    "three": "0.180.0",
+    "unified": "catalog:"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",
