@@ -24090,6 +24090,8 @@ apps/server/src/observability/OtlpEndpointCheck.test.ts
 apps/server/src/observability/OtlpEndpointCheck.ts
 apps/server/src/observability/RpcInstrumentation.test.ts
 apps/server/src/observability/RpcInstrumentation.ts
+apps/server/src/observability/RuntimeResourceDiagnostics.test.ts
+apps/server/src/observability/RuntimeResourceDiagnostics.ts
 apps/server/src/orchestration-v2/AcpRegistryOrchestratorV2.live.test.ts
 apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.test.ts
 apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.testkit.ts
