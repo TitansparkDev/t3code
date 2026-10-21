@@ -189,7 +189,9 @@ const smokeCliArchive = Effect.fn("smokeCliArchive")(function* (input: {
       detail: `no 200 from / within 30s\n${stdout}${stderr}`,
     });
   }
-  if (Option.isNone(shutdown) || Number(shutdown.value) !== 0) {
+  // NodeRuntime reports an interrupted main fiber as 130 after its shutdown
+  // finalizers have completed; that is the expected SIGTERM result here.
+  if (Option.isNone(shutdown) || ![0, 130].includes(Number(shutdown.value))) {
     return yield* new CliArchiveSmokeError({
       step: "stopping the extracted archive server",
       detail: Option.isNone(shutdown)
