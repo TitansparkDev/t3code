@@ -1,4 +1,4 @@
-import type { Goal } from "@t3tools/contracts/goals";
+import type { Goal, GoalEscalation } from "@t3tools/contracts/goals";
 
 /** One line of progress: agents running, completed, needing you, and how many have started. */
 export function describeGoalProgress(
@@ -92,4 +92,44 @@ export function describeGoalPauses(
         : nameOf(pause.instanceId);
       return `${name} is set aside (${what}) until ${formatTime(pause.until)}`;
     });
+}
+
+const ESCALATION_KIND_LABEL: Record<GoalEscalation["kind"], string> = {
+  attention: "Asked for help",
+  "repeated-failure": "Repeated failures",
+  blocked: "Blocked",
+  stuck: "Stuck",
+  manual: "Asked by you",
+};
+
+const ESCALATION_STATUS_LABEL: Record<GoalEscalation["status"], string> = {
+  open: "Waiting for overseer",
+  reviewing: "Overseer reviewing",
+  "needs-person": "Needs you",
+  resolved: "Resolved",
+  cancelled: "Cancelled",
+};
+
+export function describeEscalationKind(escalation: Pick<GoalEscalation, "kind">): string {
+  return ESCALATION_KIND_LABEL[escalation.kind];
+}
+
+export function describeEscalationStatus(escalation: Pick<GoalEscalation, "status">): string {
+  return ESCALATION_STATUS_LABEL[escalation.status];
+}
+
+/** Still needs a decision: the overseer has not answered it, or it was handed to the person. */
+export function isEscalationOpen(escalation: Pick<GoalEscalation, "status">): boolean {
+  return (
+    escalation.status === "open" ||
+    escalation.status === "reviewing" ||
+    escalation.status === "needs-person"
+  );
+}
+
+/** Newest first, so the latest problem is at the top of a goal's overseer section. */
+export function sortEscalationsNewestFirst<T extends Pick<GoalEscalation, "createdAt">>(
+  escalations: ReadonlyArray<T>,
+): ReadonlyArray<T> {
+  return [...escalations].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }

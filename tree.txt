@@ -22836,6 +22836,7 @@ apps/mobile/src/features/files/thread-file-navigator-pane.tsx
 apps/mobile/src/features/files/useFileTreeEntries.ts
 apps/mobile/src/features/files/workspaceFileAssetUrl.ts
 apps/mobile/src/features/goals/GoalEditRouteScreen.tsx
+apps/mobile/src/features/goals/GoalEscalationsSection.tsx
 apps/mobile/src/features/goals/GoalNewRouteScreens.tsx
 apps/mobile/src/features/goals/GoalSetupRouteScreen.tsx
 apps/mobile/src/features/goals/GoalsRouteScreen.tsx
@@ -25771,6 +25772,7 @@ apps/web/src/components/files/projectFilesQueryState.ts
 apps/web/src/components/files/useDirectoryEntries.ts
 apps/web/src/components/files/useFileSaveCoordinator.browser.test.tsx
 apps/web/src/components/files/useFileSaveCoordinator.ts
+apps/web/src/components/goals/GoalEscalations.tsx
 apps/web/src/components/goals/GoalPlanPanel.tsx
 apps/web/src/components/goals/GoalSetupPage.tsx
 apps/web/src/components/goals/GoalsPage.tsx

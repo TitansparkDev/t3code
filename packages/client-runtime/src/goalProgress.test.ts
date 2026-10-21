@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { describeGoalPauses, describeGoalProgress, describeGoalQueue } from "./goalProgress.ts";
+import {
+  describeGoalPauses,
+  describeGoalProgress,
+  describeGoalQueue,
+  isEscalationOpen,
+  sortEscalationsNewestFirst,
+} from "./goalProgress.ts";
 
 const chat = (status: string, waitingForLimit?: boolean) =>
   ({ status, ...(waitingForLimit ? { waitingForLimit } : {}) }) as never;
@@ -110,5 +116,25 @@ describe("describeGoalPauses", () => {
       "CODEX is set aside (usage limit) until 10-09",
       "GEMINI flash is set aside (recent failures) until 10-09",
     ]);
+  });
+});
+
+describe("sortEscalationsNewestFirst", () => {
+  it("puts the latest escalation first without changing the input", () => {
+    const older = { id: "a", createdAt: "2026-10-20T10:00:00.000Z" };
+    const newer = { id: "b", createdAt: "2026-10-21T09:00:00.000Z" };
+    const input = [older, newer];
+    expect(sortEscalationsNewestFirst(input).map((item) => item.id)).toEqual(["b", "a"]);
+    expect(input.map((item) => item.id)).toEqual(["a", "b"]);
+  });
+});
+
+describe("isEscalationOpen", () => {
+  it("treats only resolved and cancelled escalations as closed", () => {
+    expect(
+      ["open", "reviewing", "needs-person", "resolved", "cancelled"].map((status) =>
+        isEscalationOpen({ status: status as never }),
+      ),
+    ).toEqual([true, true, true, false, false]);
   });
 });

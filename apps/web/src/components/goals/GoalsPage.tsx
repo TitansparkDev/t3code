@@ -15,6 +15,7 @@ import {
 import { isElectron } from "../../env";
 import { useEnvironmentProviders, useEnvironments } from "../../state/environments";
 import { useGoals } from "../../state/goals";
+import { AskOverseerControl, type EscalationActions, GoalOverseerSection } from "./GoalEscalations";
 import { Button } from "../ui/button";
 import { toastManager } from "../ui/toast";
 import { WorkspacePageContainer } from "../WorkspacePageContainer";
@@ -58,15 +59,17 @@ function GoalCard({
   goal,
   nameOf,
   onAction,
+  escalations,
 }: {
   environmentId: EnvironmentId;
   goal: Goal;
   nameOf: (instanceId: string) => string;
   onAction: (action: "stop" | "restart" | "addAgents" | "remove", goal: Goal) => void;
+  escalations: EscalationActions;
 }) {
-  // Working and finished agents are only counted; the ones that need a look are listed.
+  // Working and finished agents are only counted; the ones that need a look or are held for the overseer are listed.
   const attentionChats = goal.chats.filter(
-    (chat) => chat.status === "attention" || chat.status === "failed",
+    (chat) => chat.status === "attention" || chat.status === "failed" || chat.escalationId,
   );
   return (
     <li className="space-y-3 rounded-lg border border-border/60 p-4">
@@ -158,6 +161,9 @@ function GoalCard({
           </Button>
         </div>
       </div>
+      {goal.status !== "draft" ? (
+        <GoalOverseerSection actions={escalations} environmentId={environmentId} goal={goal} />
+      ) : null}
       {attentionChats.length > 0 ? (
         <ul className="space-y-1">
           {attentionChats.map((chat) => (
@@ -166,20 +172,33 @@ function GoalCard({
               key={chat.threadId}
             >
               <span>
-                {chat.beadTitle ?? "An agent"} · {chat.status === "failed" ? "failed" : "needs you"}
+                {chat.beadTitle ?? "An agent"} ·{" "}
+                {chat.escalationId
+                  ? "Waiting for overseer"
+                  : chat.status === "failed"
+                    ? "failed"
+                    : "needs you"}
               </span>
-              <Button
-                render={
-                  <Link
-                    params={{ environmentId, threadId: chat.threadId }}
-                    to="/$environmentId/$threadId"
+              <div className="flex shrink-0 items-center gap-1">
+                {chat.escalationId ? null : (
+                  <AskOverseerControl
+                    label="Ask overseer"
+                    onAsk={(note) => escalations.ask(goal.id, chat.threadId, note)}
                   />
-                }
-                size="xs"
-                variant="outline"
-              >
-                <ExternalLinkIcon className="size-3" /> Open chat
-              </Button>
+                )}
+                <Button
+                  render={
+                    <Link
+                      params={{ environmentId, threadId: chat.threadId }}
+                      to="/$environmentId/$threadId"
+                    />
+                  }
+                  size="xs"
+                  variant="outline"
+                >
+                  <ExternalLinkIcon className="size-3" /> Open chat
+                </Button>
+              </div>
             </li>
           ))}
         </ul>
@@ -194,7 +213,16 @@ const ADD_AGENTS_COUNT = 3;
 export function GoalsPage() {
   const { environments: presentations } = useEnvironments();
   const providersByEnvironment = useEnvironmentProviders();
-  const { environments, stop, restart, addAgents, remove } = useGoals();
+  const {
+    environments,
+    stop,
+    restart,
+    addAgents,
+    remove,
+    resolveEscalation,
+    askOverseer,
+    cancelEscalation,
+  } = useGoals();
   const nameFor = (environmentId: EnvironmentId) => (instanceId: string) =>
     providersByEnvironment
       .get(environmentId)
@@ -203,6 +231,25 @@ export function GoalsPage() {
     presentations.find((candidate) => candidate.environmentId === environmentId)?.label ??
     "Environment";
   const total = environments.reduce((count, environment) => count + environment.goals.length, 0);
+
+  /** Escalation calls report a failure as a toast and keep the page as it was. */
+  const escalationActions = (environmentId: EnvironmentId): EscalationActions => {
+    const report = (promise: Promise<void>) =>
+      promise.catch((error: unknown) => {
+        toastManager.add({
+          type: "error",
+          title: "Could not update the overseer",
+          description: error instanceof Error ? error.message : "Try again.",
+        });
+        throw error;
+      });
+    return {
+      resolve: (id, action, note) => report(resolveEscalation(environmentId, { id, action, note })),
+      cancel: (id) => report(cancelEscalation(environmentId, id)),
+      ask: (goalId, threadId, note) =>
+        report(askOverseer(environmentId, { goalId, note, ...(threadId ? { threadId } : {}) })),
+    };
+  };
 
   const onAction =
     (environmentId: EnvironmentId) =>
@@ -263,6 +310,7 @@ export function GoalsPage() {
                         key={goal.id}
                         nameOf={nameFor(environment.environmentId)}
                         onAction={onAction(environment.environmentId)}
+                        escalations={escalationActions(environment.environmentId)}
                       />
                     ))}
                   </ul>
