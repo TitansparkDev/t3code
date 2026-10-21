@@ -133,6 +133,14 @@ export interface ThreadManagementSendInput {
   readonly creationSource: OrchestrationV2CreationSource;
 }
 
+export interface ThreadManagementBindWorkspaceInput {
+  readonly projectId: ProjectId;
+  readonly commandId: CommandId;
+  readonly threadId: ThreadId;
+  readonly branch: string;
+  readonly worktreePath: string;
+}
+
 export interface ThreadManagementSendResult {
   readonly dispatch: Orchestrator.OrchestratorV2DispatchResult;
   readonly projection: Pick<
@@ -208,6 +216,18 @@ export class ThreadManagementRunNotFoundError extends Schema.TaggedError<ThreadM
 ) {
   override get message(): string {
     return `Run ${this.runId} does not belong to thread ${this.threadId}.`;
+  }
+}
+
+export class ThreadManagementWorkspaceBindError extends Schema.TaggedError<ThreadManagementWorkspaceBindError>()(
+  "ThreadManagementWorkspaceBindError",
+  {
+    threadId: ThreadId,
+    reason: Schema.String,
+  },
+) {
+  override get message(): string {
+    return `Thread ${this.threadId} cannot be moved to its workspace: ${this.reason}`;
   }
 }
 
@@ -305,6 +325,7 @@ export const ThreadManagementError = Schema.Union([
   ThreadManagementProjectThreadsListError,
   ThreadManagementDurableRunProjectionError,
   ThreadManagementProviderInstanceDisabledError,
+  ThreadManagementWorkspaceBindError,
 ]);
 export type ThreadManagementError = typeof ThreadManagementError.Type;
 
@@ -376,6 +397,14 @@ export interface ThreadManagementServiceShape {
   readonly sendToThread: (
     input: ThreadManagementSendInput,
   ) => Effect.Effect<ThreadManagementSendResult, ThreadManagementFailure>;
+  /**
+   * Re-point an idle thread at a worktree and branch (for example a follow-up's task worktree)
+   * so its next provider session starts there. Changing the worktree detaches the live session.
+   * Already bound to the same target is a no-op.
+   */
+  readonly bindWorkspace: (
+    input: ThreadManagementBindWorkspaceInput,
+  ) => Effect.Effect<{ readonly rebound: boolean }, ThreadManagementFailure>;
   readonly assertProviderInstanceEnabled: (input: {
     readonly projectId: ProjectId;
     readonly commandId: CommandId;
@@ -959,6 +988,38 @@ const make = Effect.gen(function* () {
     return { sequence: result.sequence };
   });
 
+  const bindWorkspace: ThreadManagementServiceShape["bindWorkspace"] = Effect.fn(
+    "orchestrationV2.threadManagement.bindWorkspace",
+  )(function* (input) {
+    const { thread } = yield* getProjectThreadRecords(input, []);
+    if (thread.archivedAt !== null) {
+      return yield* new ThreadManagementThreadArchivedError({ threadId: input.threadId });
+    }
+    if (thread.worktreePath === input.worktreePath && thread.branch === input.branch) {
+      return { rebound: false };
+    }
+    const shell = yield* orchestrator.getThreadShell(input.threadId);
+    if (
+      shell === null ||
+      shell.activeRunId !== null ||
+      ["starting", "running", "preparing", "waiting"].includes(shell.status)
+    ) {
+      return yield* new ThreadManagementWorkspaceBindError({
+        threadId: input.threadId,
+        reason: "the thread is busy",
+      });
+    }
+    yield* dispatch({
+      type: "thread.metadata.update",
+      commandId: input.commandId,
+      threadId: input.threadId,
+      branch: input.branch,
+      worktreePath: input.worktreePath,
+      expectedWorktreePath: thread.worktreePath,
+    });
+    return { rebound: true };
+  });
+
   const interruptThread: ThreadManagementServiceShape["interruptThread"] = (input) =>
     Effect.gen(function* () {
       const target = yield* getProjectThreadRecords(input, ["runs", "providerTurns"]);
@@ -1166,6 +1227,7 @@ const make = Effect.gen(function* () {
     getThreadShell: orchestrator.getThreadShell,
     listProjectThreads,
     sendToThread,
+    bindWorkspace,
     assertProviderInstanceEnabled,
     isProviderInstanceEnabledForProject,
     hasReceipt,

@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off - only node:perf_hooks exposes the event loop delay histogram.
+import * as NodeFS from "node:fs";
 import * as NodePerfHooks from "node:perf_hooks";
 
 import { RotatingFileSink } from "@t3tools/shared/logging";
@@ -34,6 +35,23 @@ export interface EventLoopReadings {
     | "involuntaryContextSwitches"
   >;
   readonly rssBytes: number;
+  readonly resourcePressure?: boolean;
+}
+
+function readOwnCgroupPressure(): { readonly pressured: boolean; readonly highEvents: number } {
+  try {
+    const cgroup = NodeFS.readFileSync("/proc/self/cgroup", "utf8");
+    const relative = /^0::(.+)$/m.exec(cgroup)?.[1];
+    if (!relative) return { pressured: false, highEvents: 0 };
+    const root = `/sys/fs/cgroup${relative}`;
+    const current = Number(NodeFS.readFileSync(`${root}/memory.current`, "utf8").trim());
+    const high = Number(NodeFS.readFileSync(`${root}/memory.high`, "utf8").trim());
+    const events = NodeFS.readFileSync(`${root}/memory.events`, "utf8");
+    const highEvents = Number(/^high (\d+)$/m.exec(events)?.[1] ?? 0);
+    return { pressured: Number.isFinite(high) && high > 0 && current >= high, highEvents };
+  } catch {
+    return { pressured: false, highEvents: 0 };
+  }
 }
 
 // Node skips the first gap after a reset, so a stall right at a sample boundary can be missed.
@@ -48,11 +66,13 @@ const makeNodeSampler = Effect.gen(function* () {
   );
   let elu = NodePerfHooks.performance.eventLoopUtilization();
   let usage = process.resourceUsage();
+  let cgroupHighEvents = readOwnCgroupPressure().highEvents;
 
   // @effect-diagnostics-next-line returnEffectInGen:off - the read effect is the result.
   return Effect.sync(() => {
     const nextElu = NodePerfHooks.performance.eventLoopUtilization();
     const nextUsage = process.resourceUsage();
+    const cgroup = readOwnCgroupPressure();
     const loop = NodePerfHooks.performance.eventLoopUtilization(nextElu, elu);
     const readings: EventLoopReadings = {
       delayMaxNs: histogram.max,
@@ -67,10 +87,12 @@ const makeNodeSampler = Effect.gen(function* () {
           nextUsage.involuntaryContextSwitches - usage.involuntaryContextSwitches,
       },
       rssBytes: process.memoryUsage.rss(),
+      resourcePressure: cgroup.pressured || cgroup.highEvents > cgroupHighEvents,
     };
     histogram.reset();
     elu = nextElu;
     usage = nextUsage;
+    cgroupHighEvents = cgroup.highEvents;
     return readings;
   });
 });
@@ -119,6 +141,7 @@ export const layerWith = (
         const { utilization, usage, rssBytes } = readings;
         const attributes = {
           delayMaxMs,
+          stage: readings.resourcePressure ? "resource-pressure" : "synchronous-server-work",
           utilization: Math.round(utilization * 100) / 100,
           cpuUserMs: Math.round(usage.userCPUTime / 1000),
           cpuSystemMs: Math.round(usage.systemCPUTime / 1000),

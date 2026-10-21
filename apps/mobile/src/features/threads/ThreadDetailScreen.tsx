@@ -393,6 +393,18 @@ export const ThreadDetailScreen = function ThreadDetailScreen(props: ThreadDetai
     threadId: props.selectedThread.id,
   });
   const composerError = useAtomValue(threadComposerErrorsAtom)[selectedThreadKey]?.message ?? null;
+  const failedRuntime =
+    composerError === null && props.selectedThread.runtime?.status === "failed"
+      ? props.selectedThread.runtime
+      : null;
+  const runtimeErrorKey = failedRuntime
+    ? `${failedRuntime.updatedAt}\u0000${failedRuntime.lastError ?? ""}`
+    : null;
+  const [dismissedRuntimeErrorKey, setDismissedRuntimeErrorKey] = useState<string | null>(null);
+  const errorNoticeMessage =
+    composerError ??
+    (runtimeErrorKey === dismissedRuntimeErrorKey ? null : failedRuntime?.lastError) ??
+    null;
   const queuedCount = useThreadQueuedCount(props.selectedThreadDetailRef);
   const turnSubagents = useThreadTurnSubagents(props.selectedThreadDetailRef);
   const agentsSegment = resolveSubagentPillSegment(turnSubagents);
@@ -1176,15 +1188,24 @@ export const ThreadDetailScreen = function ThreadDetailScreen(props: ThreadDetai
                       onDismiss={() => props.onDismissFeedback(submission.id)}
                     />
                   ))}
-                  {composerError !== null ? (
+                  {errorNoticeMessage !== null ? (
                     <Animated.View
                       className="shrink-0"
                       entering={FadeInDown.duration(180)}
                       exiting={FadeOut.duration(120)}
                     >
                       <ComposerErrorNotice
-                        message={composerError}
-                        onDismiss={() => clearThreadComposerError(selectedThreadKey)}
+                        message={errorNoticeMessage}
+                        stage={
+                          failedRuntime ? (failedRuntime.lastErrorStage ?? "unknown") : undefined
+                        }
+                        reason={failedRuntime?.lastErrorReason}
+                        recovery={failedRuntime?.lastErrorRecovery}
+                        onDismiss={() => {
+                          if (runtimeErrorKey !== null)
+                            setDismissedRuntimeErrorKey(runtimeErrorKey);
+                          else clearThreadComposerError(selectedThreadKey);
+                        }}
                       />
                     </Animated.View>
                   ) : null}

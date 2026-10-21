@@ -137,7 +137,8 @@ export const GoalProviderPause = Schema.Struct({
   /** Only this model. Missing means every model on the account. */
   model: Schema.optional(Schema.String),
   until: IsoDateTime,
-  reason: Schema.Literals(["usage-limit", "errors"]),
+  /** `login`: the provider needs a person to sign in; held until the goal is started again. */
+  reason: Schema.Literals(["usage-limit", "errors", "login"]),
   /** Failures in a row, for lengthening the back-off. */
   strikes: Schema.optional(Schema.Number),
 });

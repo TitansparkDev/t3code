@@ -26,4 +26,20 @@ describe.skipIf(HostProcess.Platform.defaultValue() !== "linux")("agentScopeComm
     expect(Number(score)).toBe(AGENT_OOM_SCORE_ADJ);
     expect(args).toEqual(["a b", "$HOME"]);
   });
+
+  it("applies the private runtime memory ceiling to the owning scope", () => {
+    const launch = agentScopeCommand({
+      command: "agent",
+      args: [],
+      scope: {
+        systemdRun: "/usr/bin/systemd-run",
+        slice: "app-t3code-agents-private.slice",
+        unit: "t3code-agent-test.scope",
+        runtimeDir: "/run/user/1",
+        options: [],
+        memoryLimitMb: 10240,
+      },
+    });
+    expect(launch.args).toContain(`--property=MemoryMax=${10240 * 1024 * 1024}`);
+  });
 });

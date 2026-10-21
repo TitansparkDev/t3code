@@ -97,6 +97,7 @@ import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
 import * as Exit from "effect/Exit";
@@ -265,13 +266,19 @@ export const CLAUDE_DEFAULT_INSTANCE_ID = defaultInstanceIdForDriver(CLAUDE_PROV
 const DEFAULT_CLAUDE_SETTINGS = Schema.decodeSync(ClaudeSettings)({});
 // Entry extensions the Claude SDK runs through node instead of executing.
 const CLAUDE_SCRIPT_EXTENSIONS = [".js", ".mjs", ".tsx", ".ts", ".jsx"];
-// The SDK puts no deadline on control requests. The CLI answers
-// mcp_set_servers once each server connected or hit its own 30 s timeout.
+// The SDK puts no deadline on control requests. Initialization and registration
+// get separate deadlines: a CLI that never finishes starting is not a slow MCP server.
+const CLAUDE_INITIALIZATION_TIMEOUT = "60 seconds";
+// The CLI answers mcp_set_servers once each server connected or hit its own 30 s timeout.
 const CLAUDE_MCP_REGISTRATION_TIMEOUT = "90 seconds";
+// Only this server carries T3 tools. Its registration failure would silently
+// drop them, so it fails the open; other servers are optional.
+const CLAUDE_REQUIRED_MCP_SERVER = "t3-code";
 // Claude Code flushes transcript writes every 100 ms, so a workflow member's
 // reply can land after the progress frame that settles it. Its transcript
 // stays the source of its answer this long after it settles.
 const WORKFLOW_MEMBER_TRANSCRIPT_FLUSH_MS = 500;
+const CLAUDE_STOP_DEADLINE_MS = 10_000;
 
 /**
  * When the CLI exits it stops the MCP servers it started, but not their children: a plugin's
@@ -821,13 +828,27 @@ export const layerQueryRunner: Layer.Layer<
               restore(
                 Effect.gen(function* () {
                   if (mcpServers !== undefined) {
-                    // Error texts and the CLI's mcp_status response can echo the headers, so
-                    // only server names are logged.
-                    const failed = yield* Effect.tryPromise(() =>
-                      queryRuntime.setMcpServers(mcpServers),
-                    ).pipe(
-                      Effect.map((result) => Object.keys(result.errors)),
-                      Effect.orElseSucceed(() => Object.keys(mcpServers)),
+                    // Registration is the first control request that needs the CLI to be up,
+                    // so a CLI that never finishes starting fails here, not as a slow MCP server.
+                    yield* Effect.tryPromise({
+                      try: () => queryRuntime.initializationResult(),
+                      catch: (cause) => queryRunnerError(cause, "initializationResult"),
+                    }).pipe(
+                      Effect.timeoutOrElse({
+                        duration: CLAUDE_INITIALIZATION_TIMEOUT,
+                        orElse: () =>
+                          Effect.fail(
+                            queryRunnerError(
+                              "Claude Code did not finish initializing.",
+                              "initializationResult",
+                            ),
+                          ),
+                      }),
+                    );
+                    const registration = yield* Effect.tryPromise({
+                      try: () => queryRuntime.setMcpServers(mcpServers),
+                      catch: (cause) => queryRunnerError(cause, "setMcpServers"),
+                    }).pipe(
                       Effect.timeoutOrElse({
                         duration: CLAUDE_MCP_REGISTRATION_TIMEOUT,
                         orElse: () =>
@@ -839,6 +860,15 @@ export const layerQueryRunner: Layer.Layer<
                           ),
                       }),
                     );
+                    // Error texts and the CLI's mcp_status response can echo the headers, so
+                    // only server names are logged or returned.
+                    const failed = Object.keys(registration.errors);
+                    if (failed.includes(CLAUDE_REQUIRED_MCP_SERVER)) {
+                      return yield* queryRunnerError(
+                        `Claude Code could not register the ${CLAUDE_REQUIRED_MCP_SERVER} MCP server.`,
+                        "setMcpServers",
+                      );
+                    }
                     if (failed.length > 0) {
                       yield* Effect.logWarning("orchestration-v2.claude-mcp-servers-unavailable", {
                         threadId: input.threadId,
@@ -8912,12 +8942,33 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               next.add(turnInput.providerTurnId);
               return next;
             });
-            yield* existing.query.interrupt;
-            yield* existing.query.close.pipe(Effect.ignore);
-            const closed = yield* Deferred.await(existing.closed).pipe(
-              Effect.timeoutOption("10 seconds"),
+            existing.stopping = true;
+            const deadlineFiber = yield* Effect.sleep(
+              Duration.millis(CLAUDE_STOP_DEADLINE_MS),
+            ).pipe(Effect.asVoid, Effect.forkIn(sessionScope));
+            const interruptFiber = yield* existing.query.interrupt.pipe(
+              Effect.ignore,
+              Effect.forkIn(sessionScope),
             );
-            if (Option.isSome(closed)) {
+            const interruptFinished = yield* Effect.race(
+              Fiber.await(interruptFiber).pipe(Effect.as(true)),
+              Fiber.join(deadlineFiber).pipe(Effect.as(false)),
+            );
+            if (!interruptFinished)
+              yield* Fiber.interrupt(interruptFiber).pipe(Effect.forkIn(sessionScope));
+
+            // Closing the SDK query is the only control that also terminates
+            // its native child tasks. Do not let a broken close acknowledgment
+            // hold Stop past the same deadline used for the interrupt.
+            yield* existing.query.close.pipe(Effect.ignore, Effect.forkIn(sessionScope));
+            const closedBeforeDeadline = (yield* Deferred.isDone(existing.closed))
+              ? true
+              : yield* Effect.race(
+                  Deferred.await(existing.closed).pipe(Effect.as(true)),
+                  Fiber.join(deadlineFiber).pipe(Effect.as(false)),
+                );
+            if (closedBeforeDeadline) {
+              yield* Fiber.interrupt(deadlineFiber);
               return;
             }
 
@@ -8988,7 +9039,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           for (const { taskId, toolUseId } of foreground) {
             const inFlight = backgroundMovesByToolUseId.get(toolUseId);
             if (inFlight !== undefined) {
-              moves.push(inFlight);
               continue;
             }
             const move = yield* live.query.backgroundTasks(toolUseId).pipe(
@@ -9085,7 +9135,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         const closeSession = Effect.fnUntraced(function* () {
           const existing = yield* Ref.get(queryContext);
           if (existing !== null) {
-            yield* existing.query.close.pipe(Effect.ignore);
+            yield* existing.query.close.pipe(Effect.ignore, Effect.forkIn(sessionScope));
           }
           yield* Effect.yieldNow;
           yield* queryRunner.assertComplete.pipe(
@@ -9105,7 +9155,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           }
 
           existing.stopping = true;
-          yield* existing.query.close.pipe(Effect.ignore);
+          yield* existing.query.close.pipe(Effect.ignore, Effect.forkIn(sessionScope));
           const closed = yield* Deferred.await(existing.closed).pipe(
             Effect.timeoutOption("10 seconds"),
           );
@@ -9126,7 +9176,12 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           }
           yield* Deferred.succeed(existing.closed, undefined);
         });
-        yield* Effect.addFinalizer(() => closeSession());
+        yield* Effect.addFinalizer(() =>
+          closeSession().pipe(
+            Effect.timeoutOption(Duration.millis(CLAUDE_STOP_DEADLINE_MS)),
+            Effect.ignore,
+          ),
+        );
 
         // A CLI stopped before it saved the first prompt can leave a transcript
         // with only metadata lines. Claude can neither resume that id nor

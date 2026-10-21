@@ -6,7 +6,7 @@ import { expect, it } from "vite-plus/test";
 
 const execFile = NodeUtil.promisify(NodeChildProcess.execFile);
 
-it.each(["regular", "handoff", "handoff-compact", "handoff-failure"])(
+it.each(["regular", "handoff", "handoff-compact", "handoff-failure", "cancelled"])(
   "releases startup history while %s run workers remain alive",
   async (mode) => {
     const root = NodeURL.fileURLToPath(new URL("../../../../", import.meta.url));
@@ -15,11 +15,39 @@ it.each(["regular", "handoff", "handoff-compact", "handoff-failure"])(
     );
     const { stdout } = await execFile(process.execPath, ["--expose-gc", fixture, root, mode]);
     const result = JSON.parse(stdout) as {
-      checkpoints: ReadonlyArray<{ runs: number; retained: number }>;
+      checkpoints: ReadonlyArray<{
+        runs: number;
+        retained: number;
+        activeDiagnostics: number;
+        diagnosticFinishes: number;
+        diagnosticCancels: number;
+      }>;
     };
-    expect(result.checkpoints.map(({ runs, retained }) => ({ runs, retained }))).toEqual([
-      { runs: 2, retained: 0 },
-      { runs: 4, retained: 0 },
+    expect(
+      result.checkpoints.map(
+        ({ runs, retained, activeDiagnostics, diagnosticFinishes, diagnosticCancels }) => ({
+          runs,
+          retained,
+          activeDiagnostics,
+          diagnosticFinishes,
+          diagnosticCancels,
+        }),
+      ),
+    ).toEqual([
+      {
+        runs: 2,
+        retained: 0,
+        activeDiagnostics: 0,
+        diagnosticFinishes: 2,
+        diagnosticCancels: mode === "cancelled" ? 2 : 0,
+      },
+      {
+        runs: 4,
+        retained: 0,
+        activeDiagnostics: 0,
+        diagnosticFinishes: 4,
+        diagnosticCancels: mode === "cancelled" ? 4 : 0,
+      },
     ]);
   },
 );

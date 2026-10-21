@@ -43,6 +43,13 @@ two different AVDs run together (8.5 GB); a 2 GB-heap Gradle build needs about 3
 `docker` 3, `postgres` 6, `gpu` 0. A GPU requirement is therefore held as unavailable, not queued. New workers are also
 admitted by memory and load (`hostCapacity.admitWorker`), not by a fixed count.
 
+**Compilers declare their own demand.** `tsc`, `tsgo`, `tsc-rs`, `effect-tsgo` and the repository's `typecheck` script take
+`heavy_build` with an 8 GiB demand (`TYPECHECK_DEMAND_MB`): one `apps/server` check measured 4.4 GiB resident on 2026-10-21 and
+the incident peaked at 7.5 GiB, so admitting it on the 3.5 GB Gradle estimate was wrong. Identical checks (same source, lock file,
+checker versions, environment, command and account) share one process and one receipt (`checkReceipts.ts`,
+`scripts/reliability-check.ts`); a claim is taken only after admission, so a waiter never waits on an owner that is queued. A
+command started inside a grant its caller holds runs under that grant (`enclosingTicket`) instead of queueing for the same unit.
+
 **Scope is settled by rule (`scopeAudit.decideScope`).** A file outside the declared scope that is not protected and not sensitive
 (credentials, CI, live data) is approved automatically and recorded. A file another running task holds parks the task
 (`waits_for`), with its commits kept, until that task no longer holds it; this is a temporary constraint, not a dependency.

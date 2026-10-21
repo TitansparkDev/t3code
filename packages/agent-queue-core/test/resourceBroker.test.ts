@@ -5,11 +5,11 @@ import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import {
-  IDLE_MEMORY_OVERRIDE_MS,
   LEASE_MS,
   RAMP_MS,
   ResourceBroker,
   STARVATION_MS,
+  TYPECHECK_DEMAND_MB,
   type BrokerOptions,
   type ResourceConfig,
 } from "../src/resourceBroker.ts";
@@ -56,7 +56,7 @@ function makeBroker(
     home,
     now: () => clock.now,
     host: () => ({
-      totalMb: 25_000,
+      totalMb: 25_430,
       availableMb: free.mb,
       swapUsedMb: 0,
       swapTotalMb: 8000,
@@ -151,6 +151,35 @@ describe("resource broker queue", () => {
     expect(broker.get(c.id)!.state).toBe("granted");
   });
 
+  it("does not admit a compiler's 7.5 GiB demand under a 3.5 GB per-unit estimate", () => {
+    const { broker, free } = makeBroker({
+      free: { mb: 5_000 },
+      config: () => ({
+        ...CONFIG,
+        resources: { ...CONFIG.resources, heavy_build: { capacity: 2, memoryMb: 3500 } },
+      }),
+    });
+    const gradle = broker.enqueue({
+      resources: [{ name: "heavy_build" }],
+      pid: process.pid,
+      label: "gradle",
+    });
+    const compiler = broker.enqueue({
+      resources: [{ name: "typecheck", memoryMb: TYPECHECK_DEMAND_MB }],
+      pid: process.pid,
+      label: "tsc",
+    });
+    broker.pump();
+    expect(broker.get(gradle.id)!.state).toBe("granted");
+    // 5000 - 1000 reserve - 3500 for gradle, which has not shown in the host reading yet.
+    expect(broker.get(compiler.id)!.state).toBe("waiting");
+    expect(broker.get(compiler.id)!.note).toMatch(/needs 8192 MB/);
+    // 13000 - 1000 reserve - 3500 ramping for gradle leaves 8500, which covers the 8192 demand.
+    free.mb = 13_000;
+    broker.pump();
+    expect(broker.get(compiler.id)!.state).toBe("granted");
+  });
+
   it("lets a small request backfill but stops everything behind a ticket that has waited too long", () => {
     const { broker, clock, free } = makeBroker({ free: { mb: 4_500 } });
     const big = broker.enqueue({
@@ -182,8 +211,8 @@ describe("resource broker queue", () => {
     expect(granted).toEqual(["big", "small2"]);
   });
 
-  it("does not wait forever for memory that nothing of ours is using", () => {
-    const { broker, clock } = makeBroker({ free: { mb: 4_000 } });
+  it("keeps an idle ticket waiting until external memory pressure recovers", () => {
+    const { broker, clock, free } = makeBroker({ free: { mb: 4_000 } });
     const lone = broker.enqueue({
       resources: [{ name: "android" }],
       pid: process.pid,
@@ -191,9 +220,52 @@ describe("resource broker queue", () => {
     });
     broker.pump();
     expect(broker.get(lone.id)!.state).toBe("waiting");
-    clock.now += IDLE_MEMORY_OVERRIDE_MS + 1;
+    clock.now += 6 * 60_000;
+    broker.pump();
+    expect(broker.get(lone.id)!.state).toBe("waiting");
+    free.mb = 8_000;
     broker.pump();
     expect(broker.get(lone.id)!.state).toBe("granted");
+  });
+
+  it("does not overlap oversized requests against an effective 16 GiB agent budget", () => {
+    const { broker } = makeBroker({
+      free: { mb: 16_000 },
+      config: () => ({
+        reserveMb: 3_072,
+        resources: { ...CONFIG.resources, heavy_build: { capacity: 2, memoryMb: 8_192 } },
+      }),
+    });
+    const first = broker.enqueue({ resources: [{ name: "heavy_build" }], pid: process.pid });
+    const second = broker.enqueue({ resources: [{ name: "heavy_build" }], pid: process.pid });
+    broker.pump();
+    expect(broker.get(first.id)!.state).toBe("granted");
+    expect(broker.get(second.id)!.state).toBe("waiting");
+  });
+
+  it("holds memory requests during PSI or active swap pressure, then admits after recovery", () => {
+    const pressure = { memoryPressure: 12, swapPressure: false };
+    const { broker } = makeBroker({
+      host: () => ({
+        totalMb: 25_430,
+        availableMb: 20_000,
+        swapUsedMb: 7_000,
+        swapTotalMb: 8_000,
+        cpus: 16,
+        load1: 1,
+        ...pressure,
+      }),
+    });
+    const ticket = broker.enqueue({ resources: [{ name: "heavy_build" }], pid: process.pid });
+    broker.pump();
+    expect(broker.get(ticket.id)!.state).toBe("waiting");
+    pressure.memoryPressure = 0;
+    pressure.swapPressure = true;
+    broker.pump();
+    expect(broker.get(ticket.id)!.state).toBe("waiting");
+    pressure.swapPressure = false;
+    broker.pump();
+    expect(broker.get(ticket.id)!.state).toBe("granted");
   });
 
   it("frees the units of a holder whose process is gone, at once", () => {
@@ -388,7 +460,13 @@ describe("running under the broker", () => {
       ...process.env,
       AGENTQUEUE_RESOURCE_HOME: home,
       AGENTQUEUE_LOCK_ROOT: NodePath.join(home, "locks"),
+      // This test proves cross-process slot exclusion; host memory pressure is unrelated.
+      AGENTQUEUE_RESOURCE_CONFIG: NodePath.join(home, "resources.json"),
     };
+    NodeFS.writeFileSync(
+      env.AGENTQUEUE_RESOURCE_CONFIG,
+      JSON.stringify({ reserveMb: 0, resources: { heavy_build: { capacity: 2, memoryMb: 0 } } }),
+    );
     const children = Array.from(
       { length: 6 },
       (_, index) =>

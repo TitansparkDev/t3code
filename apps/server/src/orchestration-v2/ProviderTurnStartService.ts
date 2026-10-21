@@ -50,6 +50,7 @@ import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
+import * as RuntimeResourceDiagnostics from "../observability/RuntimeResourceDiagnostics.ts";
 import {
   isRestartNoteContinuation,
   pendingRestartCancelledBackgroundWork,
@@ -101,6 +102,7 @@ export const layer: Layer.Layer<
   | ProviderSessionManager.ProviderSessionManagerV2
   | RunExecutionService.RunExecutionServiceV2
   | RuntimePolicy.RuntimePolicyV2
+  | RuntimeResourceDiagnostics.RuntimeResourceDiagnostics
 > = Layer.effect(
   ProviderTurnStartServiceV2,
   Effect.gen(function* () {
@@ -118,6 +120,7 @@ export const layer: Layer.Layer<
     const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
     const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
     const runtimePolicy = yield* RuntimePolicy.RuntimePolicyV2;
+    const resourceDiagnostics = yield* RuntimeResourceDiagnostics.RuntimeResourceDiagnostics;
     const isManagedWorktreePath = yield* makeIsManagedWorktreePath;
 
     // These callbacks outlive startup while a run drains background work. Build
@@ -1202,55 +1205,65 @@ export const layer: Layer.Layer<
         !noteContinuation
           ? session
           : makeDeliverySession(session, startWithHandoffs);
-      return runExecution.startRootRun({
-        commandId: CommandId.make(`command:effect:provider-turn.start:${run.id}`),
-        appThread: projection.thread,
-        providerSessionId,
-        session: deliverySession,
-        run: runningRun,
-        rootNode: runningRootNode,
-        checkpointScope,
-        providerThread: runningProviderThread,
-        attempt: runningAttempt,
-        attemptId: attempt.id,
-        loadInheritedBackgroundTurnItems: runControls.loadInheritedBackgroundTurnItems,
-        relatedThreadIds: routableSubagents.flatMap((subagent) =>
-          subagent.childThreadId === null ? [] : [subagent.childThreadId],
-        ),
-        relatedProviderThreadIds: routableSubagents.flatMap((subagent) =>
-          subagent.providerThreadId === null ? [] : [subagent.providerThreadId],
-        ),
-        providerTurnOrdinal:
-          Math.max(
-            0,
-            ...projection.providerTurns
-              .filter((turn) => turn.providerThreadId === providerThread.id)
-              .map((turn) => turn.ordinal),
-          ) + 1,
-        nativeThreadHasTurns:
-          nativeInputRunIds.size > 0 ||
-          (legacyInputRunIds.size > 0 &&
-            sameNativeThread &&
-            !acceptedAttempts.some((source) => source.nativeThreadId !== undefined)),
-        shouldStartProviderTurn: runControls.shouldStartProviderTurn,
-        shouldFinalizeRun: runControls.shouldFinalizeRun,
-        hasUnpairedRunInterruptRequest: runControls.hasUnpairedRunInterruptRequest,
-        message: {
-          messageId: message.id,
-          text: userText,
-          attachments: message.attachments,
-          createdBy: message.createdBy,
-          creationSource: message.creationSource,
-          ...(message.scheduledTaskId === undefined
-            ? {}
-            : { scheduledTaskId: message.scheduledTaskId }),
-          ...(message.senderThreadId === undefined
-            ? {}
-            : { senderThreadId: message.senderThreadId }),
-        },
-        modelSelection: run.modelSelection,
-        runtimePolicy: resolvedRuntimePolicy,
+      yield* resourceDiagnostics.begin({
+        runtimeId: providerSessionId,
+        runId: run.id,
+        tool: "provider-turn",
       });
+      return runExecution
+        .startRootRun({
+          commandId: CommandId.make(`command:effect:provider-turn.start:${run.id}`),
+          appThread: projection.thread,
+          providerSessionId,
+          session: deliverySession,
+          run: runningRun,
+          rootNode: runningRootNode,
+          checkpointScope,
+          providerThread: runningProviderThread,
+          attempt: runningAttempt,
+          attemptId: attempt.id,
+          loadInheritedBackgroundTurnItems: runControls.loadInheritedBackgroundTurnItems,
+          relatedThreadIds: routableSubagents.flatMap((subagent) =>
+            subagent.childThreadId === null ? [] : [subagent.childThreadId],
+          ),
+          relatedProviderThreadIds: routableSubagents.flatMap((subagent) =>
+            subagent.providerThreadId === null ? [] : [subagent.providerThreadId],
+          ),
+          providerTurnOrdinal:
+            Math.max(
+              0,
+              ...projection.providerTurns
+                .filter((turn) => turn.providerThreadId === providerThread.id)
+                .map((turn) => turn.ordinal),
+            ) + 1,
+          nativeThreadHasTurns:
+            nativeInputRunIds.size > 0 ||
+            (legacyInputRunIds.size > 0 &&
+              sameNativeThread &&
+              !acceptedAttempts.some((source) => source.nativeThreadId !== undefined)),
+          shouldStartProviderTurn: runControls.shouldStartProviderTurn,
+          shouldFinalizeRun: runControls.shouldFinalizeRun,
+          hasUnpairedRunInterruptRequest: runControls.hasUnpairedRunInterruptRequest,
+          message: {
+            messageId: message.id,
+            text: userText,
+            attachments: message.attachments,
+            createdBy: message.createdBy,
+            creationSource: message.creationSource,
+            ...(message.scheduledTaskId === undefined
+              ? {}
+              : { scheduledTaskId: message.scheduledTaskId }),
+            ...(message.senderThreadId === undefined
+              ? {}
+              : { senderThreadId: message.senderThreadId }),
+          },
+          modelSelection: run.modelSelection,
+          runtimePolicy: resolvedRuntimePolicy,
+        })
+        .pipe(
+          Effect.onInterrupt(() => resourceDiagnostics.cancel(providerSessionId, run.id)),
+          Effect.ensuring(resourceDiagnostics.finish(providerSessionId, run.id)),
+        );
     });
 
     return ProviderTurnStartServiceV2.of({

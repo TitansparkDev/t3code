@@ -52,15 +52,17 @@ import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import { OWNED_RUNTIME_DEADLINE_MS } from "./RuntimeLiveness.ts";
 
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
-const DEFAULT_MAX_IDLE_PIN_MS = 4 * 60 * 60 * 1000;
+const DEFAULT_MAX_IDLE_PIN_MS = OWNED_RUNTIME_DEADLINE_MS;
 const RELEASE_SCOPE_CLOSE_TIMEOUT_MS = 30 * 1000;
 
 const busyTurnPrefix = (providerThreadId: ProviderThreadId) => `${providerThreadId}#`;
 const busyTurnKey = (providerThreadId: ProviderThreadId, runOrdinal: number) =>
   `${busyTurnPrefix(providerThreadId)}${runOrdinal}`;
 const UNLOAD_THREAD_TIMEOUT_MS = 10 * 1000;
+const PROVIDER_EVENT_QUEUE_CAPACITY = 256;
 
 export const ProviderSessionReleaseReason = Schema.Literals([
   "idle_timeout",
@@ -536,10 +538,14 @@ export const layerWithOptions = (
           yield* Effect.forEach(
             subscribers.values(),
             (queue) =>
-              Queue.offer(queue, {
-                type: "failure",
-                cause: Cause.fail(error),
-              }),
+              Queue.clear(queue).pipe(
+                Effect.andThen(
+                  Queue.offer(queue, {
+                    type: "failure",
+                    cause: Cause.fail(error),
+                  }),
+                ),
+              ),
             { discard: true },
           );
         });
@@ -1190,13 +1196,9 @@ export const layerWithOptions = (
           ),
         );
 
-      // Provider activity restarts the pin budget, so background work that keeps
-      // reporting progress (a long Claude workflow) is never cut off; only work
-      // that went silent for maxIdlePinMs is released.
-      const scheduleIdleReleaseInternal = (
-        providerSessionId: ProviderSessionId,
-        options?: { readonly providerActivity?: boolean },
-      ) =>
+      // Activity can postpone idle release, but once background work is pinned
+      // it cannot renew that work's absolute lifetime.
+      const scheduleIdleReleaseInternal = (providerSessionId: ProviderSessionId) =>
         Effect.gen(function* () {
           const key = sessionKey(providerSessionId);
           const current = yield* Ref.get(sessions);
@@ -1207,11 +1209,18 @@ export const layerWithOptions = (
 
           yield* cancelIdleFiber(entry.idleFiber);
           const generation = entry.idleGeneration + 1;
-          const idleFiber = yield* Effect.sleep(Duration.millis(idleTimeoutMs)).pipe(
+          const now = yield* Clock.currentTimeMillis;
+          const remainingPinBudget =
+            entry.pinnedSinceMs === null
+              ? idleTimeoutMs
+              : Math.max(0, maxIdlePinMs - (now - entry.pinnedSinceMs));
+          const idleFiber = yield* Effect.sleep(
+            Duration.millis(Math.min(idleTimeoutMs, remainingPinBudget)),
+          ).pipe(
             Effect.andThen(releaseIfStillIdle({ providerSessionId, generation })),
             Effect.forkIn(layerScope),
           );
-          const lastActivityAtMs = yield* Clock.currentTimeMillis;
+          const lastActivityAtMs = now;
           yield* Ref.update(sessions, (latest) => {
             const latestEntry = latest.get(key);
             if (latestEntry === undefined || latestEntry.busyTurns.size > 0) {
@@ -1223,19 +1232,18 @@ export const layerWithOptions = (
               idleGeneration: generation,
               idleFiber,
               lastActivityAtMs,
-              ...(options?.providerActivity === true ? { pinnedSinceMs: null } : {}),
             });
             return updated;
           });
+          if (entry.pinnedSinceMs !== null && remainingPinBudget === 0) {
+            yield* releaseIfStillIdle({ providerSessionId, generation });
+          }
         });
 
       const scheduleIdleRelease = (providerSessionId: ProviderSessionId) =>
         withActivityError(providerSessionId, scheduleIdleReleaseInternal(providerSessionId));
 
-      const touchActivity = (
-        providerSessionId: ProviderSessionId,
-        options?: { readonly providerActivity?: boolean },
-      ) =>
+      const touchActivity = (providerSessionId: ProviderSessionId) =>
         withActivityError(
           providerSessionId,
           Effect.gen(function* () {
@@ -1252,7 +1260,7 @@ export const layerWithOptions = (
               });
               return updated;
             });
-            yield* scheduleIdleReleaseInternal(providerSessionId, options);
+            yield* scheduleIdleReleaseInternal(providerSessionId);
           }),
         );
 
@@ -1668,7 +1676,11 @@ export const layerWithOptions = (
         >,
       ): Effect.Effect<ProviderAdapter.ProviderAdapterV2EventSubscription> =>
         Effect.gen(function* () {
-          const queue = yield* Queue.unbounded<ProviderSessionEventSignal, Cause.Done>();
+          // Backpressure the provider event source when a subscriber is slow; an
+          // unbounded queue could otherwise retain a whole transcript in RAM.
+          const queue = yield* Queue.bounded<ProviderSessionEventSignal, Cause.Done>(
+            PROVIDER_EVENT_QUEUE_CAPACITY,
+          );
           const subscriberId = yield* Ref.getAndUpdate(nextSubscriberId, (value) => value + 1);
           yield* Ref.update(subscribers, (current) => {
             const updated = new Map(current);
@@ -1943,7 +1955,7 @@ export const layerWithOptions = (
                     event.providerThreadId,
                     event.runOrdinal,
                   )
-                : touchActivity(entry.runtime.providerSessionId, { providerActivity: true }),
+                : touchActivity(entry.runtime.providerSessionId),
             ).pipe(
               Effect.andThen(
                 event.type === "provider_session.updated"

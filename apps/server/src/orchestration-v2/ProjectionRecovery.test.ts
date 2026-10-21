@@ -18,9 +18,12 @@ import {
   TurnItemId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -965,4 +968,143 @@ it.effect("marks fork descendants unreadable when their source is missing or cor
       new Set([fork, descendant]),
     );
   }).pipe(Effect.provide(layerTest)),
+);
+
+const orphanedStartFixture = Effect.fn(function* (name: string) {
+  const outbox = yield* EffectOutbox.EffectOutboxV2;
+  const projections = yield* ProjectionStore.ProjectionStoreV2;
+  const threadId = yield* createThread(name);
+  const lostRunId = yield* createRun(threadId, "starting", { ordinal: 1 });
+  const lostEffectId = `effect:${name}:provider-turn.start`;
+  yield* outbox.enqueue([
+    {
+      id: lostEffectId,
+      commandId: CommandId.make(`command:${name}:start`),
+      threadId,
+      request: { type: "provider-turn.start", runId: lostRunId },
+    },
+    {
+      id: `effect:${name}:cleanup`,
+      commandId: CommandId.make(`command:${name}:cleanup`),
+      threadId,
+      request: { type: "terminal.cleanup" },
+    },
+  ]);
+  return { threadId, lostRunId, lostEffectId, outbox, projections };
+});
+
+it.effect("settles a lost provider start without a restart so its thread's later effects run", () =>
+  Effect.gen(function* () {
+    const recovery = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService;
+    const { threadId, lostRunId, lostEffectId, outbox, projections } =
+      yield* orphanedStartFixture("orphan-start");
+    const claimed = yield* outbox.claimNext({ workerId: "worker-a", leaseDurationMs: 30_000 });
+    assert.equal(claimed._tag, "Some");
+    // The executor fiber is gone without settling: its process-local claim is dropped.
+    yield* outbox.clearCancellation(lostEffectId);
+    assert.isTrue(
+      Option.isNone(yield* outbox.claimNext({ workerId: "worker-a", leaseDurationMs: 30_000 })),
+    );
+
+    yield* TestClock.adjust(Duration.seconds(31));
+    const summary = yield* recovery.recoverOrphanedClaims;
+    assert.deepEqual(summary, { requeuedEffects: 0, failedEffects: 1, cancelledRuns: 1 });
+    const run = (yield* projections.getThreadProjection(threadId)).runs.find(
+      (candidate) => candidate.id === lostRunId,
+    );
+    assert.equal(run?.status, "cancelled");
+    assert.equal(Option.getOrThrow(yield* outbox.get(lostEffectId)).status, "failed");
+
+    const next = yield* outbox.claimNext({ workerId: "worker-a", leaseDurationMs: 30_000 });
+    assert.equal(Option.getOrThrow(next).request.type, "terminal.cleanup");
+
+    // A second pass has nothing left to settle, so the recovery is idempotent.
+    assert.deepEqual(yield* recovery.recoverOrphanedClaims, {
+      requeuedEffects: 0,
+      failedEffects: 0,
+      cancelledRuns: 0,
+    });
+  }).pipe(Effect.provide(layerRecoveryTest)),
+);
+
+it.effect("never reclaims a provider start whose executor is still live past its lease", () =>
+  Effect.gen(function* () {
+    const recovery = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService;
+    const { threadId, lostRunId, lostEffectId, outbox, projections } =
+      yield* orphanedStartFixture("live-start");
+    yield* outbox.claimNext({ workerId: "worker-a", leaseDurationMs: 30_000 });
+
+    yield* TestClock.adjust(Duration.minutes(10));
+    assert.deepEqual(yield* recovery.recoverOrphanedClaims, {
+      requeuedEffects: 0,
+      failedEffects: 0,
+      cancelledRuns: 0,
+    });
+    const effect = yield* outbox.get(lostEffectId);
+    assert.equal(Option.getOrThrow(effect).status, "running");
+    const run = (yield* projections.getThreadProjection(threadId)).runs.find(
+      (candidate) => candidate.id === lostRunId,
+    );
+    assert.equal(run?.status, "starting");
+  }).pipe(Effect.provide(layerRecoveryTest)),
+);
+
+it.effect("requeues an orphaned replay-safe claim instead of failing it", () =>
+  Effect.gen(function* () {
+    const recovery = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService;
+    const outbox = yield* EffectOutbox.EffectOutboxV2;
+    const threadId = yield* createThread("orphan-cleanup");
+    const effectId = "effect:orphan-cleanup:terminal";
+    yield* outbox.enqueue([
+      {
+        id: effectId,
+        commandId: CommandId.make("command:orphan-cleanup:terminal"),
+        threadId,
+        request: { type: "terminal.cleanup" },
+      },
+    ]);
+    yield* outbox.claimNext({ workerId: "worker-a", leaseDurationMs: 30_000 });
+    yield* outbox.clearCancellation(effectId);
+
+    yield* TestClock.adjust(Duration.seconds(31));
+    assert.deepEqual(yield* recovery.recoverOrphanedClaims, {
+      requeuedEffects: 1,
+      failedEffects: 0,
+      cancelledRuns: 0,
+    });
+    assert.equal(Option.getOrThrow(yield* outbox.get(effectId)).status, "pending");
+  }).pipe(Effect.provide(layerRecoveryTest)),
+);
+
+it.effect("leaves a lost start's run alone once it has already reached a terminal state", () =>
+  Effect.gen(function* () {
+    const recovery = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService;
+    const { threadId, lostRunId, lostEffectId, outbox, projections } =
+      yield* orphanedStartFixture("finished-start");
+    const now = yield* DateTime.now;
+    const lostRun = (yield* projections.getThreadProjection(threadId)).runs.find(
+      (candidate) => candidate.id === lostRunId,
+    )!;
+    yield* projections.apply({
+      id: EventId.make(`event:${lostRunId}:completed`),
+      type: "run.updated",
+      threadId,
+      runId: lostRunId,
+      occurredAt: now,
+      payload: { ...lostRun, status: "completed", completedAt: now },
+    });
+    yield* outbox.claimNext({ workerId: "worker-a", leaseDurationMs: 30_000 });
+    yield* outbox.clearCancellation(lostEffectId);
+    yield* TestClock.adjust(Duration.seconds(31));
+
+    assert.deepEqual(yield* recovery.recoverOrphanedClaims, {
+      requeuedEffects: 0,
+      failedEffects: 1,
+      cancelledRuns: 0,
+    });
+    const run = (yield* projections.getThreadProjection(threadId)).runs.find(
+      (candidate) => candidate.id === lostRunId,
+    );
+    assert.equal(run?.status, "completed");
+  }).pipe(Effect.provide(layerRecoveryTest)),
 );

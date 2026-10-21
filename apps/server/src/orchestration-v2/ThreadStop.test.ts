@@ -19,6 +19,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
@@ -968,6 +969,67 @@ it.effect("thread.stop marks a turn it cannot interrupt so a late agent watch is
     });
     assert.isTrue(Exit.isFailure(yield* Effect.exit(watch(threadId, 12))));
     assert.deepEqual(yield* threadState(threadId), { runs: ["running"], watched: [] });
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("thread.stop cancels steering still queued for the turn it stops", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const outbox = yield* EffectOutbox.EffectOutboxV2;
+    const threadId = ThreadId.make("thread:stop-pending-steer");
+    yield* createWatchingThread(threadId, 13);
+    yield* send(threadId, "work", "start_immediately");
+    const now = yield* DateTime.now;
+    const run = (yield* orchestrator.getThreadProjection(threadId)).runs[0]!;
+    const turnId = ProviderTurnId.make("provider-turn:stop-pending-steer");
+    yield* projections.apply({
+      id: EventId.make("event:stop-pending-steer:running"),
+      type: "run.updated",
+      threadId,
+      runId: run.id,
+      occurredAt: now,
+      payload: { ...run, status: "running", startedAt: now },
+    });
+    yield* projections.apply({
+      id: EventId.make("event:stop-pending-steer:turn"),
+      type: "provider-turn.updated",
+      threadId,
+      occurredAt: now,
+      payload: {
+        id: turnId,
+        providerThreadId: run.providerThreadId!,
+        nodeId: run.rootNodeId!,
+        runAttemptId: run.activeAttemptId!,
+        nativeTurnRef: null,
+        ordinal: 1,
+        status: "running",
+        startedAt: now,
+        completedAt: null,
+      },
+    });
+    const steerEffectId = "effect:stop-pending-steer:steer";
+    yield* outbox.enqueue([
+      {
+        id: steerEffectId,
+        commandId: CommandId.make("command:stop-pending-steer:steer"),
+        threadId,
+        request: {
+          type: "provider-turn.steer",
+          providerSessionId: ProviderSessionId.make("provider-session:stop-pending-steer"),
+          providerThreadId: run.providerThreadId!,
+          providerTurnId: turnId,
+          messageId: MessageId.make("message:stop-pending-steer"),
+        },
+      },
+    ]);
+
+    yield* orchestrator.dispatch({
+      type: "thread.stop",
+      commandId: CommandId.make("stop-pending-steer"),
+      threadId,
+    });
+    assert.equal(Option.getOrThrow(yield* outbox.get(steerEffectId)).status, "cancelled");
   }).pipe(Effect.provide(layerTest)),
 );
 

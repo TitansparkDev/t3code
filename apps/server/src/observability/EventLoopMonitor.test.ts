@@ -50,7 +50,7 @@ describe("EventLoopMonitor", () => {
         },
       });
       yield* Effect.gen(function* () {
-        yield* monitor([stalled, quiet, stalled]);
+        yield* monitor([stalled, quiet, { ...stalled, resourcePressure: true }]);
         yield* TestClock.adjust("60 seconds");
         assert.lengthOf(spans, 0);
         yield* TestClock.adjust("30 seconds");
@@ -63,6 +63,7 @@ describe("EventLoopMonitor", () => {
       const [span] = spans;
       assert.deepStrictEqual(Object.fromEntries(span!.attributes), {
         delayMaxMs: 4_950,
+        stage: "resource-pressure",
         utilization: 0.18,
         cpuUserMs: 310,
         cpuSystemMs: 96,
@@ -96,6 +97,7 @@ describe("EventLoopMonitor", () => {
           {
             time: "1970-01-01T00:02:00.000Z",
             delayMaxMs: 6_000,
+            stage: "synchronous-server-work",
             utilization: 0.18,
             cpuUserMs: 310,
             cpuSystemMs: 96,

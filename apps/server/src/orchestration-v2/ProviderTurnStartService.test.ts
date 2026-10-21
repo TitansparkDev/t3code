@@ -43,6 +43,7 @@ import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderTurnStart from "./ProviderTurnStartService.ts";
+import * as RuntimeResourceDiagnostics from "../observability/RuntimeResourceDiagnostics.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
 
@@ -61,6 +62,7 @@ const normalize = (target: string) => {
 const layerWorktreeLocation = (worktreesDir = managedWorktreesDir) =>
   Layer.mergeAll(
     Path.layer,
+    RuntimeResourceDiagnostics.layerTest,
     Layer.mock(ServerConfig.ServerConfig)({ worktreesDir } as ServerConfig.ServerConfig["Service"]),
     ServerSettings.layerTest(),
   );

@@ -8,15 +8,20 @@ import {
   type OrchestrationV2Subagent,
   type OrchestrationV2ThreadProjection,
   isOrchestrationV2WorkActive,
+  type RunId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 
+import { forkParked } from "../serverActivation.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -65,6 +70,12 @@ export interface ProviderRuntimeReconciliationSummary {
   readonly requeuedEffects: number;
 }
 
+export interface OrphanedClaimRecoverySummary {
+  readonly requeuedEffects: number;
+  readonly failedEffects: number;
+  readonly cancelledRuns: number;
+}
+
 export class ProviderRuntimeRecoveryService extends Context.Service<
   ProviderRuntimeRecoveryService,
   {
@@ -73,8 +84,15 @@ export class ProviderRuntimeRecoveryService extends Context.Service<
     ) => Effect.Effect<ProviderRuntimeReconciliationSummary, ProviderRuntimeRecoveryError>;
     readonly prepareForShutdown: Effect.Effect<void, ProviderRuntimeRecoveryError>;
     readonly recover: Effect.Effect<ProviderRuntimeRecoverySummary, ProviderRuntimeRecoveryError>;
+    /** Settles claims whose executor is gone while the server keeps running. */
+    readonly recoverOrphanedClaims: Effect.Effect<
+      OrphanedClaimRecoverySummary,
+      ProviderRuntimeRecoveryError
+    >;
   }
 >()("t3/orchestration-v2/ProviderRuntimeRecoveryService") {}
+
+const ORPHAN_SWEEP_INTERVAL = Duration.seconds(5);
 
 function nonterminalRuns(projection: ProjectionStore.ProjectionRuntimeRecoveryState) {
   return projection.runs.filter((run) => {
@@ -796,7 +814,155 @@ export const make = Effect.gen(function* () {
     return (yield* reconcile("startup")) satisfies ProviderRuntimeRecoverySummary;
   });
 
-  return ProviderRuntimeRecoveryService.of({ reconcile, prepareForShutdown, recover });
+  // A start whose executor vanished never reports back, so its run is cancelled here
+  // while it is still preparing or starting. Anything already past that point is left
+  // alone: its run settles through its own provider events.
+  const cancelRunOfLostStart = Effect.fn("ProviderRuntimeRecoveryService.cancelRunOfLostStart")(
+    function* (effect: EffectOutbox.OrchestrationEffectV2, runId: RunId) {
+      const projection = yield* projections.getRuntimeRecoveryProjection(effect.threadId);
+      const run = projection.runs.find((candidate) => candidate.id === runId);
+      if (run === undefined || (run.status !== "preparing" && run.status !== "starting")) {
+        return 0;
+      }
+      const now = yield* DateTime.now;
+      const commandId = CommandId.make(`command:orphaned-claim:${effect.id}`);
+      const allocateEventId = () =>
+        ids.allocate.event({ threadId: effect.threadId, commandId }).pipe(
+          Effect.mapError(
+            (cause) =>
+              new ProviderRuntimeRecoveryError({
+                operation: "reconcile",
+                threadId: effect.threadId,
+                cause,
+              }),
+          ),
+        );
+      const events: Array<OrchestrationV2DomainEvent> = [
+        {
+          id: yield* allocateEventId(),
+          type: "run.updated",
+          threadId: effect.threadId,
+          runId: run.id,
+          providerInstanceId: run.providerInstanceId,
+          occurredAt: now,
+          payload: { ...run, status: "cancelled", queuePosition: null, completedAt: now },
+        },
+      ];
+      for (const attempt of projection.attempts.filter(
+        (candidate) =>
+          candidate.runId === run.id &&
+          (candidate.status === "pending" || candidate.status === "running"),
+      )) {
+        events.push({
+          id: yield* allocateEventId(),
+          type: "run-attempt.updated",
+          threadId: effect.threadId,
+          runId: run.id,
+          nodeId: attempt.rootNodeId,
+          providerInstanceId: run.providerInstanceId,
+          occurredAt: now,
+          payload: { ...attempt, status: "cancelled", completedAt: now },
+        });
+      }
+      for (const node of projection.nodes.filter(
+        (candidate) => candidate.runId === run.id && isNonterminalNodeStatus(candidate.status),
+      )) {
+        events.push({
+          id: yield* allocateEventId(),
+          type: "node.updated",
+          threadId: effect.threadId,
+          runId: run.id,
+          nodeId: node.id,
+          providerInstanceId: run.providerInstanceId,
+          occurredAt: now,
+          payload: { ...node, status: "cancelled", completedAt: now },
+        });
+      }
+      yield* eventSink
+        .commitCommand({
+          commandId,
+          threadId: effect.threadId,
+          commandType: "provider-runtime.orphaned-claim",
+          acceptedAt: now,
+          events,
+          effects: [],
+        })
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new ProviderRuntimeRecoveryError({
+                operation: "reconcile",
+                threadId: effect.threadId,
+                cause,
+              }),
+          ),
+        );
+      return 1;
+    },
+  );
+
+  const recoverOrphanedClaims = Effect.gen(function* () {
+    const orphans = yield* outbox.orphanedClaims.pipe(
+      Effect.mapError(
+        (cause) => new ProviderRuntimeRecoveryError({ operation: "drain-outbox", cause }),
+      ),
+    );
+    const summary = { requeuedEffects: 0, failedEffects: 0, cancelledRuns: 0 };
+    for (const orphan of orphans) {
+      // The run is settled before its claim. If that write fails the claim stays
+      // orphaned, so the next pass retries both steps.
+      const outcome = yield* Effect.gen(function* () {
+        const cancelledRuns =
+          orphan.request.type === "provider-turn.start"
+            ? yield* cancelRunOfLostStart(orphan, orphan.request.runId)
+            : 0;
+        const reclaimed = yield* outbox.reclaimOrphan(orphan.id);
+        return { cancelledRuns, reclaimed };
+      }).pipe(
+        Effect.catch((cause) =>
+          Effect.logWarning("Failed to recover an orphaned effect claim", {
+            effectId: orphan.id,
+            effectType: orphan.request.type,
+            cause,
+          }).pipe(Effect.as(null)),
+        ),
+      );
+      if (outcome === null) continue;
+      summary.cancelledRuns += outcome.cancelledRuns;
+      if (Option.isNone(outcome.reclaimed)) continue;
+      if (outcome.reclaimed.value.status === "failed") summary.failedEffects += 1;
+      else summary.requeuedEffects += 1;
+    }
+    return summary;
+  });
+
+  return ProviderRuntimeRecoveryService.of({
+    reconcile,
+    prepareForShutdown,
+    recover,
+    recoverOrphanedClaims,
+  });
 });
 
 export const layer = Layer.effect(ProviderRuntimeRecoveryService, make);
+
+/**
+ * Runs orphan recovery on an interval for the life of the server. The 5 s cadence
+ * is a few times shorter than the effect lease, so a lost claim blocks its thread
+ * for seconds rather than until the next restart.
+ */
+export const layerOrphanSweeper = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const recovery = yield* ProviderRuntimeRecoveryService;
+    yield* forkParked(
+      recovery.recoverOrphanedClaims.pipe(
+        Effect.catchCauseIf(
+          (cause) => !Cause.hasInterruptsOnly(cause),
+          (cause) =>
+            Effect.logWarning("Orphaned effect recovery failed", { cause: Cause.pretty(cause) }),
+        ),
+        Effect.repeat(Schedule.spaced(ORPHAN_SWEEP_INTERVAL)),
+      ),
+    );
+  }),
+);

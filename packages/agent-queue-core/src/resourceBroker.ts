@@ -60,9 +60,22 @@ export const BUILTIN_RESOURCES: Readonly<Record<string, ResourceDefinition>> = {
   gpu: { capacity: 0, memoryMb: 0, description: "no GPU exists in this VM" },
 };
 
+/**
+ * One compiler run reached 7.5 GiB resident in the 2026-10-21 incident, while the compiler class was
+ * admitted on a 3.5 GB estimate. A compiler request declares this demand, and the broker never admits
+ * it on less than the demand, whatever the per-unit estimate says. A single `apps/server` check peaked
+ * at 4.4 GiB here (tsc-rs 0.7.0, 2026-10-21), so the 7.5 GiB peak was not reproduced; the margin covers it.
+ */
+export const TYPECHECK_DEMAND_MB = 8192;
+
+/**
+ * Compiler and type-check commands take the account-wide `heavy_build` lock, the same one Gradle
+ * uses, so no two compilers run at once across profiles and worktrees.
+ */
 export const RESOURCE_ALIASES: Readonly<Record<string, string>> = {
   gradle: "heavy_build",
   build: "heavy_build",
+  typecheck: "heavy_build",
   emulator: "android",
   avd: "android",
   playwright: "browser",
@@ -168,7 +181,12 @@ export type TicketOutcome =
 
 export interface ResourceRequest {
   /** Resource name and units, e.g. [{name: "android", units: 1}]. */
-  readonly resources: ReadonlyArray<{ readonly name: string; readonly units?: number }>;
+  readonly resources: ReadonlyArray<{
+    readonly name: string;
+    readonly units?: number;
+    /** Memory this request needs per unit; it can raise the resource's estimate, never lower it. */
+    readonly memoryMb?: number;
+  }>;
   /** Who is asking, for status (a command, a task id). */
   readonly label?: string;
   /** The task or thread this work belongs to, so its owner can be told the result. */
@@ -196,7 +214,11 @@ export interface Ticket {
   readonly seq: number;
   readonly kind: "run" | "job";
   readonly state: TicketState;
-  readonly resources: ReadonlyArray<{ readonly name: string; readonly units: number }>;
+  readonly resources: ReadonlyArray<{
+    readonly name: string;
+    readonly units: number;
+    readonly memoryMb?: number;
+  }>;
   readonly slots: Readonly<Record<string, ReadonlyArray<number>>>;
   readonly label: string;
   readonly ownerRef: string | null;
@@ -367,11 +389,6 @@ CREATE TABLE IF NOT EXISTS resource_hints (
 export const STARVATION_MS = 30_000;
 /** A holder that has not heartbeated for this long is torn down and its units are freed. */
 export const LEASE_MS = 120_000;
-/**
- * With nothing of ours running, a request that has waited this long for memory runs anyway: the
- * pressure comes from outside the queue and waiting longer would never end.
- */
-export const IDLE_MEMORY_OVERRIDE_MS = 5 * 60_000;
 /** Memory of a fresh grant keeps counting against headroom for this long, until it shows in MemAvailable. */
 export const RAMP_MS = 90_000;
 /** Finished tickets are kept this long for status and for owners to read results. */
@@ -492,14 +509,22 @@ export class ResourceBroker {
   }
 
   enqueue(request: ResourceRequest): Ticket {
-    const needs = new Map<string, number>();
+    const needs = new Map<string, { units: number; memoryMb: number }>();
     for (const item of request.resources) {
       const name = normalizeResource(item.name);
-      needs.set(name, Math.max(needs.get(name) ?? 0, Math.max(item.units ?? 1, 1)));
+      const previous = needs.get(name);
+      needs.set(name, {
+        units: Math.max(previous?.units ?? 0, Math.max(item.units ?? 1, 1)),
+        memoryMb: Math.max(previous?.memoryMb ?? 0, item.memoryMb ?? 0),
+      });
     }
     const resources = [...needs.entries()]
       .sort(([a], [b]) => (a < b ? -1 : 1))
-      .map(([name, units]) => ({ name, units }));
+      .map(([name, need]) => ({
+        name,
+        units: need.units,
+        ...(need.memoryMb ? { memoryMb: need.memoryMb } : {}),
+      }));
     const id = `rt-${NodeCrypto.randomBytes(5).toString("hex")}`;
     const now = this.now();
     const pid = request.pid ?? null;
@@ -821,7 +846,7 @@ export class ResourceBroker {
       let freeMb = host.availableMb - config.reserveMb - rampingMb;
       for (const row of stillWaiting) {
         if (headBlocked) break;
-        const needs = parse<Array<{ name: string; units: number }>>(row.resources_json, []);
+        const needs = parse<Ticket["resources"]>(row.resources_json, []);
         const aged = now - row.enqueued_at >= STARVATION_MS;
         let runner: (typeof liveRunners)[number] | undefined;
         if (row.kind === "job") {
@@ -845,12 +870,8 @@ export class ResourceBroker {
           slotsFor[item.name] = free.slice(0, item.units);
         }
         const memoryMb = this.memoryOf(needs, config);
-        // Nothing of ours is running, so the shortage is not ours to wait out forever.
-        const idle =
-          active.length === 0 &&
-          granted.length === 0 &&
-          now - row.enqueued_at >= IDLE_MEMORY_OVERRIDE_MS;
-        const memoryFits = memoryMb === 0 || idle || freeMb >= memoryMb;
+        const pressure = (host.memoryPressure ?? 0) >= 10 || host.swapPressure === true;
+        const memoryFits = memoryMb === 0 || (!pressure && freeMb >= memoryMb);
         if (fits && memoryFits) {
           this.db
             .prepare(
@@ -898,12 +919,11 @@ export class ResourceBroker {
     return granted.map((id) => this.get(id)!).filter(Boolean);
   }
 
-  private memoryOf(
-    needs: ReadonlyArray<{ name: string; units: number }>,
-    config: ResourceConfig,
-  ): number {
+  private memoryOf(needs: Ticket["resources"], config: ResourceConfig): number {
     return needs.reduce(
-      (sum, item) => sum + item.units * this.definitionOf(item.name, config).memoryMb,
+      (sum, item) =>
+        sum +
+        item.units * Math.max(item.memoryMb ?? 0, this.definitionOf(item.name, config).memoryMb),
       0,
     );
   }

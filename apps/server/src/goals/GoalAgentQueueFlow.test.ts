@@ -141,6 +141,8 @@ const makeFlow = (
     readonly extraFiles?: Record<string, string>;
     readonly spacingMillis?: number;
     readonly queueFaults?: { claims?: boolean; release?: boolean };
+    /** How many workspace binds fail before the engine accepts one. */
+    readonly bindFailures?: number;
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -223,6 +225,8 @@ const makeFlow = (
           ),
         ).pipe(Layer.provide(AgentQueueServiceLive))
       : AgentQueueServiceLive;
+    let bindFailuresLeft = options.bindFailures ?? 0;
+    let bindAttempts = 0;
     const depsLayer = Layer.mergeAll(
       GoalStore.layer,
       queueLayer,
@@ -255,6 +259,12 @@ const makeFlow = (
                   : Option.none(),
               ),
         projectRoot: (projectId) => (projectId === PROJECT ? repo.rootDir : undefined),
+        failBind: () => {
+          bindAttempts += 1;
+          if (bindFailuresLeft <= 0) return false;
+          bindFailuresLeft -= 1;
+          return true;
+        },
       }),
       Layer.mock(ProviderRegistry)({ getProviders: Ref.get(providers) }),
     ).pipe(
@@ -432,6 +442,7 @@ const makeFlow = (
       landings,
       goalOf,
       depsLayer,
+      bindAttempts: () => bindAttempts,
     };
   });
 
@@ -982,6 +993,17 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
         const text = resume?.type === "thread.turn.start" ? resume.message.text : "";
         expect(text).toContain("shared.txt");
         expect(text).toContain("merge");
+        // The conversation is durably bound to its task worktree before the prompt is sent.
+        const bind = flow.log.findIndex(
+          (c) => c.type === "thread.workspace.bind" && c.threadId === t2.threadId,
+        );
+        const bound = flow.log[bind];
+        expect(bound).toMatchObject({
+          type: "thread.workspace.bind",
+          branch: t2.branch,
+          worktreePath: t2.worktreePath,
+        });
+        expect(bind).toBeLessThan(flow.log.indexOf(resume!));
         expect(flow.log.filter((c) => c.type === "thread.create")).toHaveLength(2);
         expect(yield* flow.taskRow("T2")).toMatchObject({
           status: "claimed",
@@ -1014,6 +1036,66 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
             NodeFSP.readFile(NodePath.join(flow.repo.rootDir, "shared.txt"), "utf8"),
           ),
         ).toBe("from T1 and T2\n");
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "a failed workspace bind sends nothing, keeps the task out of new chats, and the retry sends exactly one resume",
+    () =>
+      Effect.gen(function* () {
+        const flow = yield* makeFlow(planWith([{ id: "T1" }, { id: "T2" }]), {
+          extraFiles: { "shared.txt": "base\n" },
+          bindFailures: 1,
+        });
+        const service = yield* flow.startServer;
+        yield* Effect.forkScoped(service.loop);
+        yield* Effect.yieldNow;
+        yield* service.create(settingsFor());
+        yield* flow.waitFor("thread.create", 2);
+        yield* flow.work("T1", { file: "shared.txt", content: "from T1\n" });
+        yield* flow.eventually(
+          flow.taskRow("T1"),
+          (row) => row.status === "completed",
+          "T1 to merge",
+        );
+        yield* flow.work("T2", { file: "shared.txt", content: "from T2\n" });
+
+        // The bind failed: no resume turn was sent to T2 and no chat opened in the root.
+        const t2 = flow.createdFor("T2")!;
+        yield* flow.eventually(
+          Effect.sync(() => flow.bindAttempts()),
+          (attempts) => attempts >= 1,
+          "the first bind attempt",
+        );
+        // The claim is released back to the repair queue (a conflict awaiting its owner), with no
+        // retry spent on the failed bind.
+        yield* flow.eventually(
+          flow.taskRow("T2"),
+          (row) => row.status === "verifying" && row.integration_state === "conflict",
+          "T2 to wait for its owner after the failed bind",
+        );
+        expect((yield* flow.taskRow("T2")).retry_count).toBe(0);
+        const sentBefore = (yield* flow.commandsOf("thread.turn.start")).filter(
+          (c) => c.threadId === t2.threadId,
+        );
+        expect(sentBefore).toHaveLength(1);
+        expect(flow.log.filter((c) => c.type === "thread.workspace.bind")).toHaveLength(0);
+        expect(flow.log.filter((c) => c.type === "thread.create")).toHaveLength(2);
+
+        // The owner wait expires and the scheduler hands the task back to its owner: the bind now
+        // succeeds and exactly one resume is sent.
+        yield* TestClock.adjust(Duration.seconds(25));
+        yield* Effect.yieldNow;
+        yield* TestClock.adjust(Duration.seconds(1));
+        yield* flow.waitFor("thread.workspace.bind", 1);
+        const turns = yield* flow.waitFor("thread.turn.start", 3);
+        const resumes = turns.filter((c) => c.threadId === t2.threadId);
+        expect(resumes).toHaveLength(2);
+        expect(
+          resumes.at(-1)?.type === "thread.turn.start" && resumes.at(-1)!.message.text,
+        ).toContain("merge");
+        expect(flow.log.filter((c) => c.type === "thread.workspace.bind")).toHaveLength(1);
+        expect(flow.log.filter((c) => c.type === "thread.create")).toHaveLength(2);
       }).pipe(Effect.scoped),
   );
 

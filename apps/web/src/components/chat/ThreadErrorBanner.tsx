@@ -35,10 +35,16 @@ export const ThreadErrorBanner = memo(function ThreadErrorBanner({
   error,
   onDismiss,
   errorClass,
+  errorStage,
+  errorReason,
+  recovery,
   chatGptUsageLimit = false,
 }: {
   error: string | null;
   errorClass?: OrchestrationV2ProviderFailureClass | null;
+  errorStage?: string | null;
+  errorReason?: string | null;
+  recovery?: string | null;
   onDismiss?: () => void;
   chatGptUsageLimit?: boolean;
 }) {
@@ -59,7 +65,16 @@ export const ThreadErrorBanner = memo(function ThreadErrorBanner({
               <p>Review your usage settings in ChatGPT to continue.</p>
             </div>
           ) : (
-            <ExpandableText text={error} />
+            <div className="space-y-1">
+              <ExpandableText text={error} />
+              <p className="text-muted-foreground">
+                {errorStage === "unknown" || errorStage == null
+                  ? "The failure stage is unavailable."
+                  : `Failed during ${errorStage.replaceAll("_", " ")}.`}
+                {errorReason ? ` Reason: ${errorReason}.` : ""}
+              </p>
+              {recovery ? <p>{recovery}</p> : null}
+            </div>
           )}
         </AlertDescription>
         {(chatGptUsageLimit || onDismiss) && (

@@ -3072,7 +3072,7 @@ it.effect("ProviderSessionManagerV2 releases pinned idle sessions once the pin c
   }),
 );
 
-it.effect("ProviderSessionManagerV2 keeps pinned work that reports progress", () =>
+it.effect("ProviderSessionManagerV2 caps pinned work despite repeated provider activity", () =>
   Effect.gen(function* () {
     const state = yield* Ref.make(emptyState);
     const effect = Effect.gen(function* () {
@@ -3115,11 +3115,6 @@ it.effect("ProviderSessionManagerV2 keeps pinned work that reports progress", ()
           providerSession: runtime.providerSession,
         });
         for (let i = 0; i < 20; i += 1) yield* Effect.yieldNow;
-      }
-      assert.equal((yield* Ref.get(state)).closeCount, 0);
-
-      for (let tick = 0; tick < 6; tick += 1) {
-        yield* step("1 second");
       }
       assert.equal((yield* Ref.get(state)).closeCount, 1);
     });

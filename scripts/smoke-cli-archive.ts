@@ -7,6 +7,7 @@ import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
@@ -101,7 +102,16 @@ const smokeCliArchive = Effect.fn("smokeCliArchive")(function* (input: {
   }
   const contentDir = path.join(scratch, root);
   const executable = path.join(contentDir, platform === "win32" ? "t3.exe" : "t3");
-  for (const required of [executable, path.join(contentDir, "client/index.html")]) {
+  const resourceMonitor = path.join(
+    contentDir,
+    "resource-monitor",
+    platform === "win32" ? "t3-resource-monitor.exe" : "t3-resource-monitor",
+  );
+  for (const required of [
+    executable,
+    path.join(contentDir, "client/index.html"),
+    resourceMonitor,
+  ]) {
     if (!(yield* fs.exists(required))) {
       return yield* new CliArchiveSmokeError({
         step: "checking the archive layout",
@@ -119,7 +129,14 @@ const smokeCliArchive = Effect.fn("smokeCliArchive")(function* (input: {
   }
 
   const net = yield* NetService.NetService;
-  const port = yield* net.findAvailablePort(47700);
+  const requestedPort = Number(process.env.AGENTQUEUE_PORT_BASE ?? 0);
+  if (!Number.isInteger(requestedPort) || requestedPort < 0 || requestedPort > 65535) {
+    return yield* new CliArchiveSmokeError({
+      step: "choosing a loopback port",
+      detail: `invalid AGENTQUEUE_PORT_BASE: ${process.env.AGENTQUEUE_PORT_BASE}`,
+    });
+  }
+  const port = yield* net.findAvailablePort(requestedPort);
   const home = path.join(scratch, "home");
   const server = yield* spawner.spawn(
     ChildProcess.make(
@@ -161,7 +178,7 @@ const smokeCliArchive = Effect.fn("smokeCliArchive")(function* (input: {
     Effect.orElseSucceed(() => false),
   );
   yield* server.kill({ killSignal: "SIGTERM" }).pipe(Effect.ignore);
-  yield* server.exitCode.pipe(Effect.timeout(Duration.seconds(10)), Effect.ignore);
+  const shutdown = yield* server.exitCode.pipe(Effect.timeoutOption(Duration.seconds(10)));
   const [stdout, stderr] = yield* Fiber.join(output).pipe(
     Effect.timeout(Duration.seconds(5)),
     Effect.orElseSucceed(() => ["", ""] as const),
@@ -170,6 +187,16 @@ const smokeCliArchive = Effect.fn("smokeCliArchive")(function* (input: {
     return yield* new CliArchiveSmokeError({
       step: "serving from the extracted archive",
       detail: `no 200 from / within 30s\n${stdout}${stderr}`,
+    });
+  }
+  // NodeRuntime reports an interrupted main fiber as 130 after its shutdown
+  // finalizers have completed; that is the expected SIGTERM result here.
+  if (Option.isNone(shutdown) || ![0, 130].includes(Number(shutdown.value))) {
+    return yield* new CliArchiveSmokeError({
+      step: "stopping the extracted archive server",
+      detail: Option.isNone(shutdown)
+        ? "process did not exit within 10s after SIGTERM"
+        : `process exited with ${String(shutdown.value)}`,
     });
   }
   yield* Effect.log(`[cli-smoke] ${root}: --version passed and serve answered on ${String(port)}.`);

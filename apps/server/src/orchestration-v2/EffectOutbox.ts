@@ -154,6 +154,7 @@ export type OrchestrationEffectStatusV2 = typeof OrchestrationEffectStatusV2.Typ
  */
 export const SETTLED_EFFECT_RETENTION = Duration.days(7);
 const PRUNE_BATCH_SIZE = 500;
+const ORPHAN_SWEEP_BATCH_SIZE = 100;
 
 export interface OrchestrationEffectV2 {
   readonly id: string;
@@ -221,6 +222,18 @@ export interface EffectOutboxV2Shape {
     { readonly requeued: number; readonly cancelled: number },
     EffectOutboxError
   >;
+  /**
+   * Running claims whose lease has passed and that no executor in this process still holds.
+   * A claim with a live executor is never an orphan, however late its lease timestamp is.
+   */
+  readonly orphanedClaims: Effect.Effect<ReadonlyArray<OrchestrationEffectV2>, EffectOutboxError>;
+  /**
+   * Settles one orphaned claim if it is still one. Replay-safe effects return to the queue;
+   * a process-bound effect fails, because its provider side effect may already have happened.
+   */
+  readonly reclaimOrphan: (
+    effectId: string,
+  ) => Effect.Effect<Option.Option<OrchestrationEffectV2>, EffectOutboxError>;
   readonly claimNext: (input: {
     readonly workerId: string;
     readonly leaseDurationMs: number;
@@ -526,6 +539,75 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
           (cause) => new EffectOutboxError({ operation: "reconcile-process-loss", cause }),
         ),
       ),
+      orphanedClaims: Effect.gen(function* () {
+        const nowIso = DateTime.formatIso(yield* DateTime.now);
+        const rows = yield* sql<EffectRow>`
+          SELECT *
+          FROM orchestration_v2_effect_outbox
+          WHERE status = 'running'
+            AND lease_expires_at <= ${nowIso}
+          ORDER BY lease_expires_at ASC, effect_id ASC
+          LIMIT ${ORPHAN_SWEEP_BATCH_SIZE}
+        `;
+        return yield* decodeRows(
+          "orphaned-claims",
+          rows.filter((row) => !cancellationSignals.has(row.effect_id)),
+        );
+      }).pipe(
+        Effect.mapError((cause) =>
+          isEffectOutboxError(cause)
+            ? cause
+            : new EffectOutboxError({ operation: "orphaned-claims", cause }),
+        ),
+      ),
+      reclaimOrphan: (effectId) =>
+        Effect.gen(function* () {
+          // A live executor keeps its registry entry until its outcome is written, so
+          // an expired lease alone never makes its claim an orphan.
+          if (cancellationSignals.has(effectId)) return Option.none();
+          const now = DateTime.formatIso(yield* DateTime.now);
+          const current = yield* sql<EffectRow>`
+            SELECT *
+            FROM orchestration_v2_effect_outbox
+            WHERE effect_id = ${effectId}
+            LIMIT 1
+          `;
+          const row = current[0];
+          if (row === undefined) return Option.none();
+          const replaySafe = REPLAY_SAFE_EFFECT_TYPES_AFTER_PROCESS_LOSS.some(
+            (effectType) => effectType === row.effect_type,
+          );
+          const rows = yield* sql<EffectRow>`
+            UPDATE orchestration_v2_effect_outbox
+            SET
+              status = ${replaySafe ? "pending" : "failed"},
+              available_at = ${now},
+              lease_owner = NULL,
+              lease_expires_at = NULL,
+              completed_at = ${replaySafe ? null : now},
+              updated_at = ${now},
+              last_error = ${
+                replaySafe
+                  ? "Requeued after its executor stopped without settling the claim."
+                  : "Failed because its executor stopped without settling the claim; it was not re-run."
+              }
+            WHERE effect_id = ${effectId}
+              AND status = 'running'
+              AND lease_expires_at <= ${now}
+            RETURNING *
+          `;
+          const reclaimed = rows[0];
+          if (reclaimed === undefined) return Option.none();
+          if (!replaySafe) yield* signalSettled([effectId]);
+          yield* notifyAvailable();
+          return Option.some(yield* rowToEffect(reclaimed));
+        }).pipe(
+          Effect.mapError((cause) =>
+            isEffectOutboxError(cause)
+              ? cause
+              : new EffectOutboxError({ operation: "reclaim-orphan", effectId, cause }),
+          ),
+        ),
       claimNext: ({ workerId, leaseDurationMs, excludeRestartContinuations = false }) =>
         Effect.gen(function* () {
           const now = yield* DateTime.now;

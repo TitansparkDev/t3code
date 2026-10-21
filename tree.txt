@@ -24090,6 +24090,8 @@ apps/server/src/observability/OtlpEndpointCheck.test.ts
 apps/server/src/observability/OtlpEndpointCheck.ts
 apps/server/src/observability/RpcInstrumentation.test.ts
 apps/server/src/observability/RpcInstrumentation.ts
+apps/server/src/observability/RuntimeResourceDiagnostics.test.ts
+apps/server/src/observability/RuntimeResourceDiagnostics.ts
 apps/server/src/orchestration-v2/AcpRegistryOrchestratorV2.live.test.ts
 apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.test.ts
 apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.testkit.ts
@@ -24199,6 +24201,7 @@ apps/server/src/orchestration-v2/PullRequestSyncReactor.ts
 apps/server/src/orchestration-v2/PullRequestWatchReactor.ts
 apps/server/src/orchestration-v2/QueuedRunOrder.test.ts
 apps/server/src/orchestration-v2/QueuedRunOrder.ts
+apps/server/src/orchestration-v2/Reliability.integration.test.ts
 apps/server/src/orchestration-v2/ResourceCleanupService.ts
 apps/server/src/orchestration-v2/RestartBackgroundNote.test.ts
 apps/server/src/orchestration-v2/RestartBackgroundNote.ts
@@ -24210,6 +24213,8 @@ apps/server/src/orchestration-v2/RunExecutionService.ts
 apps/server/src/orchestration-v2/RunFinalizationQueue.test.ts
 apps/server/src/orchestration-v2/RunFinalizationService.test.ts
 apps/server/src/orchestration-v2/RunFinalizationService.ts
+apps/server/src/orchestration-v2/RuntimeLiveness.test.ts
+apps/server/src/orchestration-v2/RuntimeLiveness.ts
 apps/server/src/orchestration-v2/RuntimePolicy.test.ts
 apps/server/src/orchestration-v2/RuntimePolicy.ts
 apps/server/src/orchestration-v2/RuntimeRequestService.test.ts
@@ -27131,6 +27136,7 @@ packages/agent-queue-cli/tsconfig.json
 packages/agent-queue-core/package.json
 packages/agent-queue-core/src/audit.ts
 packages/agent-queue-core/src/baseline.ts
+packages/agent-queue-core/src/checkReceipts.ts
 packages/agent-queue-core/src/checkout.ts
 packages/agent-queue-core/src/claimService.ts
 packages/agent-queue-core/src/completion.ts
@@ -27183,6 +27189,7 @@ packages/agent-queue-core/test/fullStressHarness.test.ts
 packages/agent-queue-core/test/harness/contractHarness.ts
 packages/agent-queue-core/test/harness/gitHarness.test.ts
 packages/agent-queue-core/test/harness/gitHarness.ts
+packages/agent-queue-core/test/hostCapacity.test.ts
 packages/agent-queue-core/test/integration.test.ts
 packages/agent-queue-core/test/leaseRecovery.test.ts
 packages/agent-queue-core/test/linearize.test.ts
@@ -27196,6 +27203,7 @@ packages/agent-queue-core/test/queueInspector.test.ts
 packages/agent-queue-core/test/realAgent/realAgentGoal.mts
 packages/agent-queue-core/test/repoManager.test.ts
 packages/agent-queue-core/test/resourceBroker.test.ts
+packages/agent-queue-core/test/resourceRunner.test.ts
 packages/agent-queue-core/test/scopeManager.test.ts
 packages/agent-queue-core/test/stateMachine.test.ts
 packages/agent-queue-core/test/verificationAndFollowUp.test.ts
@@ -28460,6 +28468,10 @@ scripts/npm-launcher/t3.mjs
 scripts/package.json
 scripts/publish-desktop-release.ts
 scripts/release-smoke.ts
+scripts/reliability-artifact-smoke.test.ts
+scripts/reliability-artifact-smoke.ts
+scripts/reliability-check.test.ts
+scripts/reliability-check.ts
 scripts/resolve-nightly-release.test.ts
 scripts/resolve-nightly-release.ts
 scripts/resolve-previous-release-tag.test.ts

@@ -9488,6 +9488,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                   }),
               ),
             );
+      // Steering aimed at this turn must not reach the provider once it is stopped, and a
+      // pending one must not hold the interrupt back in the outbox until it finally fails.
+      const cancelPendingSteering = {
+        effectTypes: ["provider-turn.steer"],
+        reason: `Run ${run.id} was interrupted; its pending steering was cancelled.`,
+      } satisfies {
+        readonly effectTypes: ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
+        readonly reason: string;
+      };
       if (Option.isNone(sessionOption)) {
         yield* emitEvent({
           type: "turn-item.updated",
@@ -9509,7 +9518,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           now,
         });
         yield* Ref.update(effects, (existing) => [...existing, ...otherProviderInterrupts]);
-        return undefined;
+        return cancelPendingSteering;
       }
       if (providerThread.providerSessionId === null) {
         return yield* new OrchestratorDispatchError({
@@ -9553,7 +9562,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         } satisfies PendingOrchestrationEffectV2,
         ...otherProviderInterrupts,
       ]);
-      return undefined;
+      return cancelPendingSteering;
     });
 
   const dispatchThreadStop = (

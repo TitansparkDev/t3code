@@ -21,6 +21,7 @@ import {
   lockRoot,
   normalizeResource,
   openBroker,
+  TYPECHECK_DEMAND_MB,
   type BrokerOptions,
   type ResourceBroker,
   type ResourceRequest,
@@ -48,6 +49,200 @@ const COMMAND_RULES: ReadonlyArray<readonly [RegExp, ReadonlyArray<string>]> = [
   ],
 ];
 
+const COMPILERS = new Set(["tsc", "tsgo", "tsc-rs", "effect-tsgo"]);
+const CHECK_SCRIPTS = new Set(["typecheck", "tc"]);
+const SCRIPT_RUNNERS = new Set(["pnpm", "npm", "yarn", "bun", "vp"]);
+const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh"]);
+/** Commands that run their arguments as another command. */
+const LAUNCHERS = new Set(["env", "exec", "nice", "nohup", "time", "timeout", "npx"]);
+/** `timeout` takes a duration before the command; `nice` takes its value as a flag (`-n`). */
+const LAUNCHERS_WITH_VALUE = new Set(["timeout"]);
+/** Launcher options that take the next word as their value (`time -f FORMAT`, `env -u NAME`). */
+const LAUNCHER_FLAGS_WITH_VALUE = new Set([
+  "-f",
+  "--format",
+  "-o",
+  "--output",
+  "-n",
+  "-s",
+  "-k",
+  "-u",
+  "-C",
+  "-S",
+  "--signal",
+  "--kill-after",
+]);
+const SCRIPT_FLAGS_WITH_VALUE = new Set(["-F", "--filter", "-C", "--dir", "--concurrency-limit"]);
+
+/** Index of the `)` closing a `$(` that starts just before `start`, or the end of the line. */
+function closingParen(line: string, start: number): number {
+  let depth = 1;
+  for (let i = start; i < line.length; i++) {
+    if (line[i] === "\\") i++;
+    else if (line[i] === "(") depth++;
+    else if (line[i] === ")" && --depth === 0) return i;
+  }
+  return line.length;
+}
+
+/**
+ * Splits a shell command line into simple commands, each a list of words with quotes and
+ * escapes removed. Operators (`;`, `&&`, `|`, newline) start a new command, and so do
+ * substitutions (`$(...)`, backticks), which are read as commands of their own. Quoted text stays
+ * one word, which is how `echo "run tsc later"` is told apart from `tsc --noEmit`.
+ */
+function shellCommands(line: string): string[][] {
+  const commands: string[][] = [];
+  let words: string[] = [];
+  let word: string | null = null;
+  let quoted = false;
+  const endWord = () => {
+    if (word !== null) words.push(word);
+    word = null;
+  };
+  const endCommand = () => {
+    endWord();
+    if (words.length > 0) commands.push(words);
+    words = [];
+  };
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i]!;
+    if (char === "\\") {
+      const next = line[i + 1];
+      if (next === undefined) break;
+      const literal = quoted && !/["\\$`\n]/.test(next);
+      word = (word ?? "") + (literal ? char : next);
+      i++;
+    } else if (char === "'" && !quoted) {
+      const close = line.indexOf("'", i + 1);
+      const end = close === -1 ? line.length : close;
+      word = (word ?? "") + line.slice(i + 1, end);
+      i = end;
+    } else if (char === '"') {
+      quoted = !quoted;
+      word ??= "";
+    } else if (char === "$" && line[i + 1] === "(") {
+      const end = closingParen(line, i + 2);
+      commands.push(...shellCommands(line.slice(i + 2, end)));
+      word ??= "";
+      i = end;
+    } else if (char === "`") {
+      const close = line.indexOf("`", i + 1);
+      const end = close === -1 ? line.length : close;
+      commands.push(...shellCommands(line.slice(i + 1, end)));
+      word ??= "";
+      i = end;
+    } else if (!quoted && (char === " " || char === "\t" || char === "\r")) {
+      endWord();
+    } else if (!quoted && /[;&|()\n]/.test(char)) {
+      endCommand();
+    } else {
+      word = (word ?? "") + char;
+    }
+  }
+  endCommand();
+  return commands;
+}
+
+const baseProgram = (word: string): string =>
+  word
+    .split(/[\\/]/)
+    .pop()!
+    .replace(/\.(exe|cmd|bat|ps1)$/i, "");
+
+const isAssignment = (word: string): boolean => /^[A-Za-z_][A-Za-z0-9_]*=/.test(word);
+
+/** True when a simple command launches a type checker, directly or through a launcher or shell. */
+function launchesCompiler(words: ReadonlyArray<string>, depth: number): boolean {
+  let index = 0;
+  while (index < words.length && isAssignment(words[index]!)) index++;
+  while (index < words.length && LAUNCHERS.has(baseProgram(words[index]!))) {
+    const launcher = baseProgram(words[index]!);
+    index++;
+    while (index < words.length && (isAssignment(words[index]!) || words[index]!.startsWith("-"))) {
+      if (LAUNCHER_FLAGS_WITH_VALUE.has(words[index]!)) index++;
+      index++;
+    }
+    if (LAUNCHERS_WITH_VALUE.has(launcher)) index++;
+  }
+  const program = words[index];
+  if (program === undefined) return false;
+  const name = baseProgram(program);
+  if (COMPILERS.has(name)) return true;
+  if (name === "node") {
+    const script = words[index + 1];
+    return script !== undefined && COMPILERS.has(baseProgram(script).replace(/\.[cm]?js$/, ""));
+  }
+  if (SHELLS.has(name)) {
+    const flag = words.findIndex((word, at) => at > index && /^-[a-zA-Z]*c[a-zA-Z]*$/.test(word));
+    const script = flag === -1 ? undefined : words[flag + 1];
+    return script !== undefined && depth < 4 && isCompilerCommand(script, depth + 1);
+  }
+  if (SCRIPT_RUNNERS.has(name)) {
+    const rest = words.slice(index + 1);
+    for (let at = 0; at < rest.length; at++) {
+      const word = rest[at]!;
+      if (word.startsWith("-")) {
+        if (SCRIPT_FLAGS_WITH_VALUE.has(word)) at++;
+        continue;
+      }
+      if (word === "run") continue;
+      if (word === "exec") return launchesCompiler(rest.slice(at + 1), depth + 1);
+      return CHECK_SCRIPTS.has(word);
+    }
+  }
+  return false;
+}
+
+/**
+ * Whether a command line runs a TypeScript checker (tsc, tsgo, tsc-rs, effect-tsgo) or the
+ * repository's typecheck script. Matches the program in command position, so an argument, an
+ * echoed string or a commit message that merely mentions a checker is never a launch.
+ */
+export function isCompilerCommand(command: string, depth = 0): boolean {
+  return shellCommands(command).some((words) => launchesCompiler(words, depth));
+}
+
+export interface ResourceDemand {
+  readonly name: string;
+  readonly memoryMb?: number;
+}
+
+/** Resources a command line needs, with the memory a compiler run declares for admission. */
+export function inferResourceDemands(
+  command: string,
+  repoResources: ReadonlyArray<{
+    readonly name: string;
+    readonly commands: ReadonlyArray<string>;
+  }> = [],
+): ResourceDemand[] {
+  const found = new Map<string, number | undefined>();
+  const add = (name: string, memoryMb?: number) => {
+    const key = normalizeResource(name);
+    const previous = found.get(key);
+    found.set(key, memoryMb === undefined ? previous : Math.max(memoryMb, previous ?? 0));
+  };
+  for (const [pattern, names] of COMMAND_RULES) {
+    if (pattern.test(command)) for (const name of names) add(name);
+  }
+  if (isCompilerCommand(command)) add("typecheck", TYPECHECK_DEMAND_MB);
+  for (const resource of repoResources) {
+    for (const expression of resource.commands) {
+      try {
+        if (new RegExp(expression).test(command)) add(resource.name);
+      } catch {
+        if (command.includes(expression)) add(resource.name);
+      }
+    }
+  }
+  return [...found]
+    .sort(([a], [b]) => (a < b ? -1 : 1))
+    .map(([name, memoryMb]) => ({
+      name,
+      ...(memoryMb === undefined ? {} : { memoryMb }),
+    }));
+}
+
 export function inferResources(
   command: string,
   repoResources: ReadonlyArray<{
@@ -55,20 +250,7 @@ export function inferResources(
     readonly commands: ReadonlyArray<string>;
   }> = [],
 ): string[] {
-  const found = new Set<string>();
-  for (const [pattern, names] of COMMAND_RULES) {
-    if (pattern.test(command)) for (const name of names) found.add(name);
-  }
-  for (const resource of repoResources) {
-    for (const expression of resource.commands) {
-      try {
-        if (new RegExp(expression).test(command)) found.add(normalizeResource(resource.name));
-      } catch {
-        if (command.includes(expression)) found.add(normalizeResource(resource.name));
-      }
-    }
-  }
-  return [...found].sort();
+  return inferResourceDemands(command, repoResources).map((demand) => demand.name);
 }
 
 const LEGACY_CLASSES = new Set(["android", "browser", "heavy_build", "package_install", "codegen"]);
@@ -176,12 +358,18 @@ export async function waitForGrant(
     /** Resolve `"defer"` instead of waiting once this much time passed (the caller turns the ticket into a stored job). */
     readonly deferAfterMs?: number;
     readonly signal?: AbortSignal;
+    /** Polled while waiting: true withdraws the ticket and resolves `"superseded"` (the same work finished meanwhile). */
+    readonly shouldStop?: () => boolean;
   } = {},
-): Promise<Ticket | "defer"> {
+): Promise<Ticket | "defer" | "superseded"> {
   const started = Date.now();
   let lastReport = 0;
   let delay = 150;
   while (true) {
+    if (options.shouldStop && broker.get(ticketId)?.state === "waiting" && options.shouldStop()) {
+      broker.cancel(ticketId, "superseded by an identical check");
+      return "superseded";
+    }
     broker.pump();
     const ticket = broker.get(ticketId);
     if (!ticket) throw new Error(`Resource ticket ${ticketId} disappeared.`);
@@ -224,6 +412,8 @@ export interface CommandResult {
   readonly exitCode: number;
   readonly tail: string;
   readonly logPath: string | null;
+  /** Largest resident memory the command's process tree reached, in KiB (0 when it cannot be read). */
+  readonly peakRssKb: number;
 }
 
 const TAIL_BYTES = 6000;
@@ -239,30 +429,58 @@ function killTree(pgid: number): void {
   }
 }
 
+/** Resident memory, in KiB, of every process in a process group (Linux `/proc`; 0 elsewhere). */
+function treeResidentKb(pgid: number): number {
+  let entries: string[];
+  try {
+    entries = NodeFS.readdirSync("/proc");
+  } catch {
+    return 0;
+  }
+  let total = 0;
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry)) continue;
+    try {
+      const stat = NodeFS.readFileSync(`/proc/${entry}/stat`, "utf8")
+        .split(")")[1]!
+        .trim()
+        .split(/\s+/);
+      if (Number(stat[2]) !== pgid) continue;
+      const rss = /^VmRSS:\s+(\d+) kB/m.exec(NodeFS.readFileSync(`/proc/${entry}/status`, "utf8"));
+      if (rss) total += Number(rss[1]);
+    } catch {
+      // It exited while it was being read.
+    }
+  }
+  return total;
+}
+
+interface TreeRun {
+  readonly code: number;
+  readonly timedOut: boolean;
+  readonly tail: string;
+  readonly peakRssKb: number;
+}
+
 /**
- * Run `argv` while the ticket's resources are held. The command runs in its own process group,
- * wrapped in `flock` for every physical lock, so an orphaned command keeps its locks until it
- * ends. Heartbeats keep the lease; the group is killed at `runMs`.
+ * Run `argv` in its own process group and wait for it. The group is killed at `runMs`, so the
+ * command's children cannot outlive its time limit. Output goes to the log file and to the tail.
  */
-export async function runGranted(
-  broker: ResourceBroker,
-  ticket: Ticket,
+async function runTree(
+  argv: ReadonlyArray<string>,
   command: {
-    argv: ReadonlyArray<string>;
-    cwd: string;
-    env?: Record<string, string>;
-    stdio?: "inherit" | "pipe";
-    logFile?: string;
+    readonly cwd: string;
+    readonly env: Record<string, string>;
+    readonly stdio?: "inherit" | "pipe";
+    readonly logFile?: string;
   },
-): Promise<CommandResult> {
-  const files = ticketLockFiles(ticket);
-  const lockWait = 1800;
-  const full = [...flockPrefix(files, lockWait), ...command.argv];
-  const logPath = command.logFile ?? null;
+  runMs: number | null,
+  hooks: { readonly onStart?: (pgid: number | null) => void; readonly onBeat?: () => void } = {},
+): Promise<TreeRun> {
   let logFd: number | null = null;
-  if (logPath) {
-    NodeFS.mkdirSync(NodePath.dirname(logPath), { recursive: true });
-    logFd = NodeFS.openSync(logPath, "a");
+  if (command.logFile) {
+    NodeFS.mkdirSync(NodePath.dirname(command.logFile), { recursive: true });
+    logFd = NodeFS.openSync(command.logFile, "a");
   }
   const tail: string[] = [];
   let tailBytes = 0;
@@ -273,16 +491,14 @@ export async function runGranted(
     while (tailBytes > TAIL_BYTES * 2 && tail.length > 1)
       tailBytes -= Buffer.byteLength(tail.shift()!);
   };
-  await ensureEmulator(ticketEnv(ticket), { repo: ticket.repo ?? null });
-  const child = NodeChildProcess.spawn(full[0]!, full.slice(1), {
+  const child = NodeChildProcess.spawn(argv[0]!, argv.slice(1), {
     cwd: command.cwd,
-    env: { ...process.env, ...command.env, ...ticketEnv(ticket) },
+    env: command.env,
     detached: true,
     stdio: ["ignore", "pipe", "pipe"],
   });
   const pgid = child.pid ?? null;
-  broker.markRunning(ticket.id, pgid);
-  if (pgid !== null) broker.heartbeat(ticket.id, { pgid });
+  hooks.onStart?.(pgid);
   child.stdout!.on("data", (chunk: Buffer) => {
     if (command.stdio === "inherit") process.stdout.write(chunk);
     keep(chunk);
@@ -291,14 +507,21 @@ export async function runGranted(
     if (command.stdio === "inherit") process.stderr.write(chunk);
     keep(chunk);
   });
-  const beat = setInterval(() => broker.heartbeat(ticket.id), 10_000);
+  const beat = setInterval(() => hooks.onBeat?.(), 10_000);
+  let peakRssKb = 0;
+  const sample =
+    pgid === null
+      ? null
+      : setInterval(() => {
+          peakRssKb = Math.max(peakRssKb, treeResidentKb(pgid));
+        }, 1000);
   let timedOut = false;
   const limit =
-    ticket.runMs !== null
+    runMs !== null
       ? setTimeout(() => {
           timedOut = true;
           if (pgid !== null) killTree(pgid);
-        }, ticket.runMs)
+        }, runMs)
       : null;
   const forward = (signal: NodeJS.Signals) => {
     if (pgid !== null) {
@@ -321,32 +544,124 @@ export async function runGranted(
     child.on("close", (exit, signal) => resolve(exit ?? (signal ? 128 : 1)));
   });
   clearInterval(beat);
+  if (sample) clearInterval(sample);
   if (limit) clearTimeout(limit);
   process.off("SIGTERM", onTerm);
   process.off("SIGINT", onInt);
   if (logFd !== null) NodeFS.closeSync(logFd);
-  const text = tail.join("").slice(-TAIL_BYTES);
-  const lockTimedOut = code === 111 && files.length > 0;
-  const outcome: TicketOutcome = timedOut
+  return { code, timedOut, tail: tail.join("").slice(-TAIL_BYTES), peakRssKb };
+}
+
+/**
+ * Run `argv` while the ticket's resources are held. The command runs in its own process group,
+ * wrapped in `flock` for every physical lock, so an orphaned command keeps its locks until it
+ * ends. Heartbeats keep the lease; the group is killed at `runMs`.
+ */
+export async function runGranted(
+  broker: ResourceBroker,
+  ticket: Ticket,
+  command: {
+    argv: ReadonlyArray<string>;
+    cwd: string;
+    env?: Record<string, string>;
+    stdio?: "inherit" | "pipe";
+    logFile?: string;
+    /** Runs after the command ended and before its ticket is released, so what it records is visible to the next waiter. */
+    beforeFinish?: (result: CommandResult) => void;
+  },
+): Promise<CommandResult> {
+  const files = ticketLockFiles(ticket);
+  const lockWait = 1800;
+  const full = [...flockPrefix(files, lockWait), ...command.argv];
+  await ensureEmulator(ticketEnv(ticket), { repo: ticket.repo ?? null });
+  const run = await runTree(
+    full,
+    {
+      cwd: command.cwd,
+      env: { ...process.env, ...command.env, ...ticketEnv(ticket) } as Record<string, string>,
+      ...(command.stdio ? { stdio: command.stdio } : {}),
+      ...(command.logFile ? { logFile: command.logFile } : {}),
+    },
+    ticket.runMs,
+    {
+      onStart: (pgid) => {
+        broker.markRunning(ticket.id, pgid);
+        if (pgid !== null) broker.heartbeat(ticket.id, { pgid });
+      },
+      onBeat: () => broker.heartbeat(ticket.id),
+    },
+  );
+  const logPath = command.logFile ?? null;
+  const lockTimedOut = run.code === 111 && files.length > 0;
+  const outcome: TicketOutcome = run.timedOut
     ? "timed-out"
     : lockTimedOut
       ? "exhausted"
-      : code === 0
+      : run.code === 0
         ? "ok"
         : "failed";
-  const exitCode = timedOut ? 124 : lockTimedOut ? 76 : code;
-  broker.finish(ticket.id, {
+  const exitCode = run.timedOut ? 124 : lockTimedOut ? 76 : run.code;
+  const result: CommandResult = {
     outcome,
     exitCode,
-    tail: text,
+    tail: run.tail,
     logPath,
-    note: lockTimedOut
-      ? "A script outside AgentQueue held the same lock file for the whole wait."
-      : timedOut
-        ? `Killed at its time limit (${ticket.runMs} ms).`
-        : null,
-  });
-  return { outcome, exitCode, tail: text, logPath };
+    peakRssKb: run.peakRssKb,
+  };
+  try {
+    command.beforeFinish?.(result);
+  } finally {
+    broker.finish(ticket.id, {
+      outcome,
+      exitCode,
+      tail: run.tail,
+      logPath,
+      note: lockTimedOut
+        ? "A script outside AgentQueue held the same lock file for the whole wait."
+        : run.timedOut
+          ? `Killed at its time limit (${ticket.runMs} ms).`
+          : null,
+    });
+  }
+  return result;
+}
+
+/**
+ * The ticket this process was started under, when it holds every resource asked for. A command
+ * that a granted command runs (a script calling the compiler, a wrapper calling a wrapper) must not
+ * queue for the units its own ancestor holds: it would wait on itself.
+ */
+function enclosingTicket(broker: ResourceBroker, names: ReadonlyArray<string>): Ticket | null {
+  const id = process.env.AGENTQUEUE_RESOURCE_TICKET;
+  if (!id) return null;
+  const ticket = broker.get(id);
+  if (!ticket || (ticket.state !== "granted" && ticket.state !== "running")) return null;
+  const held = new Set(ticket.resources.map((item) => item.name));
+  return names.every((name) => held.has(normalizeResource(name))) ? ticket : null;
+}
+
+/** A command inside a grant its caller already holds: it runs under that grant, with no ticket of its own. */
+async function runNested(options: RunUnderBrokerOptions): Promise<CommandResult> {
+  const run = await runTree(
+    options.argv,
+    {
+      cwd: options.cwd,
+      env: { ...process.env, ...options.env } as Record<string, string>,
+      ...(options.stdio ? { stdio: options.stdio } : {}),
+      ...(options.logFile ? { logFile: options.logFile } : {}),
+    },
+    options.runMs ?? null,
+  );
+  const outcome: TicketOutcome = run.timedOut ? "timed-out" : run.code === 0 ? "ok" : "failed";
+  const result: CommandResult = {
+    outcome,
+    exitCode: run.timedOut ? 124 : run.code,
+    tail: run.tail,
+    logPath: options.logFile ?? null,
+    peakRssKb: run.peakRssKb,
+  };
+  options.beforeFinish?.(result);
+  return result;
 }
 
 export interface RunUnderBrokerOptions extends Omit<ResourceRequest, "job"> {
@@ -358,6 +673,12 @@ export interface RunUnderBrokerOptions extends Omit<ResourceRequest, "job"> {
   readonly onWaiting?: (ticket: Ticket, position: number) => void;
   /** When set the request becomes a stored job after waiting this long (the caller then ends its turn). */
   readonly deferAfterMs?: number;
+  /** Polled while waiting. True withdraws the request: the same work has finished or is running elsewhere. */
+  readonly shouldStop?: () => boolean;
+  /** Asked once the resources are held, before the command starts. False withdraws the request. */
+  readonly beforeRun?: () => boolean;
+  /** Told how the command ended, before its resources are released. */
+  readonly beforeFinish?: (result: CommandResult) => void;
   readonly broker?: ResourceBroker;
   readonly brokerOptions?: BrokerOptions;
 }
@@ -365,6 +686,7 @@ export interface RunUnderBrokerOptions extends Omit<ResourceRequest, "job"> {
 export type RunUnderBrokerResult =
   | { readonly kind: "ran"; readonly result: CommandResult; readonly ticket: Ticket }
   | { readonly kind: "deferred"; readonly ticket: Ticket }
+  | { readonly kind: "superseded"; readonly ticket: Ticket }
   | {
       readonly kind: "not-granted";
       readonly outcome: "exhausted" | "unavailable" | "cancelled";
@@ -379,6 +701,16 @@ export async function runUnderBroker(
   const broker = options.broker ?? openBroker(options.brokerOptions);
   const owned = options.broker === undefined;
   try {
+    const enclosing = enclosingTicket(
+      broker,
+      options.resources.map((item) => item.name),
+    );
+    if (enclosing) {
+      if (options.beforeRun && !options.beforeRun())
+        return { kind: "superseded", ticket: enclosing };
+      const result = await runNested(options);
+      return { kind: "ran", result, ticket: enclosing };
+    }
     const ticket = broker.enqueue({
       resources: options.resources,
       pid: process.pid,
@@ -401,7 +733,9 @@ export async function runUnderBroker(
       const granted = await waitForGrant(broker, ticket.id, {
         ...(options.onWaiting ? { onWaiting: options.onWaiting } : {}),
         ...(options.deferAfterMs !== undefined ? { deferAfterMs: options.deferAfterMs } : {}),
+        ...(options.shouldStop ? { shouldStop: options.shouldStop } : {}),
       });
+      if (granted === "superseded") return { kind: "superseded", ticket: broker.get(ticket.id)! };
       if (granted === "defer") {
         const converted = broker.convertToJob(ticket.id, {
           command: options.argv.map(shQuote).join(" "),
@@ -417,6 +751,10 @@ export async function runUnderBroker(
           }
         }
         return { kind: "deferred", ticket: broker.get(ticket.id)! };
+      }
+      if (options.beforeRun && !options.beforeRun()) {
+        broker.cancel(ticket.id, "superseded by an identical check");
+        return { kind: "superseded", ticket: broker.get(ticket.id)! };
       }
       const result = await runGranted(broker, granted, options);
       return { kind: "ran", result, ticket: broker.get(ticket.id)! };
@@ -522,6 +860,14 @@ export async function withBrokerResources<A>(
   if (unique.length === 0) return body({});
   const broker = options.broker ?? openBroker(options.brokerOptions);
   const owned = options.broker === undefined;
+  const enclosing = enclosingTicket(broker, unique);
+  if (enclosing) {
+    try {
+      return await body(ticketEnv(enclosing));
+    } finally {
+      if (owned) broker.close();
+    }
+  }
   const ticket = broker.enqueue({
     resources: unique.map((name) => ({ name })),
     pid: process.pid,

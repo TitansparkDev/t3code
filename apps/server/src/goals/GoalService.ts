@@ -236,6 +236,12 @@ function stuckSinceProgress(goal: Goal): number {
   ).length;
 }
 
+/** How long a login hold lasts when nothing ends it: starting the goal again clears it first. */
+const LOGIN_HOLD_MS = 365 * 24 * 60 * 60 * 1000;
+
+const LOGIN_NEEDED_DETAIL =
+  "A provider needs you to sign in or unlock its keyring. Sign in on this computer, then start the goal again.";
+
 /** Short on purpose: the composer of some providers corrupts long pasted prompts. */
 function overseerPrompt(goal: Goal, count: number): string {
   return [
@@ -445,7 +451,9 @@ export const make = Effect.gen(function* () {
         reason: paused
           ? paused.reason === "usage-limit"
             ? "hit its usage limit"
-            : "keeps failing"
+            : paused.reason === "login"
+              ? "needs you to sign in"
+              : "keeps failing"
           : (block?.reason ?? ""),
         name,
       });
@@ -476,6 +484,7 @@ export const make = Effect.gen(function* () {
       );
       const stillPaused = existing !== undefined && Date.parse(existing.until) > now;
       const strikes = (existing?.strikes ?? 0) + (stillPaused ? 0 : 1);
+      // A login is not a timed failure: it holds until the goal is started again.
       const until =
         reason === "usage-limit"
           ? nextUsageLimitRetryAt({
@@ -483,9 +492,13 @@ export const make = Effect.gen(function* () {
               attempt: Math.max(strikes - 1, 0),
               ...(retryAt !== undefined ? { providerRetryAt: retryAt as never } : {}),
             })
-          : (DateTime.formatIso(
-              DateTime.makeUnsafe(now + ERROR_BACKOFF_MINUTES[Math.min(strikes - 1, 3)]! * 60_000),
-            ) as never);
+          : reason === "login"
+            ? (DateTime.formatIso(DateTime.makeUnsafe(now + LOGIN_HOLD_MS)) as never)
+            : (DateTime.formatIso(
+                DateTime.makeUnsafe(
+                  now + ERROR_BACKOFF_MINUTES[Math.min(strikes - 1, 3)]! * 60_000,
+                ),
+              ) as never);
       const kept = (goal.pauses ?? []).filter(
         (pause) =>
           !(pause.instanceId === instanceId && pause.model === (perModel ? model : undefined)),
@@ -838,6 +851,21 @@ export const make = Effect.gen(function* () {
     // One writer per worktree: nothing else may still be working where the owner is about to.
     if (!(yield* worktreeWritersQuiet(goal, task.worktreePath, task.claimToken, owner.threadId)))
       return { wait: soon } as const;
+    // The conversation must be durably in the task's worktree before the model reads the prompt;
+    // a prompt that only names the path would run in the deleted original folder.
+    const bindFailure = yield* threads
+      .bindWorkspace({
+        threadId: owner.threadId,
+        projectId: goal.projectId,
+        key: task.claimToken,
+        branch: task.branch,
+        worktreePath: task.worktreePath,
+      })
+      .pipe(
+        Effect.as(undefined),
+        Effect.catch((error) => Effect.succeed(error.message)),
+      );
+    if (bindFailure !== undefined) return { workspace: bindFailure } as const;
     const sent = yield* continueChat(goal, owner, text);
     if (!sent) return "replace" as const;
     yield* updateChat(goal.id, owner.threadId, {
@@ -1037,6 +1065,30 @@ export const make = Effect.gen(function* () {
         queueResumePrompt(assignment, reason),
       );
       if (resumed === "resumed") return "started" as const;
+      if (typeof resumed === "object" && "workspace" in resumed) {
+        // Nothing was sent, so no model turn or retry was spent. The task goes back to pending with
+        // its owner held: a claimed task is never reserved again, so keeping the claim would never
+        // retry the bind. Nobody else takes it meanwhile, and no chat opens in the repository root.
+        yield* Effect.logWarning("goals.agentqueue-owner-rebind-failed", {
+          goalId: goal.id,
+          taskId: task.taskId,
+          threadId: owner.threadId,
+          worktreePath: task.worktreePath,
+          branch: task.branch,
+          detail: resumed.workspace,
+        });
+        const now = yield* nowMillis;
+        ownerWaits.set(`${goal.id}:${task.taskId}`, now + 20_000);
+        yield* queue
+          .release(
+            binding,
+            task.claimToken,
+            "pending",
+            "Could not move its owner into the worktree.",
+          )
+          .pipe(Effect.catch(logQueueError("goals.agentqueue-release-failed")));
+        return "skipped" as const;
+      }
       if (typeof resumed === "object") {
         // Its provider is out until a known time: leave the task as it is (no penalty, no stranger)
         // and carry on with other work. It is looked at again when the provider is back.
@@ -1093,6 +1145,13 @@ export const make = Effect.gen(function* () {
   //  - a worker settling: its thread is settled and its lane freed once its turn ended;
   //  - the goal completing: only `verifyPlanCompletion` can say so.
   // Nothing a worker writes decides any of them.
+
+  /**
+   * A provider that needs a person at its desktop app: signed out, or its keyring locked so the
+   * app never loads. Retrying it unattended only repeats the same failure.
+   */
+  const isLoginFailure = (error: string) =>
+    /APP_SHELL_NOT_LOADED|keyring|\bsign[ -]?in\b|\blog[ -]?in\b/i.test(error);
 
   /** What a thread's failure says about its provider when it did no work: a login, a keyring, a crash. */
   const providerFailureOf = (thread: GoalThreadView | undefined): string | undefined => {
@@ -2142,6 +2201,9 @@ export const make = Effect.gen(function* () {
     }
     const unavailable = yield* unavailableAgents(goal);
     const index = goal.agents.findIndex((_, candidate) => !unavailable.has(candidate));
+    // Nothing is free and a person must sign in: relaunching would only repeat the failure.
+    if (index === -1 && (goal.pauses ?? []).some((pause) => pause.reason === "login"))
+      return undefined;
     const agent = goal.agents[index === -1 ? 0 : index];
     return agent
       ? ({ agentIndex: Math.max(index, 0), modelSelection: agent.modelSelection } as const)
@@ -2259,6 +2321,14 @@ export const make = Effect.gen(function* () {
     const waiting = (goal.escalations ?? []).filter((escalation) => escalation.status === "open");
     if (waiting.length === 0) return;
     const agent = yield* overseerAgent(goal);
+    if (!agent && (goal.pauses ?? []).some((pause) => pause.reason === "login")) {
+      // Only a login-held provider is left: the escalations wait for the person, not a relaunch.
+      yield* store.update(goalId, (current) => ({
+        ...current,
+        detail: LOGIN_NEEDED_DETAIL,
+      }));
+      return;
+    }
     if (!agent) {
       for (const escalation of waiting) {
         yield* handOffToPerson(
@@ -2472,7 +2542,7 @@ export const make = Effect.gen(function* () {
       yield* pauseAgent(
         goal.id,
         { modelSelection: thread.modelSelection } as Goal["agents"][number],
-        "errors",
+        isLoginFailure(providerFailure) ? "login" : "errors",
       );
     }
     if (fresh.status !== "running") {
@@ -2760,8 +2830,10 @@ export const make = Effect.gen(function* () {
         yield* store.update(goalId, (current) => ({ ...current, useBeads: false }));
         return;
       }
-      // The overseer is deciding how to go on: start nothing until it answers.
-      if (first.chats.some((chat) => chat.overseer && chat.status === "running")) return;
+      // The overseer is deciding how to go on: start nothing until it answers. It may have
+      // been opened just now by ensureOverseer, so the goal is read again rather than `first`.
+      const deciding = yield* currentGoal(goalId);
+      if (deciding?.chats.some((chat) => chat.overseer && chat.status === "running")) return;
       while (true) {
         const goal = yield* currentGoal(goalId);
         const unavailable = goal ? yield* unavailableAgents(goal) : undefined;

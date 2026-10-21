@@ -35,6 +35,10 @@ export const providerTurnsTotal = Metric.counter("t3_provider_turns_total", {
   description: "Total provider turn lifecycle operations.",
 });
 
+export const runtimeResourceSamplesTotal = Metric.counter("t3_runtime_resource_samples_total", {
+  description: "Runtime resource samples recorded, by coarse diagnostic stage.",
+});
+
 export const providerTurnDuration = Metric.timer("t3_provider_turn_duration", {
   description: "Time for the provider adapter to start a turn, not how long the turn runs.",
 });

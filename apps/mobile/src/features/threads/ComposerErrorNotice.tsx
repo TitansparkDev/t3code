@@ -4,12 +4,21 @@ import { Notice } from "../../components/ui/Notice";
 /** Why the thread's last message did not send, above the composer until dismissed. */
 export function ComposerErrorNotice(props: {
   readonly message: string;
+  readonly stage?: string | null;
+  readonly reason?: string | null;
+  readonly recovery?: string | null;
   readonly onDismiss: () => void;
 }) {
+  const message = [
+    props.message,
+    ...(props.stage === undefined ? [] : [`Failure stage: ${props.stage ?? "unknown"}.`]),
+    ...(props.reason ? [`Reason: ${props.reason}.`] : []),
+    ...(props.recovery ? [props.recovery] : []),
+  ].join("\n");
   return (
     <View className="px-4 pb-3">
       <Notice
-        message={props.message}
+        message={message}
         icon="exclamationmark.circle"
         iconTone="danger"
         floating

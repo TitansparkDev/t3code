@@ -3,8 +3,10 @@ import {
   EventId,
   MessageId,
   ORCHESTRATION_V2_WS_METHODS,
+  RunId,
   ThreadId,
   TurnItemId,
+  type OrchestrationV2Run,
   type OrchestrationV2ThreadDetailSnapshot,
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2ThreadStreamItem,
@@ -36,7 +38,7 @@ import * as ConnectionWakeups from "../connection/wakeups.ts";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import * as Persistence from "../platform/persistence.ts";
 import * as RpcSession from "../rpc/session.ts";
-import { v2Projection, v2ThreadId } from "./orchestrationV2TestFixtures.ts";
+import { v2Now, v2Projection, v2ThreadId } from "./orchestrationV2TestFixtures.ts";
 import * as ThreadHistoryController from "./threadHistoryController.ts";
 import {
   EMPTY_ENVIRONMENT_THREAD_STATE,
@@ -686,6 +688,74 @@ describe("EnvironmentThreads", () => {
       );
 
       expect(yield* Ref.get(harness.lastSubscribeAfterSequence)).toBe(CACHED_SNAPSHOT_SEQUENCE);
+      expect(yield* Ref.get(harness.loaderCalls)).toBe(0);
+    }),
+  );
+
+  it.effect("does not let a replayed run update resurrect a run stopped after the warm cache", () =>
+    Effect.gen(function* () {
+      const runRecord = (
+        status: OrchestrationV2Run["status"],
+        completedAt: OrchestrationV2Run["completedAt"],
+      ): OrchestrationV2Run => ({
+        id: RunId.make("run-stop"),
+        threadId: THREAD_ID,
+        ordinal: 1,
+        providerInstanceId: v2Projection.thread.providerInstanceId,
+        modelSelection: v2Projection.thread.modelSelection,
+        providerThreadId: null,
+        userMessageId: MessageId.make("message-stop"),
+        rootNodeId: null,
+        activeAttemptId: null,
+        status,
+        requestedAt: v2Now,
+        startedAt: v2Now,
+        completedAt,
+        checkpointId: null,
+        contextHandoffId: null,
+      });
+      const runUpdated = (
+        run: OrchestrationV2Run,
+        sequence: number,
+      ): OrchestrationV2ThreadStreamItem => ({
+        kind: "event",
+        sequence,
+        event: {
+          id: EventId.make(`event-run-${run.status}-${sequence}`),
+          type: "run.updated",
+          threadId: THREAD_ID,
+          occurredAt: v2Now,
+          payload: run,
+        },
+      });
+      const running = runRecord("running", null);
+      const interrupted = runRecord("interrupted", v2Now);
+      const harness = yield* makeHarness({
+        cached: { ...BASE_PROJECTION, runs: [running] },
+      });
+
+      // The stop settled while the client was away; its replay arrives after the cache.
+      yield* Queue.offer(harness.inputs, runUpdated(interrupted, CACHED_SNAPSHOT_SEQUENCE + 1));
+      yield* awaitThreadState(
+        harness.observed,
+        (value) =>
+          value.status === "live" &&
+          Option.isSome(value.data) &&
+          value.data.value.runs[0]?.status === "interrupted",
+      );
+
+      // A stale copy of the running run, at a sequence already applied, must not win.
+      yield* Queue.offer(harness.inputs, runUpdated(running, CACHED_SNAPSHOT_SEQUENCE + 1));
+      yield* Queue.offer(harness.inputs, titleUpdated("After stop", CACHED_SNAPSHOT_SEQUENCE + 2));
+      const state = yield* awaitThreadState(
+        harness.observed,
+        (value) =>
+          value.status === "live" &&
+          Option.isSome(value.data) &&
+          value.data.value.thread.title === "After stop",
+      );
+
+      expect(Option.getOrThrow(state.data).runs.map((run) => run.status)).toEqual(["interrupted"]);
       expect(yield* Ref.get(harness.loaderCalls)).toBe(0);
     }),
   );

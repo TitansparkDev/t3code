@@ -89,6 +89,7 @@ import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter"
 import type * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import * as ClaudeAdapterV2 from "./ClaudeAdapterV2.ts";
+import * as RuntimeResourceDiagnostics from "../../observability/RuntimeResourceDiagnostics.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { ClaudeOrchestratorReplayHarness } from "./ClaudeAdapterV2.testkit.ts";
 import { provideDeterministicTestRuntime } from "../testkit/DeterministicRuntime.ts";
@@ -2026,10 +2027,21 @@ describe("ClaudeAdapterV2 native fork", () => {
   );
 });
 
-function makeFakeClaudeCli(answerSetServers = true) {
+interface FakeClaudeCliAnswers {
+  // `silent` never answers, so the request stays pending until the CLI is closed.
+  readonly initialize?: "answer" | "silent";
+  readonly setServers?: "answer" | "silent" | { readonly errors: Record<string, string> };
+}
+
+function makeFakeClaudeCli(answers: FakeClaudeCliAnswers = {}) {
   const spawns: Array<SpawnOptions> = [];
   const controlRequests: Array<object> = [];
   const stdins: Array<NodeStream.PassThrough> = [];
+  // Answers a silent request after the fact, as a CLI does when it finally replies.
+  const lateResponses: Array<() => void> = [];
+  const requestWaiters: Array<{ readonly subtype: string; readonly resolve: () => void }> = [];
+  const hasSubtype = (request: object, subtype: string) =>
+    (request as { readonly subtype?: unknown }).subtype === subtype;
   const spawn = (options: SpawnOptions): SpawnedProcess => {
     spawns.push(options);
     const stdin = new NodeStream.PassThrough();
@@ -2046,6 +2058,16 @@ function makeFakeClaudeCli(answerSetServers = true) {
         return true;
       },
     });
+    const respond = (requestId: string, response: object) => {
+      // A reply to a CLI the SDK already closed has nowhere to go.
+      if (stdout.writableEnded) return;
+      stdout.write(
+        `${JSON.stringify({
+          type: "control_response",
+          response: { subtype: "success", request_id: requestId, response },
+        })}\n`,
+      );
+    };
     let pending = "";
     stdin.on("data", (chunk: Buffer) => {
       pending += chunk.toString("utf8");
@@ -2054,14 +2076,30 @@ function makeFakeClaudeCli(answerSetServers = true) {
         pending = pending.slice(end + 1);
         if (frame.type !== "control_request") continue;
         controlRequests.push(frame.request);
-        const setServers = frame.request.subtype === "mcp_set_servers";
-        if (setServers && !answerSetServers) continue;
-        const response = {
-          subtype: "success",
-          request_id: frame.request_id,
-          response: setServers ? { added: [], removed: [], errors: {} } : {},
-        };
-        stdout.write(`${JSON.stringify({ type: "control_response", response })}\n`);
+        for (const waiter of requestWaiters.splice(0)) {
+          if (hasSubtype(frame.request, waiter.subtype)) waiter.resolve();
+          else requestWaiters.push(waiter);
+        }
+        const requestId: string = frame.request_id;
+        if (frame.request.subtype === "initialize") {
+          if (answers.initialize === "silent") continue;
+          respond(requestId, {});
+          continue;
+        }
+        if (frame.request.subtype !== "mcp_set_servers") {
+          respond(requestId, {});
+          continue;
+        }
+        const setServers = answers.setServers ?? "answer";
+        if (setServers === "silent") {
+          lateResponses.push(() => respond(requestId, { added: [], removed: [], errors: {} }));
+          continue;
+        }
+        respond(requestId, {
+          added: [],
+          removed: [],
+          errors: setServers === "answer" ? {} : setServers.errors,
+        });
       }
     });
     stdin.on("end", () => {
@@ -2072,7 +2110,17 @@ function makeFakeClaudeCli(answerSetServers = true) {
   };
   // The SDK closes the CLI by ending its stdin.
   const closed = () => stdins.length > 0 && stdins.every((stdin) => stdin.writableEnded);
-  return { spawn, spawns, controlRequests, closed };
+  const answerLate = () => {
+    for (const respond of lateResponses.splice(0)) respond();
+  };
+  // Resolves once the SDK has written a control request of this subtype to the CLI.
+  const requested = (subtype: string) =>
+    new Promise<void>((resolve) => {
+      const seen = controlRequests.some((request) => hasSubtype(request, subtype));
+      if (seen) resolve();
+      else requestWaiters.push({ subtype, resolve });
+    });
+  return { spawn, spawns, controlRequests, closed, answerLate, requested };
 }
 
 describe("ClaudeAdapterV2 MCP credential channel", () => {
@@ -2081,7 +2129,15 @@ describe("ClaudeAdapterV2 MCP credential channel", () => {
     url: "http://127.0.0.1:43123/mcp",
     headers: { Authorization: "Bearer dummy-mcp-credential" },
   };
-  const openWith = (cli: ReturnType<typeof makeFakeClaudeCli>) =>
+  const openWith = (
+    cli: ReturnType<typeof makeFakeClaudeCli>,
+    mcpServers: Record<
+      string,
+      typeof t3McpServer | { readonly type: "http"; readonly url: string }
+    > = {
+      "t3-code": t3McpServer,
+    },
+  ) =>
     Effect.gen(function* () {
       const runner = yield* ClaudeAdapterV2.ClaudeAgentSdkQueryRunner;
       return yield* runner.open({
@@ -2094,7 +2150,7 @@ describe("ClaudeAdapterV2 MCP credential channel", () => {
             resume: false,
             cwd: null,
             environment: { PATH: "/usr/bin" },
-            mcpServers: { "t3-code": t3McpServer },
+            mcpServers,
           }),
           pathToClaudeCodeExecutable: "/opt/claude/cli.js",
           spawnClaudeCodeProcess: cli.spawn,
@@ -2127,12 +2183,78 @@ describe("ClaudeAdapterV2 MCP credential channel", () => {
 
   it.effect("closes the CLI when it never answers the MCP registration", () =>
     Effect.gen(function* () {
-      const cli = makeFakeClaudeCli(false);
+      const cli = makeFakeClaudeCli({ setServers: "silent" });
       const opening = yield* openWith(cli).pipe(Effect.result, Effect.forkChild);
+      yield* Effect.promise(() => cli.requested("mcp_set_servers"));
       yield* TestClock.adjust("90 seconds");
       const opened = yield* Fiber.join(opening);
 
       assert.equal(opened._tag, "Failure");
+      assert.isTrue(cli.closed());
+    }),
+  );
+
+  it.effect("fails the registration timeout and ignores an answer that arrives after it", () =>
+    Effect.gen(function* () {
+      const cli = makeFakeClaudeCli({ setServers: "silent" });
+      const opening = yield* openWith(cli).pipe(Effect.result, Effect.forkChild);
+      yield* Effect.promise(() => cli.requested("mcp_set_servers"));
+      yield* TestClock.adjust("90 seconds");
+      const opened = yield* Fiber.join(opening);
+      cli.answerLate();
+
+      assert.equal(opened._tag, "Failure");
+      assert.equal(
+        opened._tag === "Failure" ? opened.failure.cause : undefined,
+        "Claude Code did not answer the MCP server registration.",
+      );
+      assert.isTrue(cli.closed());
+    }),
+  );
+
+  it.effect("closes the CLI when initialization never finishes, before registration", () =>
+    Effect.gen(function* () {
+      const cli = makeFakeClaudeCli({ initialize: "silent" });
+      const opening = yield* openWith(cli).pipe(Effect.result, Effect.forkChild);
+      yield* Effect.promise(() => cli.requested("initialize"));
+      yield* TestClock.adjust("60 seconds");
+      const opened = yield* Fiber.join(opening);
+
+      assert.equal(opened._tag, "Failure");
+      assert.equal(
+        opened._tag === "Failure" ? opened.failure.cause : undefined,
+        "Claude Code did not finish initializing.",
+      );
+      assert.notDeepInclude(cli.controlRequests, { subtype: "mcp_set_servers" });
+      assert.isTrue(cli.closed());
+    }),
+  );
+
+  it.effect("fails the open when the required T3 MCP registration errors", () =>
+    Effect.gen(function* () {
+      const cli = makeFakeClaudeCli({
+        setServers: { errors: { "t3-code": "unreachable" } },
+      });
+      const opened = yield* openWith(cli).pipe(Effect.result);
+
+      assert.equal(opened._tag, "Failure");
+      assert.equal(
+        opened._tag === "Failure" ? opened.failure.cause : undefined,
+        "Claude Code could not register the t3-code MCP server.",
+      );
+      assert.isTrue(cli.closed());
+    }),
+  );
+
+  it.effect("keeps the session open when an optional MCP registration errors", () =>
+    Effect.gen(function* () {
+      const cli = makeFakeClaudeCli({ setServers: { errors: { docs: "unavailable" } } });
+      const session = yield* openWith(cli, {
+        "t3-code": t3McpServer,
+        docs: { type: "http", url: "http://127.0.0.1:43124/mcp" },
+      });
+      yield* session.close;
+
       assert.isTrue(cli.closed());
     }),
   );
@@ -2429,7 +2551,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
 
   const makeWakeHarnessWithOptions = (options?: {
     readonly close?: (sdkMessages: Queue.Queue<SDKMessage>) => Effect.Effect<void>;
-    readonly interrupt?: Effect.Effect<void>;
+    readonly interrupt?: Effect.Effect<void, ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError>;
     readonly stopTask?: (
       taskId: string,
     ) => Effect.Effect<void, ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError>;
@@ -4934,7 +5056,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           1,
         );
       }).pipe(
-        Effect.provide(layerProviderReplay(scenario, ClaudeOrchestratorReplayHarness)),
+        Effect.provide(
+          Layer.provideMerge(
+            layerProviderReplay(scenario, ClaudeOrchestratorReplayHarness),
+            RuntimeResourceDiagnostics.layerTest,
+          ),
+        ),
         provideDeterministicTestRuntime,
         Effect.scoped,
       );
@@ -5609,6 +5736,205 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.deepEqual(roster, [
           { taskId: longRunning.taskId, kind: "monitor", description: "Monitor 0" },
         ]);
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    ),
+  );
+
+  it.effect.each([{ scenario: "never answers" }, { scenario: "rejects" }] as const)(
+    "stops the turn when Claude interrupt is $scenario",
+    ({ scenario }) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const interruptStarted = yield* Deferred.make<void>();
+          let closes = 0;
+          const harness = yield* makeWakeHarnessWithOptions({
+            interrupt: Deferred.succeed(interruptStarted, undefined).pipe(
+              Effect.andThen(
+                scenario === "never answers"
+                  ? Effect.never
+                  : Effect.fail(
+                      new ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError({
+                        method: "interrupt",
+                        cause: new Error("CLI exited before acknowledging Stop"),
+                      }),
+                    ),
+              ),
+            ),
+            close: (sdkMessages) =>
+              Effect.sync(() => {
+                closes++;
+              }).pipe(Effect.andThen(Queue.shutdown(sdkMessages))),
+          });
+          const now = yield* DateTime.now;
+          const attemptId = RunAttemptId.make(
+            `attempt-claude-stop-${scenario.replaceAll(" ", "-")}`,
+          );
+          const idAllocator = yield* IdAllocator.IdAllocatorV2;
+          const providerTurnId = idAllocator.derive.providerTurn({
+            driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+            nativeTurnId: `turn:${attemptId}`,
+          });
+          yield* harness.runtime.startTurn(
+            makeClaudeTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now,
+              attemptId,
+              text: "Stop the stuck build.",
+              attachments: [],
+            }),
+          );
+          const stopping = yield* harness.runtime
+            .interruptTurn({ providerThread: harness.providerThread, providerTurnId })
+            .pipe(Effect.forkScoped);
+          yield* Deferred.await(interruptStarted);
+          yield* TestClock.adjust("10 seconds");
+          const stopped = yield* Fiber.await(stopping);
+          assert.isTrue(Exit.isSuccess(stopped), "Stop must finish without a CLI acknowledgment");
+          const terminal = yield* Queue.take(harness.terminalReceipts);
+          assert.equal(terminal.status, "interrupted");
+          assert.equal(closes, 1);
+          assert.isFalse(yield* harness.hasPendingBackgroundWork);
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
+        ),
+      ),
+  );
+
+  it.effect("forces an interrupted result when Claude never acknowledges query close", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarnessWithOptions({
+          interrupt: Effect.succeed(undefined),
+          close: () => Effect.never,
+          freshQueueOnReopen: true,
+        });
+        const now = yield* DateTime.now;
+        const attemptId = RunAttemptId.make("attempt-claude-stop-no-terminal-ack");
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const providerTurnId = idAllocator.derive.providerTurn({
+          driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+          nativeTurnId: `turn:${attemptId}`,
+        });
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now,
+            attemptId,
+            text: "Stop without a terminal frame.",
+            attachments: [],
+          }),
+        );
+        const stopping = yield* harness.runtime
+          .interruptTurn({ providerThread: harness.providerThread, providerTurnId })
+          .pipe(Effect.forkScoped);
+        yield* TestClock.adjust("10 seconds");
+        const stopExit = yield* Fiber.await(stopping);
+        assert.isTrue(Exit.isSuccess(stopExit));
+        assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "interrupted");
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make("attempt-claude-stop-replacement"),
+            text: "Continue after Stop.",
+            attachments: [],
+            providerTurnOrdinal: 2,
+          }),
+        );
+        yield* harness.offerAndWait(
+          makeResultFrame({ uuid: "late-success-after-stop", result: "Done after Stop." }),
+        );
+        assert.deepEqual(
+          harness.terminalEvents().map((event) => event.status),
+          ["interrupted"],
+        );
+        const replacementMessages = harness.processQueues[1];
+        assert.isDefined(replacementMessages);
+        yield* Queue.offer(
+          replacementMessages!,
+          makeResultFrame({ uuid: "replacement-success", result: "Replacement completed." }),
+        );
+        yield* awaitUntil(() => harness.terminalEvents().length === 2, "replacement terminal");
+        assert.equal(harness.terminalEvents()[1]?.status, "completed");
+        yield* Queue.shutdown(harness.sdkMessages);
+        yield* Queue.shutdown(replacementMessages!);
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    ),
+  );
+
+  it.effect("a repeated Stop leaves an unrelated Claude runtime alive", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarnessWithOptions({
+          close: Queue.shutdown,
+        });
+        const unrelated = yield* makeWakeHarnessWithOptions();
+        const now = yield* DateTime.now;
+        const firstAttempt = RunAttemptId.make("attempt-claude-stop-repeated");
+        const secondAttempt = RunAttemptId.make("attempt-claude-stop-unrelated");
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const providerTurnId = (attemptId: RunAttemptId) =>
+          idAllocator.derive.providerTurn({
+            driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+            nativeTurnId: `turn:${attemptId}`,
+          });
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now,
+            attemptId: firstAttempt,
+            text: "Stop this runtime.",
+            attachments: [],
+          }),
+        );
+        yield* unrelated.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: unrelated.threadId,
+            providerThread: unrelated.providerThread,
+            now,
+            attemptId: secondAttempt,
+            text: "Keep this runtime alive.",
+            attachments: [],
+          }),
+        );
+
+        yield* harness.runtime.interruptTurn({
+          providerThread: harness.providerThread,
+          providerTurnId: providerTurnId(firstAttempt),
+        });
+        yield* awaitUntil(() => harness.terminalEvents().length === 1, "first Stop terminal");
+        yield* harness.runtime.interruptTurn({
+          providerThread: harness.providerThread,
+          providerTurnId: providerTurnId(firstAttempt),
+          requestRuntimeRestart: true,
+        });
+        assert.deepEqual(
+          harness.terminalEvents().map((event) => event.status),
+          ["interrupted"],
+        );
+        assert.lengthOf(unrelated.terminalEvents(), 0);
+        yield* unrelated.offerAndWait(
+          makeResultFrame({ uuid: "unrelated-still-alive", result: "Still running." }),
+        );
+        yield* awaitUntil(
+          () => unrelated.terminalEvents().length === 1,
+          "unrelated runtime terminal",
+        );
+        assert.equal(unrelated.terminalEvents()[0]?.status, "completed");
       }).pipe(
         Effect.provide(
           Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
@@ -15353,6 +15679,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           ) {
             yield* awaitUntil(() => calls.length === 1, "background request");
             assert.equal(harness.offeredMessages.length, offered);
+            // Let the control fiber install its timeout before advancing the
+            // shared fake clock; the call callback runs just before it does.
+            yield* Effect.yieldNow;
             yield* TestClock.adjust("5 seconds");
           }
           const steered = yield* Fiber.await(steering);
@@ -15369,6 +15698,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           if (backgrounding === "never answers") {
             for (let repeat = 1; repeat <= 2; repeat++) {
               const again = yield* Effect.forkScoped(steer);
+              yield* Effect.yieldNow;
               for (let tick = 0; tick < 100 && again.pollUnsafe() === undefined; tick++) {
                 yield* TestClock.adjust("1 second");
                 yield* Effect.yieldNow;

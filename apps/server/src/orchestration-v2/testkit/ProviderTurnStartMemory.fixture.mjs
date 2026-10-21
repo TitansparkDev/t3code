@@ -30,6 +30,7 @@ const [
   Auth,
   Config,
   Settings,
+  ResourceDiagnostics,
 ] = await Promise.all([
   app("orchestration-v2/ProviderTurnStartService"),
   app("orchestration-v2/ProjectionStore"),
@@ -44,6 +45,7 @@ const [
   app("provider/ProviderAuthService"),
   app("config"),
   app("serverSettings"),
+  app("observability/RuntimeResourceDiagnostics"),
 ]);
 let current;
 let fullReads = 0;
@@ -51,6 +53,9 @@ let threadReads = 0;
 const liveRuns = [];
 const refs = [];
 const checkpoints = [];
+const activeDiagnostics = new Set();
+let diagnosticFinishes = 0;
+let diagnosticCancels = 0;
 const count = Number(process.argv[4] ?? 4);
 const bytes = Number(process.argv[5] ?? 32768);
 const session = {
@@ -94,6 +99,19 @@ const dependencies = Layer.mergeAll(
     getRuntimeRecoveryProjection: () => Effect.sync(() => current),
   }),
   Layer.mock(Sessions.ProviderSessionManagerV2)({ open: () => Effect.succeed(session) }),
+  Layer.mock(ResourceDiagnostics.RuntimeResourceDiagnostics)({
+    begin: ({ runtimeId, runId }) =>
+      Effect.sync(() => activeDiagnostics.add(runtimeId + "/" + runId)),
+    progress: () => Effect.void,
+    cancel: () => Effect.sync(() => diagnosticCancels++),
+    finish: (runtimeId, runId) =>
+      Effect.sync(() => {
+        const diagnosticKey = runtimeId + "/" + runId;
+        activeDiagnostics.delete(diagnosticKey);
+        diagnosticFinishes++;
+      }),
+    snapshot: Effect.succeed([]),
+  }),
   Layer.mock(Policy.RuntimePolicyV2)({
     resolve: () =>
       Effect.succeed({ cwd: "/synthetic", interactionMode: "default", runtimeMode: "full-access" }),
@@ -102,13 +120,19 @@ const dependencies = Layer.mergeAll(
     startRootRun: (input) =>
       Effect.gen(function* () {
         liveRuns.push(input);
+        if (mode === "cancelled") return yield* Effect.interrupt;
         const turnInput = { ...input, message: input.message };
         const result = yield* Effect.exit(
           mode === "handoff-compact"
             ? input.session.compactThread(turnInput)
             : input.session.startTurn(turnInput),
         );
-        NodeAssert.equal(result._tag, mode === "handoff-failure" ? "Failure" : "Success");
+        NodeAssert.equal(
+          result._tag,
+          mode === "regular" || mode === "handoff" || mode === "handoff-compact"
+            ? "Success"
+            : "Failure",
+        );
       }),
   }),
   Layer.mock(Sink.EventSinkV2)({
@@ -194,7 +218,15 @@ await Effect.runPromise(
     const service = yield* Start.ProviderTurnStartServiceV2;
     for (let i = 0; i < count; i++) {
       current = fixture(i);
-      yield* service.start({ threadId: "thread", runId: "run:" + i });
+      const startExit = yield* Effect.exit(
+        service.start({ threadId: "thread", runId: "run:" + i }),
+      );
+      NodeAssert.equal(startExit._tag, mode === "cancelled" ? "Failure" : "Success");
+      NodeAssert.equal(
+        activeDiagnostics.size,
+        0,
+        JSON.stringify({ active: [...activeDiagnostics] }),
+      );
       const controls = liveRuns.at(-1);
       current = { ...current, turnItems: [] };
       NodeAssert.equal(yield* controls.shouldStartProviderTurn(), true);
@@ -222,6 +254,9 @@ await Effect.runPromise(
             runs: liveRuns.length,
             payloadMiB: ((i + 1) * bytes * 2) / 1048576,
             retained: refs.filter((ref) => ref.deref()).length,
+            activeDiagnostics: activeDiagnostics.size,
+            diagnosticFinishes,
+            diagnosticCancels,
             heapMiB: Math.round(process.memoryUsage().heapUsed / 1048576),
           });
         });

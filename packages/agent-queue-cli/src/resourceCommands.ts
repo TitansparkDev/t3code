@@ -16,7 +16,7 @@ import { resolveGitContext } from "./gitContext.ts";
 import {
   createJobRunner,
   describeJob,
-  inferResources,
+  inferResourceDemands,
   loadContract,
   loadResourceConfig,
   normalizeResource,
@@ -171,7 +171,11 @@ export async function runResourceCommand(
       typeof flags.resource === "string"
         ? flags.resource.split(",").map(normalizeResource).filter(Boolean)
         : [];
-    const resources = [...new Set([...named, ...inferResources(commandLine, repoResources)])];
+    const demands = [
+      ...named.map((name) => ({ name })),
+      ...inferResourceDemands(commandLine, repoResources),
+    ];
+    const resources = [...new Set(demands.map((demand) => demand.name))];
     if (resources.length === 0) {
       // Nothing shared is involved: run it straight away, as if the prefix were not there.
       const child = NodeChildProcess.spawnSync(command[0]!, command.slice(1), {
@@ -189,7 +193,7 @@ export async function runResourceCommand(
         : num(process.env.AGENTQUEUE_DEFER_AFTER, 0);
     const owner = typeof flags.owner === "string" ? flags.owner : process.env.AGENTQUEUE_OWNER;
     const result = await runUnderBroker({
-      resources: resources.map((name) => ({ name })),
+      resources: demands,
       argv: command,
       cwd,
       label: typeof flags.label === "string" ? flags.label : commandLine.slice(0, 100),
@@ -232,6 +236,13 @@ export async function runResourceCommand(
           `WAITING FOR ${result.ticket.id}`,
           `The server runs the command and sends its result into this same conversation, then you continue from there.`,
         ].join("\n"),
+      };
+    }
+    if (result.kind === "superseded") {
+      return {
+        exitCode: 75,
+        stdout: "",
+        stderr: `[agentq] ${result.ticket.label} was withdrawn: an identical check already finished or is running.`,
       };
     }
     return {

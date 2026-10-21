@@ -35,15 +35,41 @@ export function threadErrorSummary(
   failure: OrchestrationV2ProviderFailure | null,
   sessionError: string | null,
 ) {
+  // A session error that is not the failure's own message has no classification,
+  // so only the message is shown for it.
   const currentFailure =
     sessionError !== null && sessionError !== failure?.message ? null : failure;
+  const lastError = sessionError ?? failure?.message ?? null;
   return {
     usageLimitResetAt:
       currentFailure?.class === "usage_limit" ? (currentFailure.resetAt ?? null) : null,
-    lastError: sessionError ?? failure?.message ?? null,
-    lastErrorClass:
-      sessionError !== null && sessionError !== failure?.message ? null : (failure?.class ?? null),
+    lastError,
+    lastErrorClass: currentFailure?.class ?? null,
+    lastErrorStage:
+      currentFailure === null
+        ? null
+        : (currentFailure.stage ?? (currentFailure.class === "unknown" ? "unknown" : null)),
+    lastErrorReason: currentFailure?.code ?? null,
+    lastErrorRecovery: lastError === null ? null : failureRecoveryGuidance(currentFailure),
   };
+}
+
+export function failureRecoveryGuidance(failure: OrchestrationV2ProviderFailure | null): string {
+  if (failure === null) return "Review the error details.";
+  switch (failure.class) {
+    case "usage_limit":
+      return "Wait for the usage limit to reset, or review the provider's usage settings.";
+    case "transport_error":
+      return "Check the connection, then start a new message when ready.";
+    case "permission_error":
+      return "Review the requested permission or approval, then try again.";
+    case "validation_error":
+      return "Review the request details and correct them before trying again.";
+    case "provider_error":
+      return "Review the provider error, then start a new message when ready.";
+    case "unknown":
+      return "Review the error details before trying again.";
+  }
 }
 
 export function latestExecutedRun(
