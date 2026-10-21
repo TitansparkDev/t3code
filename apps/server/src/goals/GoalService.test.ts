@@ -82,6 +82,7 @@ const makeHarnessWith = (spacing: number) =>
     const thread = (state: { reply: string; turnState: string }) =>
       ({
         latestTurn: { state: state.turnState },
+        modelSelection: CODEX,
         messages: state.reply === "" ? [] : [{ role: "assistant", text: state.reply }],
         activities: [],
       }) as unknown as OrchestrationThread;
@@ -882,6 +883,58 @@ it.layer(NodeServices.layer)("GoalService", (it) => {
           yield* harness.runAndFinish(threadIdOf(overseer));
           while ((yield* service.list)[0]?.waitingUntil === undefined) yield* Effect.yieldNow;
           expect((yield* service.list)[0]?.status).toBe("running");
+        }).pipe(Effect.provide(harness.layer), Effect.scoped);
+      }),
+  );
+
+  it.effect(
+    "an overseer that needs a sign-in is not relaunched on every tick, and a restart runs it once",
+    () =>
+      Effect.gen(function* () {
+        const harness = yield* makeHarness;
+        yield* Ref.set(harness.threadState, { reply: "boom", turnState: "error" });
+        yield* Effect.gen(function* () {
+          const service = yield* GoalService.GoalService;
+          yield* Effect.forkScoped(service.loop);
+          yield* Effect.yieldNow;
+          yield* service.create(settings({ concurrency: 1, stopAfterProblems: 1, overseer: true }));
+          const [worker] = yield* harness.waitFor("thread.create", 1);
+          yield* harness.runAndFinish(threadIdOf(worker));
+          const [, overseer] = yield* harness.waitFor("thread.create", 2);
+          // An overseer that said nothing: its failure is the provider's, not a finished attempt.
+          yield* Ref.set(harness.threadState, { reply: "", turnState: "error" });
+          yield* harness.sessionEvent(threadIdOf(overseer), {
+            status: "running",
+            activeTurnId: "turn-2",
+          });
+          yield* harness.sessionEvent(threadIdOf(overseer), {
+            status: "error",
+            activeTurnId: null,
+            lastError: "APP_SHELL_NOT_LOADED: the desktop login keyring is locked",
+          });
+
+          // The scheduler reaches its decision with the login hold in place: no launch, one note.
+          let goal = (yield* service.list)[0]!;
+          for (let spin = 0; spin < 500 && goal.detail === undefined; spin++) {
+            yield* Effect.yieldNow;
+            goal = (yield* service.list)[0]!;
+          }
+          yield* harness.drain;
+          expect(goal.pauses).toEqual([
+            expect.objectContaining({ instanceId: "codex", reason: "login" }),
+          ]);
+          expect(goal.detail).toContain("sign in");
+          expect(goal.escalations?.[0]).toMatchObject({ status: "open" });
+          const creates = () => harness.log.filter((command) => command.type === "thread.create");
+          expect(creates()).toHaveLength(2);
+
+          // Stopping and starting the goal is the operator's retry: one overseer turn on the same provider.
+          yield* service.stop(goal.id);
+          yield* service.restart(goal.id);
+          for (let spin = 0; spin < 500 && creates().length < 3; spin++) yield* Effect.yieldNow;
+          yield* harness.drain;
+          expect(creates()).toHaveLength(3);
+          expect(creates()[2]).toMatchObject({ modelSelection: { instanceId: "codex" } });
         }).pipe(Effect.provide(harness.layer), Effect.scoped);
       }),
   );
