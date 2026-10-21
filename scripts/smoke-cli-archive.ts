@@ -3,11 +3,11 @@ import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
-import * as Either from "effect/Either";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
@@ -178,7 +178,7 @@ const smokeCliArchive = Effect.fn("smokeCliArchive")(function* (input: {
     Effect.orElseSucceed(() => false),
   );
   yield* server.kill({ killSignal: "SIGTERM" }).pipe(Effect.ignore);
-  const shutdown = yield* server.exitCode.pipe(Effect.timeout(Duration.seconds(10)), Effect.either);
+  const shutdown = yield* server.exitCode.pipe(Effect.timeoutOption(Duration.seconds(10)));
   const [stdout, stderr] = yield* Fiber.join(output).pipe(
     Effect.timeout(Duration.seconds(5)),
     Effect.orElseSucceed(() => ["", ""] as const),
@@ -189,12 +189,12 @@ const smokeCliArchive = Effect.fn("smokeCliArchive")(function* (input: {
       detail: `no 200 from / within 30s\n${stdout}${stderr}`,
     });
   }
-  if (Either.isLeft(shutdown) || Number(shutdown.right) !== 0) {
+  if (Option.isNone(shutdown) || Number(shutdown.value) !== 0) {
     return yield* new CliArchiveSmokeError({
       step: "stopping the extracted archive server",
-      detail: Either.isLeft(shutdown)
+      detail: Option.isNone(shutdown)
         ? "process did not exit within 10s after SIGTERM"
-        : `process exited with ${String(shutdown.right)}`,
+        : `process exited with ${String(shutdown.value)}`,
     });
   }
   yield* Effect.log(`[cli-smoke] ${root}: --version passed and serve answered on ${String(port)}.`);
