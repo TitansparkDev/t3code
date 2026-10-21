@@ -24201,6 +24201,7 @@ apps/server/src/orchestration-v2/PullRequestSyncReactor.ts
 apps/server/src/orchestration-v2/PullRequestWatchReactor.ts
 apps/server/src/orchestration-v2/QueuedRunOrder.test.ts
 apps/server/src/orchestration-v2/QueuedRunOrder.ts
+apps/server/src/orchestration-v2/Reliability.integration.test.ts
 apps/server/src/orchestration-v2/ResourceCleanupService.ts
 apps/server/src/orchestration-v2/RestartBackgroundNote.test.ts
 apps/server/src/orchestration-v2/RestartBackgroundNote.ts

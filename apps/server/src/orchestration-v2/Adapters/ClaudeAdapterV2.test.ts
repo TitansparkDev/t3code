@@ -89,6 +89,7 @@ import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter"
 import type * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import * as ClaudeAdapterV2 from "./ClaudeAdapterV2.ts";
+import * as RuntimeResourceDiagnostics from "../../observability/RuntimeResourceDiagnostics.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { ClaudeOrchestratorReplayHarness } from "./ClaudeAdapterV2.testkit.ts";
 import { provideDeterministicTestRuntime } from "../testkit/DeterministicRuntime.ts";
@@ -5055,7 +5056,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           1,
         );
       }).pipe(
-        Effect.provide(layerProviderReplay(scenario, ClaudeOrchestratorReplayHarness)),
+        Effect.provide(
+          Layer.provideMerge(
+            layerProviderReplay(scenario, ClaudeOrchestratorReplayHarness),
+            RuntimeResourceDiagnostics.layerTest,
+          ),
+        ),
         provideDeterministicTestRuntime,
         Effect.scoped,
       );
