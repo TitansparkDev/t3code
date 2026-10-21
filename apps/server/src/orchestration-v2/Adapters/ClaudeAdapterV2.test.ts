@@ -2026,10 +2026,21 @@ describe("ClaudeAdapterV2 native fork", () => {
   );
 });
 
-function makeFakeClaudeCli(answerSetServers = true) {
+interface FakeClaudeCliAnswers {
+  // `silent` never answers, so the request stays pending until the CLI is closed.
+  readonly initialize?: "answer" | "silent";
+  readonly setServers?: "answer" | "silent" | { readonly errors: Record<string, string> };
+}
+
+function makeFakeClaudeCli(answers: FakeClaudeCliAnswers = {}) {
   const spawns: Array<SpawnOptions> = [];
   const controlRequests: Array<object> = [];
   const stdins: Array<NodeStream.PassThrough> = [];
+  // Answers a silent request after the fact, as a CLI does when it finally replies.
+  const lateResponses: Array<() => void> = [];
+  const requestWaiters: Array<{ readonly subtype: string; readonly resolve: () => void }> = [];
+  const hasSubtype = (request: object, subtype: string) =>
+    (request as { readonly subtype?: unknown }).subtype === subtype;
   const spawn = (options: SpawnOptions): SpawnedProcess => {
     spawns.push(options);
     const stdin = new NodeStream.PassThrough();
@@ -2046,6 +2057,16 @@ function makeFakeClaudeCli(answerSetServers = true) {
         return true;
       },
     });
+    const respond = (requestId: string, response: object) => {
+      // A reply to a CLI the SDK already closed has nowhere to go.
+      if (stdout.writableEnded) return;
+      stdout.write(
+        `${JSON.stringify({
+          type: "control_response",
+          response: { subtype: "success", request_id: requestId, response },
+        })}\n`,
+      );
+    };
     let pending = "";
     stdin.on("data", (chunk: Buffer) => {
       pending += chunk.toString("utf8");
@@ -2054,14 +2075,30 @@ function makeFakeClaudeCli(answerSetServers = true) {
         pending = pending.slice(end + 1);
         if (frame.type !== "control_request") continue;
         controlRequests.push(frame.request);
-        const setServers = frame.request.subtype === "mcp_set_servers";
-        if (setServers && !answerSetServers) continue;
-        const response = {
-          subtype: "success",
-          request_id: frame.request_id,
-          response: setServers ? { added: [], removed: [], errors: {} } : {},
-        };
-        stdout.write(`${JSON.stringify({ type: "control_response", response })}\n`);
+        for (const waiter of requestWaiters.splice(0)) {
+          if (hasSubtype(frame.request, waiter.subtype)) waiter.resolve();
+          else requestWaiters.push(waiter);
+        }
+        const requestId: string = frame.request_id;
+        if (frame.request.subtype === "initialize") {
+          if (answers.initialize === "silent") continue;
+          respond(requestId, {});
+          continue;
+        }
+        if (frame.request.subtype !== "mcp_set_servers") {
+          respond(requestId, {});
+          continue;
+        }
+        const setServers = answers.setServers ?? "answer";
+        if (setServers === "silent") {
+          lateResponses.push(() => respond(requestId, { added: [], removed: [], errors: {} }));
+          continue;
+        }
+        respond(requestId, {
+          added: [],
+          removed: [],
+          errors: setServers === "answer" ? {} : setServers.errors,
+        });
       }
     });
     stdin.on("end", () => {
@@ -2072,7 +2109,17 @@ function makeFakeClaudeCli(answerSetServers = true) {
   };
   // The SDK closes the CLI by ending its stdin.
   const closed = () => stdins.length > 0 && stdins.every((stdin) => stdin.writableEnded);
-  return { spawn, spawns, controlRequests, closed };
+  const answerLate = () => {
+    for (const respond of lateResponses.splice(0)) respond();
+  };
+  // Resolves once the SDK has written a control request of this subtype to the CLI.
+  const requested = (subtype: string) =>
+    new Promise<void>((resolve) => {
+      const seen = controlRequests.some((request) => hasSubtype(request, subtype));
+      if (seen) resolve();
+      else requestWaiters.push({ subtype, resolve });
+    });
+  return { spawn, spawns, controlRequests, closed, answerLate, requested };
 }
 
 describe("ClaudeAdapterV2 MCP credential channel", () => {
@@ -2081,7 +2128,15 @@ describe("ClaudeAdapterV2 MCP credential channel", () => {
     url: "http://127.0.0.1:43123/mcp",
     headers: { Authorization: "Bearer dummy-mcp-credential" },
   };
-  const openWith = (cli: ReturnType<typeof makeFakeClaudeCli>) =>
+  const openWith = (
+    cli: ReturnType<typeof makeFakeClaudeCli>,
+    mcpServers: Record<
+      string,
+      typeof t3McpServer | { readonly type: "http"; readonly url: string }
+    > = {
+      "t3-code": t3McpServer,
+    },
+  ) =>
     Effect.gen(function* () {
       const runner = yield* ClaudeAdapterV2.ClaudeAgentSdkQueryRunner;
       return yield* runner.open({
@@ -2094,7 +2149,7 @@ describe("ClaudeAdapterV2 MCP credential channel", () => {
             resume: false,
             cwd: null,
             environment: { PATH: "/usr/bin" },
-            mcpServers: { "t3-code": t3McpServer },
+            mcpServers,
           }),
           pathToClaudeCodeExecutable: "/opt/claude/cli.js",
           spawnClaudeCodeProcess: cli.spawn,
@@ -2127,12 +2182,78 @@ describe("ClaudeAdapterV2 MCP credential channel", () => {
 
   it.effect("closes the CLI when it never answers the MCP registration", () =>
     Effect.gen(function* () {
-      const cli = makeFakeClaudeCli(false);
+      const cli = makeFakeClaudeCli({ setServers: "silent" });
       const opening = yield* openWith(cli).pipe(Effect.result, Effect.forkChild);
+      yield* Effect.promise(() => cli.requested("mcp_set_servers"));
       yield* TestClock.adjust("90 seconds");
       const opened = yield* Fiber.join(opening);
 
       assert.equal(opened._tag, "Failure");
+      assert.isTrue(cli.closed());
+    }),
+  );
+
+  it.effect("fails the registration timeout and ignores an answer that arrives after it", () =>
+    Effect.gen(function* () {
+      const cli = makeFakeClaudeCli({ setServers: "silent" });
+      const opening = yield* openWith(cli).pipe(Effect.result, Effect.forkChild);
+      yield* Effect.promise(() => cli.requested("mcp_set_servers"));
+      yield* TestClock.adjust("90 seconds");
+      const opened = yield* Fiber.join(opening);
+      cli.answerLate();
+
+      assert.equal(opened._tag, "Failure");
+      assert.equal(
+        opened._tag === "Failure" ? opened.failure.cause : undefined,
+        "Claude Code did not answer the MCP server registration.",
+      );
+      assert.isTrue(cli.closed());
+    }),
+  );
+
+  it.effect("closes the CLI when initialization never finishes, before registration", () =>
+    Effect.gen(function* () {
+      const cli = makeFakeClaudeCli({ initialize: "silent" });
+      const opening = yield* openWith(cli).pipe(Effect.result, Effect.forkChild);
+      yield* Effect.promise(() => cli.requested("initialize"));
+      yield* TestClock.adjust("60 seconds");
+      const opened = yield* Fiber.join(opening);
+
+      assert.equal(opened._tag, "Failure");
+      assert.equal(
+        opened._tag === "Failure" ? opened.failure.cause : undefined,
+        "Claude Code did not finish initializing.",
+      );
+      assert.notDeepInclude(cli.controlRequests, { subtype: "mcp_set_servers" });
+      assert.isTrue(cli.closed());
+    }),
+  );
+
+  it.effect("fails the open when the required T3 MCP registration errors", () =>
+    Effect.gen(function* () {
+      const cli = makeFakeClaudeCli({
+        setServers: { errors: { "t3-code": "unreachable" } },
+      });
+      const opened = yield* openWith(cli).pipe(Effect.result);
+
+      assert.equal(opened._tag, "Failure");
+      assert.equal(
+        opened._tag === "Failure" ? opened.failure.cause : undefined,
+        "Claude Code could not register the t3-code MCP server.",
+      );
+      assert.isTrue(cli.closed());
+    }),
+  );
+
+  it.effect("keeps the session open when an optional MCP registration errors", () =>
+    Effect.gen(function* () {
+      const cli = makeFakeClaudeCli({ setServers: { errors: { docs: "unavailable" } } });
+      const session = yield* openWith(cli, {
+        "t3-code": t3McpServer,
+        docs: { type: "http", url: "http://127.0.0.1:43124/mcp" },
+      });
+      yield* session.close;
+
       assert.isTrue(cli.closed());
     }),
   );
