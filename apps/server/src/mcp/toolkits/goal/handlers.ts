@@ -38,10 +38,10 @@ const present = <K extends string, V>(key: K, value: V | undefined) =>
   value === undefined ? {} : ({ [key]: value } as { [P in K]: V });
 
 /** Drops keys an optional MCP field left unset, so they do not overwrite the defaults. */
-const defined = <T extends object>(value: T): Partial<T> =>
-  Object.fromEntries(
-    Object.entries(value).filter(([, field]) => field !== undefined),
-  ) as Partial<T>;
+const defined = <T extends object>(value: T) =>
+  Object.fromEntries(Object.entries(value).filter(([, field]) => field !== undefined)) as {
+    [K in keyof T]?: Exclude<T[K], undefined>;
+  };
 
 const findGoal = (goals: ReadonlyArray<Goal>, id: GoalId) => {
   const goal = goals.find((candidate) => candidate.id === id);
@@ -163,6 +163,9 @@ export const layer = McpToolAccess.toLayer(GoalToolkit, {
         standardRules: true,
         queueMode: "auto",
         ...defined(fields),
+        name: fields.name,
+        projectId: fields.projectId,
+        agents: fields.agents,
         runtimeMode: yield* clampRuntimeMode(runtimeMode),
       };
       const list = yield* goals

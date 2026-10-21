@@ -19,6 +19,12 @@ const workspaceRootOf = Effect.fn("mcp.repo.workspaceRootOf")(function* (project
   return project.value.workspaceRoot;
 });
 
+/** Drops keys an optional MCP field left unset, so exactOptionalPropertyTypes accepts the call. */
+const defined = <T extends object>(value: T) =>
+  Object.fromEntries(Object.entries(value).filter(([, field]) => field !== undefined)) as {
+    [K in keyof T]?: Exclude<T[K], undefined>;
+  };
+
 const repoFailure = (error: RepoContext.RepoContextError) =>
   new OrchestratorMcpFailure({
     code:
@@ -34,7 +40,10 @@ export const layer = McpToolAccess.toLayer(RepoToolkit, {
       const workspaceRoot = yield* workspaceRootOf(input.projectId);
       const repo = yield* RepoContext.RepoContext;
       return yield* repo
-        .listDir({ workspaceRoot, worktreePath: input.worktreePath, path: input.path })
+        .listDir({
+          workspaceRoot,
+          ...defined({ worktreePath: input.worktreePath, path: input.path }),
+        })
         .pipe(Effect.mapError(repoFailure));
     }),
   ),
@@ -45,10 +54,12 @@ export const layer = McpToolAccess.toLayer(RepoToolkit, {
       return yield* repo
         .readFile({
           workspaceRoot,
-          worktreePath: input.worktreePath,
           path: input.path,
-          startLine: input.startLine,
-          maxLines: input.maxLines,
+          ...defined({
+            worktreePath: input.worktreePath,
+            startLine: input.startLine,
+            maxLines: input.maxLines,
+          }),
         })
         .pipe(Effect.mapError(repoFailure));
     }),
@@ -60,11 +71,13 @@ export const layer = McpToolAccess.toLayer(RepoToolkit, {
       return yield* repo
         .search({
           workspaceRoot,
-          worktreePath: input.worktreePath,
           query: input.query,
-          glob: input.glob,
-          regex: input.regex,
-          maxResults: input.maxResults,
+          ...defined({
+            worktreePath: input.worktreePath,
+            glob: input.glob,
+            regex: input.regex,
+            maxResults: input.maxResults,
+          }),
         })
         .pipe(Effect.mapError(repoFailure));
     }),
@@ -76,11 +89,13 @@ export const layer = McpToolAccess.toLayer(RepoToolkit, {
       return yield* repo
         .git({
           workspaceRoot,
-          worktreePath: input.worktreePath,
           view: input.view,
-          ref: input.ref,
-          path: input.path,
-          maxChars: input.maxChars,
+          ...defined({
+            worktreePath: input.worktreePath,
+            ref: input.ref,
+            path: input.path,
+            maxChars: input.maxChars,
+          }),
         })
         .pipe(Effect.mapError(repoFailure));
     }),
