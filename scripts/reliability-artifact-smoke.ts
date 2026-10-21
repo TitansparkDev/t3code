@@ -81,7 +81,10 @@ async function readCandidate(directory: string): Promise<Candidate | undefined> 
       await readFile(join(directory, "candidate.json"), "utf8"),
     ) as Candidate;
     const archivePath = join(directory, candidate.archive);
-    if (sha256(await readFile(archivePath)) !== candidate.sha256) return undefined;
+    const digest = sha256(await readFile(archivePath));
+    const checksums = (await readFile(join(directory, "SHA256SUMS"), "utf8")).trim();
+    if (digest !== candidate.sha256 || checksums !== `${digest}  ${candidate.archive}`)
+      return undefined;
     return candidate;
   } catch {
     return undefined;
@@ -186,40 +189,65 @@ async function main() {
   const portBase = process.env.AGENTQUEUE_PORT_BASE;
   if (!portBase)
     throw new Error("AGENTQUEUE_PORT_BASE must be set to the task's reserved port range.");
-  await run(
-    "node",
-    ["scripts/smoke-cli-archive.ts", "--archive", archivePath, "--expect-version", version],
-    {
-      env: { ...env, AGENTQUEUE_PORT_BASE: portBase },
-    },
-  );
+  const smoke = (archive: string, expectedVersion: string) =>
+    run(
+      "node",
+      ["scripts/smoke-cli-archive.ts", "--archive", archive, "--expect-version", expectedVersion],
+      { env: { ...env, AGENTQUEUE_PORT_BASE: portBase } },
+    );
+  await smoke(archivePath, version);
 
   // Preserve the prior verified candidate as the rollback target before
   // advancing current.json. Candidate directories are never removed.
   const currentPath = join(artifactRoot, "current.json");
   const previousPath = join(artifactRoot, "previous.json");
-  let rollbackAvailable = false;
+  let rollback: (Candidate & { directory: string }) | undefined;
   try {
     const previous = JSON.parse(await readFile(currentPath, "utf8")) as Candidate & {
       directory: string;
     };
     const previousCandidate = await readCandidate(previous.directory);
-    if (previousCandidate?.sha256 === previous.sha256) {
-      await writeFile(previousPath, `${JSON.stringify(previous, null, 2)}\n`);
-      rollbackAvailable = true;
+    if (previousCandidate?.sha256 === previous.sha256 && previous.revision !== revision) {
+      rollback = previous;
     }
   } catch {
-    // A first candidate has no local predecessor yet.
+    // A first candidate has no current pointer yet.
+  }
+  if (!rollback) {
+    const candidatesRoot = join(artifactRoot, "candidates");
+    const directories = await readdir(candidatesRoot, { withFileTypes: true });
+    const existing = await Promise.all(
+      directories
+        .filter((entry) => entry.isDirectory())
+        .map(async (entry) => ({
+          directory: join(candidatesRoot, entry.name),
+          modified: (await stat(join(candidatesRoot, entry.name))).mtimeMs,
+        })),
+    );
+    existing.sort((left, right) => right.modified - left.modified);
+    for (const entry of existing) {
+      const prior = await readCandidate(entry.directory);
+      if (prior && prior.revision !== revision && prior.version === version) {
+        rollback = { ...prior, directory: entry.directory };
+        break;
+      }
+    }
+  }
+  if (rollback) {
+    // Re-smoke an older local archive before declaring it a rollback target;
+    // interrupted or incomplete attempts are never promoted by metadata alone.
+    await smoke(join(rollback.directory, rollback.archive), rollback.version);
+    await writeFile(previousPath, `${JSON.stringify(rollback, null, 2)}\n`);
   }
   await writeFile(
     currentPath,
     `${JSON.stringify({ ...candidate, directory: candidateDir }, null, 2)}\n`,
   );
-  if (rollbackAvailable) {
-    const rollback = JSON.parse(await readFile(previousPath, "utf8")) as Candidate & {
+  if (rollback) {
+    const savedRollback = JSON.parse(await readFile(previousPath, "utf8")) as Candidate & {
       directory: string;
     };
-    if ((await readCandidate(rollback.directory))?.sha256 !== rollback.sha256) {
+    if ((await readCandidate(savedRollback.directory))?.sha256 !== savedRollback.sha256) {
       throw new Error("Previous candidate is no longer available for rollback.");
     }
   }
