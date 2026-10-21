@@ -145,6 +145,117 @@ function git(cwd: string, args: ReadonlyArray<string>) {
   };
 }
 
+export function linkProbeDependencies(sourceRoot: string, probeRoot: string): void {
+  const manifests = git(probeRoot, ["ls-files", "--", "package.json", "**/package.json"])
+    .stdout.split("\n")
+    .filter(Boolean);
+  const workspaces = new Map<string, string>();
+  const directories = new Set(["."]);
+  for (const manifest of manifests) {
+    const directory = NodePath.dirname(manifest);
+    directories.add(directory);
+    const source = NodePath.join(sourceRoot, directory);
+    if (NodeFS.existsSync(source)) {
+      workspaces.set(NodeFS.realpathSync(source), NodePath.join(probeRoot, directory));
+    }
+  }
+  for (const name of DEPENDENCY_DIRS.filter((name) => name !== "node_modules")) {
+    const source = NodePath.join(sourceRoot, name);
+    const target = NodePath.join(probeRoot, name);
+    if (NodeFS.existsSync(source) && !NodeFS.existsSync(target)) {
+      NodeFS.symlinkSync(source, target, "dir");
+    }
+  }
+  for (const directory of directories) {
+    const source = NodePath.join(sourceRoot, directory, "node_modules");
+    if (!NodeFS.existsSync(source)) continue;
+    const target = NodePath.join(probeRoot, directory, "node_modules");
+    NodeFS.mkdirSync(target, { recursive: true });
+    const link = (name: string) => {
+      const entry = NodePath.join(source, name);
+      const destination = NodePath.join(target, name);
+      if (!NodeFS.existsSync(entry) || NodeFS.existsSync(destination)) return;
+      // Workspace imports must read the checked-out revision, not the candidate's edits.
+      const installed = NodeFS.realpathSync(entry);
+      const dependency = workspaces.get(installed) ?? installed;
+      NodeFS.symlinkSync(
+        dependency,
+        destination,
+        NodeFS.statSync(dependency).isDirectory() ? "dir" : "file",
+      );
+    };
+    for (const name of NodeFS.readdirSync(source)) {
+      if (name.startsWith("@") && NodeFS.statSync(NodePath.join(source, name)).isDirectory()) {
+        NodeFS.mkdirSync(NodePath.join(target, name), { recursive: true });
+        for (const scoped of NodeFS.readdirSync(NodePath.join(source, name))) {
+          link(`${name}/${scoped}`);
+        }
+      } else {
+        link(name);
+      }
+    }
+  }
+}
+
+/**
+ * The first dependency a tracked package declares that its own directory cannot resolve (through
+ * its node_modules or an ancestor's). Workspace siblings count: they are linked like any package.
+ */
+function unresolvedDependency(root: string): string | null {
+  const manifests = git(root, ["ls-files", "--", "package.json", "**/package.json"])
+    .stdout.split("\n")
+    .filter(Boolean);
+  for (const manifest of manifests) {
+    let declared: {
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+    };
+    try {
+      declared = JSON.parse(NodeFS.readFileSync(NodePath.join(root, manifest), "utf8"));
+    } catch {
+      continue;
+    }
+    const names = [
+      ...Object.keys(declared.dependencies ?? {}),
+      ...Object.keys(declared.devDependencies ?? {}),
+    ];
+    for (const name of names) {
+      let directory = NodePath.dirname(manifest);
+      let installed = false;
+      for (;;) {
+        if (NodeFS.existsSync(NodePath.join(root, directory, "node_modules", name))) {
+          installed = true;
+          break;
+        }
+        if (directory === ".") break;
+        directory = NodePath.dirname(directory);
+      }
+      if (!installed) return `${name} (declared in ${manifest})`;
+    }
+  }
+  return null;
+}
+
+/**
+ * Makes `probeRoot` resolve its imports the way `sourceRoot` does (per-package node_modules, with
+ * workspace links rebound to the probe's own sources), then verifies that every declared dependency
+ * resolves. Returns the infrastructure failure to report, or null when the checks may run.
+ */
+export function prepareVerificationDependencies(input: {
+  readonly stage: string;
+  readonly sourceRoot: string;
+  readonly probeRoot: string;
+}): string | null {
+  if (input.sourceRoot !== input.probeRoot)
+    linkProbeDependencies(input.sourceRoot, input.probeRoot);
+  const missing = unresolvedDependency(input.probeRoot);
+  return missing
+    ? `Dependency preparation failed at ${input.stage}: ${missing} is not installed for this revision. The checks were not run.`
+    : null;
+}
+
+const BASELINE_PREPARATION_SIGNATURE = "workspace-dependencies-v2";
+
 /**
  * Runs `check` on the untouched integration tip. The tip is checked out in a private worktree whose
  * installed dependencies are the candidate worktree's own (linked, never copied), so the check meets
@@ -168,28 +279,23 @@ async function runAtBaseline(
   stderr: string;
   exitCode: number;
 }> {
-  const path = NodePath.join(
-    input.repoRoot,
-    ".worktrees",
-    `agentqueue-baseline-${input.tip.slice(0, 9)}`,
+  const parent = NodePath.join(input.repoRoot, ".worktrees");
+  NodeFS.mkdirSync(parent, { recursive: true });
+  const path = NodeFS.mkdtempSync(
+    NodePath.join(parent, `agentqueue-baseline-${input.tip.slice(0, 9)}-`),
   );
-  NodeFS.mkdirSync(NodePath.dirname(path), { recursive: true });
-  git(input.repoRoot, ["worktree", "prune"]);
-  if (NodeFS.existsSync(path)) git(input.repoRoot, ["worktree", "remove", "--force", path]);
   const added = git(input.repoRoot, ["worktree", "add", "--detach", path, input.tip]);
-  if (added.code !== 0) return { state: "unknown", stdout: "", stderr: added.stderr, exitCode: 1 };
+  if (added.code !== 0) {
+    NodeFS.rmdirSync(path);
+    return { state: "unknown", stdout: "", stderr: added.stderr, exitCode: 1 };
+  }
   try {
-    for (const name of DEPENDENCY_DIRS) {
-      const source = NodePath.join(input.candidateWorktree, name);
-      const target = NodePath.join(path, name);
-      if (NodeFS.existsSync(source) && !NodeFS.existsSync(target)) {
-        try {
-          NodeFS.symlinkSync(source, target, "dir");
-        } catch {
-          // The check will say what is missing.
-        }
-      }
-    }
+    const preparation = prepareVerificationDependencies({
+      stage: "baseline",
+      sourceRoot: input.candidateWorktree,
+      probeRoot: path,
+    });
+    if (preparation) return { state: "unknown", stdout: "", stderr: preparation, exitCode: 1 };
     let result: Awaited<ReturnType<typeof runSpec>>;
     try {
       result = await runSpec(
@@ -250,18 +356,23 @@ export async function baselineResult(
   const key = checkKey(input.check);
   const cached = db
     .prepare(
-      "SELECT state, summary, failing_json FROM check_baselines WHERE check_key = ? AND ref_commit = ?",
+      "SELECT state, summary, failing_json, signature FROM check_baselines WHERE check_key = ? AND ref_commit = ?",
     )
     .get(key, input.commit) as
-    | { state: string; summary: string | null; failing_json: string }
+    | { state: string; summary: string | null; failing_json: string; signature: string | null }
     | undefined;
-  if (cached) {
+  if (cached?.signature === BASELINE_PREPARATION_SIGNATURE && cached.state !== "unknown") {
     const names = JSON.parse(cached.failing_json) as string[];
     return {
       state: cached.state as "passed" | "failed" | "unknown",
       stdout: names.map((name) => `FAILED ${name}`).join("\n"),
       stderr: cached.summary ?? "",
-      exitCode: input.check.expectExitCode === 0 ? 1 : 0,
+      exitCode:
+        cached.state === "passed"
+          ? input.check.expectExitCode
+          : input.check.expectExitCode === 0
+            ? 1
+            : 0,
       failing: names,
       cached: true,
     };
@@ -285,7 +396,7 @@ export async function baselineResult(
     key,
     input.commit,
     ran.state,
-    null,
+    BASELINE_PREPARATION_SIGNATURE,
     JSON.stringify(failing),
     `${ran.stderr}${ran.stdout}`.slice(-600),
     new Date().toISOString(),

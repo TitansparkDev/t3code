@@ -27169,6 +27169,7 @@ packages/agent-queue-core/src/toolchain.ts
 packages/agent-queue-core/src/verificationSpec.ts
 packages/agent-queue-core/src/verifier.ts
 packages/agent-queue-core/src/worktreeManager.ts
+packages/agent-queue-core/test/baselineWorkspace.test.ts
 packages/agent-queue-core/test/claimService.test.ts
 packages/agent-queue-core/test/concurrencyChaos.test.ts
 packages/agent-queue-core/test/db.test.ts

@@ -15,6 +15,7 @@ import * as NodePath from "node:path";
 import { loadContract, matchesAny, resourcesNeededBy } from "./contract.ts";
 import { scopesIntersect } from "./scopeManager.ts";
 import { recordEvent } from "./eventStream.ts";
+import { prepareVerificationDependencies } from "./baseline.ts";
 import { acquireLandingLock, prepareStagingWorktree } from "./integration.ts";
 import { addFollowUpTask } from "./overseerRepairs.ts";
 import { ensureSlot, taskEnvironment } from "./taskEnvironment.ts";
@@ -213,6 +214,21 @@ export async function auditUnverifiedTasks(
   const release = await acquireLandingLock(input.gitCommonDir);
   try {
     const staging = prepareStagingWorktree(input.repoRoot, tip);
+    const preparation = prepareVerificationDependencies({
+      stage: "audit",
+      sourceRoot: input.repoRoot,
+      probeRoot: staging,
+    });
+    if (preparation) {
+      // Nothing was checked: every task stays unaudited until the environment can run the checks.
+      for (const task of needs) {
+        recordEvent(db, task.id, "task_audit_environment_wait", {
+          commit: tip,
+          reason: preparation,
+        });
+      }
+      return { audited, followUps, unauditable };
+    }
     for (const task of needs) {
       const spec = parseStoredSpec(task.verification_spec, task.verification_command);
       if (spec.checks.length === 0) {
@@ -284,6 +300,18 @@ export async function auditUnverifiedTasks(
           while (low < high) {
             const mid = Math.floor((low + high) / 2);
             const probe = prepareStagingWorktree(input.repoRoot, suspects[mid]!.commit);
+            const probeProblem = prepareVerificationDependencies({
+              stage: "audit",
+              sourceRoot: input.repoRoot,
+              probeRoot: probe,
+            });
+            if (probeProblem) {
+              recordEvent(db, task.id, "task_audit_environment_wait", {
+                commit: suspects[mid]!.commit,
+                reason: probeProblem,
+              });
+              return { audited, followUps, unauditable };
+            }
             const earlier = await runSpec(task.id, probe, spec, undefined, {
               env: taskEnvironment({
                 taskId: task.id,

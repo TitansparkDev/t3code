@@ -28,6 +28,7 @@ import {
   type CheckoutAnalysis,
 } from "./checkout.ts";
 import { acquireLandingLock, prepareStagingWorktree } from "./integration.ts";
+import { prepareVerificationDependencies } from "./baseline.ts";
 import { recordEvent } from "./eventStream.ts";
 import { runVerification } from "./verifier.ts";
 
@@ -81,7 +82,8 @@ export type PublishOutcome =
         | "conflicting-edits"
         | "policy"
         | "unknown-owner"
-        | "base-moved";
+        | "base-moved"
+        | "environment";
       readonly files: ReadonlyArray<string>;
       readonly snapshotId?: string;
     }
@@ -311,6 +313,16 @@ export async function publishPlan(
           | undefined
       )?.final_verification;
       if (finalCommand?.trim()) {
+        const preparation = prepareVerificationDependencies({
+          stage: "publication",
+          sourceRoot: input.repoRoot,
+          probeRoot: staging,
+        });
+        if (preparation) {
+          // The final check never ran: the verified result is kept until the environment can run it.
+          setPublication(db, input.planId, "pending", preparation);
+          return { kind: "pending", reason: preparation, cause: "environment", files: [] };
+        }
         const receipt = await runVerification("plan", staging, finalCommand, 900_000);
         if (!receipt.passed) {
           const reason = `After combining with ${input.baseBranch}, the plan's final check failed (exit ${receipt.exitCode}).`;

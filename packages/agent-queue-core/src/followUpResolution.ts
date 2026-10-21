@@ -16,7 +16,7 @@ import type * as NodeSqlite from "node:sqlite";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
-import { DEPENDENCY_DIRS } from "./baseline.ts";
+import { prepareVerificationDependencies } from "./baseline.ts";
 import { renewLease } from "./claimService.ts";
 import { loadContract, resourcesNeededBy } from "./contract.ts";
 import { recordEvent } from "./eventStream.ts";
@@ -173,17 +173,13 @@ export async function settleUnchangedFollowUp(
   }, 60_000);
   renewal.unref();
   try {
-    for (const name of DEPENDENCY_DIRS) {
-      const source = input.worktreePath ? NodePath.join(input.worktreePath, name) : "";
-      const target = NodePath.join(probe, name);
-      if (source && NodeFS.existsSync(source) && !NodeFS.existsSync(target)) {
-        try {
-          NodeFS.symlinkSync(source, target, "dir");
-        } catch {
-          // The check will say what is missing.
-        }
-      }
-    }
+    const preparation = prepareVerificationDependencies({
+      stage: "follow-up",
+      sourceRoot: input.worktreePath ?? input.repoRoot,
+      probeRoot: probe,
+    });
+    // Nothing ran, so nothing failed: the follow-up waits for the environment, with no repair.
+    if (preparation) return { kind: "resource-wait", message: preparation };
     for (let attempt = 1; attempt <= attempts; attempt++) {
       try {
         receipt = await runSpec(input.taskId, probe, spec, undefined, options);

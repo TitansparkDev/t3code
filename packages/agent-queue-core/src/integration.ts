@@ -46,7 +46,7 @@ import {
   type AmendmentOutcome,
   type ScopeRequest,
 } from "./scopeAudit.ts";
-import { attributeFailure, checkKey } from "./baseline.ts";
+import { attributeFailure, checkKey, prepareVerificationDependencies } from "./baseline.ts";
 import { ResourceWaitError } from "./resourceRunner.ts";
 import { addFollowUpTask } from "./overseerRepairs.ts";
 import { linearizeBranch } from "./linearize.ts";
@@ -890,6 +890,12 @@ export async function submitCandidate(
       };
     }
   };
+  const preparation = prepareVerificationDependencies({
+    stage: "candidate",
+    sourceRoot: input.worktreePath,
+    probeRoot: input.worktreePath,
+  });
+  if (preparation) return fail("prerequisite", preparation, null);
   let receipt = await guarded(spec);
   // A check that fails on the integration branch the worker started from, in the same way, is not
   // this worker's to repair: judge the rest, and keep the failure as its own blocking task.
@@ -1375,6 +1381,20 @@ export async function integrateCandidate(
             }
           ).scope_patterns || "[]",
         ) as string[];
+        const preparation = prepareVerificationDependencies({
+          stage: "staged integration",
+          sourceRoot: input.repoRoot,
+          probeRoot: staging,
+        });
+        if (preparation) {
+          markEnvironmentWait(
+            db,
+            input.taskId,
+            preparation,
+            toolchainFingerprint({ repoRoot: input.repoRoot }),
+          );
+          return { kind: "environment-wait", reason: `${ENVIRONMENT_WAIT}${preparation}` };
+        }
         let receipt: SpecResult;
         try {
           receipt = await runSpec(input.taskId, staging, spec, undefined, {
