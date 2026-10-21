@@ -182,7 +182,10 @@ describe("AgentScope service", () => {
         expect(stops).toEqual([["--user", "stop", ownedAgentSlice(stateDir)]]);
         expect(sliceOf(agent)).toBe(ownedAgentSlice(stateDir));
         expect(agent.args).toContain("--property=TimeoutStopSec=10s");
-        expect(agent.args).toContain(`--property=MemoryMax=${8192 * 1024 * 1024}`);
+        const effectiveTotalBytes = Math.min(NodeOS.totalmem(), readHost().totalMb * 1024 ** 2);
+        expect(agent.args).toContain(
+          `--property=MemoryMax=${privateAgentMemoryLimitMb(effectiveTotalBytes) * 1024 ** 2}`,
+        );
         const terminal = yield* scope.wrap({
           command: "agent",
           args: [],
@@ -191,13 +194,16 @@ describe("AgentScope service", () => {
         });
         expect(sliceOf(terminal)).toBe("app-t3code-agents.slice");
         expect(calls.filter(([, verb]) => verb === "stop")).toHaveLength(1);
-        expect(calls).toContainEqual([
+        const ownedSliceLimits = calls.find(
+          (call) => call[1] === "set-property" && call[3] === ownedAgentSlice(stateDir),
+        );
+        expect(ownedSliceLimits).toEqual([
           "--user",
           "set-property",
           "--runtime",
           ownedAgentSlice(stateDir),
-          `MemoryHigh=${agentSliceMemoryLimits(readHost().totalMb * 1024 ** 2).high}`,
-          `MemoryMax=${agentSliceMemoryLimits(readHost().totalMb * 1024 ** 2).max}`,
+          `MemoryHigh=${agentSliceMemoryLimits(effectiveTotalBytes).high}`,
+          `MemoryMax=${agentSliceMemoryLimits(effectiveTotalBytes).max}`,
         ]);
       }),
     ),
