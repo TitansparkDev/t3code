@@ -125,6 +125,7 @@ async function main() {
     // the previous one.
     await run("vp", ["run", "--filter", "@t3tools/web", "build"], { env });
     await run("vp", ["run", "build:resource-monitor"], { env });
+    await run("node", ["apps/server/scripts/cli.ts", "build"], { env });
     await run("node", ["apps/server/scripts/cli.ts", "build-exe"], { env });
 
     const monitorTarget = join(ROOT, "native/resource-monitor/target/release");
