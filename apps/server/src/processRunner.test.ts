@@ -13,6 +13,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import { SpawnExecutableResolution } from "@t3tools/shared/shell";
 
 import * as ProcessRunner from "./processRunner.ts";
+import { OWNED_RUNTIME_DEADLINE_MS } from "./orchestration-v2/RuntimeLiveness.ts";
 
 type ChildProcessCommand = {
   readonly command: string;
@@ -367,6 +368,8 @@ describe("runProcess", () => {
       const spawner = makeSpawner(() =>
         Effect.succeed(
           makeHandle({
+            stdout: "partial stdout",
+            stderr: "partial stderr",
             exitCode: Effect.never,
           }),
         ),
@@ -393,6 +396,8 @@ describe("runProcess", () => {
         cwd: "/logical",
         spawnCwd: "/actual",
         timeoutMs: 50,
+        stdout: "partial stdout",
+        stderr: "partial stderr",
       });
       expect(error.message).toBe("Process 'fake' in '/actual' timed out after 50ms");
     }),
@@ -403,6 +408,8 @@ describe("runProcess", () => {
       const spawner = makeSpawner(() =>
         Effect.succeed(
           makeHandle({
+            stdout: "partial stdout",
+            stderr: "partial stderr",
             exitCode: Effect.never,
           }),
         ),
@@ -419,13 +426,31 @@ describe("runProcess", () => {
       const result = yield* Fiber.join(resultFiber);
 
       expect(result).toMatchObject({
-        stdout: "",
-        stderr: "",
+        stdout: "partial stdout",
+        stderr: "partial stderr",
         code: null,
         timedOut: true,
         stdoutTruncated: false,
         stderrTruncated: false,
       });
+    }),
+  );
+
+  it.effect("caps an app-owned command at sixteen hours even when callers request longer", () =>
+    Effect.gen(function* () {
+      const spawner = makeSpawner(() => Effect.succeed(makeHandle({ exitCode: Effect.never })));
+      const resultFiber = yield* runWith(spawner)({
+        command: "compiler",
+        args: ["--cpu-bound"],
+        timeout: Duration.millis(OWNED_RUNTIME_DEADLINE_MS * 2),
+        timeoutBehavior: "timedOutResult",
+      }).pipe(Effect.forkScoped);
+
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust(Duration.millis(OWNED_RUNTIME_DEADLINE_MS));
+      const result = yield* Fiber.join(resultFiber);
+      expect(result.timedOut).toBe(true);
+      expect(result.code).toBeNull();
     }),
   );
 });

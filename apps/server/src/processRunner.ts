@@ -10,6 +10,7 @@ import * as Stream from "effect/Stream";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
+import { deadlineFromStartedAt } from "./orchestration-v2/RuntimeLiveness.ts";
 import {
   collectUint8StreamText,
   decodeUtf8,
@@ -30,8 +31,7 @@ export interface ProcessRunInput {
   readonly outputMode?: "error" | "truncate" | undefined;
   readonly truncatedMarker?: string | undefined;
   /**
-   * On timeout, return a synthetic timedOut result.
-   * Partial stdout/stderr are not preserved.
+   * On timeout, return a timedOut result with output collected before cleanup.
    */
   readonly timeoutBehavior?: "error" | "timedOutResult" | undefined;
 }
@@ -122,6 +122,8 @@ export class ProcessTimeoutError extends Schema.TaggedError<ProcessTimeoutError>
   {
     ...ProcessInvocationFields,
     timeoutMs: Schema.Number,
+    stdout: Schema.String,
+    stderr: Schema.String,
   },
 ) {
   override get message(): string {
@@ -226,42 +228,46 @@ const collectText = Effect.fnUntraced(function* (input: {
 });
 
 function finalizeRunProcess<R>(
-  effect: Effect.Effect<ProcessRunOutput, ProcessRunError, R | Scope.Scope>,
+  makeEffect: (
+    observe: (stream: "stdout" | "stderr", chunk: Uint8Array) => void,
+  ) => Effect.Effect<ProcessRunOutput, ProcessRunError, R | Scope.Scope>,
   input: ProcessRunInput,
 ): Effect.Effect<ProcessRunOutput, ProcessRunError, Exclude<R, Scope.Scope>> {
-  const timeout = Duration.fromInputUnsafe(input.timeout ?? DEFAULT_TIMEOUT);
-  const timeoutBehavior = input.timeoutBehavior ?? "error";
-
-  return effect.pipe(
-    Effect.scoped,
-    Effect.timeoutOption(timeout),
-    Effect.flatMap((result) => {
-      if (Option.isSome(result)) {
-        return Effect.succeed(result.value);
-      }
-      if (timeoutBehavior === "timedOutResult") {
-        return Effect.succeed({
-          stdout: "",
-          stderr: "",
-          code: null,
-          timedOut: true,
-          stdoutTruncated: false,
-          stderrTruncated: false,
-          stdoutInvalidUtf8: false,
-          stderrInvalidUtf8: false,
-        } satisfies ProcessRunOutput);
-      }
-      return Effect.fail(
-        new ProcessTimeoutError({
-          command: input.command,
-          argumentCount: input.args.length,
-          cwd: input.cwd,
-          spawnCwd: input.spawnCwd,
-          timeoutMs: Duration.toMillis(timeout),
-        }),
-      );
-    }),
+  const requestedTimeout = Duration.toMillis(
+    Duration.fromInputUnsafe(input.timeout ?? DEFAULT_TIMEOUT),
   );
+  const timeout = Duration.millis(Math.max(1, deadlineFromStartedAt(0, requestedTimeout)));
+  const timeoutBehavior = input.timeoutBehavior ?? "error";
+  const captured = { stdout: [] as Uint8Array[], stderr: [] as Uint8Array[] };
+  const observe = (stream: "stdout" | "stderr", chunk: Uint8Array) => {
+    captured[stream].push(chunk);
+  };
+
+  return Effect.gen(function* () {
+    const result = yield* makeEffect(observe).pipe(Effect.scoped, Effect.timeoutOption(timeout));
+    if (Option.isSome(result)) return result.value;
+    if (timeoutBehavior === "timedOutResult") {
+      return {
+        stdout: decodeUtf8(Buffer.concat(captured.stdout)).text,
+        stderr: decodeUtf8(Buffer.concat(captured.stderr)).text,
+        code: null,
+        timedOut: true,
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        stdoutInvalidUtf8: false,
+        stderrInvalidUtf8: false,
+      } satisfies ProcessRunOutput;
+    }
+    return yield* new ProcessTimeoutError({
+      command: input.command,
+      argumentCount: input.args.length,
+      cwd: input.cwd,
+      spawnCwd: input.spawnCwd,
+      timeoutMs: Duration.toMillis(timeout),
+      stdout: decodeUtf8(Buffer.concat(captured.stdout)).text,
+      stderr: decodeUtf8(Buffer.concat(captured.stderr)).text,
+    });
+  });
 }
 
 export const commandName = (command: string) => command.replace(/^.*[\\/]/, "");
@@ -269,6 +275,7 @@ export const commandName = (command: string) => command.replace(/^.*[\\/]/, "");
 const runProcessCore = Effect.fn("processRunner.runProcessCore")(function* (
   spawner: ChildProcessSpawner.ChildProcessSpawner["Service"],
   input: ProcessRunInput,
+  observe: (stream: "stdout" | "stderr", chunk: Uint8Array) => void,
 ): Effect.fn.Return<ProcessRunOutput, ProcessRunError, Scope.Scope> {
   yield* Effect.annotateCurrentSpan("process.command", commandName(input.command));
   const maxOutputBytes = input.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
@@ -341,9 +348,14 @@ const runProcessCore = Effect.fn("processRunner.runProcessCore")(function* (
         cwd: input.cwd,
         spawnCwd: input.spawnCwd,
         streamName: "stdout",
-        stream: onStdoutChunk
-          ? child.stdout.pipe(Stream.tap((chunk) => Effect.sync(() => onStdoutChunk(chunk))))
-          : child.stdout,
+        stream: child.stdout.pipe(
+          Stream.tap((chunk) =>
+            Effect.sync(() => {
+              observe("stdout", chunk);
+              onStdoutChunk?.(chunk);
+            }),
+          ),
+        ),
         maxOutputBytes,
         outputMode,
         truncatedMarker,
@@ -354,7 +366,9 @@ const runProcessCore = Effect.fn("processRunner.runProcessCore")(function* (
         cwd: input.cwd,
         spawnCwd: input.spawnCwd,
         streamName: "stderr",
-        stream: child.stderr,
+        stream: child.stderr.pipe(
+          Stream.tap((chunk) => Effect.sync(() => observe("stderr", chunk))),
+        ),
         maxOutputBytes,
         outputMode,
         truncatedMarker,
@@ -395,7 +409,7 @@ export const make = Effect.fn("ProcessRunner.make")(function* () {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
 
   const run: ProcessRunner["Service"]["run"] = (input) =>
-    finalizeRunProcess(runProcessCore(spawner, input), input);
+    finalizeRunProcess((observe) => runProcessCore(spawner, input, observe), input);
 
   return ProcessRunner.of({
     run,
