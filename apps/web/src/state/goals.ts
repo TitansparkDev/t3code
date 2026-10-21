@@ -9,8 +9,14 @@
  */
 import { useAtomValue } from "@effect/atom-react";
 import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
-import type { EnvironmentId, ProjectId } from "@t3tools/contracts";
-import type { Goal, GoalId, GoalPlanPreview, GoalSettings } from "@t3tools/contracts/goals";
+import type { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
+import type {
+  Goal,
+  GoalEscalationResolveAction,
+  GoalId,
+  GoalPlanPreview,
+  GoalSettings,
+} from "@t3tools/contracts/goals";
 import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
@@ -130,6 +136,48 @@ export function useGoals() {
     },
     [refresh],
   );
+  /** Answers an open escalation: the worker is told to retry, unblocked, given up on, or handed to the person. */
+  const resolveEscalation = async (
+    environmentId: EnvironmentId,
+    input: {
+      readonly id: string;
+      readonly action: GoalEscalationResolveAction;
+      readonly note: string;
+    },
+  ) => {
+    const result = await runAtomCommand(
+      appAtomRegistry,
+      serverEnvironment.resolveGoalEscalation,
+      { environmentId, input },
+      { label: "resolve goal escalation" },
+    );
+    refresh(environmentId);
+    if (result._tag === "Failure") throw Cause.squash(result.cause);
+  };
+  /** Asks the overseer about one worker chat, or about the whole goal when no thread is given. */
+  const askOverseer = async (
+    environmentId: EnvironmentId,
+    input: { readonly goalId: GoalId; readonly threadId?: ThreadId; readonly note: string },
+  ) => {
+    const result = await runAtomCommand(
+      appAtomRegistry,
+      serverEnvironment.openGoalEscalation,
+      { environmentId, input },
+      { label: "ask goal overseer" },
+    );
+    refresh(environmentId);
+    if (result._tag === "Failure") throw Cause.squash(result.cause);
+  };
+  const cancelEscalation = async (environmentId: EnvironmentId, id: string) => {
+    const result = await runAtomCommand(
+      appAtomRegistry,
+      serverEnvironment.cancelGoalEscalation,
+      { environmentId, input: { id } },
+      { label: "cancel goal escalation" },
+    );
+    refresh(environmentId);
+    if (result._tag === "Failure") throw Cause.squash(result.cause);
+  };
   const stop = useMemo(() => command(serverEnvironment.stopGoal, "stop goal"), [command]);
   const restart = useMemo(() => command(serverEnvironment.restartGoal, "restart goal"), [command]);
   const remove = useMemo(() => command(serverEnvironment.deleteGoal, "delete goal"), [command]);
@@ -143,7 +191,31 @@ export function useGoals() {
   }, [environments, refresh]);
 
   return useMemo(
-    () => ({ environments, create, update, stop, restart, addAgents, remove, previewPlan }),
-    [environments, create, update, stop, restart, addAgents, remove, previewPlan],
+    () => ({
+      environments,
+      create,
+      update,
+      stop,
+      restart,
+      addAgents,
+      remove,
+      previewPlan,
+      resolveEscalation,
+      askOverseer,
+      cancelEscalation,
+    }),
+    [
+      environments,
+      create,
+      update,
+      stop,
+      restart,
+      addAgents,
+      remove,
+      previewPlan,
+      resolveEscalation,
+      askOverseer,
+      cancelEscalation,
+    ],
   );
 }

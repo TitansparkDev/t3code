@@ -1225,6 +1225,24 @@ export function createServerEnvironmentAtoms<R, E>(
       scheduler: configScheduler,
       concurrency: configConcurrency,
     }),
+    resolveGoalEscalation: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:resolve-goal-escalation",
+      tag: WS_METHODS.serverResolveGoalEscalation,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
+    }),
+    openGoalEscalation: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:open-goal-escalation",
+      tag: WS_METHODS.serverOpenGoalEscalation,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
+    }),
+    cancelGoalEscalation: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:cancel-goal-escalation",
+      tag: WS_METHODS.serverCancelGoalEscalation,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
+    }),
     deleteGoal: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:delete-goal",
       tag: WS_METHODS.serverDeleteGoal,

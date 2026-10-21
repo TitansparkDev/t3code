@@ -21,6 +21,7 @@ import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { SettingsScreen } from "../settings/components/SettingsScreen";
+import { GoalEscalationsSection } from "./GoalEscalationsSection";
 
 const REFRESH_MS = 5_000;
 
@@ -96,6 +97,13 @@ function GoalCard(props: {
           </Text>
         ) : null}
       </View>
+      {goal.status !== "draft" ? (
+        <GoalEscalationsSection
+          environmentId={environmentId}
+          goal={goal}
+          onChanged={props.onChanged}
+        />
+      ) : null}
       <View className="flex-row flex-wrap gap-2">
         {running ? (
           <Button label="Stop" onPress={() => void run(stopGoal)} />
