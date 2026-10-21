@@ -3,21 +3,31 @@ import {
   CheckpointRef,
   CheckpointScopeId,
   EnvironmentId,
+  EventId,
   NodeId,
   ProviderDriverKind,
+  ProviderSessionId,
   RuntimeRequestId,
   TurnItemId,
+  type OrchestrationV2DomainEvent,
+  type OrchestrationV2ProviderFailure,
+  type OrchestrationV2ProviderSession,
+  type OrchestrationV2Run,
   type OrchestrationV2ThreadProjection,
+  type OrchestrationV2TurnItem,
   ThreadId,
   RunId,
   MessageId,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import { describe, expect, it } from "vite-plus/test";
 
 import { v2Projection, v2Now } from "./orchestrationV2TestFixtures.ts";
+import { applyOrchestrationV2ProjectionEvent } from "./orchestrationV2Projection.ts";
+import { deriveThreadRuntime } from "./threadExecution.ts";
 import { EMPTY_THREAD_HISTORY_META } from "./threadHistoryMerge.ts";
 import { createEnvironmentThreadDetailAtoms } from "./threadDetail.ts";
 import type { EnvironmentThreadState } from "./threads.ts";
@@ -371,4 +381,227 @@ it("rebuilds checkpoint summaries only when checkpoints or messages change", () 
   expect(registry.get(details.checkpointSummariesAtom(ref))).toEqual([]);
   dispose();
   registry.dispose();
+});
+
+describe("failure recovery from decoded server events", () => {
+  const threadId = v2Projection.thread.id;
+  const rootNodeId = NodeId.make("root");
+  const at = (iso: string) => DateTime.makeUnsafe(iso);
+  const T1 = "2026-06-20T01:00:00.000Z";
+  const T2 = "2026-06-20T01:01:00.000Z";
+  const T3 = "2026-06-20T01:02:00.000Z";
+
+  function runRecord(
+    id: string,
+    ordinal: number,
+    status: OrchestrationV2Run["status"],
+    completedAt: string | null,
+  ): OrchestrationV2Run {
+    return {
+      id: RunId.make(id),
+      threadId,
+      ordinal,
+      providerInstanceId: v2Projection.thread.providerInstanceId,
+      modelSelection: v2Projection.thread.modelSelection,
+      providerThreadId: null,
+      userMessageId: MessageId.make(`message-${id}`),
+      rootNodeId,
+      activeAttemptId: null,
+      status,
+      requestedAt: at(T1),
+      startedAt: at(T1),
+      completedAt: completedAt === null ? null : at(completedAt),
+      checkpointId: null,
+      contextHandoffId: null,
+    };
+  }
+
+  function runEvent(run: OrchestrationV2Run): OrchestrationV2DomainEvent {
+    return {
+      id: EventId.make(`event-run-${run.id}-${run.status}`),
+      type: "run.updated",
+      threadId,
+      occurredAt: run.completedAt ?? run.requestedAt,
+      payload: run,
+    };
+  }
+
+  function failureEvent(
+    id: string,
+    runId: string,
+    updatedAt: string,
+    failure: OrchestrationV2ProviderFailure,
+  ): OrchestrationV2DomainEvent {
+    const item: OrchestrationV2TurnItem = {
+      id: TurnItemId.make(id),
+      threadId,
+      runId: RunId.make(runId),
+      nodeId: rootNodeId,
+      providerThreadId: null,
+      providerTurnId: null,
+      nativeItemRef: null,
+      parentItemId: null,
+      ordinal: 1,
+      status: "failed",
+      title: "Provider error",
+      startedAt: at(updatedAt),
+      completedAt: at(updatedAt),
+      updatedAt: at(updatedAt),
+      type: "error",
+      failure,
+    };
+    return {
+      id: EventId.make(`event-${id}`),
+      type: "turn-item.updated",
+      threadId,
+      occurredAt: item.updatedAt,
+      payload: item,
+    };
+  }
+
+  // Only the identity and error fields are read by the thread runtime summary.
+  function sessionEvent(lastError: string | null, updatedAt: string): OrchestrationV2DomainEvent {
+    const session = {
+      id: ProviderSessionId.make("session-1"),
+      driver: ProviderDriverKind.make("codex"),
+      providerInstanceId: v2Projection.thread.providerInstanceId,
+      status: lastError === null ? "running" : "error",
+      cwd: "/workspace/project",
+      model: "gpt-5.4",
+      createdAt: at(T1),
+      updatedAt: at(updatedAt),
+      lastError,
+    } as OrchestrationV2ProviderSession;
+    return {
+      id: EventId.make(`event-session-${updatedAt}`),
+      type: "provider-session.updated",
+      threadId,
+      occurredAt: at(updatedAt),
+      payload: session,
+    };
+  }
+
+  // The reducer only returns null for a null projection, so the fallback never applies.
+  function replay(
+    events: ReadonlyArray<OrchestrationV2DomainEvent>,
+  ): OrchestrationV2ThreadProjection {
+    return events.reduce<OrchestrationV2ThreadProjection>(
+      (projection, event) => applyOrchestrationV2ProjectionEvent(projection, event) ?? projection,
+      v2Projection,
+    );
+  }
+
+  const providerFailure = (
+    stage: OrchestrationV2ProviderFailure["stage"],
+    code: string | null,
+  ): OrchestrationV2ProviderFailure => ({
+    class: "provider_error",
+    stage,
+    message: "Provider turn failed.",
+    code,
+    retryable: null,
+  });
+
+  it("keeps a provider error that lands after a stop out of the thread's current error", () => {
+    const running = runRecord("run-stop", 1, "running", null);
+    const interrupted = runRecord("run-stop", 1, "interrupted", T2);
+
+    // Disconnected while the stop settles: the runtime error is recorded, but the run is not failed.
+    expect(
+      deriveThreadRuntime(replay([runEvent(running), sessionEvent("Runtime exited.", T2)])),
+    ).toMatchObject({ status: "running", lastError: null, lastErrorRecovery: null });
+
+    // Reconnect after cleanup: the interrupted run and the delayed error both arrive.
+    expect(
+      deriveThreadRuntime(
+        replay([runEvent(running), runEvent(interrupted), sessionEvent("Runtime exited.", T3)]),
+      ),
+    ).toMatchObject({ status: "interrupted", lastError: null, lastErrorRecovery: null });
+  });
+
+  it("presents a session error for a failed run and clears it once a later run completes", () => {
+    const failed = runRecord("run-failed", 1, "failed", T2);
+    const completed = runRecord("run-next", 2, "completed", T3);
+
+    expect(
+      deriveThreadRuntime(replay([runEvent(failed), sessionEvent("Runtime exited.", T3)])),
+    ).toMatchObject({
+      status: "failed",
+      lastError: "Runtime exited.",
+      lastErrorClass: null,
+      lastErrorRecovery: "Review the error details.",
+    });
+    expect(
+      deriveThreadRuntime(
+        replay([runEvent(failed), sessionEvent("Runtime exited.", T3), runEvent(completed)]),
+      ),
+    ).toMatchObject({ status: "completed", lastError: null });
+  });
+
+  it("gives the same stage and recovery whichever order the failure updates arrive in", () => {
+    const failed = runRecord("run-failed", 1, "failed", T3);
+    const older = failureEvent(
+      "item-startup",
+      "run-failed",
+      T1,
+      providerFailure("startup", "startup-timeout"),
+    );
+    const newer = failureEvent(
+      "item-provider",
+      "run-failed",
+      T2,
+      providerFailure("provider", "rate-limited"),
+    );
+    const expected = {
+      status: "failed",
+      lastError: "Provider turn failed.",
+      lastErrorClass: "provider_error",
+      lastErrorStage: "provider",
+      lastErrorReason: "rate-limited",
+      lastErrorRecovery: "Review the provider error, then start a new message when ready.",
+    };
+
+    expect(deriveThreadRuntime(replay([runEvent(failed), older, newer]))).toMatchObject(expected);
+    expect(deriveThreadRuntime(replay([runEvent(failed), newer, older]))).toMatchObject(expected);
+  });
+
+  it("isolates the same thread across environments", () => {
+    const local = EnvironmentId.make("environment-local");
+    const remote = EnvironmentId.make("environment-remote");
+    const failed = runRecord("run-failed", 1, "failed", T2);
+    const projections = new Map<EnvironmentId, OrchestrationV2ThreadProjection | null>([
+      [local, replay([runEvent(failed), sessionEvent("Runtime exited.", T2)])],
+      [remote, replay([runEvent(runRecord("run-ok", 1, "completed", T2))])],
+    ]);
+    const sources = new Map(
+      [...projections].map(([environmentId, projection]) => [
+        environmentId,
+        Atom.make(
+          AsyncResult.success(
+            threadState({
+              data: Option.fromNullishOr(projection),
+              status: "live",
+              error: Option.none(),
+            }),
+          ),
+        ),
+      ]),
+    );
+    const details = createEnvironmentThreadDetailAtoms((environmentId) => {
+      const source = sources.get(environmentId);
+      if (source === undefined) throw new Error(`Unexpected environment ${environmentId}`);
+      return source;
+    });
+    const registry = AtomRegistry.make();
+    const runtimeFor = (environmentId: EnvironmentId) => {
+      const thread = registry.get(
+        details.threadAtom({ environmentId, threadId: ThreadId.make(threadId) }),
+      );
+      return thread === null ? null : deriveThreadRuntime(thread.projection);
+    };
+
+    expect(runtimeFor(local)).toMatchObject({ status: "failed", lastError: "Runtime exited." });
+    expect(runtimeFor(remote)).toMatchObject({ status: "completed", lastError: null });
+    registry.dispose();
+  });
 });

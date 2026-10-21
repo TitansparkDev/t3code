@@ -35,24 +35,22 @@ export function threadErrorSummary(
   failure: OrchestrationV2ProviderFailure | null,
   sessionError: string | null,
 ) {
+  // A session error that is not the failure's own message has no classification,
+  // so only the message is shown for it.
   const currentFailure =
     sessionError !== null && sessionError !== failure?.message ? null : failure;
+  const lastError = sessionError ?? failure?.message ?? null;
   return {
     usageLimitResetAt:
       currentFailure?.class === "usage_limit" ? (currentFailure.resetAt ?? null) : null,
-    lastError: sessionError ?? failure?.message ?? null,
-    lastErrorClass:
-      sessionError !== null && sessionError !== failure?.message ? null : (failure?.class ?? null),
+    lastError,
+    lastErrorClass: currentFailure?.class ?? null,
     lastErrorStage:
-      sessionError !== null && sessionError !== failure?.message
+      currentFailure === null
         ? null
-        : (failure?.stage ?? (failure?.class === "unknown" ? "unknown" : undefined)),
-    lastErrorReason:
-      sessionError !== null && sessionError !== failure?.message ? null : (failure?.code ?? null),
-    lastErrorRecovery:
-      sessionError !== null && sessionError !== failure?.message
-        ? null
-        : failureRecoveryGuidance(failure),
+        : (currentFailure.stage ?? (currentFailure.class === "unknown" ? "unknown" : null)),
+    lastErrorReason: currentFailure?.code ?? null,
+    lastErrorRecovery: lastError === null ? null : failureRecoveryGuidance(currentFailure),
   };
 }
 

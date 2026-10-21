@@ -234,6 +234,10 @@ export function deriveThreadRuntime(
   }
   const activeRunId =
     latestMatchingRun(projection, (run) => INTERRUPTIBLE_RUN_STATUSES.has(run.status))?.id ?? null;
+  // The session keeps a provider runtime error after the run it ended is stopped
+  // or superseded. Only a failed latest run can still own that error.
+  const sessionError =
+    latestRunProjection?.status === "failed" ? (providerSession?.lastError ?? null) : null;
   return {
     status: usageLimitedRun
       ? "failed"
@@ -249,7 +253,7 @@ export function deriveThreadRuntime(
     providerName: providerSession?.driver ?? null,
     ...threadErrorSummary(
       latestRootProviderFailure(latestRunProjection, projection.turnItems),
-      providerSession?.lastError ?? null,
+      sessionError,
     ),
     updatedAt: DateTime.formatIso(projection.updatedAt),
   };
