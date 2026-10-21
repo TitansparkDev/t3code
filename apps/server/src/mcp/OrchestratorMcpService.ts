@@ -243,6 +243,8 @@ function threadManagementFailure(error: unknown): OrchestratorMcpFailure {
       return failure("thread_not_sendable", error.message);
     case "ThreadManagementThreadNotInterruptibleError":
       return failure("thread_not_interruptible", error.message);
+    case "ThreadManagementWorkspaceBindError":
+      return failure("thread_not_sendable", error.message);
     case "ThreadManagementProjectionLoadError":
     case "ThreadManagementProjectThreadsListError":
     case "ThreadManagementDurableRunProjectionError":
