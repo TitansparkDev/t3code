@@ -29,6 +29,8 @@ import * as PreviewControlsHandlers from "./toolkits/previewControls/handlers.ts
 import { EnvironmentToolkit } from "./toolkits/environment/tools.ts";
 import * as EnvironmentHandlers from "./toolkits/environment/handlers.ts";
 import { ProjectToolkit } from "./toolkits/project/tools.ts";
+import { GoalToolkit } from "./toolkits/goal/tools.ts";
+import * as GoalHandlers from "./toolkits/goal/handlers.ts";
 import * as ProjectHandlers from "./toolkits/project/handlers.ts";
 import { RepoToolkit } from "./toolkits/repo/tools.ts";
 import * as RepoHandlers from "./toolkits/repo/handlers.ts";
@@ -821,6 +823,7 @@ const layerProjectRegistration = toolkitRegistration(ProjectToolkit, ProjectHand
 const layerRepoRegistration = toolkitRegistration(RepoToolkit, RepoHandlers.layer).pipe(
   Layer.provide(RepoContext.layer),
 );
+const layerGoalRegistration = toolkitRegistration(GoalToolkit, GoalHandlers.layer);
 
 export const layerAttachmentToolkit = toolkitRegistration(
   AttachmentToolkit,
@@ -862,6 +865,7 @@ export const layer = Layer.mergeAll(
   layerAttachmentToolkit,
   layerProjectRegistration,
   layerRepoRegistration,
+  layerGoalRegistration,
   layerEnvironmentToolkit,
   layerPreviewControlsRegistration,
   layerWorktreeToolkitRegistration,

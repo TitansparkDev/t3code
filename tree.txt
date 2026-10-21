@@ -24038,6 +24038,9 @@ apps/server/src/mcp/toolkits/device/tools.ts
 apps/server/src/mcp/toolkits/environment/handlers.test.ts
 apps/server/src/mcp/toolkits/environment/handlers.ts
 apps/server/src/mcp/toolkits/environment/tools.ts
+apps/server/src/mcp/toolkits/goal/handlers.test.ts
+apps/server/src/mcp/toolkits/goal/handlers.ts
+apps/server/src/mcp/toolkits/goal/tools.ts
 apps/server/src/mcp/toolkits/html/handlers.ts
 apps/server/src/mcp/toolkits/html/tools.ts
 apps/server/src/mcp/toolkits/orchestrator/handlers.ts
@@ -27590,6 +27593,7 @@ packages/contracts/src/git.test.ts
 packages/contracts/src/git.ts
 packages/contracts/src/goals.test.ts
 packages/contracts/src/goals.ts
+packages/contracts/src/goalsMcp.ts
 packages/contracts/src/index.ts
 packages/contracts/src/ipc.test.ts
 packages/contracts/src/ipc.ts
