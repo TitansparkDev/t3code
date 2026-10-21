@@ -6668,7 +6668,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           replacementMessages!,
           makeResultFrame({ uuid: "replacement-success", result: "Replacement completed." }),
         );
-        yield* awaitUntil(() => harness.terminalEvents().length === 2, "replacement terminal");
+        yield* harness.until(() => harness.terminalEvents().length === 2);
         assert.equal(harness.terminalEvents()[1]?.status, "completed");
         yield* Queue.shutdown(harness.sdkMessages);
         yield* Queue.shutdown(replacementMessages!);
@@ -6721,7 +6721,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           providerThread: harness.providerThread,
           providerTurnId: providerTurnId(firstAttempt),
         });
-        yield* awaitUntil(() => harness.terminalEvents().length === 1, "first Stop terminal");
+        yield* harness.until(() => harness.terminalEvents().length === 1);
         yield* harness.runtime.interruptTurn({
           providerThread: harness.providerThread,
           providerTurnId: providerTurnId(firstAttempt),
@@ -6735,10 +6735,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         yield* unrelated.offerAndWait(
           makeResultFrame({ uuid: "unrelated-still-alive", result: "Still running." }),
         );
-        yield* awaitUntil(
-          () => unrelated.terminalEvents().length === 1,
-          "unrelated runtime terminal",
-        );
+        yield* unrelated.until(() => unrelated.terminalEvents().length === 1);
         assert.equal(unrelated.terminalEvents()[0]?.status, "completed");
       }).pipe(
         Effect.provide(
@@ -13393,10 +13390,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           const NESTED_TOOL_USE_ID = "toolu-steer-nested";
           const FINISHED_TOOL_USE_ID = "toolu-steer-finished";
           const calls: Array<string> = [];
+          const backgroundRequested = yield* Deferred.make<void>();
           let beforeAnswer: Effect.Effect<void> = Effect.void;
           const harness = yield* makeWakeHarnessWithOptions({
             backgroundTasks: (toolUseId) =>
               Effect.sync(() => calls.push(toolUseId)).pipe(
+                Effect.andThen(Deferred.succeed(backgroundRequested, undefined)),
                 Effect.andThen(
                   backgrounding === "answers after the turn ended" ||
                     backgrounding === "answers after the subagent ran again"
@@ -13432,7 +13431,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               harness.sdkMessages,
               makeResultFrame({ uuid: "00000000-0000-4000-8000-000000000a10", result: "Done." }),
             ).pipe(
-              Effect.andThen(awaitUntil(() => harness.terminalEvents().length === 1, "turn end")),
+              Effect.andThen(harness.until(() => harness.terminalEvents().length === 1)),
             );
           }
           const foregroundTaskStarted = (task: {
@@ -13515,14 +13514,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                   : [],
               )
               .at(-1);
-          yield* awaitUntil(
-            () =>
+          yield* harness.until(() =>
               latestSubagent("task-steer-nested")?.status === "running" &&
               latestSubagent("task-steer-deep")?.status === "running" &&
               latestSubagent("task-steer-foreground")?.status === "running" &&
-              latestSubagent("task-steer-finished")?.status === "completed",
-            "subagents registered",
-          );
+              latestSubagent("task-steer-finished")?.status === "completed");
 
           const offered = harness.offeredMessages.length;
           const steer = harness.runtime.steerTurn({
@@ -13569,7 +13565,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             backgrounding === "never answers" ||
             backgrounding === "answers after the steer went out"
           ) {
-            yield* awaitUntil(() => calls.length === 1, "background request");
+            yield* Deferred.await(backgroundRequested);
             assert.equal(harness.offeredMessages.length, offered);
             // Let the control fiber install its timeout before advancing the
             // shared fake clock; the call callback runs just before it does.
@@ -13620,7 +13616,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           ]) {
             yield* Queue.offer(harness.sdkMessages, frame);
           }
-          yield* awaitUntil(() => harness.terminalEvents().length === 1, "steered turn terminal");
+          yield* harness.until(() => harness.terminalEvents().length === 1);
           yield* harness.runtime.startTurn(
             makeClaudeTestTurnInput({
               threadId: harness.threadId,
@@ -13643,9 +13639,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           ]) {
             yield* Queue.offer(harness.sdkMessages, frame);
           }
-          yield* awaitUntil(() => harness.terminalEvents().length === 2, "next turn terminal");
+          yield* harness.until(() => harness.terminalEvents().length === 2);
           yield* Queue.offer(harness.sdkMessages, wakeTurnInit);
-          yield* awaitUntil(() => harness.continuationRequests.length === 1, "subagent wake");
+          yield* harness.until(() => harness.continuationRequests.length === 1);
           assert.equal(
             harness.continuationRequests[0]?.notification?.summary,
             reran ? undefined : 'Subagent "task-steer-foreground" finished',

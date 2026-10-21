@@ -1,4 +1,5 @@
 import { SourceControlProviderKind } from "@t3tools/contracts";
+import * as RuntimeResourceDiagnostics from "../observability/RuntimeResourceDiagnostics.ts";
 import { limitRecoveryCommand } from "./UsageLimitRecoveryWorker.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
@@ -107,6 +108,7 @@ const layerVcsDriverRegistryTest = VcsDriverRegistry.layer.pipe(
   Layer.provide(VcsProcess.layer),
   Layer.provide(layerServerConfig),
   Layer.provide(layerPlatformTest),
+  Layer.provide(RuntimeResourceDiagnostics.layerTest),
 );
 
 const layerCheckpointStoreTest = CheckpointStore.layer.pipe(
@@ -288,6 +290,7 @@ const layerTest = Layer.mergeAll(
   Layer.provide(layerGitWorkflowTest),
   Layer.provide(layerProjectServiceTest),
   Layer.provide(layerPlatformTest),
+  Layer.provide(RuntimeResourceDiagnostics.layerTest),
 );
 
 const layerLegacyImportTest = RuntimeLayer.layer.pipe(
@@ -301,6 +304,7 @@ const layerLegacyImportTest = RuntimeLayer.layer.pipe(
   Layer.provide(layerGitWorkflowTest),
   Layer.provide(layerProjectServiceTest),
   Layer.provide(layerPlatformTest),
+  Layer.provide(RuntimeResourceDiagnostics.layerTest),
 );
 
 const layerScheduledTasksTest = ScheduledTaskService.layer.pipe(
@@ -365,6 +369,7 @@ const layerProjectDeletionTest = Layer.mergeAll(
   Layer.provide(layerTestProviderInstanceRegistry),
   Layer.provide(layerGitWorkflowTest),
   Layer.provide(layerPlatformTest),
+  Layer.provide(RuntimeResourceDiagnostics.layerTest),
 );
 
 it.layer(layerProjectDeletionTest)("project deletion during thread commands", (it) => {
@@ -633,6 +638,7 @@ const layerSharedApplicationDataPlaneTest = Layer.mergeAll(
   Layer.provide(layerTestProviderInstanceRegistry),
   Layer.provide(layerGitWorkflowTest),
   Layer.provide(layerPlatformTest),
+  Layer.provide(RuntimeResourceDiagnostics.layerTest),
 );
 
 it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
@@ -6223,6 +6229,7 @@ const layerQueueResumeDisabledInstanceTest = Layer.mergeAll(
   Layer.provide(layerGitWorkflowTest),
   Layer.provide(layerProjectServiceTest),
   Layer.provide(layerPlatformTest),
+  Layer.provide(RuntimeResourceDiagnostics.layerTest),
 );
 
 it.layer(layerQueueResumeDisabledInstanceTest)(

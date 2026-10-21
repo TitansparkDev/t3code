@@ -2,9 +2,11 @@ import { expect, it } from "@effect/vitest";
 import {
   CommandId,
   MessageId,
+  type OrchestrationV2Command,
   type OrchestrationV2Run,
   type OrchestrationV2StoredEvent,
   type OrchestrationV2ThreadProjection,
+  type OrchestrationV2ThreadShell,
   ProjectId,
   ProviderInstanceId,
   RunId,

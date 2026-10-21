@@ -2598,7 +2598,7 @@ export const make = Effect.gen(function* () {
   /** Finds an escalation; `settleable` also refuses one that is already resolved or cancelled. */
   const findEscalation = Effect.fn("GoalService.findEscalation")(function* (
     id: string,
-    settleable = false,
+    settleable: boolean = false,
   ) {
     const goals = yield* store.list;
     for (const goal of goals) {

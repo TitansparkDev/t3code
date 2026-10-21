@@ -1,4 +1,5 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as RuntimeResourceDiagnostics from "../observability/RuntimeResourceDiagnostics.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import { assert, it } from "@effect/vitest";
 import { ProjectId } from "@t3tools/contracts";
@@ -169,6 +170,7 @@ const layerRuntime = (dbPath: string) => {
         pruneWorktrees: () => Effect.void,
       }),
     ),
+    Layer.provide(RuntimeResourceDiagnostics.layerTest),
     Layer.provide(layerPlatform),
   );
 };

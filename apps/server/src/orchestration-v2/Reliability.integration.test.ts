@@ -171,7 +171,9 @@ it.effect("recovers one lost start from SQLite without losing the queued message
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const directory = yield* fs.makeTempDirectory({ prefix: "t3-reliability-" });
-    yield* Effect.addFinalizer(() => fs.remove(directory, { recursive: true, force: true }));
+    yield* Effect.addFinalizer(() =>
+      fs.remove(directory, { recursive: true, force: true }).pipe(Effect.orDie),
+    );
     const dbPath = path.join(directory, "state.sqlite");
     const worktreePath = path.join(directory, "worktree");
     yield* fs.makeDirectory(worktreePath);
@@ -274,5 +276,5 @@ it.effect("recovers one lost start from SQLite without losing the queued message
         });
       }).pipe(Effect.provide(runtimeLayer(dbPath))),
     );
-  }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, TestClock.layer()))),
+  }).pipe(Effect.orDie, Effect.provide(Layer.mergeAll(NodeServices.layer, TestClock.layer()))),
 );

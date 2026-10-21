@@ -1,4 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off - only the server's own cgroup and memory counters are read.
+// @effect-diagnostics nodeBuiltinImport:off globalDate:off globalDateInEffect:off - only the server's own cgroup and memory counters are read, and samples are stamped with wall-clock time for operators.
 import * as NodeFSP from "node:fs/promises";
 
 import { RotatingFileSink } from "@t3tools/shared/logging";
