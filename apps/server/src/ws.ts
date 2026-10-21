@@ -2403,6 +2403,23 @@ const layerWsRpc = (
           goals.restart(input.id).pipe(Effect.map((list) => ({ goals: list }))),
         [WS_METHODS.serverAddGoalAgents]: (input) =>
           goals.addAgents(input.id, input.count).pipe(Effect.map((list) => ({ goals: list }))),
+        [WS_METHODS.serverResolveGoalEscalation]: (input) =>
+          goals
+            .resolveEscalation(input.id, { action: input.action, note: input.note }, "person")
+            .pipe(
+              Effect.andThen(goals.list),
+              Effect.map((list) => ({ goals: list })),
+            ),
+        [WS_METHODS.serverOpenGoalEscalation]: (input) =>
+          goals.openEscalation(input.goalId, input.threadId, input.note).pipe(
+            Effect.andThen(goals.list),
+            Effect.map((list) => ({ goals: list })),
+          ),
+        [WS_METHODS.serverCancelGoalEscalation]: (input) =>
+          goals.cancelEscalation(input.id, "person").pipe(
+            Effect.andThen(goals.list),
+            Effect.map((list) => ({ goals: list })),
+          ),
         [WS_METHODS.serverDeleteGoal]: (input) =>
           goals.remove(input.id).pipe(Effect.map((list) => ({ goals: list }))),
         [WS_METHODS.serverCheckOtlpEndpoint]: (input) => otlpEndpointCheck.check(input),

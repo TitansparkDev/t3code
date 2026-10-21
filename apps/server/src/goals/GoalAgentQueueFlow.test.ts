@@ -1017,6 +1017,62 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
       }).pipe(Effect.scoped),
   );
 
+  it.effect(
+    "a check that keeps failing holds the worker for the overseer, and give-up hands its task back",
+    () =>
+      Effect.gen(function* () {
+        const flow = yield* makeFlow(
+          planWith([
+            {
+              id: "T1",
+              verify: "node -e \"process.exit(require('fs').existsSync('T1.txt') ? 3 : 0)\"",
+            },
+          ]),
+        );
+        const service = yield* flow.startServer;
+        yield* Effect.forkScoped(service.loop);
+        yield* Effect.yieldNow;
+        yield* service.create(settingsFor({ overseer: true }));
+        yield* flow.waitFor("thread.create", 1);
+        const threadId = yield* flow.work("T1");
+        yield* flow.waitFor("thread.turn.start", 2);
+        yield* flow.work("T1", { content: "second\n" });
+        yield* flow.waitFor("thread.turn.start", 3);
+        yield* flow.work("T1", { content: "third\n" });
+        // Two retries are spent; the third failure goes to an overseer instead of giving up.
+        yield* flow.waitFor("thread.create", 2);
+        const [held] = yield* service.list;
+        const escalation = held?.escalations?.[0];
+        expect(escalation).toMatchObject({
+          kind: "repeated-failure",
+          taskId: "T1",
+          threadId,
+        });
+        expect(held?.chats.find((chat) => chat.threadId === threadId)).toMatchObject({
+          status: "running",
+          escalationId: escalation?.id,
+        });
+        expect((yield* flow.taskRow("T1")).status).toBe("claimed");
+
+        yield* service.resolveEscalation(
+          escalation!.id,
+          { action: "give-up", note: "Stop here." },
+          "person",
+        );
+        const [after] = yield* service.list;
+        expect(after?.escalations?.[0]).toMatchObject({
+          status: "resolved",
+          resolution: { action: "give-up", by: "person" },
+        });
+        // The original hand-back: the claim is given back, the task is no longer held.
+        expect((yield* flow.taskRow("T1")).status).not.toBe("claimed");
+        expect(after?.chats.find((chat) => chat.threadId === threadId)).toMatchObject({
+          status: "failed",
+          taskOutcome: "retry",
+        });
+      }).pipe(Effect.scoped),
+  );
+
   it.effect("a failing check sends the worker back with the failure, not a generic nudge", () =>
     Effect.gen(function* () {
       const flow = yield* makeFlow(

@@ -34,8 +34,12 @@ export const MAX_GOAL_AGENT_COUNT = 100;
 /** Agents in a row that may fail to finish before the goal stops itself. */
 export const DEFAULT_GOAL_STOP_AFTER_PROBLEMS = 3;
 export const MAX_GOAL_STOP_AFTER_PROBLEMS = 50;
-/** Times per start an overseer may be asked to get a stuck goal moving before the goal gives up. */
-export const MAX_GOAL_OVERSEER_RUNS = 2;
+/** Escalations one worker chat may raise before the goal gives up on it for good. */
+export const MAX_GOAL_ESCALATION_ROUNDS = 3;
+/** Overseer runs that may leave one escalation unhandled before it goes to the person. */
+export const MAX_GOAL_ESCALATION_UNHANDLED = 2;
+/** Stuck escalations since the last finished chat before the goal fails. */
+export const MAX_GOAL_STUCK_ESCALATIONS = 3;
 export const DEFAULT_GOAL_MAX_CHATS = 50;
 export const MAX_GOAL_MAX_CHATS = 10_000;
 
@@ -85,6 +89,8 @@ export const GoalChat = Schema.Struct({
   nudged: Schema.optional(Schema.Boolean),
   /** This chat is the overseer, not a worker: it decides how a stuck goal goes on. */
   overseer: Schema.optional(Schema.Boolean),
+  /** Set while this worker is held (still running, lane occupied) waiting for an overseer. */
+  escalationId: Schema.optional(Schema.String),
   /** AgentQueue assignment, kept so a restart can find the claim this chat is working under. */
   taskId: Schema.optional(Schema.String),
   worktreePath: Schema.optional(Schema.String),
@@ -259,6 +265,60 @@ export const GoalQueue = Schema.Struct({
 });
 export type GoalQueue = typeof GoalQueue.Type;
 
+export const GoalEscalationKind = Schema.Literals([
+  "attention",
+  "repeated-failure",
+  "blocked",
+  "stuck",
+  "manual",
+]);
+export type GoalEscalationKind = typeof GoalEscalationKind.Type;
+export const GoalEscalationStatus = Schema.Literals([
+  "open",
+  "reviewing",
+  "resolved",
+  "needs-person",
+  "cancelled",
+]);
+export type GoalEscalationStatus = typeof GoalEscalationStatus.Type;
+export const GoalEscalationAction = Schema.Literals([
+  "replied",
+  "retry",
+  "unblock",
+  "give-up",
+  "needs-person",
+  "cancelled",
+]);
+export type GoalEscalationAction = typeof GoalEscalationAction.Type;
+
+/**
+ * A problem the goal's overseer must answer: about one worker chat (threadId), or about the
+ * whole goal when it has none. Durable, so a restart resumes it; a held worker keeps its lane
+ * until the escalation is resolved.
+ */
+export const GoalEscalation = Schema.Struct({
+  id: Schema.String,
+  kind: GoalEscalationKind,
+  status: GoalEscalationStatus,
+  reason: Schema.String.check(Schema.isMaxLength(4000)),
+  threadId: Schema.optional(ThreadId),
+  taskId: Schema.optional(Schema.String),
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+  resolvedAt: Schema.optional(IsoDateTime),
+  overseerThreadId: Schema.optional(ThreadId),
+  resolution: Schema.optional(
+    Schema.Struct({
+      action: GoalEscalationAction,
+      note: Schema.String,
+      by: Schema.Literals(["overseer", "person", "server"]),
+    }),
+  ),
+  /** Overseer runs that have taken this escalation. */
+  rounds: Schema.Number,
+});
+export type GoalEscalation = typeof GoalEscalation.Type;
+
 export const Goal = Schema.Struct({
   ...GoalSettings.fields,
   id: GoalId,
@@ -295,13 +355,79 @@ export const Goal = Schema.Struct({
   guidance: Schema.optional(Schema.String),
   /** Chats before this position were looked at by the overseer or a restart: they no longer count. */
   reviewedChats: Schema.optional(Schema.Number),
-  /** Overseers asked for since the goal was last started by hand. */
+  /** Overseers asked for since the goal was last started by hand. Historical; no longer written. */
   overseerRuns: Schema.optional(Schema.Number),
+  /** Problems the overseer is asked about, oldest first. */
+  escalations: Schema.optional(Schema.Array(GoalEscalation)),
 });
 export type Goal = typeof Goal.Type;
 
 export const GoalList = Schema.Struct({ goals: Schema.Array(Goal) });
 export type GoalList = typeof GoalList.Type;
+
+/** What an overseer may do with an escalation that is not a reply to its worker. */
+export const GoalEscalationResolveAction = Schema.Literals([
+  "retry",
+  "unblock",
+  "give-up",
+  "needs-person",
+]);
+export type GoalEscalationResolveAction = typeof GoalEscalationResolveAction.Type;
+
+/** Everything an overseer needs to decide one escalation, read through the MCP tools. */
+export const GoalEscalationPacket = Schema.Struct({
+  goalId: GoalId,
+  goalName: Schema.String,
+  goalInstructions: Schema.String,
+  projectId: ProjectId,
+  guidance: Schema.optional(Schema.String),
+  escalation: GoalEscalation,
+  worker: Schema.optional(
+    Schema.Struct({
+      threadId: ThreadId,
+      taskId: Schema.optional(Schema.String),
+      branch: Schema.optional(Schema.String),
+      worktreePath: Schema.optional(Schema.String),
+      baseBranch: Schema.optional(Schema.String),
+      landingRetries: Schema.optional(Schema.Number),
+      attentionNote: Schema.optional(Schema.String),
+    }),
+  ),
+  /** The worker's last assistant messages, oldest first, each trimmed to its end. */
+  recentReplies: Schema.Array(Schema.String),
+  /** The AgentQueue briefing for the worker's task, for queue goals. */
+  queueBriefing: Schema.optional(Schema.String),
+  /** Earlier escalations for the same worker chat, with what was done about them. */
+  previous: Schema.Array(GoalEscalation),
+});
+export type GoalEscalationPacket = typeof GoalEscalationPacket.Type;
+
+const GOAL_ESCALATION_MESSAGES = {
+  "not-found": "The escalation was not found.",
+  closed: "The escalation is already resolved.",
+  "no-thread": "The escalation is not about a worker chat.",
+  "not-held": "The worker is still working; wait until it stops.",
+  "invalid-chat": "The worker chat is not part of this goal.",
+  "not-sent": "The message could not be sent to the worker.",
+} as const;
+
+export class GoalEscalationError extends Schema.TaggedError<GoalEscalationError>()(
+  "GoalEscalationError",
+  {
+    reason: Schema.Literals([
+      "not-found",
+      "closed",
+      "no-thread",
+      "not-held",
+      "invalid-chat",
+      "not-sent",
+    ]),
+  },
+) {
+  override get message(): string {
+    return GOAL_ESCALATION_MESSAGES[this.reason];
+  }
+}
 
 /** The first line of a goal's name, for lists and chat titles. */
 export function goalTitle(goal: Pick<Goal, "name">): string {
@@ -395,68 +521,6 @@ export function goalWorkerTitle(number: number): string {
 }
 
 export const GOAL_OVERSEER_TITLE = "Goal overseer";
-
-export interface OverseerDecision {
-  /** `undefined` when the reply did not say: treated as giving up. */
-  readonly verdict: "continue" | "stop" | undefined;
-  /** Chunks the overseer wants given back to the queue. */
-  readonly release: ReadonlyArray<string>;
-  /** Failed tasks the overseer wants tried again (AgentQueue goals). */
-  readonly retry: ReadonlyArray<string>;
-  /** Blocked tasks the overseer wants released (AgentQueue goals). */
-  readonly unblock: ReadonlyArray<string>;
-  /** The prompt for every worker that starts next. */
-  readonly guidance: string | undefined;
-  /** The prompt for each stuck chat the briefing numbered, by that number. */
-  readonly chats: ReadonlyMap<number, string>;
-}
-
-const OVERSEER_DIRECTIVE =
-  /^\s*(OVERSEER|RELEASE|RETRY|UNBLOCK|GUIDANCE|CHAT\s+\d+)\s*:[ \t]*(.*)$/iu;
-const MAX_OVERSEER_TEXT = 6000;
-
-/**
- * Reads an overseer's reply, a list of sections that each start on a line of their
- * own: `OVERSEER: CONTINUE|STOP`, `RELEASE: id, id`, `GUIDANCE:` (the prompt for new
- * workers) and `CHAT n:` (the prompt that continues stuck chat n). A section runs
- * until the next one starts, so prompts may span several lines.
- */
-export function parseOverseerReply(reply: string | undefined): OverseerDecision {
-  const sections: Array<{ key: string; lines: Array<string> }> = [];
-  for (const line of (reply ?? "").split("\n")) {
-    const match = OVERSEER_DIRECTIVE.exec(line);
-    if (match)
-      sections.push({ key: match[1]!.toUpperCase().replace(/\s+/gu, " "), lines: [match[2]!] });
-    else sections.at(-1)?.lines.push(line);
-  }
-  const text = (section: { lines: ReadonlyArray<string> }) =>
-    section.lines.join("\n").trim().slice(0, MAX_OVERSEER_TEXT);
-  const first = (key: string) => sections.find((section) => section.key === key);
-  const verdictWord = /^(CONTINUE|STOP)\b/iu.exec(text(first("OVERSEER") ?? { lines: [] }))?.[1];
-  const chats = new Map<number, string>();
-  for (const section of sections) {
-    const number = /^CHAT (\d+)$/u.exec(section.key)?.[1];
-    if (number !== undefined && text(section)) chats.set(Number(number), text(section));
-  }
-  const taskIds = (section: { lines: ReadonlyArray<string> } | undefined) =>
-    (section ? text(section) : "").split(/[\s,]+/u).filter((id) => /^[A-Za-z0-9._-]+$/u.test(id));
-  const guidanceSection = first("GUIDANCE");
-  return {
-    verdict:
-      verdictWord?.toUpperCase() === "CONTINUE"
-        ? "continue"
-        : verdictWord?.toUpperCase() === "STOP"
-          ? "stop"
-          : undefined,
-    release: (first("RELEASE") ? text(first("RELEASE")!) : "")
-      .split(/[\s,]+/u)
-      .filter((id) => /^[A-Za-z0-9._-]+$/u.test(id)),
-    retry: taskIds(first("RETRY")),
-    unblock: taskIds(first("UNBLOCK")),
-    guidance: guidanceSection ? text(guidanceSection) || undefined : undefined,
-    chats,
-  };
-}
 
 /** The instructions every agent in the goal receives, before the rules added to them. */
 export function goalInstructions(goal: Pick<Goal, "name" | "prompt">): string {

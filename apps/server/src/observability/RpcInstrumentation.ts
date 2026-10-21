@@ -217,6 +217,9 @@ const RPC_AGGREGATES = {
   [WS_METHODS.serverRestartGoal]: "server",
   [WS_METHODS.serverAddGoalAgents]: "server",
   [WS_METHODS.serverDeleteGoal]: "server",
+  [WS_METHODS.serverResolveGoalEscalation]: "server",
+  [WS_METHODS.serverOpenGoalEscalation]: "server",
+  [WS_METHODS.serverCancelGoalEscalation]: "server",
 } as const satisfies Readonly<Record<WsRpcMethod, string>>;
 
 const RPC_SPAN_PREFIX = "ws.rpc";

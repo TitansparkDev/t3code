@@ -24038,6 +24038,9 @@ apps/server/src/mcp/toolkits/device/tools.ts
 apps/server/src/mcp/toolkits/environment/handlers.test.ts
 apps/server/src/mcp/toolkits/environment/handlers.ts
 apps/server/src/mcp/toolkits/environment/tools.ts
+apps/server/src/mcp/toolkits/escalation/handlers.test.ts
+apps/server/src/mcp/toolkits/escalation/handlers.ts
+apps/server/src/mcp/toolkits/escalation/tools.ts
 apps/server/src/mcp/toolkits/goal/handlers.test.ts
 apps/server/src/mcp/toolkits/goal/handlers.ts
 apps/server/src/mcp/toolkits/goal/tools.ts
