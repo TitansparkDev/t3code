@@ -12,7 +12,7 @@ import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Stream from "effect/Stream";
 
-import { GoalThreads, type GoalThreadView } from "./GoalThreads.ts";
+import { GoalThreads, GoalThreadsError, type GoalThreadView } from "./GoalThreads.ts";
 
 /** What the runner asks of the engine, in the shape the goal tests assert on. */
 export type OrchestrationCommand =
@@ -32,6 +32,12 @@ export type OrchestrationCommand =
       readonly message: { readonly role: "user"; readonly text: string; readonly attachments: [] };
       readonly modelSelection: ModelSelection;
       readonly runtimeMode?: string;
+    }
+  | {
+      readonly type: "thread.workspace.bind";
+      readonly threadId: ThreadId;
+      readonly branch: string;
+      readonly worktreePath: string;
     }
   | { readonly type: "thread.delete"; readonly threadId: ThreadId }
   | { readonly type: "thread.settle"; readonly threadId: ThreadId }
@@ -79,6 +85,8 @@ export const layerFromLegacyHarness = (harness: {
     threadId: ThreadId,
   ) => Effect.Effect<Option.Option<{ readonly backgroundLiveness?: unknown }>>;
   readonly projectRoot: (projectId: ProjectId) => string | undefined;
+  /** Whether the next workspace bind should fail before the engine commits it. */
+  readonly failBind?: () => boolean;
 }) => {
   /** The newest session each thread's events reported; the detail's own session is the fallback. */
   const sessions = new Map<string, NonNullable<OrchestrationThread["session"]>>();
@@ -152,6 +160,20 @@ export const layerFromLegacyHarness = (harness: {
             modelSelection: input.modelSelection,
           })
           .pipe(Effect.asVoid),
+      bindWorkspace: (input) =>
+        Effect.gen(function* () {
+          if (harness.failBind?.())
+            return yield* new GoalThreadsError({
+              operation: "bindWorkspace",
+              message: "test bind outage",
+            });
+          yield* harness.dispatch({
+            type: "thread.workspace.bind",
+            threadId: input.threadId,
+            branch: input.branch,
+            worktreePath: input.worktreePath,
+          });
+        }).pipe(Effect.asVoid),
       remove: (threadId) =>
         harness.dispatch({ type: "thread.delete", threadId }).pipe(Effect.asVoid),
       interrupt: (input) =>

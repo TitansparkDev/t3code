@@ -83,6 +83,15 @@ export interface GoalThreadSend {
   readonly modelSelection: ModelSelection;
 }
 
+export interface GoalThreadBindWorkspace {
+  readonly threadId: ThreadId;
+  readonly projectId: ProjectId;
+  /** Names the durable command, so replaying the same claim cannot bind twice. */
+  readonly key: string;
+  readonly branch: string;
+  readonly worktreePath: string;
+}
+
 export class GoalThreads extends Context.Service<
   GoalThreads,
   {
@@ -90,6 +99,10 @@ export class GoalThreads extends Context.Service<
     readonly launch: (input: GoalThreadLaunch) => Effect.Effect<void, GoalThreadsError>;
     /** Say something to an existing thread; it queues behind a running turn. */
     readonly send: (input: GoalThreadSend) => Effect.Effect<void, GoalThreadsError>;
+    /** Durably point an idle thread at a task's worktree and branch; a no-op when it already is. */
+    readonly bindWorkspace: (
+      input: GoalThreadBindWorkspace,
+    ) => Effect.Effect<void, GoalThreadsError>;
     readonly remove: (threadId: ThreadId) => Effect.Effect<void, GoalThreadsError>;
     /** Ask the running turn to stop. Nothing running is not an error. */
     readonly interrupt: (input: {
@@ -224,6 +237,16 @@ export const make = Effect.gen(function* () {
           creationSource: "server",
         });
       }).pipe(Effect.asVoid, failed("send")),
+    bindWorkspace: (input) =>
+      management
+        .bindWorkspace({
+          projectId: input.projectId,
+          commandId: CommandId.make(`goal-bind:${input.threadId}:${input.key}`),
+          threadId: input.threadId,
+          branch: input.branch,
+          worktreePath: input.worktreePath,
+        })
+        .pipe(Effect.asVoid, failed("bindWorkspace")),
     remove: (threadId) =>
       uuid.pipe(
         Effect.flatMap((key) =>

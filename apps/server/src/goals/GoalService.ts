@@ -851,6 +851,21 @@ export const make = Effect.gen(function* () {
     // One writer per worktree: nothing else may still be working where the owner is about to.
     if (!(yield* worktreeWritersQuiet(goal, task.worktreePath, task.claimToken, owner.threadId)))
       return { wait: soon } as const;
+    // The conversation must be durably in the task's worktree before the model reads the prompt;
+    // a prompt that only names the path would run in the deleted original folder.
+    const bindFailure = yield* threads
+      .bindWorkspace({
+        threadId: owner.threadId,
+        projectId: goal.projectId,
+        key: task.claimToken,
+        branch: task.branch,
+        worktreePath: task.worktreePath,
+      })
+      .pipe(
+        Effect.as(undefined),
+        Effect.catch((error) => Effect.succeed(error.message)),
+      );
+    if (bindFailure !== undefined) return { workspace: bindFailure } as const;
     const sent = yield* continueChat(goal, owner, text);
     if (!sent) return "replace" as const;
     yield* updateChat(goal.id, owner.threadId, {
@@ -1050,6 +1065,30 @@ export const make = Effect.gen(function* () {
         queueResumePrompt(assignment, reason),
       );
       if (resumed === "resumed") return "started" as const;
+      if (typeof resumed === "object" && "workspace" in resumed) {
+        // Nothing was sent, so no model turn or retry was spent. The task goes back to pending with
+        // its owner held: a claimed task is never reserved again, so keeping the claim would never
+        // retry the bind. Nobody else takes it meanwhile, and no chat opens in the repository root.
+        yield* Effect.logWarning("goals.agentqueue-owner-rebind-failed", {
+          goalId: goal.id,
+          taskId: task.taskId,
+          threadId: owner.threadId,
+          worktreePath: task.worktreePath,
+          branch: task.branch,
+          detail: resumed.workspace,
+        });
+        const now = yield* nowMillis;
+        ownerWaits.set(`${goal.id}:${task.taskId}`, now + 20_000);
+        yield* queue
+          .release(
+            binding,
+            task.claimToken,
+            "pending",
+            "Could not move its owner into the worktree.",
+          )
+          .pipe(Effect.catch(logQueueError("goals.agentqueue-release-failed")));
+        return "skipped" as const;
+      }
       if (typeof resumed === "object") {
         // Its provider is out until a known time: leave the task as it is (no penalty, no stranger)
         // and carry on with other work. It is looked at again when the provider is back.

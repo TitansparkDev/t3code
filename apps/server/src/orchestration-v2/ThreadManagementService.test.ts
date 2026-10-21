@@ -1077,3 +1077,91 @@ it.effect.each([
     expect(dispatched).toEqual(settles ? ["thread.settle"] : []);
   }),
 );
+
+const layerBindWorkspaceTest = (
+  thread: Record<string, unknown>,
+  dispatched: Array<OrchestrationV2Command>,
+) =>
+  ThreadManagementService.layer.pipe(
+    Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
+    Layer.provide(
+      Layer.mock(Orchestrator.OrchestratorV2)({
+        getThreadRecords: () =>
+          Effect.succeed({ thread } as unknown as OrchestrationV2ThreadProjection),
+        getThreadShell: () => Effect.succeed(thread as unknown as OrchestrationV2ThreadShell),
+        dispatch: (command) =>
+          Effect.sync(() => {
+            dispatched.push(command as OrchestrationV2Command);
+            return { sequence: 1, storedEvents: [] } as never;
+          }),
+      }),
+    ),
+    Layer.provide(ServerSettings.layerTest({})),
+    Layer.provideMerge(layerReceiptsTest),
+  );
+
+const bindThread = {
+  id: ThreadId.make("thread:bind-workspace"),
+  projectId: ProjectId.make("project:bind-workspace"),
+  deletedAt: null,
+  archivedAt: null,
+  status: "ready",
+  activeRunId: null,
+  branch: "agent/T1",
+  worktreePath: "/repo/.worktrees/T1",
+};
+
+const bindInput = {
+  projectId: ProjectId.make("project:bind-workspace"),
+  commandId: CommandId.make("command:bind-workspace:T1-FU1"),
+  threadId: ThreadId.make("thread:bind-workspace"),
+  branch: "agent/T1-FU1",
+  worktreePath: "/repo/.worktrees/T1-FU1",
+};
+
+it.effect(
+  "binds an idle thread to the new worktree with a metadata update that checks the old one",
+  () => {
+    const dispatched: Array<OrchestrationV2Command> = [];
+    return Effect.gen(function* () {
+      const threads = yield* ThreadManagementService.ThreadManagementService;
+      const result = yield* threads.bindWorkspace(bindInput);
+      expect(result).toEqual({ rebound: true });
+      expect(dispatched).toEqual([
+        expect.objectContaining({
+          type: "thread.metadata.update",
+          commandId: bindInput.commandId,
+          threadId: bindInput.threadId,
+          branch: "agent/T1-FU1",
+          worktreePath: "/repo/.worktrees/T1-FU1",
+          expectedWorktreePath: "/repo/.worktrees/T1",
+        }),
+      ]);
+    }).pipe(Effect.provide(layerBindWorkspaceTest(bindThread, dispatched)));
+  },
+);
+
+it.effect("binding a thread already on the target is a no-op", () => {
+  const dispatched: Array<OrchestrationV2Command> = [];
+  return Effect.gen(function* () {
+    const threads = yield* ThreadManagementService.ThreadManagementService;
+    const result = yield* threads.bindWorkspace({
+      ...bindInput,
+      branch: "agent/T1",
+      worktreePath: "/repo/.worktrees/T1",
+    });
+    expect(result).toEqual({ rebound: false });
+    expect(dispatched).toEqual([]);
+  }).pipe(Effect.provide(layerBindWorkspaceTest(bindThread, dispatched)));
+});
+
+it.effect("refuses to move a busy thread and dispatches nothing", () => {
+  const dispatched: Array<OrchestrationV2Command> = [];
+  const busy = { ...bindThread, status: "running", activeRunId: "run-1" };
+  return Effect.gen(function* () {
+    const threads = yield* ThreadManagementService.ThreadManagementService;
+    const error = yield* Effect.flip(threads.bindWorkspace(bindInput));
+    expect(error).toBeInstanceOf(ThreadManagementService.ThreadManagementWorkspaceBindError);
+    expect(dispatched).toEqual([]);
+  }).pipe(Effect.provide(layerBindWorkspaceTest(busy, dispatched)));
+});
