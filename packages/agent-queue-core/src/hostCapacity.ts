@@ -51,7 +51,7 @@ export function readHost(): HostSnapshot {
       if (cgroupPath !== undefined) {
         let path = NodePath.resolve("/sys/fs/cgroup", `.${cgroupPath}`);
         const root = NodePath.resolve("/sys/fs/cgroup");
-        const levels: Array<{ max: string; current: string }> = [];
+        const levels: Array<{ max: string; current: string; stat: string }> = [];
         const readLevel = (file: string) => {
           try {
             return NodeFS.readFileSync(file, "utf8");
@@ -63,6 +63,7 @@ export function readHost(): HostSnapshot {
           levels.push({
             max: readLevel(NodePath.join(path, "memory.max")),
             current: readLevel(NodePath.join(path, "memory.current")),
+            stat: readLevel(NodePath.join(path, "memory.stat")),
           });
           if (path === root) break;
           path = NodePath.dirname(path);
@@ -114,7 +115,7 @@ export function parseCgroupMemoryValue(value: string): number | undefined {
 
 /** Return the effective memory ceiling and headroom across all visible ancestors. */
 export function effectiveCgroupMemory(
-  levels: ReadonlyArray<{ readonly max: string; readonly current: string }>,
+  levels: ReadonlyArray<{ readonly max: string; readonly current: string; readonly stat?: string }>,
 ): { readonly limitBytes: number | undefined; readonly availableBytes: number | undefined } {
   let limitBytes: number | undefined;
   let availableBytes: number | undefined;
@@ -124,7 +125,10 @@ export function effectiveCgroupMemory(
     if (max === undefined) continue;
     limitBytes = Math.min(limitBytes ?? max, max);
     if (current !== undefined) {
-      const available = Math.max(max - current, 0);
+      // memory.current counts page cache; the kernel reclaims inactive file pages before the
+      // limit bites, so they are headroom, not usage (MemAvailable treats them the same way).
+      const reclaimable = Number(/^inactive_file (\d+)$/m.exec(level.stat ?? "")?.[1] ?? 0);
+      const available = Math.max(max - Math.max(current - reclaimable, 0), 0);
       availableBytes = Math.min(availableBytes ?? available, available);
     }
   }
@@ -133,7 +137,7 @@ export function effectiveCgroupMemory(
 
 export function effectiveMemorySnapshot(
   host: { readonly totalMb: number; readonly availableMb: number },
-  levels: ReadonlyArray<{ readonly max: string; readonly current: string }>,
+  levels: ReadonlyArray<{ readonly max: string; readonly current: string; readonly stat?: string }>,
 ): { readonly totalMb: number; readonly availableMb: number } {
   const budget = effectiveCgroupMemory(levels);
   return {

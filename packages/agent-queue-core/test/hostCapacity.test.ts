@@ -40,6 +40,17 @@ describe("effective cgroup memory", () => {
     });
   });
 
+  it("counts a budget's inactive file cache as headroom, since the kernel reclaims it first", () => {
+    const levels = [
+      {
+        max: "16000000000",
+        current: "4000000000",
+        stat: "anon 600000000\nfile 3400000000\ninactive_file 3000000000\n",
+      },
+    ];
+    expect(effectiveCgroupMemory(levels).availableBytes).toBe(15_000_000_000);
+  });
+
   it("keeps host capacity when the memory controller is absent", () => {
     expect(
       effectiveMemorySnapshot({ totalMb: 25_430, availableMb: 20_000 }, [
