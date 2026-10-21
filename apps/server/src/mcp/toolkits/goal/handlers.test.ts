@@ -51,6 +51,12 @@ const clientLayer = (access: "read-only" | "auto-accept-edits" | "full-access") 
     previewPlan: () => Effect.die("unused"),
     addAgents: () => Effect.die("unused"),
     remove: () => Effect.die("unused"),
+    listEscalations: () => Effect.die("unused"),
+    readEscalation: () => Effect.die("unused"),
+    replyEscalation: () => Effect.die("unused"),
+    resolveEscalation: () => Effect.die("unused"),
+    openEscalation: () => Effect.die("unused"),
+    cancelEscalation: () => Effect.die("unused"),
     loop: Effect.void,
   });
   const dependencies = Layer.mergeAll(

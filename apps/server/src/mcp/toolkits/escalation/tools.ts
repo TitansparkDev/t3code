@@ -10,11 +10,16 @@ import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/ai";
 import * as GoalService from "../../../goals/GoalService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
+import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 
 const shared = {
   failure: OrchestratorMcpFailure,
   failureMode: "return" as const,
-  dependencies: [McpInvocationContext.McpInvocationContext, GoalService.GoalService],
+  dependencies: [
+    McpInvocationContext.McpInvocationContext,
+    ThreadManagementService.ThreadManagementService,
+    GoalService.GoalService,
+  ],
 };
 
 const EscalationListTool = Tool.make("t3_escalation_list", {

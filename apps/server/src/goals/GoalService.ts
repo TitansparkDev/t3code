@@ -1600,9 +1600,9 @@ export const make = Effect.gen(function* () {
   });
 
   /** Too many chats in a row that could not finish their task: stop and say so. */
-  const settleAfterProblem = Effect.fn("GoalService.settleAfterProblem")(function* (
-    goalId: GoalId,
-  ) {
+  const settleAfterProblem: (goalId: GoalId) => Effect.Effect<void> = Effect.fn(
+    "GoalService.settleAfterProblem",
+  )(function* (goalId: GoalId) {
     const after = yield* currentGoal(goalId);
     if (!after || after.status !== "running") return;
     const limit = after.stopAfterProblems ?? DEFAULT_GOAL_STOP_AFTER_PROBLEMS;
@@ -2153,7 +2153,15 @@ export const make = Effect.gen(function* () {
    * the escalation is resolved. Returns false when the worker must be given up on now: escalations
    * are off, the goal is not running, or the worker (or the goal's stuck count) is out of rounds.
    */
-  const raiseEscalation = Effect.fn("GoalService.raiseEscalation")(function* (
+  const raiseEscalation: (
+    goalId: GoalId,
+    input: {
+      readonly kind: GoalEscalationKind;
+      readonly reason: string;
+      readonly threadId?: ThreadId | undefined;
+      readonly taskId?: string | undefined;
+    },
+  ) => Effect.Effect<boolean> = Effect.fn("GoalService.raiseEscalation")(function* (
     goalId: GoalId,
     input: {
       readonly kind: GoalEscalationKind;
@@ -2242,7 +2250,9 @@ export const make = Effect.gen(function* () {
    * Only one overseer runs per goal. When escalations wait for one and none is running, start it
    * on the best seat; its prompt is short and it reads the escalations through the tools.
    */
-  const ensureOverseer = Effect.fn("GoalService.ensureOverseer")(function* (goalId: GoalId) {
+  const ensureOverseer: (goalId: GoalId) => Effect.Effect<void> = Effect.fn(
+    "GoalService.ensureOverseer",
+  )(function* (goalId: GoalId) {
     const goal = yield* currentGoal(goalId);
     if (!goal || goal.status !== "running") return;
     if (goal.chats.some((chat) => chat.overseer && chat.status === "running")) return;
@@ -2284,7 +2294,12 @@ export const make = Effect.gen(function* () {
    * The overseer cannot settle this one: the person decides. A held worker is given up on
    * (keeping its work for the person), a stuck goal stops, and any other escalation waits.
    */
-  const handOffToPerson = Effect.fn("GoalService.handOffToPerson")(function* (
+  const handOffToPerson: (
+    goalId: GoalId,
+    escalation: GoalEscalation,
+    note: string,
+    by: "overseer" | "server",
+  ) => Effect.Effect<void> = Effect.fn("GoalService.handOffToPerson")(function* (
     goalId: GoalId,
     escalation: GoalEscalation,
     note: string,
@@ -2304,7 +2319,12 @@ export const make = Effect.gen(function* () {
   });
 
   /** A held worker that the overseer or person gave up on: its work is handed back, as before. */
-  const giveUpHeldChat = Effect.fn("GoalService.giveUpHeldChat")(function* (
+  const giveUpHeldChat: (
+    goalId: GoalId,
+    threadId: ThreadId,
+    outcome: "attention" | "failed",
+    reason: string,
+  ) => Effect.Effect<void> = Effect.fn("GoalService.giveUpHeldChat")(function* (
     goalId: GoalId,
     threadId: ThreadId,
     outcome: "attention" | "failed",
@@ -2332,13 +2352,21 @@ export const make = Effect.gen(function* () {
    * A queue worker's task that cannot go on: an attention request gives its claim back blocked,
    * anything else hands it back for a retry. Its checks, commits and worktree are kept.
    */
-  const giveUpQueueChat = Effect.fn("GoalService.giveUpQueueChat")(function* (
+  const giveUpQueueChat: (
     goalId: GoalId,
     threadId: ThreadId,
     outcome: {
       readonly kind: "attention" | "retry";
       readonly reason: string;
-      readonly record?: boolean;
+      readonly record?: boolean | undefined;
+    },
+  ) => Effect.Effect<void> = Effect.fn("GoalService.giveUpQueueChat")(function* (
+    goalId: GoalId,
+    threadId: ThreadId,
+    outcome: {
+      readonly kind: "attention" | "retry";
+      readonly reason: string;
+      readonly record?: boolean | undefined;
     },
   ) {
     const goal = yield* currentGoal(goalId);
@@ -2373,7 +2401,9 @@ export const make = Effect.gen(function* () {
   });
 
   /** Too many chats in a row without a stuck escalation resolved: the goal is stuck, ask the overseer. */
-  const escalate = Effect.fn("GoalService.escalate")(function* (goalId: GoalId, reason: string) {
+  const escalate: (goalId: GoalId, reason: string) => Effect.Effect<void> = Effect.fn(
+    "GoalService.escalate",
+  )(function* (goalId: GoalId, reason: string) {
     const goal = yield* currentGoal(goalId);
     if (!goal || goal.status !== "running") return;
     if (yield* raiseEscalation(goalId, { kind: "stuck", reason })) return;
@@ -2718,32 +2748,34 @@ export const make = Effect.gen(function* () {
    * Start chats until the lanes are full, the cap is reached, or a start fails;
    * at most one per START_SPACING. Workers select distinct chunks with plan-work.
    */
-  const fillLanes = Effect.fn("GoalService.fillLanes")(function* (goalId: GoalId) {
-    const first = yield* currentGoal(goalId);
-    if (!first || first.status !== "running") return;
-    yield* ensureOverseer(goalId);
-    if (first.agentQueue) return yield* fillQueueLanes(goalId, first.agentQueue);
-    // Older stored Goal records may still contain this field. Keep their history,
-    // but never schedule new work from a Beads queue.
-    if (first.useBeads) {
-      yield* store.update(goalId, (current) => ({ ...current, useBeads: false }));
-      return;
-    }
-    // The overseer is deciding how to go on: start nothing until it answers.
-    if (first.chats.some((chat) => chat.overseer && chat.status === "running")) return;
-    while (true) {
-      const goal = yield* currentGoal(goalId);
-      const unavailable = goal ? yield* unavailableAgents(goal) : undefined;
-      const agentIndex = goal ? nextAgentIndex(goal, new Set(unavailable?.keys())) : undefined;
-      if (!goal || agentIndex === undefined) break;
-      const now = yield* nowMillis;
-      const last = lastStart.get(goalId);
-      if (spacing > 0 && last !== undefined && now - last < spacing) break;
-      if ((yield* startChat(goal, agentIndex)) !== "started") break;
-      lastStart.set(goalId, now);
-    }
-    yield* settleIfIdle(goalId);
-  });
+  const fillLanes: (goalId: GoalId) => Effect.Effect<void> = Effect.fn("GoalService.fillLanes")(
+    function* (goalId: GoalId) {
+      const first = yield* currentGoal(goalId);
+      if (!first || first.status !== "running") return;
+      yield* ensureOverseer(goalId);
+      if (first.agentQueue) return yield* fillQueueLanes(goalId, first.agentQueue);
+      // Older stored Goal records may still contain this field. Keep their history,
+      // but never schedule new work from a Beads queue.
+      if (first.useBeads) {
+        yield* store.update(goalId, (current) => ({ ...current, useBeads: false }));
+        return;
+      }
+      // The overseer is deciding how to go on: start nothing until it answers.
+      if (first.chats.some((chat) => chat.overseer && chat.status === "running")) return;
+      while (true) {
+        const goal = yield* currentGoal(goalId);
+        const unavailable = goal ? yield* unavailableAgents(goal) : undefined;
+        const agentIndex = goal ? nextAgentIndex(goal, new Set(unavailable?.keys())) : undefined;
+        if (!goal || agentIndex === undefined) break;
+        const now = yield* nowMillis;
+        const last = lastStart.get(goalId);
+        if (spacing > 0 && last !== undefined && now - last < spacing) break;
+        if ((yield* startChat(goal, agentIndex)) !== "started") break;
+        lastStart.set(goalId, now);
+      }
+      yield* settleIfIdle(goalId);
+    },
+  );
 
   /** A running goal with nothing running and nothing left to start is over, or stuck. */
   const settleIfIdle = Effect.fn("GoalService.settleIfIdle")(function* (goalId: GoalId) {

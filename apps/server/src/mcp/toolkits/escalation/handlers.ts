@@ -9,7 +9,7 @@ import { EscalationToolkit } from "./tools.ts";
 const failure = (error: GoalEscalationError) =>
   new OrchestratorMcpFailure({ code: "invalid_request", message: error.message });
 
-const handlers = {
+export const layer = McpToolAccess.toLayer(EscalationToolkit, {
   t3_escalation_list: McpToolAccess.reads((input) =>
     Effect.gen(function* () {
       const goals = yield* GoalService.GoalService;
@@ -64,6 +64,4 @@ const handlers = {
       return { id: input.id };
     }),
   ),
-};
-
-export const layer = McpToolAccess.toLayer(EscalationToolkit, handlers);
+});

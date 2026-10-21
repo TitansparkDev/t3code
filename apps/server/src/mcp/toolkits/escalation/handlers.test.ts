@@ -8,6 +8,7 @@ import * as Stream from "effect/Stream";
 import * as GoalService from "../../../goals/GoalService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
+import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as EscalationHandlers from "./handlers.ts";
 import { EscalationToolkit } from "./tools.ts";
 
@@ -27,6 +28,7 @@ const dependencies = (access: "read-only" | "full-access") =>
       listEscalations: () => Effect.succeed([]),
       cancelEscalation: () => Effect.fail(new GoalEscalationError({ reason: "not-found" })),
     }),
+    Layer.mock(ThreadManagementService.ThreadManagementService)({}),
   );
 
 const callTool = <Name extends "t3_escalation_list" | "t3_escalation_cancel">(
