@@ -332,6 +332,10 @@ const layerProviderRuntimeRecoveryProvided = ProviderRuntimeRecoveryService.laye
     ),
   ),
 );
+// The sweeper shares this recovery instance, so one sweep never races another.
+const layerProviderRuntimeRecoverySwept = ProviderRuntimeRecoveryService.layerOrphanSweeper.pipe(
+  Layer.provideMerge(layerProviderRuntimeRecoveryProvided),
+);
 
 const layerMcpAppRequestsProvided = McpAppRequests.layer.pipe(
   Layer.provide(
@@ -352,7 +356,7 @@ export const layer = Layer.mergeAll(
   layerEffectWorkerProvided,
   layerProviderSessionManagerProvided,
   layerProviderAuthServiceProvided,
-  layerProviderRuntimeRecoveryProvided,
+  layerProviderRuntimeRecoverySwept,
   layerProjectionMaintenanceProvided,
   layerLegacyV1ThreadImporterProvided,
 );
