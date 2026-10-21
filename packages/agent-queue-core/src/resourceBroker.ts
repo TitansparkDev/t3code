@@ -615,6 +615,17 @@ export class ResourceBroker {
   }
 
   heartbeat(id: string, extra?: { pid?: number; pgid?: number }): boolean {
+    try {
+      return this.heartbeatOnce(id, extra);
+    } catch (error) {
+      // Another broker client holding the write lock past busy_timeout only delays this beat;
+      // the next interval retries it. Throwing here would kill the job the beat is protecting.
+      if (isSqliteBusy(error)) return false;
+      throw error;
+    }
+  }
+
+  private heartbeatOnce(id: string, extra?: { pid?: number; pgid?: number }): boolean {
     const now = this.now();
     const result = this.db
       .prepare(
@@ -992,4 +1003,9 @@ export class ResourceBroker {
 
 export function openBroker(options: BrokerOptions = {}): ResourceBroker {
   return new ResourceBroker(options);
+}
+
+function isSqliteBusy(error: unknown): boolean {
+  const errcode = (error as { errcode?: unknown } | null)?.errcode;
+  return errcode === 5 || errcode === 6;
 }

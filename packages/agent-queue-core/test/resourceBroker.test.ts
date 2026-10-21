@@ -268,6 +268,19 @@ describe("resource broker queue", () => {
     expect(broker.get(ticket.id)!.state).toBe("granted");
   });
 
+  it("survives a heartbeat that finds the database locked, and beats again next time", () => {
+    const { broker } = makeBroker();
+    const ticket = broker.enqueue({ resources: [{ name: "db" }], pid: process.pid, label: "job" });
+    broker.pump();
+    const prepare = broker.db.prepare.bind(broker.db);
+    broker.db.prepare = () => {
+      throw Object.assign(new Error("database is locked"), { errcode: 5 });
+    };
+    expect(broker.heartbeat(ticket.id)).toBe(false);
+    broker.db.prepare = prepare;
+    expect(broker.heartbeat(ticket.id)).toBe(true);
+  });
+
   it("frees the units of a holder whose process is gone, at once", () => {
     const { broker } = makeBroker();
     const child = NodeChildProcess.spawn("sleep", ["30"], { stdio: "ignore" });
