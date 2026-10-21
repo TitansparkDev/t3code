@@ -15,6 +15,7 @@ import {
 } from "../src/integration.ts";
 import { importPlanFile } from "../src/planImport.ts";
 import { publishPlan, type PublishPolicy } from "../src/publication.ts";
+import { auditUnverifiedTasks } from "../src/audit.ts";
 import { releaseClaimForRetry } from "../src/claimService.ts";
 import { reserveNextTask } from "../src/reservation.ts";
 import { createTestGitRepo, execCommand } from "./harness/gitHarness.ts";
@@ -529,6 +530,152 @@ describe("publication", () => {
       expect([...(await NodeFSP.readFile(NodePath.join(t.repo.rootDir, "new.bin")))]).toEqual([
         0, 1, 2, 255,
       ]);
+    } finally {
+      t.db.close();
+      await t.repo.cleanup();
+    }
+  });
+});
+
+/** A workspace package that declares a dependency nothing installs in the checkout it is checked in. */
+const MANIFEST = '{"name":"fixture","dependencies":{"external-dep":"1.0.0"}}';
+
+/** Keeps installed dependency folders out of every worktree's commits (the exclude file is shared). */
+async function ignoreDependencyFolders(gitCommonDir: string) {
+  await NodeFSP.mkdir(NodePath.join(gitCommonDir, "info"), { recursive: true });
+  await NodeFSP.appendFile(NodePath.join(gitCommonDir, "info", "exclude"), "node_modules/\n");
+}
+
+const installDependency = (dir: string) =>
+  NodeFSP.mkdir(NodePath.join(dir, "node_modules", "external-dep"), { recursive: true });
+
+describe("verification dependencies", () => {
+  it("stops a candidate whose dependencies are not installed before any check, with no repair", async () => {
+    const t = await setup();
+    try {
+      const task = await t.reserve("w-a1");
+      await t.commitFile(task.worktreePath, "package.json", MANIFEST);
+      const submitted = await t.submit(task);
+      expect(submitted).toMatchObject({
+        kind: "verification-failed",
+        failureClass: "prerequisite",
+      });
+      expect(submitted).toMatchObject({
+        error: expect.stringContaining("Dependency preparation failed at candidate"),
+      });
+      expect(submitted).toMatchObject({ error: expect.stringContaining("external-dep") });
+      const repairs = t.db.prepare("SELECT id FROM tasks WHERE id LIKE 'A1-FU%'").all();
+      expect(repairs).toEqual([]);
+    } finally {
+      t.db.close();
+      await t.repo.cleanup();
+    }
+  });
+
+  it("waits for the machine, with no repair, when the merged result cannot resolve a dependency", async () => {
+    const t = await setup();
+    try {
+      await ignoreDependencyFolders(t.repo.gitCommonDir);
+      const a1 = await t.reserve("w-a1");
+      await t.commitFile(a1.worktreePath, "package.json", MANIFEST);
+      await installDependency(a1.worktreePath);
+      expect((await t.submit(a1)).kind).toBe("submitted");
+      expect((await t.finish("a2", "a2.txt", "two\n")).outcome.kind).toBe("landed");
+      const outcome = await t.integrate(a1.taskId);
+      expect(outcome).toMatchObject({ kind: "environment-wait" });
+      expect(outcome).toMatchObject({
+        reason: expect.stringContaining("Dependency preparation failed at staged integration"),
+      });
+      expect(t.db.prepare("SELECT id FROM tasks WHERE id LIKE 'A1-FU%'").all()).toEqual([]);
+    } finally {
+      t.db.close();
+      await t.repo.cleanup();
+    }
+  });
+
+  it("keeps a publication pending, not blocked by code, when the final check cannot resolve its dependencies", async () => {
+    const t = await setup();
+    try {
+      await ignoreDependencyFolders(t.repo.gitCommonDir);
+      const a1 = await t.reserve("w-a1");
+      await t.commitFile(a1.worktreePath, "package.json", MANIFEST);
+      await installDependency(a1.worktreePath);
+      await t.submit(a1);
+      expect((await t.integrate(a1.taskId)).kind).toBe("landed");
+      // The target moves on its own, so the result must be combined before publishing.
+      await NodeFSP.writeFile(NodePath.join(t.repo.rootDir, "main-only.txt"), "main\n");
+      await execCommand("git", ["add", "main-only.txt"], t.repo.rootDir);
+      await execCommand("git", ["commit", "-m", "main moves"], t.repo.rootDir);
+      t.db
+        .prepare("UPDATE plans SET final_verification = ? WHERE id = ?")
+        .run('node -e "process.exit(0)"', t.planId);
+      const outcome = await t.publish();
+      expect(outcome).toMatchObject({ kind: "pending", cause: "environment" });
+      expect(outcome).toMatchObject({
+        reason: expect.stringContaining("Dependency preparation failed at publication"),
+      });
+    } finally {
+      t.db.close();
+      await t.repo.cleanup();
+    }
+  });
+
+  it("an audit whose checkout cannot resolve dependencies records a wait, not a repair", async () => {
+    const t = await setup();
+    try {
+      await ignoreDependencyFolders(t.repo.gitCommonDir);
+      const a1 = await t.reserve("w-a1");
+      await t.commitFile(a1.worktreePath, "package.json", MANIFEST);
+      await installDependency(a1.worktreePath);
+      await t.submit(a1);
+      expect((await t.integrate(a1.taskId)).kind).toBe("landed");
+      t.db
+        .prepare("UPDATE tasks SET receipt_json = '{\"state\":\"unverified\"}' WHERE id = 'A1'")
+        .run();
+      const report = await auditUnverifiedTasks(t.db, {
+        repoRoot: t.repo.rootDir,
+        gitCommonDir: t.repo.gitCommonDir,
+        baseBranch: "main",
+        integrationBranch: t.goal,
+        planId: t.planId,
+      });
+      expect(report).toMatchObject({ audited: [], followUps: [] });
+      const waits = t.db
+        .prepare(
+          "SELECT id FROM task_events WHERE task_id = 'A1' AND event_type = 'task_audit_environment_wait'",
+        )
+        .all();
+      expect(waits.length).toBeGreaterThan(0);
+    } finally {
+      t.db.close();
+      await t.repo.cleanup();
+    }
+  });
+
+  it("an audit whose dependencies resolve still opens a repair for a check that really fails", async () => {
+    const t = await setup();
+    try {
+      await ignoreDependencyFolders(t.repo.gitCommonDir);
+      const a1 = await t.reserve("w-a1");
+      await t.commitFile(a1.worktreePath, "package.json", MANIFEST);
+      await installDependency(a1.worktreePath);
+      await t.submit(a1);
+      expect((await t.integrate(a1.taskId)).kind).toBe("landed");
+      await installDependency(t.repo.rootDir);
+      t.db
+        .prepare(
+          "UPDATE tasks SET receipt_json = '{\"state\":\"unverified\"}', verification_spec = NULL, verification_command = ? WHERE id = 'A1'",
+        )
+        .run('node -e "process.exit(1)"');
+      const report = await auditUnverifiedTasks(t.db, {
+        repoRoot: t.repo.rootDir,
+        gitCommonDir: t.repo.gitCommonDir,
+        baseBranch: "main",
+        integrationBranch: t.goal,
+        planId: t.planId,
+      });
+      expect(report.audited).toEqual([{ taskId: "A1", state: "failed" }]);
+      expect(report.followUps).toHaveLength(1);
     } finally {
       t.db.close();
       await t.repo.cleanup();

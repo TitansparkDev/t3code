@@ -19,6 +19,9 @@ import {
   integrationBranchFor,
   submitCandidate,
 } from "../src/integration.ts";
+import { addFollowUpTask } from "../src/overseerRepairs.ts";
+import { claimTask } from "../src/claimService.ts";
+import { settleUnchangedFollowUp } from "../src/followUpResolution.ts";
 import { importPlanFile } from "../src/planImport.ts";
 import { reserveNextTask } from "../src/reservation.ts";
 import {
@@ -65,9 +68,12 @@ const planOf = (tasks: ReadonlyArray<{ id: string; verify: string; scope?: strin
     ]),
   ].join("\n");
 
-async function setup(plan: string) {
+async function setup(plan: string, files: Record<string, string> = {}) {
   const repo = await createTestGitRepo("aq-followup-");
   await NodeFSP.writeFile(NodePath.join(repo.rootDir, "PLAN.md"), plan);
+  for (const [name, content] of Object.entries(files)) {
+    await NodeFSP.writeFile(NodePath.join(repo.rootDir, name), content);
+  }
   await execCommand("git", ["add", "."], repo.rootDir);
   await execCommand("git", ["commit", "-m", "plan"], repo.rootDir);
   const { planId } = importPlanFile(repo.rootDir, "PLAN.md");
@@ -666,6 +672,79 @@ describe("one task that cannot be prepared", () => {
           t.repo.rootDir,
         ).catch(() => undefined);
       }
+      await t.cleanup();
+    }
+  });
+});
+
+describe("a follow-up whose checks need dependencies that are not installed", () => {
+  const MANIFEST = '{"name":"fixture","dependencies":{"external-dep":"1.0.0"}}';
+
+  /** Opens a repair follow-up of A1 and claims it, as the server does for its owner. */
+  const openClaimedFollowUp = async (t: Awaited<ReturnType<typeof setup>>) => {
+    const followUp = addFollowUpTask(t.db, {
+      planId: t.planId,
+      parentTaskId: "A1",
+      kind: "repair",
+      blocking: true,
+      title: "Repair A1",
+      note: "The check fails on the integration branch.",
+    });
+    const claimed = claimTask(t.db, {
+      taskId: followUp.taskId,
+      workerPid: process.pid,
+      workerSessionId: "owner",
+      worktreePath: NodePath.join(t.repo.rootDir, ".worktrees", "agentqueue", followUp.taskId),
+      branch: `agent/aq/${followUp.taskId}`,
+      leaseSeconds: 600,
+    });
+    if (!claimed.success) throw new Error(`could not claim: ${claimed.reason}`);
+    return { taskId: followUp.taskId, claimToken: claimed.claim.ownerToken };
+  };
+
+  const settle = (
+    t: Awaited<ReturnType<typeof setup>>,
+    follow: { taskId: string; claimToken: string },
+  ) =>
+    settleUnchangedFollowUp(t.db, {
+      taskId: follow.taskId,
+      claimToken: follow.claimToken,
+      repoRoot: t.repo.rootDir,
+      gitCommonDir: t.repo.gitCommonDir,
+      baseBranch: t.goal,
+    });
+
+  it("waits for the environment, with no second repair, when a declared dependency is not installed", async () => {
+    const t = await setup(planOf([{ id: "A1", verify: 'node -e "process.exit(0)"' }]), {
+      "package.json": MANIFEST,
+    });
+    try {
+      const follow = await openClaimedFollowUp(t);
+      const outcome = await settle(t, follow);
+      expect(outcome).toMatchObject({
+        kind: "resource-wait",
+        message: expect.stringContaining("Dependency preparation failed at follow-up"),
+      });
+      expect(outcome).toMatchObject({ message: expect.stringContaining("external-dep") });
+      expect(t.followUps("A1")).toEqual([follow.taskId]);
+      expect(t.events(follow.taskId, "task_verification_failed")).toHaveLength(0);
+    } finally {
+      await t.cleanup();
+    }
+  });
+
+  it("still reports a genuinely failing check once its dependencies are installed", async () => {
+    const dir = await tempDir("aq-gate-deps-");
+    const t = await setup(planOf([{ id: "A1", verify: await gated(dir) }]), {
+      "package.json": MANIFEST,
+    });
+    try {
+      await NodeFSP.mkdir(NodePath.join(t.repo.rootDir, "node_modules", "external-dep"), {
+        recursive: true,
+      });
+      const follow = await openClaimedFollowUp(t);
+      expect(await settle(t, follow)).toMatchObject({ kind: "still-failing" });
+    } finally {
       await t.cleanup();
     }
   });
