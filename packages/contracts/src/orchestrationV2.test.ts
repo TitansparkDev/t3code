@@ -30,6 +30,7 @@ import {
   OrchestrationV2LimitRecoveryUpdate,
   OrchestrationV2DomainEvent,
   OrchestrationV2ProviderCapabilities,
+  OrchestrationV2ProviderFailure,
   OrchestrationV2ProviderThread,
   OrchestrationV2ProviderThreadJson,
   OrchestrationV2RpcSchemas,
@@ -137,6 +138,17 @@ const decodeOrchestrationV2SubscribeThreadInput = Schema.decodeUnknownSync(
 );
 
 describe("orchestration V2 contracts", () => {
+  it("accepts additive failure stages and historical failures without one", () => {
+    const decodeFailure = Schema.decodeUnknownSync(OrchestrationV2ProviderFailure);
+    const legacy = decodeFailure({
+      class: "provider_error",
+      message: "Provider failed",
+      code: null,
+      retryable: null,
+    });
+    expect(legacy.stage).toBeUndefined();
+    expect(decodeFailure({ ...legacy, stage: "cleanup" }).stage).toBe("cleanup");
+  });
   it("carries command failure metadata through runtime and JSON schemas without output text", () => {
     const base = {
       id: "command-item",

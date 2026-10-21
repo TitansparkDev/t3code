@@ -60,6 +60,9 @@ export interface ThreadRuntimeSummary {
   readonly providerName: string | null;
   readonly lastError: string | null;
   readonly lastErrorClass?: OrchestrationV2ProviderFailureClass | null;
+  readonly lastErrorStage?: string | null;
+  readonly lastErrorReason?: string | null;
+  readonly lastErrorRecovery?: string | null;
   readonly usageLimitResetAt?: string | null;
   readonly updatedAt: string;
 }

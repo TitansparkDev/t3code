@@ -43,7 +43,35 @@ export function threadErrorSummary(
     lastError: sessionError ?? failure?.message ?? null,
     lastErrorClass:
       sessionError !== null && sessionError !== failure?.message ? null : (failure?.class ?? null),
+    lastErrorStage:
+      sessionError !== null && sessionError !== failure?.message
+        ? null
+        : (failure?.stage ?? (failure?.class === "unknown" ? "unknown" : undefined)),
+    lastErrorReason:
+      sessionError !== null && sessionError !== failure?.message ? null : (failure?.code ?? null),
+    lastErrorRecovery:
+      sessionError !== null && sessionError !== failure?.message
+        ? null
+        : failureRecoveryGuidance(failure),
   };
+}
+
+export function failureRecoveryGuidance(failure: OrchestrationV2ProviderFailure | null): string {
+  if (failure === null) return "Review the error details.";
+  switch (failure.class) {
+    case "usage_limit":
+      return "Wait for the usage limit to reset, or review the provider's usage settings.";
+    case "transport_error":
+      return "Check the connection, then start a new message when ready.";
+    case "permission_error":
+      return "Review the requested permission or approval, then try again.";
+    case "validation_error":
+      return "Review the request details and correct them before trying again.";
+    case "provider_error":
+      return "Review the provider error, then start a new message when ready.";
+    case "unknown":
+      return "Review the error details before trying again.";
+  }
 }
 
 export function latestExecutedRun(

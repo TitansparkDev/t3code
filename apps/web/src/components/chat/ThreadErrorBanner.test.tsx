@@ -6,8 +6,25 @@ import {
   isThreadErrorBannerDismissedForSession,
   shouldShowThreadErrorBanner,
 } from "./ThreadErrorBanner";
+import type { OrchestrationV2ProviderFailureClass } from "@t3tools/contracts";
+import { failureRecoveryGuidance } from "@t3tools/shared/orchestrationV2ThreadError";
 
 describe("ThreadErrorBanner", () => {
+  it("gives actionable guidance for each known failure class and an honest fallback", () => {
+    const guidance = (failureClass: OrchestrationV2ProviderFailureClass) =>
+      failureRecoveryGuidance({
+        class: failureClass,
+        message: "failed",
+        code: null,
+        retryable: null,
+      });
+    expect(guidance("usage_limit")).toContain("Wait for the usage limit");
+    expect(guidance("transport_error")).toContain("connection");
+    expect(guidance("permission_error")).toContain("permission");
+    expect(guidance("validation_error")).toContain("request details");
+    expect(guidance("provider_error")).toContain("provider error");
+    expect(guidance("unknown")).toContain("Review the error details");
+  });
   it("stays hidden after its current error is dismissed", () => {
     const bannerKey = getThreadErrorBannerKey("env:thread-a", "Aborted");
     dismissThreadErrorBannerForSession(bannerKey);

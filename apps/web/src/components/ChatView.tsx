@@ -7928,6 +7928,21 @@ export default function ChatView(props: ChatViewProps) {
                     ? (serverRuntime?.lastErrorClass ?? null)
                     : null
                 }
+                errorStage={
+                  localServerError === null && visibleThreadError === serverRuntime?.lastError
+                    ? (serverRuntime?.lastErrorStage ?? null)
+                    : null
+                }
+                errorReason={
+                  localServerError === null && visibleThreadError === serverRuntime?.lastError
+                    ? (serverRuntime?.lastErrorReason ?? null)
+                    : null
+                }
+                recovery={
+                  localServerError === null && visibleThreadError === serverRuntime?.lastError
+                    ? (serverRuntime?.lastErrorRecovery ?? null)
+                    : null
+                }
                 onDismiss={() => {
                   setThreadError(activeThread.id, null);
                   dismissThreadErrorBannerForSession(threadErrorBannerKey);

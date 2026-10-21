@@ -60,7 +60,7 @@ import {
   type ServerProvider,
   ThreadId,
 } from "@t3tools/contracts";
-import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
+import { failureRecoveryGuidance, runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import {
   normalizeThreadPullRequestKey,
   visibleThreadPullRequests,
@@ -868,7 +868,12 @@ function turnItemText(item: OrchestrationV2TurnItem): string | null {
     case "system_notice":
       return item.message;
     case "error":
-      return item.failure.message;
+      return [
+        item.failure.message,
+        `Failure stage: ${item.failure.stage ?? "unknown"}.`,
+        ...(item.failure.code === null ? [] : [`Reason: ${item.failure.code}.`]),
+        failureRecoveryGuidance(item.failure),
+      ].join("\n");
     case "compaction":
       return item.summary ?? null;
     case "handoff":

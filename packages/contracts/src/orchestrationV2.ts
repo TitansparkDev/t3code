@@ -1250,6 +1250,10 @@ const OrchestrationV2ProviderFailureCode = TrimmedNonEmptyString.check(Schema.is
  */
 export const OrchestrationV2ProviderFailure = Schema.Struct({
   class: OrchestrationV2ProviderFailureClass,
+  /** Optional for persisted events written before failure stages were available. */
+  stage: Schema.optional(
+    Schema.Literals(["queue", "resource", "approval", "startup", "provider", "cleanup", "unknown"]),
+  ),
   message: OrchestrationV2ProviderFailureMessage,
   code: Schema.NullOr(OrchestrationV2ProviderFailureCode),
   retryable: Schema.NullOr(Schema.Boolean),
