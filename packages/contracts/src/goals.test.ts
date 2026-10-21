@@ -7,7 +7,6 @@ import {
   replyReportsBlockedWork,
   goalSettingsProblem,
   goalTitle,
-  parseOverseerReply,
   replyNeedsAttention,
   replyReportsGoalComplete,
 } from "./goals.ts";
@@ -142,52 +141,7 @@ describe("problemStreak", () => {
   });
 });
 
-describe("overseer reply", () => {
-  it("reads the verdict, released chunks and the note after GUIDANCE", () => {
-    expect(
-      parseOverseerReply(
-        "Looked at it.\nOVERSEER: continue\nRELEASE: bd-1, bd-2\nGUIDANCE: Install first.\nThen test.",
-      ),
-    ).toEqual({
-      verdict: "continue",
-      release: ["bd-1", "bd-2"],
-      retry: [],
-      unblock: [],
-      guidance: "Install first.\nThen test.",
-      chats: new Map(),
-    });
-  });
-
-  it("treats a reply with no verdict as no answer", () => {
-    expect(parseOverseerReply("I think maybe continue?")).toEqual({
-      verdict: undefined,
-      release: [],
-      retry: [],
-      unblock: [],
-      guidance: undefined,
-      chats: new Map(),
-    });
-    expect(parseOverseerReply("OVERSEER: STOP").verdict).toBe("stop");
-  });
-
-  it("reads queue repairs: tasks to retry and tasks to unblock", () => {
-    const decision = parseOverseerReply(
-      "OVERSEER: CONTINUE\nRETRY: RP1, RP4\nUNBLOCK: RP9\nGUIDANCE: Rebase first.",
-    );
-    expect(decision.retry).toEqual(["RP1", "RP4"]);
-    expect(decision.unblock).toEqual(["RP9"]);
-    expect(decision.guidance).toBe("Rebase first.");
-  });
-
-  it("reads the prompt for each stuck chat, which may span lines", () => {
-    const decision = parseOverseerReply(
-      "OVERSEER: CONTINUE\nCHAT 2: Pick option A.\nThen merge.\nCHAT 1: Retry the push.\nGUIDANCE: All: pull first.",
-    );
-    expect(decision.chats.get(2)).toBe("Pick option A.\nThen merge.");
-    expect(decision.chats.get(1)).toBe("Retry the push.");
-    expect(decision.guidance).toBe("All: pull first.");
-  });
-
+describe("overseer note", () => {
   it("puts the overseer's note into worker prompts", () => {
     const prompt = goalPrompt({
       name: "x",

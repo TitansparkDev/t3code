@@ -25,7 +25,7 @@ import * as Schema from "effect/Schema";
 import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as RpcMiddleware from "effect/rpc/RpcMiddleware";
-import { NonNegativeInt, ProjectId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { NonNegativeInt, ProjectId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import {
   CodexAuthCallbackInput,
   CodexAuthCallbackState,
@@ -319,7 +319,14 @@ import {
   ResourceTelemetryRetryResult,
   ResourceTelemetrySnapshot,
 } from "./resourceTelemetry.ts";
-import { GoalId, GoalList, GoalPlanPreview, GoalSettings } from "./goals.ts";
+import {
+  GoalEscalationError,
+  GoalEscalationResolveAction,
+  GoalId,
+  GoalList,
+  GoalPlanPreview,
+  GoalSettings,
+} from "./goals.ts";
 import {
   UsageLimitSourceError,
   ProviderConsumeResetCreditInput,
@@ -509,6 +516,9 @@ export const WS_METHODS = {
   serverRestartGoal: "server.restartGoal",
   serverAddGoalAgents: "server.addGoalAgents",
   serverDeleteGoal: "server.deleteGoal",
+  serverResolveGoalEscalation: "server.resolveGoalEscalation",
+  serverOpenGoalEscalation: "server.openGoalEscalation",
+  serverCancelGoalEscalation: "server.cancelGoalEscalation",
   serverRefreshUsageRates: "server.refreshUsageRates",
 
   scheduledTasksList: "scheduledTasks.list",
@@ -963,6 +973,34 @@ const WsServerDeleteGoalRpc = Rpc.make(WS_METHODS.serverDeleteGoal, {
   payload: Schema.Struct({ id: GoalId }),
   success: GoalList,
   error: EnvironmentAuthorizationError,
+});
+
+/** A person answers an escalation: the overseer is not asked again for it. */
+const WsServerResolveGoalEscalationRpc = Rpc.make(WS_METHODS.serverResolveGoalEscalation, {
+  payload: Schema.Struct({
+    id: Schema.String,
+    action: GoalEscalationResolveAction,
+    note: Schema.String.check(Schema.isMaxLength(4000)),
+  }),
+  success: GoalList,
+  error: Schema.Union([EnvironmentAuthorizationError, GoalEscalationError]),
+});
+
+/** A person asks the overseer about a worker chat, or the whole goal when no thread is given. */
+const WsServerOpenGoalEscalationRpc = Rpc.make(WS_METHODS.serverOpenGoalEscalation, {
+  payload: Schema.Struct({
+    goalId: GoalId,
+    threadId: Schema.optional(ThreadId),
+    note: Schema.String.check(Schema.isMaxLength(4000)),
+  }),
+  success: GoalList,
+  error: Schema.Union([EnvironmentAuthorizationError, GoalEscalationError]),
+});
+
+const WsServerCancelGoalEscalationRpc = Rpc.make(WS_METHODS.serverCancelGoalEscalation, {
+  payload: Schema.Struct({ id: Schema.String }),
+  success: GoalList,
+  error: Schema.Union([EnvironmentAuthorizationError, GoalEscalationError]),
 });
 
 /**
@@ -1989,6 +2027,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerRestartGoalRpc,
   WsServerAddGoalAgentsRpc,
   WsServerDeleteGoalRpc,
+  WsServerResolveGoalEscalationRpc,
+  WsServerOpenGoalEscalationRpc,
+  WsServerCancelGoalEscalationRpc,
   WsServerRefreshUsageRatesRpc,
   WsServerSignalProcessRpc,
   WsScheduledTasksListRpc,
