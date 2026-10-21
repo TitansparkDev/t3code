@@ -97,6 +97,7 @@ import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
 import * as Exit from "effect/Exit";
@@ -272,6 +273,7 @@ const CLAUDE_MCP_REGISTRATION_TIMEOUT = "90 seconds";
 // reply can land after the progress frame that settles it. Its transcript
 // stays the source of its answer this long after it settles.
 const WORKFLOW_MEMBER_TRANSCRIPT_FLUSH_MS = 500;
+const CLAUDE_STOP_DEADLINE_MS = 10_000;
 
 /**
  * When the CLI exits it stops the MCP servers it started, but not their children: a plugin's
@@ -8912,12 +8914,33 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               next.add(turnInput.providerTurnId);
               return next;
             });
-            yield* existing.query.interrupt;
-            yield* existing.query.close.pipe(Effect.ignore);
-            const closed = yield* Deferred.await(existing.closed).pipe(
-              Effect.timeoutOption("10 seconds"),
+            existing.stopping = true;
+            const deadlineFiber = yield* Effect.sleep(
+              Duration.millis(CLAUDE_STOP_DEADLINE_MS),
+            ).pipe(Effect.asVoid, Effect.forkIn(sessionScope));
+            const interruptFiber = yield* existing.query.interrupt.pipe(
+              Effect.ignore,
+              Effect.forkIn(sessionScope),
             );
-            if (Option.isSome(closed)) {
+            const interruptFinished = yield* Effect.race(
+              Fiber.await(interruptFiber).pipe(Effect.as(true)),
+              Fiber.join(deadlineFiber).pipe(Effect.as(false)),
+            );
+            if (!interruptFinished)
+              yield* Fiber.interrupt(interruptFiber).pipe(Effect.forkIn(sessionScope));
+
+            // Closing the SDK query is the only control that also terminates
+            // its native child tasks. Do not let a broken close acknowledgment
+            // hold Stop past the same deadline used for the interrupt.
+            yield* existing.query.close.pipe(Effect.ignore, Effect.forkIn(sessionScope));
+            const closedBeforeDeadline = (yield* Deferred.isDone(existing.closed))
+              ? true
+              : yield* Effect.race(
+                  Deferred.await(existing.closed).pipe(Effect.as(true)),
+                  Fiber.join(deadlineFiber).pipe(Effect.as(false)),
+                );
+            if (closedBeforeDeadline) {
+              yield* Fiber.interrupt(deadlineFiber);
               return;
             }
 
@@ -8988,7 +9011,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           for (const { taskId, toolUseId } of foreground) {
             const inFlight = backgroundMovesByToolUseId.get(toolUseId);
             if (inFlight !== undefined) {
-              moves.push(inFlight);
               continue;
             }
             const move = yield* live.query.backgroundTasks(toolUseId).pipe(
@@ -9085,7 +9107,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         const closeSession = Effect.fnUntraced(function* () {
           const existing = yield* Ref.get(queryContext);
           if (existing !== null) {
-            yield* existing.query.close.pipe(Effect.ignore);
+            yield* existing.query.close.pipe(Effect.ignore, Effect.forkIn(sessionScope));
           }
           yield* Effect.yieldNow;
           yield* queryRunner.assertComplete.pipe(
@@ -9105,7 +9127,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           }
 
           existing.stopping = true;
-          yield* existing.query.close.pipe(Effect.ignore);
+          yield* existing.query.close.pipe(Effect.ignore, Effect.forkIn(sessionScope));
           const closed = yield* Deferred.await(existing.closed).pipe(
             Effect.timeoutOption("10 seconds"),
           );
@@ -9126,7 +9148,12 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           }
           yield* Deferred.succeed(existing.closed, undefined);
         });
-        yield* Effect.addFinalizer(() => closeSession());
+        yield* Effect.addFinalizer(() =>
+          closeSession().pipe(
+            Effect.timeoutOption(Duration.millis(CLAUDE_STOP_DEADLINE_MS)),
+            Effect.ignore,
+          ),
+        );
 
         // A CLI stopped before it saved the first prompt can leave a transcript
         // with only metadata lines. Claude can neither resume that id nor
