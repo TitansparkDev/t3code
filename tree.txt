@@ -28467,6 +28467,8 @@ scripts/npm-launcher/t3.mjs
 scripts/package.json
 scripts/publish-desktop-release.ts
 scripts/release-smoke.ts
+scripts/reliability-artifact-smoke.test.ts
+scripts/reliability-artifact-smoke.ts
 scripts/reliability-check.test.ts
 scripts/reliability-check.ts
 scripts/resolve-nightly-release.test.ts
