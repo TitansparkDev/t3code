@@ -86,10 +86,13 @@ export function describeGoalPauses(
   return (goal.pauses ?? [])
     .filter((pause) => Date.parse(pause.until) > now)
     .map((pause) => {
-      const what = pause.reason === "usage-limit" ? "usage limit" : "recent failures";
       const name = pause.model
         ? `${nameOf(pause.instanceId)} ${pause.model}`
         : nameOf(pause.instanceId);
+      // A login hold has no meaningful end time: it lasts until the goal is started again.
+      if (pause.reason === "login")
+        return `${name} needs you to sign in; start the goal again afterwards`;
+      const what = pause.reason === "usage-limit" ? "usage limit" : "recent failures";
       return `${name} is set aside (${what}) until ${formatTime(pause.until)}`;
     });
 }

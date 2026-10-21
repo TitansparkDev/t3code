@@ -236,13 +236,13 @@ function stuckSinceProgress(goal: Goal): number {
   ).length;
 }
 
-/** Short on purpose: the composer of some providers corrupts long pasted prompts. */
 /** How long a login hold lasts when nothing ends it: starting the goal again clears it first. */
 const LOGIN_HOLD_MS = 365 * 24 * 60 * 60 * 1000;
 
 const LOGIN_NEEDED_DETAIL =
   "A provider needs you to sign in or unlock its keyring. Sign in on this computer, then start the goal again.";
 
+/** Short on purpose: the composer of some providers corrupts long pasted prompts. */
 function overseerPrompt(goal: Goal, count: number): string {
   return [
     "T3-OVERSEER/1",
@@ -1112,7 +1112,7 @@ export const make = Effect.gen(function* () {
    * app never loads. Retrying it unattended only repeats the same failure.
    */
   const isLoginFailure = (error: string) =>
-    /APP_SHELL_NOT_LOADED|keyring|sign[ -]?in|log[ -]?in/i.test(error);
+    /APP_SHELL_NOT_LOADED|keyring|\bsign[ -]?in\b|\blog[ -]?in\b/i.test(error);
 
   /** What a thread's failure says about its provider when it did no work: a login, a keyring, a crash. */
   const providerFailureOf = (thread: GoalThreadView | undefined): string | undefined => {
