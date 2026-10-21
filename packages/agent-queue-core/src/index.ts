@@ -28,6 +28,7 @@ export * from "./taskEnvironment.ts";
 export * from "./resourceLocks.ts";
 export * from "./resourceBroker.ts";
 export * from "./resourceRunner.ts";
+export * from "./checkReceipts.ts";
 export * from "./hostCapacity.ts";
 export * from "./audit.ts";
 export * from "./baseline.ts";

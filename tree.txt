@@ -27131,6 +27131,7 @@ packages/agent-queue-cli/tsconfig.json
 packages/agent-queue-core/package.json
 packages/agent-queue-core/src/audit.ts
 packages/agent-queue-core/src/baseline.ts
+packages/agent-queue-core/src/checkReceipts.ts
 packages/agent-queue-core/src/checkout.ts
 packages/agent-queue-core/src/claimService.ts
 packages/agent-queue-core/src/completion.ts
@@ -27195,6 +27196,7 @@ packages/agent-queue-core/test/queueInspector.test.ts
 packages/agent-queue-core/test/realAgent/realAgentGoal.mts
 packages/agent-queue-core/test/repoManager.test.ts
 packages/agent-queue-core/test/resourceBroker.test.ts
+packages/agent-queue-core/test/resourceRunner.test.ts
 packages/agent-queue-core/test/scopeManager.test.ts
 packages/agent-queue-core/test/stateMachine.test.ts
 packages/agent-queue-core/test/verificationAndFollowUp.test.ts
@@ -28459,6 +28461,8 @@ scripts/npm-launcher/t3.mjs
 scripts/package.json
 scripts/publish-desktop-release.ts
 scripts/release-smoke.ts
+scripts/reliability-check.test.ts
+scripts/reliability-check.ts
 scripts/resolve-nightly-release.test.ts
 scripts/resolve-nightly-release.ts
 scripts/resolve-previous-release-tag.test.ts

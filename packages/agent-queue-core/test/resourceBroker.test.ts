@@ -10,6 +10,7 @@ import {
   RAMP_MS,
   ResourceBroker,
   STARVATION_MS,
+  TYPECHECK_DEMAND_MB,
   type BrokerOptions,
   type ResourceConfig,
 } from "../src/resourceBroker.ts";
@@ -149,6 +150,35 @@ describe("resource broker queue", () => {
     free.mb = 9_000;
     broker.pump();
     expect(broker.get(c.id)!.state).toBe("granted");
+  });
+
+  it("does not admit a compiler's 7.5 GiB demand under a 3.5 GB per-unit estimate", () => {
+    const { broker, free } = makeBroker({
+      free: { mb: 5_000 },
+      config: () => ({
+        ...CONFIG,
+        resources: { ...CONFIG.resources, heavy_build: { capacity: 2, memoryMb: 3500 } },
+      }),
+    });
+    const gradle = broker.enqueue({
+      resources: [{ name: "heavy_build" }],
+      pid: process.pid,
+      label: "gradle",
+    });
+    const compiler = broker.enqueue({
+      resources: [{ name: "typecheck", memoryMb: TYPECHECK_DEMAND_MB }],
+      pid: process.pid,
+      label: "tsc",
+    });
+    broker.pump();
+    expect(broker.get(gradle.id)!.state).toBe("granted");
+    // 5000 - 1000 reserve - 3500 for gradle, which has not shown in the host reading yet.
+    expect(broker.get(compiler.id)!.state).toBe("waiting");
+    expect(broker.get(compiler.id)!.note).toMatch(/needs 8192 MB/);
+    // 13000 - 1000 reserve - 3500 ramping for gradle leaves 8500, which covers the 8192 demand.
+    free.mb = 13_000;
+    broker.pump();
+    expect(broker.get(compiler.id)!.state).toBe("granted");
   });
 
   it("lets a small request backfill but stops everything behind a ticket that has waited too long", () => {
