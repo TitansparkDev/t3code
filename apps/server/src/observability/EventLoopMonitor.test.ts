@@ -24,6 +24,10 @@ const stalled: EventLoopMonitor.EventLoopReadings = {
     involuntaryContextSwitches: 57,
   },
   rssBytes: 1536 * 1024 * 1024,
+  heapUsedBytes: 512 * 1024 * 1024,
+  elapsedMs: 30_000,
+  loadAverage: 219.43,
+  cpuCount: 18,
 };
 const quiet: EventLoopMonitor.EventLoopReadings = { ...stalled, delayMaxNs: ms(2_950) };
 

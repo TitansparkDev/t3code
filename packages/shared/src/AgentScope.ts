@@ -16,6 +16,11 @@ export interface AgentScopeShape {
     readonly survivesRestart?: boolean | undefined;
     /** Extra memory already reserved for a child resource job; it raises this private scope's ceiling. */
     readonly reservationMb?: number | undefined;
+    /**
+     * Keep a shared process running after a tool OOM when supported.
+     * Falls back to ordinary scope behavior on older systemd.
+     */
+    readonly shared?: boolean | undefined;
   }) => Effect.Effect<AgentScopeCommand>;
   readonly oomKilled: (threadId: string) => Effect.Effect<boolean>;
   /**

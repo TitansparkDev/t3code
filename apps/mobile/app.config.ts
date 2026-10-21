@@ -226,7 +226,7 @@ const config: ExpoConfig = {
   slug: "t3-code",
   platforms: ["ios", "android"],
   scheme: variant.scheme,
-  version: repoEnv.T3CODE_MOBILE_VERSION ?? "2.0.2",
+  version: repoEnv.T3CODE_MOBILE_VERSION ?? "2.0.3",
   runtimeVersion: {
     // Development manifests resolve on every launch, so avoid fingerprint's
     // expensive native-project calculation there. Preview and production stay
@@ -294,7 +294,7 @@ const config: ExpoConfig = {
   android: {
     icon: variant.assets.appIcon,
     package: variant.androidPackage,
-    versionCode: 9,
+    versionCode: 10,
     ...(repoEnv.T3CODE_ANDROID_GOOGLE_SERVICES_FILE
       ? { googleServicesFile: repoEnv.T3CODE_ANDROID_GOOGLE_SERVICES_FILE }
       : {}),
@@ -318,6 +318,7 @@ const config: ExpoConfig = {
   },
   plugins: [
     "expo-asset",
+    "react-native-pdf-jsi",
     [
       "expo-font",
       {

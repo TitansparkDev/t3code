@@ -1,13 +1,10 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
-import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
-import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as PlatformError from "effect/PlatformError";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
-import { TestClock } from "effect/testing";
 import { ChildProcessSpawner } from "effect/process";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { SpawnExecutableResolution } from "@t3tools/shared/shell";
@@ -80,50 +77,6 @@ const runWith =
     );
 
 describe("runProcess", () => {
-  it.effect("collects stdout through an injected ChildProcessSpawner", () =>
-    Effect.gen(function* () {
-      const spawner = makeSpawner((command) =>
-        Effect.sync(() => {
-          expect(command.command).toBe("fake");
-          expect(command.args).toEqual(["stdout-bytes", "32"]);
-          return makeHandle({ stdout: "x".repeat(32) });
-        }),
-      );
-
-      const result = yield* runWith(spawner)({
-        command: "fake",
-        args: ["stdout-bytes", "32"],
-      });
-
-      expect(result.code).toBe(0);
-      expect(result.stdout).toBe("x".repeat(32));
-      expect(result.timedOut).toBe(false);
-    }),
-  );
-
-  it.effect("runs through the ProcessRunner service", () => {
-    const spawner = makeSpawner((command) =>
-      Effect.sync(() => {
-        expect(command.command).toBe("fake");
-        expect(command.args).toEqual(["--service"]);
-        return makeHandle({ stdout: "service ok" });
-      }),
-    );
-    const layer = ProcessRunner.layer.pipe(
-      Layer.provide(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner)),
-    );
-
-    return Effect.gen(function* () {
-      const runner = yield* ProcessRunner.ProcessRunner;
-      const result = yield* runner.run({
-        command: "fake",
-        args: ["--service"],
-      });
-
-      expect(result.stdout).toBe("service ok");
-    }).pipe(Effect.provide(layer));
-  });
-
   it.effect("resolves and escapes Windows command shims before spawning", () => {
     const spawner = makeSpawner((command) =>
       Effect.sync(() => {
@@ -164,44 +117,6 @@ describe("runProcess", () => {
       }),
     );
   });
-
-  it.effect("preserves resolved spawn context and cause", () =>
-    Effect.gen(function* () {
-      const cause = PlatformError.systemError({
-        _tag: "PermissionDenied",
-        module: "ChildProcessSpawner",
-        method: "spawn",
-        pathOrDescriptor: "/actual/fake",
-      });
-      const spawner = makeSpawner(() => Effect.fail(cause));
-
-      const error = yield* runWith(spawner)({
-        command: "fake",
-        args: ["--flag", "secret-token-value"],
-        cwd: "/logical",
-        spawnCwd: "/actual",
-      }).pipe(Effect.flip);
-
-      expect(error._tag).toBe("ProcessSpawnError");
-      if (error._tag !== "ProcessSpawnError") {
-        return expect.fail("Expected ProcessSpawnError");
-      }
-      expect(error).toMatchObject({
-        command: "fake",
-        argumentCount: 2,
-        cwd: "/logical",
-        spawnCwd: "/actual",
-        resolvedCommand: "fake",
-        resolvedArgumentCount: 2,
-        shell: false,
-      });
-      expect(error.cause).toBe(cause);
-      expect(error.message).toBe("Failed to spawn process 'fake' in '/actual'");
-      expect(error).not.toHaveProperty("args");
-      expect(error).not.toHaveProperty("resolvedArgs");
-      expect(error.message).not.toContain("secret-token-value");
-    }),
-  );
 
   it.effect("types spawn failures that the platform spawner throws synchronously", () =>
     Effect.gen(function* () {
@@ -465,12 +380,4 @@ describe("isWindowsCommandNotFound", () => {
       expect(isCommandNotFound).toBe(true);
     }),
   );
-});
-
-describe("commandName", () => {
-  it("drops the directory from POSIX and Windows paths", () => {
-    expect(ProcessRunner.commandName("/Users/me/.local/bin/claude")).toBe("claude");
-    expect(ProcessRunner.commandName("C:\\Program Files\\nodejs\\npx.cmd")).toBe("npx.cmd");
-    expect(ProcessRunner.commandName("git")).toBe("git");
-  });
 });

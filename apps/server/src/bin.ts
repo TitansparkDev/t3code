@@ -14,6 +14,9 @@ if (
   })
 ) {
   const command = process.argv[2];
+  // Guard sockets before either dispatch path can load outbound-capable modules.
+  const { ignoreMacosTypeOfServiceEinval } = await import("./outboundHttp.ts");
+  ignoreMacosTypeOfServiceEinval();
   if (command === "chat-agents-acp") {
     // An ACP agent the server runs as a local command: stdout carries only protocol messages.
     const { runChatAgentsAcp } = await import("./provider/chatAgentsAcp.ts");

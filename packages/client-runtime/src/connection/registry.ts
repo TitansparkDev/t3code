@@ -50,6 +50,7 @@ import {
   credentialConnectionId,
   entryWithRoutes,
   findRouteToSameAddress,
+  hasSavedBearerRoute,
   mergeLearnedRoutes,
   routesAfterRemoving,
   upsertRoute,
@@ -356,10 +357,9 @@ export const make = Effect.gen(function* () {
           const environmentId = entry.target.environmentId;
           const scope = yield* Scope.fork(registryScope);
           const supervisor = yield* EnvironmentSupervisor.make(entry, {
-            // An enabled environment starts out connecting. Starting it idle and
-            // then asking it to connect would first publish the state of an
-            // environment the user switched off.
-            initiallyDesired: entry.enabled,
+            // Seed the intent to avoid publishing a false switched-off state
+            // before an enabled, compatible environment starts connecting.
+            initiallyDesired: entry.enabled && entry.unsupportedReason === undefined,
             learnRoutes: (input) => learnRoutes({ environmentId, ...input }),
           }).pipe(
             Effect.provideService(Connectivity.Connectivity, connectivity),
@@ -376,14 +376,7 @@ export const make = Effect.gen(function* () {
           yield* SubscriptionRef.changes(supervisor.state).pipe(
             Stream.runForEach((state) =>
               state.phase === "blocked" && state.lastFailure?.reason === "unsupported"
-                ? setCompatibility(environmentId, state.lastFailure).pipe(
-                    Effect.catch((error) =>
-                      Effect.logWarning("Could not disable an unsupported environment.", {
-                        environmentId,
-                        error,
-                      }),
-                    ),
-                  )
+                ? setCompatibility(environmentId, state.lastFailure)
                 : Effect.void,
             ),
             Effect.forkIn(scope),
@@ -612,7 +605,7 @@ export const make = Effect.gen(function* () {
           const entry: ConnectionCatalogEntry =
             previous?.unsupportedReason !== undefined &&
             gitHubRoutingConnectionKey(previous) === gitHubRoutingConnectionKey(registered)
-              ? { ...registered, enabled: false, ...unsupportedState(previous) }
+              ? { ...registered, ...unsupportedState(previous) }
               : registered;
           const persisted = (yield* Ref.get(persistedEnvironmentIds)).has(target.environmentId);
           if (
@@ -1020,10 +1013,16 @@ export const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const entry = yield* getEntry(environmentId);
         // Switching back on is how a person asks to check again after updating
-        // the server, so the old verdict is dropped and the connection decides;
+        // the server, so a cached rejection is dropped and the connection decides;
         // a host that is still incompatible blocks it again.
-        const { unsupportedReason, serverUpdateRequired: _update, ...compatible } = entry;
-        if (entry.enabled === enabled && (!enabled || unsupportedReason === undefined)) {
+        const retryUnsupported = enabled && entry.unsupportedReason !== undefined;
+        if (retryUnsupported && !hasSavedBearerRoute(entry)) {
+          return yield* new ConnectionBlockedError({
+            reason: "unsupported",
+            detail: entry.unsupportedReason,
+          });
+        }
+        if (entry.enabled === enabled && !retryUnsupported) {
           return;
         }
         if (
@@ -1032,9 +1031,8 @@ export const make = Effect.gen(function* () {
         ) {
           yield* registrations.setEnabled(environmentId, enabled);
         }
-        const next: ConnectionCatalogEntry = enabled
-          ? { ...compatible, enabled }
-          : { ...entry, enabled };
+        const { unsupportedReason: _reason, serverUpdateRequired: _update, ...rest } = entry;
+        const next: ConnectionCatalogEntry = enabled ? { ...rest, enabled } : { ...entry, enabled };
         // Update the lease in place so the supervisor keeps its generation and
         // durable streams; `installEntryLocked` would tear it down instead.
         const lease = (yield* SubscriptionRef.get(serviceScopes)).get(environmentId);
@@ -1117,28 +1115,22 @@ export const make = Effect.gen(function* () {
           serverUpdateRequired: _previousUpdateRequired,
           ...rest
         } = entry;
+        // Compatibility pauses connections without changing the user's saved on/off choice.
         const next: ConnectionCatalogEntry =
           error === null
             ? rest
             : {
                 ...rest,
-                enabled: false,
                 unsupportedReason: error.message,
                 ...(error.serverUpdateRequired === true ? { serverUpdateRequired: true } : {}),
               };
-        if (
-          error !== null &&
-          entry.enabled &&
-          !(yield* Ref.get(platformEnvironmentIds)).has(environmentId)
-        ) {
-          yield* registrations.setEnabled(environmentId, false);
-        }
         const lease = (yield* SubscriptionRef.get(serviceScopes)).get(environmentId);
         if (lease !== undefined) {
           yield* SubscriptionRef.update(serviceScopes, (current) =>
             new Map(current).set(environmentId, { ...lease, entry: next }),
           );
           if (error !== null) yield* lease.supervisor.disconnect;
+          else if (next.enabled) yield* lease.supervisor.connect;
         }
         yield* SubscriptionRef.update(entries, (current) =>
           new Map(current).set(environmentId, next),
