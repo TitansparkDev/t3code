@@ -30,6 +30,9 @@ import { EnvironmentToolkit } from "./toolkits/environment/tools.ts";
 import * as EnvironmentHandlers from "./toolkits/environment/handlers.ts";
 import { ProjectToolkit } from "./toolkits/project/tools.ts";
 import * as ProjectHandlers from "./toolkits/project/handlers.ts";
+import { RepoToolkit } from "./toolkits/repo/tools.ts";
+import * as RepoHandlers from "./toolkits/repo/handlers.ts";
+import * as RepoContext from "../workspace/RepoContext.ts";
 import { AttachmentToolkit } from "./toolkits/attachment/tools.ts";
 import * as AttachmentHandlers from "./toolkits/attachment/handlers.ts";
 import { ThreadToolkit } from "./toolkits/thread/tools.ts";
@@ -815,6 +818,10 @@ export const layerEnvironmentToolkit = toolkitRegistration(
 
 const layerProjectRegistration = toolkitRegistration(ProjectToolkit, ProjectHandlers.layer);
 
+const layerRepoRegistration = toolkitRegistration(RepoToolkit, RepoHandlers.layer).pipe(
+  Layer.provide(RepoContext.layer),
+);
+
 export const layerAttachmentToolkit = toolkitRegistration(
   AttachmentToolkit,
   AttachmentHandlers.layer,
@@ -854,6 +861,7 @@ export const layer = Layer.mergeAll(
   layerThreadToolkit,
   layerAttachmentToolkit,
   layerProjectRegistration,
+  layerRepoRegistration,
   layerEnvironmentToolkit,
   layerPreviewControlsRegistration,
   layerWorktreeToolkitRegistration,

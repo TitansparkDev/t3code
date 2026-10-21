@@ -24056,6 +24056,8 @@ apps/server/src/mcp/toolkits/project/tools.ts
 apps/server/src/mcp/toolkits/pullRequests/handlers.test.ts
 apps/server/src/mcp/toolkits/pullRequests/handlers.ts
 apps/server/src/mcp/toolkits/pullRequests/tools.ts
+apps/server/src/mcp/toolkits/repo/handlers.ts
+apps/server/src/mcp/toolkits/repo/tools.ts
 apps/server/src/mcp/toolkits/thread/handlers.ts
 apps/server/src/mcp/toolkits/thread/tools.ts
 apps/server/src/mcp/toolkits/worktree/handlers.ts
@@ -25118,6 +25120,8 @@ apps/server/src/vcs/VcsStatusBroadcaster.ts
 apps/server/src/vcs/testing/GitVcsDriverCore.fixture.sh
 apps/server/src/vcs/testing/VcsDriverContractHarness.ts
 apps/server/src/workspace/KnownWorkspaces.ts
+apps/server/src/workspace/RepoContext.test.ts
+apps/server/src/workspace/RepoContext.ts
 apps/server/src/workspace/WorkspaceEntries.test.ts
 apps/server/src/workspace/WorkspaceEntries.ts
 apps/server/src/workspace/WorkspaceFileSystem.test.ts
@@ -27627,6 +27631,7 @@ packages/contracts/src/relay.test.ts
 packages/contracts/src/relay.ts
 packages/contracts/src/relayClient.ts
 packages/contracts/src/remoteAccess.ts
+packages/contracts/src/repoContext.ts
 packages/contracts/src/resourceTelemetry.ts
 packages/contracts/src/review.ts
 packages/contracts/src/rpc.test.ts
