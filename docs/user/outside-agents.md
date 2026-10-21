@@ -82,6 +82,17 @@ Add the environment as a custom MCP app in ChatGPT's apps settings:
    need a client ID or secret.
 4. Create the app, then approve the sign-in page that opens.
 
+Choose **Supervised** or broader access if ChatGPT should start work. Then you can ask
+it things like "fix the login crash in MacroSnap" or "finish the plan in Overseer". It
+can read the project's files and git history, including unpushed worktrees. It sees which
+providers are near their 5-hour or weekly limits and picks a provider, model and effort
+level that have room. It can start threads, or create and start goals. It saves new goals
+as drafts unless you ask it to start them.
+
+To have ChatGPT act as the overseer for goals, use [Chat Agents](./providers-chat-agents.md).
+Its chats attach the app named **W**, so point that app's server URL at this environment's
+MCP URL.
+
 ## Other agents and bots
 
 Any agent that supports remote MCP servers over HTTP with OAuth can connect. Give

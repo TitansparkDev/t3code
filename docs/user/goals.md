@@ -64,15 +64,19 @@ thread list; the Goals page shows how each one ended.
   stay safe (no deleting others' data, no force-pushes, no disabling checks) and to say
   the line again only if a person really is needed. Only if it says so again does it count
   as stuck.
-- **Overseer.** Before the goal gives up (the safety stop above, or every Beads chunk
-  blocked with nothing working), an overseer reads a briefing: the repository's
-  instruction, spec and plan documents, the Beads queue, what is blocked or claimed, and
-  how each stuck chat ended. Its answer is the prompt: it is sent to each stuck chat to
-  continue it (a decision made, a fix to apply, extra work to do first) and is read first
-  by every new agent. It stops the goal and asks you only when nothing an agent can do
-  will help, such as a missing login. It runs on Chat Agents when that provider is on,
-  otherwise on one of the goal's own models, and is asked at most twice per start. Turn
-  it off under **Other settings**.
+- **Overseer.** When an agent still needs help after its one more try, keeps failing the
+  same check, or the whole goal is stuck, the goal opens an escalation and holds that chat
+  instead of giving up on it. An overseer agent investigates with T3's tools: it reads the
+  worker's replies, the task, the failing check, and the repository and the worker's
+  worktree, including work that is not pushed yet. Then it acts on each escalation: it
+  writes the worker exact instructions in the same chat, or retries, unblocks or gives up
+  the task. It hands an escalation to you only when a person must act, such as a missing
+  login or a product decision. One overseer chat handles all of a goal's open escalations
+  at once. It runs on Chat Agents (ChatGPT) when that provider is ready, otherwise on one of
+  the goal's own models. A chat gets at most three rounds before it is handed to you.
+  Escalations appear on the Goals page, where you can tell a worker to retry, give up its
+  task, cancel an escalation, or use **Ask overseer** on a chat or the whole goal. Turn the
+  overseer off under **Other settings**.
 
 ## Plans with AgentQueue
 

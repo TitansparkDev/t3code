@@ -22,8 +22,12 @@ Pick **Chat Agents** from the model picker, or use it in a goal, like any other 
   see text appear word by word or a list of tool calls. A reply can take minutes.
 - **One message at a time.** All Chat Agents threads share one worker. Messages wait their turn
   rather than failing.
-- **The chat has W's tools.** The ChatGPT chat can use the `@W` connector, so ask it to use W when
-  you want it to start or check W work.
+- **The chat has the `@W` app's tools.** Every chat attaches the ChatGPT app named **W**. Point
+  that app at this environment's MCP URL (see [outside agents](./outside-agents.md#chatgpt)) so the
+  chat can use T3's tools. Goal overseers need this to read and act on escalations.
+- **The desktop must be unlocked.** After a reboot without a desktop login, the keyring stays
+  locked and the ChatGPT app cannot be driven. The provider then shows an error and goal
+  overseers run on another provider.
 - **No attachments, titles or rollback.** Thread titles come from another provider.
 - **Stop** ends the worker for that message and closes its window. If you delete the chat in
   ChatGPT, the next message starts a new one and says so.
