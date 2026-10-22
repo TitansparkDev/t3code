@@ -205,6 +205,14 @@ Architecture and its constraints: `docs/internals/overview.md`. Glossary: `docs/
 
 ## Recent request log
 
+- 2026-10-22 — v0.1.5: goal-worker pipeline audit. Queue workers are told the `agentq run` deadline,
+  what finalize exit 3 means and that the old claim tools are banned; a run with no `--timeout` gets one
+  hour; `agentq --help` prints usage; NEEDS ATTENTION / BLOCKED TASKS count only as their own status line.
+  A goal whose detail was cut on a space became unreadable (`t3_goal_read` internal error) and unwritable;
+  the store now trims details and refuses unencodable writes, failed MCP tools are logged, and the server
+  trace keeps about a day (50 MB x 20). Device checks in repos with no matching AVD boot the first one.
+  Environment: `dcg` hook timeout 5 s, the duplicate destructive-command hook removed from both Claude homes,
+  Serena skips goal worktrees, Overseer's AGENTS.md aligned with the queue plus a `ruff` finalize guard.
 - 2026-10-22 — v0.1.4: merged upstream/main (890 commits) and finished the reliability plan (RLY01–RLY14).
   The overseer is held while a desktop provider needs sign-in (cleared by restarting the goal), and repair
   conversations are rebound to their task worktree before a resume is sent. The `agentq run` broker no longer
@@ -242,7 +250,7 @@ Architecture and its constraints: `docs/internals/overview.md`. Glossary: `docs/
   (`agentq run`, broker + `agent-resources` lock files, capacities measured on this 25 GB / no-GPU VM) so a busy
   resource never fails a task or burns a model turn; safe extra files are approved automatically and a held file
   pauses the task; failures that already existed on the starting branch become their own task; `agentq plan lint
-[--baseline]` checks a plan against the repository before any worker starts, and the `autonomous-plan` skill
+  [--baseline]` checks a plan against the repository before any worker starts, and the `autonomous-plan` skill
   (Claude and Codex) drives it. Real Claude and Codex workers finished a 10-task plan in 9 sessions, including a
   `kill -9` of the server mid-run. See `docs/agentqueue/ADR-0010-*.md`.
 - 2026-10-12 — v0.0.68: AgentQueue execution contract. Workers were dispatched into assignments the
