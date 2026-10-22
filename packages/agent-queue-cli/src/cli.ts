@@ -64,6 +64,17 @@ export function parseArgs(rawArgs: string[]): ParsedArgs {
   };
 }
 
+const USAGE = `Usage: agentq <command> [args] [--json]
+  run [--resource a,b] [--owner TASK] [--defer-after S] [--timeout S] [--wait S] -- <command>
+                        run a command through the machine's resource queue (see agentq run --help)
+  resource status       show shared resources and who holds them
+  repo init|doctor      set up or check the repository's queue contract
+  plan import|validate|lint [--baseline] <PLAN.md>
+  task list|claim|heartbeat|release|finalize|abort|retry|block|unblock|note
+  status                queue status (the default command)
+  events                recent queue events
+`;
+
 /**
  * The entry point of the `agentq` binary. `run` and `resource` wait for machine resources and
  * stream a command's output, so they are asynchronous; everything else is the synchronous CLI.
@@ -72,6 +83,9 @@ export async function runCliAsync(
   rawArgs: string[],
   cwd: string = process.cwd(),
 ): Promise<{ exitCode: number; output: string; error?: string }> {
+  if (rawArgs[0] === "--help" || rawArgs[0] === "-h" || rawArgs[0] === "help") {
+    return { exitCode: 0, output: USAGE };
+  }
   try {
     // `plan lint --baseline` runs the plan's checks on the untouched branch, so it waits.
     if (

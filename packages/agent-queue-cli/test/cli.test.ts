@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vite-plus/test";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
-import { runCli } from "../src/cli.ts";
+import { runCli, runCliAsync } from "../src/cli.ts";
+import { runResourceCommand } from "../src/resourceCommands.ts";
 import { createTestGitRepo } from "../../agent-queue-core/test/harness/gitHarness.ts";
 
 describe("AgentQueue CLI & Human Intervention (AQ-016, AQ-017, AQ-018)", () => {
@@ -190,5 +191,20 @@ Verify: vp test src/second
     } finally {
       await repo.cleanup();
     }
+  });
+
+  it("prints usage for --help and -h rather than queue status", async () => {
+    for (const flag of ["--help", "-h"]) {
+      const result = await runCliAsync([flag], process.cwd());
+      expect(result.exitCode).toBe(0);
+      expect(result.output).toContain("Usage: agentq");
+      expect(result.output).not.toContain("Host:");
+    }
+  });
+
+  it("states the default run deadline in agentq run --help", async () => {
+    const result = await runResourceCommand(["run", "--help"], process.cwd());
+    expect(result?.exitCode).toBe(0);
+    expect(result?.stdout).toContain("default 3600");
   });
 });

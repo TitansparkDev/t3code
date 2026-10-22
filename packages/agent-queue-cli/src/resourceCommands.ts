@@ -15,6 +15,7 @@ import * as NodeChildProcess from "node:child_process";
 import { resolveGitContext } from "./gitContext.ts";
 import {
   createJobRunner,
+  DEFAULT_RUN_MS,
   describeJob,
   inferResourceDemands,
   loadContract,
@@ -104,6 +105,12 @@ export interface ResourceCliResult {
   readonly stderr: string;
 }
 
+const RUN_USAGE = `Usage: agentq run [--resource a,b] [--owner TASK] [--defer-after SECONDS] [--timeout SECONDS] [--wait SECONDS] -- <command> [args]
+  --timeout   kill the command after SECONDS once it holds the resource (default ${DEFAULT_RUN_MS / 1000})
+  --defer-after  with --owner: store the command as a job after waiting this long (exit 75)
+  --wait      give up waiting for the resource after SECONDS (default 10800)
+`;
+
 const fmtMs = (ms: number) =>
   ms < 90_000 ? `${Math.round(ms / 1000)}s` : `${Math.round(ms / 60_000)}m`;
 
@@ -157,13 +164,11 @@ export async function runResourceCommand(
   });
 
   if (sub === "run") {
+    if (flags.help === true || flags.h === true) {
+      return { exitCode: 0, stdout: RUN_USAGE, stderr: "" };
+    }
     if (command.length === 0) {
-      return {
-        exitCode: 2,
-        stdout: "",
-        stderr:
-          "Usage: agentq run [--resource a,b] [--owner TASK] [--defer-after SECONDS] [--timeout SECONDS] [--wait SECONDS] -- <command> [args]",
-      };
+      return { exitCode: 2, stdout: "", stderr: RUN_USAGE };
     }
     const { resources: repoResources, repo } = contractResources(cwd);
     const commandLine = command.join(" ");
