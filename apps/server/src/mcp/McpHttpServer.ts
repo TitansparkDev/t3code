@@ -1,4 +1,5 @@
 import * as Cause from "effect/Cause";
+import * as Exit from "effect/Exit";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -835,7 +836,33 @@ const withToolAnalytics =
   Effect.fnUntraced(function* <A, E, R>(registration: Effect.Effect<A, E, R>) {
     const server = yield* McpServer.McpServer;
     const analytics = yield* Effect.serviceOption(AnalyticsService.AnalyticsService);
-    if (Option.isNone(analytics)) return yield* registration;
+    // A failed or crashed tool reaches the client only as "internal server error"; this log
+    // is the only record of why.
+    const logFailure = (tool: string, exit: Exit.Exit<unknown, unknown>) =>
+      Exit.isFailure(exit) && !Cause.hasInterruptsOnly(exit.cause)
+        ? Effect.logError("mcp.tool.failed", {
+            tool,
+            cause: Cause.pretty(exit.cause).slice(0, 4000),
+          })
+        : Effect.void;
+    if (Option.isNone(analytics)) {
+      return yield* registration.pipe(
+        Effect.provideService(
+          McpServer.McpServer,
+          McpServer.McpServer.of({
+            ...server,
+            addTool: (options) =>
+              server.addTool({
+                ...options,
+                handle: (payload) =>
+                  options
+                    .handle(payload)
+                    .pipe(Effect.onExit((exit) => logFailure(options.tool.name, exit))),
+              }),
+          }),
+        ),
+      );
+    }
     const registry = yield* Effect.serviceOption(ProviderRegistry.ProviderRegistry);
     const threads = yield* Effect.serviceOption(ThreadManagementService.ThreadManagementService);
     const shellOf = (threadId: string) =>
@@ -945,6 +972,7 @@ const withToolAnalytics =
             Effect.fnUntraced(function* (payload) {
               const startedAt = yield* Clock.currentTimeMillis;
               return yield* options.handle(payload).pipe(
+                Effect.onExit((exit) => logFailure(options.tool.name, exit)),
                 Effect.onExit((exit) => {
                   const result = exit._tag === "Success" ? exit.value : undefined;
                   // A call that asks for input is retried with it, and that call is the one counted.

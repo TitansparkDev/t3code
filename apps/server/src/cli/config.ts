@@ -88,8 +88,10 @@ export const traceFileConfig = Config.String("T3CODE_TRACE_FILE").pipe(
   Config.option,
   Config.map(Option.getOrUndefined),
 );
+// Per-query SQL spans fill about 10 MB every 13 minutes; this keeps roughly a day, so an
+// overnight goal run can still be diagnosed the next morning.
 export const traceMaxFilesConfig = Config.Int("T3CODE_TRACE_MAX_FILES").pipe(
-  Config.withDefault(10),
+  Config.withDefault(20),
 );
 
 const EnvServerConfig = Config.all({
@@ -97,7 +99,7 @@ const EnvServerConfig = Config.all({
   traceMinLevel: Config.LogLevel("T3CODE_TRACE_MIN_LEVEL").pipe(Config.withDefault("Info")),
   traceTimingEnabled: Config.Boolean("T3CODE_TRACE_TIMING_ENABLED").pipe(Config.withDefault(true)),
   traceFile: traceFileConfig,
-  traceMaxBytes: Config.Int("T3CODE_TRACE_MAX_BYTES").pipe(Config.withDefault(10 * 1024 * 1024)),
+  traceMaxBytes: Config.Int("T3CODE_TRACE_MAX_BYTES").pipe(Config.withDefault(50 * 1024 * 1024)),
   traceMaxFiles: traceMaxFilesConfig,
   traceBatchWindowMs: Config.Int("T3CODE_TRACE_BATCH_WINDOW_MS").pipe(Config.withDefault(1_000)),
   otlpTracesUrl: Config.String("T3CODE_OTLP_TRACES_URL").pipe(
