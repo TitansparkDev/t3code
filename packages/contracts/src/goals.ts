@@ -438,13 +438,15 @@ export function goalTitle(goal: Pick<Goal, "name">): string {
 
 const GOAL_COMPLETE_LINE = new RegExp(`^\\s*${GOAL_COMPLETE_MARKER}\\s*$`, "mu");
 /**
- * A marker counts only where a line starts with it (after markdown such as `**`, `#` or `- `),
- * so prose that merely mentions it ("No NEEDS ATTENTION is needed", "...needs NEEDS ATTENTION")
- * never escalates. Starting the line also rules out a negation in front of the marker.
+ * A marker counts only as a line of its own: it starts the line (after markdown such as `**`,
+ * `#` or `- `) and is followed by nothing, or by a `:`, ` -`, ` —` or ` –` introducing a reason.
+ * Narration that starts with the marker ("NEEDS ATTENTION I'll inspect…") and prose that
+ * mentions it ("No NEEDS ATTENTION is needed") do not escalate.
  */
 const MARKER_LINE_START = "^[ \\t]*(?:(?:#{1,6}|[-*+>]|\\*\\*|__)[ \\t]*)*";
+const MARKER_LINE_TAIL = "(?:\\*\\*)?(?:[ \\t]*$|(?::|[ \\t]+[-–—])(?=[ \\t]*\\S))";
 const GOAL_NEEDS_ATTENTION_LINE = new RegExp(
-  `${MARKER_LINE_START}${GOAL_NEEDS_ATTENTION_MARKER}\\b`,
+  `${MARKER_LINE_START}${GOAL_NEEDS_ATTENTION_MARKER}${MARKER_LINE_TAIL}`,
   "mu",
 );
 
@@ -459,7 +461,7 @@ export function replyNeedsAttention(reply: string | undefined): boolean {
 }
 
 const GOAL_ATTENTION_NOTE = new RegExp(
-  `${MARKER_LINE_START}${GOAL_NEEDS_ATTENTION_MARKER}\\b[ \\t]*[-–—:]?[ \\t]*([^]*)$`,
+  `${MARKER_LINE_START}${GOAL_NEEDS_ATTENTION_MARKER}${MARKER_LINE_TAIL}([^]*)$`,
   "mu",
 );
 
@@ -481,7 +483,7 @@ export function replyAttentionNote(reply: string | undefined): string | undefine
 }
 
 const GOAL_BLOCKED_LINE = new RegExp(
-  `${MARKER_LINE_START}${GOAL_BLOCKED_MARKER}(?:[ \\t]*[-–—:][^\\r\\n]*)?[ \\t]*$`,
+  `${MARKER_LINE_START}${GOAL_BLOCKED_MARKER}${MARKER_LINE_TAIL}`,
   "mu",
 );
 

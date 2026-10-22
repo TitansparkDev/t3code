@@ -32,7 +32,7 @@ describe("needs attention", () => {
 
   it("counts a marker that starts a line, with markdown or a reason after it", () => {
     expect(replyNeedsAttention("Done.\n\n**NEEDS ATTENTION**: I need a login.")).toBe(true);
-    expect(replyNeedsAttention("- NEEDS ATTENTION I'll inspect the tunnel.")).toBe(true);
+    expect(replyNeedsAttention("- NEEDS ATTENTION: I'll inspect the tunnel.")).toBe(true);
     expect(replyAttentionNote("Done.\n\nNEEDS ATTENTION: the migration is missing.")).toBe(
       "the migration is missing.",
     );
@@ -41,6 +41,17 @@ describe("needs attention", () => {
   it("does not count a negated mention", () => {
     expect(replyNeedsAttention("All green. No NEEDS ATTENTION is needed.")).toBe(false);
     expect(replyNeedsAttention("Not NEEDS ATTENTION, the check passed.")).toBe(false);
+  });
+
+  it("does not count narration that starts with the marker", () => {
+    expect(replyNeedsAttention("NEEDS ATTENTION I'll inspect the guard")).toBe(false);
+    expect(replyAttentionNote("NEEDS ATTENTION I'll inspect the guard")).toBe(undefined);
+  });
+
+  it("counts a bolded bare marker and a marker with a reason", () => {
+    expect(replyNeedsAttention("**NEEDS ATTENTION**")).toBe(true);
+    expect(replyNeedsAttention("NEEDS ATTENTION: the emulator is missing")).toBe(true);
+    expect(replyNeedsAttention("NEEDS ATTENTION — the emulator is missing")).toBe(true);
   });
 
   it("does not count the marker in the middle of a sentence", () => {
@@ -159,6 +170,11 @@ describe("goal instructions", () => {
     expect(prompt).toContain("normal non-Beads workflow");
     expect(prompt).not.toContain("bd ");
     expect(prompt).not.toContain("agent-work");
+  });
+
+  it("recognises blocked work only as its own line, not narration", () => {
+    expect(replyReportsBlockedWork("BLOCKED TASKS I'll look at the queue next")).toBe(false);
+    expect(replyReportsBlockedWork("**BLOCKED TASKS**")).toBe(true);
   });
 
   it("recognises blocked work on its own line", () => {
