@@ -5,6 +5,7 @@ import { Atom } from "effect/reactivity";
 import * as MobileDatabase from "../persistence/mobile-database";
 import { projectFaviconDatabaseCache } from "../lib/projectFaviconDatabaseCache";
 import * as Runtime from "../lib/runtime";
+import { environmentThreads } from "./threads";
 
 export interface EnvironmentClientCacheSummary {
   readonly environmentId: EnvironmentId;
@@ -85,6 +86,8 @@ export const clearClientCacheAtom = clientCacheRuntime
       ),
       Effect.tap(() =>
         Effect.sync(() => {
+          if (scope.type === "all") environmentThreads.clearRetainedSnapshots();
+          else environmentThreads.clearRetainedEnvironment(scope.environmentId);
           get.refresh(clientCacheSummaryAtom);
         }),
       ),

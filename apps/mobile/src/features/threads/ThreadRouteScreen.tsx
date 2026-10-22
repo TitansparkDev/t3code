@@ -242,6 +242,7 @@ export function ThreadRouteScreen(props: ThreadRouteScreenProps) {
     shellHasError: routeEnvironmentShellState.hasError,
     detailStatus: selectedThreadDetailState.status,
     detailHasError: Option.isSome(selectedThreadDetailState.error),
+    detailHasContent: Option.isSome(selectedThreadDetailState.data),
   });
 
   if (stillHydrating) {

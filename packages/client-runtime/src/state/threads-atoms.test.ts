@@ -36,6 +36,7 @@ import { createEnvironmentThreadDetailAtoms } from "./threadDetail.ts";
 import { v2Projection, v2ThreadId } from "./orchestrationV2TestFixtures.ts";
 import * as ThreadHistoryController from "./threadHistoryController.ts";
 import { createEnvironmentThreadStateAtoms, type EnvironmentThreadState } from "./threads.ts";
+import { createThreadSnapshotRetention } from "./threadRetention.ts";
 import * as ThreadSnapshotLoader from "./threadSnapshotHttp.ts";
 
 const TARGET = new PrimaryConnectionTarget({
@@ -50,6 +51,44 @@ const THREAD: OrchestrationV2ThreadProjection = {
   thread: { ...v2Projection.thread, title: "Cached thread" },
 };
 const SNAPSHOT: OrchestrationV2ThreadDetailSnapshot = { snapshotSequence: 7, projection: THREAD };
+
+describe("thread snapshot retention", () => {
+  it("evicts the oldest snapshot when count or byte budgets are exceeded", () => {
+    const retention = createThreadSnapshotRetention<{ readonly body: string }>({
+      idleTtlMs: 1000,
+      maxEntries: 2,
+      maxBytes: 30,
+    });
+    const first = retention.cache("environment\u0000first");
+    const second = retention.cache("environment\u0000second");
+    const third = retention.cache("environment\u0000third");
+    first.snapshot = { body: "aa" };
+    second.snapshot = { body: "bb" };
+    third.snapshot = { body: "cc" };
+    expect(first.snapshot).toBeUndefined();
+    expect(second.snapshot).toEqual({ body: "bb" });
+    expect(third.snapshot).toEqual({ body: "cc" });
+  });
+
+  it("expires snapshots by age and clears a saved environment", () => {
+    vi.useFakeTimers();
+    try {
+      const retention = createThreadSnapshotRetention<{ readonly body: string }>({
+        idleTtlMs: 100,
+      });
+      const old = retention.cache("environment\u0000old");
+      old.snapshot = { body: "old" };
+      vi.advanceTimersByTime(101);
+      expect(old.snapshot).toBeUndefined();
+      const retained = retention.cache("environment\u0000kept");
+      retained.snapshot = { body: "private" };
+      retention.clearEnvironment("environment");
+      expect(retained.snapshot).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
 
 const makeHarness = Effect.fn("TestThreadAtoms.makeHarness")(function* (options?: {
   readonly snapshot?: OrchestrationV2ThreadDetailSnapshot;

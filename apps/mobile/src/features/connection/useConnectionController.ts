@@ -17,6 +17,7 @@ import {
   updateBearerConnection,
 } from "../../connection/onboarding";
 import { useWorkspaceEnvironments } from "../../state/workspace";
+import { environmentThreads } from "../../state/threads";
 import { relayEnvironmentDiscovery } from "../../state/relay";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { relayManagedEnvironmentIds } from "./environmentSections";
@@ -89,7 +90,10 @@ export function useConnectionController() {
     [registerEnvironment],
   );
   const removeEnvironment = useCallback(
-    (environmentId: EnvironmentId) => removeEnvironmentMutation(environmentId),
+    (environmentId: EnvironmentId) => {
+      environmentThreads.clearRetainedEnvironment(environmentId);
+      return removeEnvironmentMutation(environmentId);
+    },
     [removeEnvironmentMutation],
   );
   const retryEnvironment = useCallback(

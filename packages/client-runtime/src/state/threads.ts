@@ -32,7 +32,11 @@ import * as ManagedRelay from "../relay/managedRelay.ts";
 import { subscribeDynamic } from "../rpc/client.ts";
 import { parseThreadKey, threadKey } from "./entities.ts";
 import { applyOrchestrationV2ProjectionEvent } from "./orchestrationV2Projection.ts";
-import { THREAD_SNAPSHOT_IDLE_TTL_MS } from "./threadRetention.ts";
+import {
+  createThreadSnapshotRetention,
+  DEFAULT_THREAD_SNAPSHOT_RETENTION,
+  type ThreadSnapshotRetentionPolicy,
+} from "./threadRetention.ts";
 import { followStreamInEnvironment } from "./runtime.ts";
 import * as ThreadHistoryController from "./threadHistoryController.ts";
 import { fetchEnvironmentThreadHistoryPage } from "./threadHistoryHttp.ts";
@@ -922,15 +926,14 @@ export function createEnvironmentThreadStateAtoms<R, E>(
     | R,
     E
   >,
+  retentionPolicy: ThreadSnapshotRetentionPolicy = DEFAULT_THREAD_SNAPSHOT_RETENTION,
 ) {
   // Cache definitions must outlive collectible live-atom definitions. The
   // registry retains these nodes without retaining environment or RPC scopes.
+  const retention = createThreadSnapshotRetention<ThreadResumeSnapshot>(retentionPolicy);
   const resumeFamily = Atom.family((key: string) =>
-    Atom.make((): ThreadResumeCache => ({
-      snapshot: undefined,
-      owner: undefined,
-    })).pipe(
-      Atom.setIdleTTL(THREAD_SNAPSHOT_IDLE_TTL_MS),
+    Atom.make((): ThreadResumeCache => retention.cache(key)).pipe(
+      Atom.setIdleTTL(retentionPolicy.idleTtlMs),
       Atom.withLabel(`environment-thread-resume:${key}`),
     ),
   );
@@ -957,6 +960,9 @@ export function createEnvironmentThreadStateAtoms<R, E>(
   return {
     stateAtom: (environmentId: EnvironmentIdType, threadId: ThreadIdType) =>
       family(threadKey({ environmentId, threadId })),
+    clearRetainedEnvironment: (environmentId: EnvironmentIdType) =>
+      retention.clearEnvironment(environmentId),
+    clearRetainedSnapshots: retention.clear,
   };
 }
 

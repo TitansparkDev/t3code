@@ -9,6 +9,7 @@ const settled = {
   shellHasError: false,
   detailStatus: "live" as const,
   detailHasError: false,
+  detailHasContent: false,
 };
 
 describe("threadRouteIsHydrating", () => {
@@ -68,6 +69,19 @@ describe("threadRouteIsHydrating", () => {
         connectionState: "offline",
         shellStatus: "synchronizing",
         detailStatus: "synchronizing",
+      }),
+    ).toBe(false);
+  });
+
+  it("shows cached content while connections, shell, or detail catch up", () => {
+    expect(
+      threadRouteIsHydrating({
+        ...settled,
+        isLoadingConnections: true,
+        connectionState: "reconnecting",
+        shellStatus: "synchronizing",
+        detailStatus: "cached",
+        detailHasContent: true,
       }),
     ).toBe(false);
   });
