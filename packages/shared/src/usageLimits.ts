@@ -164,11 +164,56 @@ export interface LimitAccount {
   readonly limits: ServerProviderUsageLimits;
 }
 
+/**
+ * An enabled, installed native instance or a source account that has no usable
+ * reading this time. `identity` is the same key that merges readable duplicates,
+ * so a caller can tell a configured account apart from one already shown.
+ */
+export interface UnreadLimitAccount {
+  readonly identity: string;
+  readonly key: string;
+  readonly driver: ServerProvider["driver"];
+  readonly displayName: string | null;
+  readonly email: string | undefined;
+  readonly plan: string | undefined;
+  readonly environments: LimitAccount["environments"];
+  readonly sourceLabel: string | null;
+  /** False for a native instance whose sign-in is missing; sources are always signed in. */
+  readonly signedIn: boolean;
+  readonly available: boolean;
+  readonly limits: ServerProviderUsageLimits | undefined;
+  readonly reporters: readonly EnvironmentId[];
+}
+
+export interface LimitAccountSnapshot {
+  readonly read: ReadonlyArray<{
+    readonly identity: string;
+    readonly account: LimitAccount;
+    /** Environments whose readings were merged into this account. */
+    readonly reporters: readonly EnvironmentId[];
+  }>;
+  /**
+   * Configured instances and source accounts without a usable reading. An identity can also be in
+   * `read`; the caller keeps the readable entry.
+   */
+  readonly unread: readonly UnreadLimitAccount[];
+}
+
 export function collectLimitAccounts(presentations: LimitPresentations): readonly LimitAccount[] {
+  return collectLimitAccountSnapshot(presentations).read.map((entry) => entry.account);
+}
+
+export function collectLimitAccountSnapshot(
+  presentations: LimitPresentations,
+): LimitAccountSnapshot {
   const accounts = new Map<string, LimitAccount>();
+  const reporters = new Map<string, EnvironmentId[]>();
+  const unread: UnreadLimitAccount[] = [];
   const creditSources = new Map<string, LimitAccount>();
   const hubRedeems = new Map<string, LimitAccount>();
-  const merge = (key: string, next: LimitAccount) => {
+  const merge = (key: string, next: LimitAccount, reporter: EnvironmentId) => {
+    const seen = reporters.get(key) ?? [];
+    if (!seen.includes(reporter)) reporters.set(key, [...seen, reporter]);
     // Redeeming through a hub also clears the routing cooldown that hub holds
     // for the account. Redeeming natively against the same subscription resets
     // it upstream but leaves the hub refusing to route to the account until
@@ -233,19 +278,46 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
   );
   for (const [environmentId, presentation] of presentations) {
     const label = presentation.entry.target.label;
-    for (const provider of providersWithLimits(presentation.serverConfig?.providers ?? [])) {
-      if (!provider.usageLimits || limitsNotice(provider.usageLimits) !== null) continue;
-      merge(resolveKey(nativeReport(provider)) ?? `${environmentId}:${provider.instanceId}`, {
-        key: `${environmentId}:${provider.instanceId}`,
+    for (const provider of presentation.serverConfig?.providers ?? []) {
+      if (!provider.enabled || !provider.installed) continue;
+      const identity =
+        resolveKey(nativeReport(provider)) ?? `${environmentId}:${provider.instanceId}`;
+      const limits = provider.usageLimits;
+      const key = `${environmentId}:${provider.instanceId}`;
+      const readable =
+        limits !== undefined && isProviderAvailable(provider) && limitsNotice(limits) === null;
+      if (readable && limits) {
+        merge(
+          identity,
+          {
+            key,
+            driver: provider.driver,
+            displayName: provider.displayName?.trim() || null,
+            email: provider.auth.email,
+            plan: provider.auth.label,
+            accentColor: provider.accentColor,
+            environments: [{ environmentId, label }],
+            sourceLabel: null,
+            redeem: { environmentId, input: { instanceId: provider.instanceId } },
+            limits,
+          },
+          environmentId,
+        );
+        continue;
+      }
+      unread.push({
+        identity,
+        key,
         driver: provider.driver,
         displayName: provider.displayName?.trim() || null,
         email: provider.auth.email,
         plan: provider.auth.label,
-        accentColor: provider.accentColor,
         environments: [{ environmentId, label }],
         sourceLabel: null,
-        redeem: { environmentId, input: { instanceId: provider.instanceId } },
-        limits: provider.usageLimits,
+        signedIn: provider.auth.status === "authenticated",
+        available: isProviderAvailable(provider),
+        limits,
+        reporters: [environmentId],
       });
     }
   }
@@ -256,33 +328,62 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
         ? `${presentation.entry.target.label} · ${source.label}`
         : source.label;
       for (const account of source.accounts) {
-        if (limitsNotice(account.usageLimits) !== null) continue;
         const key = `${source.id}:${account.id}${account.workspaceId ? `:${account.workspaceId}` : ""}`;
-        merge(resolveKey(account) ?? key, {
-          key,
-          driver: account.driver,
-          displayName: account.email ? null : account.id.replace(/\.json$/i, ""),
-          email: account.email,
-          plan: account.plan,
-          accentColor: undefined,
-          environments: [],
-          sourceLabel,
-          redeem: account.usageLimits.resetCredits?.nextCreditId
-            ? {
-                environmentId,
-                input: {
-                  sourceId: source.id,
-                  accountId: account.id,
-                  creditId: account.usageLimits.resetCredits.nextCreditId,
-                },
-              }
-            : null,
-          limits: account.usageLimits,
-        });
+        const identity = resolveKey(account) ?? key;
+        const displayName = account.email ? null : account.id.replace(/\.json$/i, "");
+        if (limitsNotice(account.usageLimits) !== null) {
+          unread.push({
+            identity,
+            key,
+            driver: account.driver,
+            displayName,
+            email: account.email,
+            plan: account.plan,
+            environments: [],
+            sourceLabel,
+            signedIn: true,
+            available: true,
+            limits: account.usageLimits,
+            reporters: [environmentId],
+          });
+          continue;
+        }
+        merge(
+          identity,
+          {
+            key,
+            driver: account.driver,
+            displayName,
+            email: account.email,
+            plan: account.plan,
+            accentColor: undefined,
+            environments: [],
+            sourceLabel,
+            redeem: account.usageLimits.resetCredits?.nextCreditId
+              ? {
+                  environmentId,
+                  input: {
+                    sourceId: source.id,
+                    accountId: account.id,
+                    creditId: account.usageLimits.resetCredits.nextCreditId,
+                  },
+                }
+              : null,
+            limits: account.usageLimits,
+          },
+          environmentId,
+        );
       }
     }
   }
-  return [...accounts.values()];
+  return {
+    read: [...accounts].map(([identity, account]) => ({
+      identity,
+      account,
+      reporters: reporters.get(identity) ?? [],
+    })),
+    unread,
+  };
 }
 
 export function collectLimitNotices(presentations: LimitPresentations): readonly string[] {

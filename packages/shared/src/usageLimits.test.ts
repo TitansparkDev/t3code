@@ -3,6 +3,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ServerProvider,
+  type UsageLimitSourceSnapshots,
   UsageLimitSourceId,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
@@ -12,6 +13,7 @@ import {
   collectProviderUsageLimits,
   sameUsageLimitCommandCoverage,
   withUsageLimitsCommands,
+  collectLimitAccountSnapshot,
   collectLimitAccounts,
   collectExternalUsageLinks,
   collectLimitNotices,
@@ -1288,5 +1290,78 @@ describe("ChatGPT sharing presentation", () => {
         auth: { status: "unauthenticated", subscriptionSharing: true },
       }),
     ).toBe(false);
+  });
+});
+
+describe("account snapshot", () => {
+  const checkedAt = "2026-09-03T11:00:00.000Z";
+  const claudeDriver = ProviderDriverKind.make("claudeAgent");
+  const env = EnvironmentId.make("snapshot-env");
+  const presentations = (
+    providers: readonly ServerProvider[],
+    usageLimitSources: UsageLimitSourceSnapshots = [],
+  ) =>
+    new Map([
+      [
+        env,
+        {
+          entry: { target: { label: "Laptop" } },
+          serverConfig: { providers, usageLimitSources },
+        },
+      ],
+    ]);
+
+  it("reports a configured instance with a failed probe as unread, not as a readable account", () => {
+    const failing = provider({
+      instanceId: ProviderInstanceId.make("claude"),
+      driver: claudeDriver,
+      auth: { status: "authenticated", email: "x@example.com" },
+      usageLimits: { checkedAt, windows: [], unavailable: { reason: "probeFailed" } },
+    });
+    const snapshot = collectLimitAccountSnapshot(presentations([failing]));
+    expect(snapshot.read).toEqual([]);
+    expect(collectLimitAccounts(presentations([failing]))).toEqual([]);
+    expect(snapshot.unread).toEqual([
+      expect.objectContaining({
+        identity: "claudeAgent:x@example.com",
+        key: "snapshot-env:claude",
+        signedIn: true,
+        available: true,
+        reporters: [env],
+      }),
+    ]);
+  });
+
+  it("leaves out disabled and uninstalled instances entirely", () => {
+    const readable = provider({
+      instanceId: ProviderInstanceId.make("codex"),
+      usageLimits: { checkedAt, windows: [{ ...window, usedPercent: 40 }] },
+    });
+    const snapshot = collectLimitAccountSnapshot(
+      presentations([
+        { ...readable, enabled: false },
+        { ...readable, installed: false, instanceId: ProviderInstanceId.make("codex-2") },
+      ]),
+    );
+    expect(snapshot.read).toEqual([]);
+    expect(snapshot.unread).toEqual([]);
+  });
+
+  it("repeats an identity in unread only when a readable entry already holds it", () => {
+    const failing = provider({
+      instanceId: ProviderInstanceId.make("claude"),
+      driver: claudeDriver,
+      auth: { status: "authenticated", email: "x@example.com" },
+      usageLimits: { checkedAt, windows: [], unavailable: { reason: "probeFailed" } },
+    });
+    const readable = {
+      ...failing,
+      instanceId: ProviderInstanceId.make("claude-2"),
+      usageLimits: { checkedAt, windows: [{ ...window, usedPercent: 10 }] },
+    };
+    const snapshot = collectLimitAccountSnapshot(presentations([failing, readable]));
+    expect(snapshot.read.map((entry) => entry.identity)).toEqual(["claudeAgent:x@example.com"]);
+    expect(snapshot.unread.map((entry) => entry.identity)).toEqual(["claudeAgent:x@example.com"]);
+    expect(snapshot.read[0]?.reporters).toEqual([env]);
   });
 });
