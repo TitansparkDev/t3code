@@ -205,6 +205,11 @@ Architecture and its constraints: `docs/internals/overview.md`. Glossary: `docs/
 
 ## Recent request log
 
+- 2026-10-22 — v0.1.4: merged upstream/main (890 commits) and finished the reliability plan (RLY01–RLY14).
+  The overseer is held while a desktop provider needs sign-in (cleared by restarting the goal), and repair
+  conversations are rebound to their task worktree before a resume is sent. The `agentq run` broker no longer
+  kills its job when a heartbeat meets a locked database, and counts a budget's inactive file cache as headroom
+  (it had blocked every 8 GB build). Built locally: Linux archive, AppImage, Windows installer, APK 2.0.3.
 - 2026-10-18 — v0.1.1: merged upstream's orchestration v2 (1,500+ commits; protocol 2, so web, desktop and
   mobile must all be new builds; mobile is 2.0.0). Goals and AgentQueue run on v2 through the `GoalThreads` port
   (`apps/server/src/goals/GoalThreads.ts`); a goal now continues a usage-limited chat itself when the limit
