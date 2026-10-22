@@ -46,6 +46,11 @@ import {
 } from "./threadHistoryMerge.ts";
 import * as ThreadSnapshotLoader from "./threadSnapshotHttp.ts";
 import {
+  isThreadOpenPerformanceEnabled,
+  markThreadOpenStage,
+  threadOpenTraceKey,
+} from "./threadOpenPerformance.ts";
+import {
   EMPTY_ENVIRONMENT_THREAD_STATE,
   type EnvironmentThreadState,
   type EnvironmentThreadStatus,
@@ -178,12 +183,28 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   );
   const wakeups = yield* Effect.serviceOption(ConnectionWakeups.ConnectionWakeups);
   const environmentId = supervisor.target.environmentId;
+  const performanceKey = threadOpenTraceKey(environmentId, threadId);
+  if (isThreadOpenPerformanceEnabled()) {
+    if (Option.isSome(yield* SubscriptionRef.get(supervisor.prepared))) {
+      markThreadOpenStage(performanceKey, "environment-ready");
+    }
+  }
   const retained = resumeCache?.snapshot;
   const owner = {};
   if (resumeCache) resumeCache.owner = owner;
   const cached =
     retained === undefined
-      ? yield* cache.loadThread(environmentId, threadId).pipe(
+      ? yield* (
+          isThreadOpenPerformanceEnabled()
+            ? cache
+                .loadThread(environmentId, threadId)
+                .pipe(
+                  Effect.tap(() =>
+                    Effect.sync(() => markThreadOpenStage(performanceKey, "sqlite-load-decode")),
+                  ),
+                )
+            : cache.loadThread(environmentId, threadId)
+        ).pipe(
           Effect.catch((error) =>
             Effect.logWarning("Could not load cached thread.").pipe(
               Effect.annotateLogs({
@@ -196,6 +217,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
           ),
         )
       : Option.none<OrchestrationV2ThreadDetailSnapshot>();
+  if (retained !== undefined) markThreadOpenStage(performanceKey, "memory-hit");
   const cachedThread = Option.map(cached, (snapshot) => snapshot.projection);
   const initialState: EnvironmentThreadState = retained
     ? cachedThreadState(retained.state)
@@ -552,6 +574,9 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   ) {
     if (item.kind === "synchronized") {
       yield* Ref.set(awaitingCompletion, false);
+      if (isThreadOpenPerformanceEnabled()) {
+        yield* Effect.sync(() => markThreadOpenStage(performanceKey, "subscription-resumed"));
+      }
       yield* SubscriptionRef.update(state, (current) =>
         Option.isSome(current.data) && current.status !== "deleted" && Option.isNone(current.error)
           ? { ...current, status: "live" as const, error: Option.none() }
@@ -799,6 +824,10 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
               }),
             ),
           );
+          if (isThreadOpenPerformanceEnabled()) {
+            yield* Effect.sync(() => markThreadOpenStage(performanceKey, "environment-ready"));
+            yield* Effect.sync(() => markThreadOpenStage(performanceKey, "http-start"));
+          }
           const httpResult: ThreadSnapshotLoader.ThreadSnapshotLoadResult =
             yield* snapshotLoader.load(prepared, threadId);
           switch (httpResult._tag) {

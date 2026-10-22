@@ -315,6 +315,10 @@
       "types": "./src/state/threadExecution.ts",
       "default": "./src/state/threadExecution.ts"
     },
+    "./state/thread-open-performance": {
+      "types": "./src/state/threadOpenPerformance.ts",
+      "default": "./src/state/threadOpenPerformance.ts"
+    },
     "./state/thread-requests": {
       "types": "./src/state/threadRequests.ts",
       "default": "./src/state/threadRequests.ts"

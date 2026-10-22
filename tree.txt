@@ -27353,6 +27353,7 @@ packages/client-runtime/src/state/threadHistoryMerge.ts
 packages/client-runtime/src/state/threadInbox.test.ts
 packages/client-runtime/src/state/threadInbox.ts
 packages/client-runtime/src/state/threadLifecycle.ts
+packages/client-runtime/src/state/threadOpenPerformance.ts
 packages/client-runtime/src/state/threadRelationships.test.ts
 packages/client-runtime/src/state/threadRelationships.ts
 packages/client-runtime/src/state/threadRequests.test.ts
@@ -28294,6 +28295,8 @@ scripts/mobile-showcase-environment.ts
 scripts/mobile-showcase.config.ts
 scripts/mobile-showcase.test.ts
 scripts/mobile-showcase.ts
+scripts/mobile-thread-performance.test.ts
+scripts/mobile-thread-performance.ts
 scripts/mock-update-server.test.ts
 scripts/mock-update-server.ts
 scripts/notify-discord-release.test.ts

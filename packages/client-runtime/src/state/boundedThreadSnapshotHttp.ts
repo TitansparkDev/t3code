@@ -14,8 +14,22 @@ import {
   withOrchestrationProtocolHeader,
 } from "./environmentHttpAuth.ts";
 import * as ThreadSnapshotLoader from "./threadSnapshotHttp.ts";
+import {
+  isThreadOpenPerformanceEnabled,
+  markThreadOpenStage,
+  threadOpenTraceKey,
+} from "./threadOpenPerformance.ts";
 
 const DEFAULT_BOUNDED_THREAD_SNAPSHOT_TIMEOUT_MS = 6_000;
+
+const markStage = <A, E, R>(
+  effect: Effect.Effect<A, E, R>,
+  key: string,
+  stage: "http-response" | "snapshot-decode",
+) =>
+  isThreadOpenPerformanceEnabled()
+    ? effect.pipe(Effect.tap(() => Effect.sync(() => markThreadOpenStage(key, stage))))
+    : effect;
 
 export const fetchEnvironmentBoundedThreadSnapshot = Effect.fn(
   "clientRuntime.state.fetchEnvironmentBoundedThreadSnapshot",
@@ -32,6 +46,7 @@ export const fetchEnvironmentBoundedThreadSnapshot = Effect.fn(
     params: { threadId: input.threadId },
     query: { compactTurnItems: "1" },
   };
+  const key = threadOpenTraceKey(input.prepared.environmentId, input.threadId);
   return yield* executeAuthenticatedEnvironmentHttpRequest({
     ...input,
     group: "orchestration",
@@ -44,10 +59,12 @@ export const fetchEnvironmentBoundedThreadSnapshot = Effect.fn(
         headers: withOrchestrationProtocolHeader(headers),
       }),
   }).pipe(
+    (effect) => markStage(effect, key, "http-response"),
     Effect.map(({ turnItemsOmitLocalVisible, ...snapshot }) => ({
       ...snapshot,
       projection: boundedSnapshotProjection({ ...snapshot, turnItemsOmitLocalVisible }),
     })),
+    (effect) => markStage(effect, key, "snapshot-decode"),
   );
 });
 
@@ -70,16 +87,34 @@ export const layer: Layer.Layer<
     );
     return ThreadSnapshotLoader.ThreadSnapshotLoader.of({
       load: (prepared: PreparedConnection, threadId: ThreadId) => {
-        const loadFullFallback = ThreadSnapshotLoader.fetchEnvironmentThreadSnapshot({
+        const fullSnapshotRequest = ThreadSnapshotLoader.fetchEnvironmentThreadSnapshot({
           prepared,
           threadId,
           signer,
           remoteAuthorization,
-        }).pipe(
-          Effect.map((snapshot): ThreadSnapshotLoader.ThreadSnapshotLoadResult => ({
-            _tag: "present",
-            snapshot,
-          })),
+        });
+        const observedFullSnapshotRequest = isThreadOpenPerformanceEnabled()
+          ? fullSnapshotRequest.pipe(
+              Effect.tap(() =>
+                Effect.sync(() =>
+                  markThreadOpenStage(
+                    threadOpenTraceKey(prepared.environmentId, threadId),
+                    "http-response",
+                  ),
+                ),
+              ),
+            )
+          : fullSnapshotRequest;
+        const loadFullFallback = observedFullSnapshotRequest.pipe(
+          Effect.map((snapshot): ThreadSnapshotLoader.ThreadSnapshotLoadResult => {
+            if (isThreadOpenPerformanceEnabled()) {
+              markThreadOpenStage(
+                threadOpenTraceKey(prepared.environmentId, threadId),
+                "snapshot-decode",
+              );
+            }
+            return { _tag: "present", snapshot };
+          }),
           Effect.provideService(HttpClient.HttpClient, httpClient),
           Effect.catchTags({
             EnvironmentResourceNotFoundError: () =>

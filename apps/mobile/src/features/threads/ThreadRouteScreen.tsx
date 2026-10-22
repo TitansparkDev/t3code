@@ -88,6 +88,11 @@ import {
   type ThreadInspectorMode,
 } from "./thread-inspector-content-stack";
 import { threadRouteIsHydrating } from "./thread-route-hydration";
+import {
+  startThreadOpenTrace,
+  threadOpenTraceKey,
+} from "@t3tools/client-runtime/state/thread-open-performance";
+import { createDebugLogger } from "../../lib/debugLog";
 import { useThreadPromptLink } from "../prompt-links/useThreadPromptLink";
 import { ThreadHeader } from "./ThreadHeader";
 import {
@@ -206,6 +211,15 @@ export function ThreadRouteScreen(props: ThreadRouteScreenProps) {
     environmentId !== null && threadIdRaw !== null
       ? scopedThreadKey(environmentId, ThreadId.make(threadIdRaw))
       : null;
+  useEffect(() => {
+    if (routeThreadKey === null || environmentId === null || threadIdRaw === null) return;
+    const logger = createDebugLogger("thread-open-perf", { enabledInDev: true });
+    const trace = startThreadOpenTrace(
+      threadOpenTraceKey(environmentId, ThreadId.make(threadIdRaw)),
+      (entry) => logger.log("trace", entry),
+    );
+    return () => trace?.cancel();
+  }, [environmentId, routeThreadKey, threadIdRaw]);
   const selectedThreadKey =
     selectedThread === null
       ? null

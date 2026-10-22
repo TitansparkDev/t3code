@@ -215,6 +215,10 @@ import {
   WORK_GROUP_TOGGLE_HEIGHT,
 } from "./thread-work-log";
 import { appendPendingThreadMessages, type PendingThreadFeedEntry } from "./pending-thread-feed";
+import {
+  markThreadOpenStage,
+  threadOpenTraceKey,
+} from "@t3tools/client-runtime/state/thread-open-performance";
 import type { QueuedThreadMessage } from "../../state/thread-outbox-model";
 import { resolveThreadFeedFixedItemSize } from "./thread-feed-item-size";
 import { htmlRenderFrameHeight } from "@t3tools/shared/htmlRender";
@@ -1883,7 +1887,7 @@ function useThreadFeedPresentation(
   expandedWorkGroups: Record<string, boolean>,
 ) {
   const [feedCache] = useState(createThreadFeedCache);
-  return appendPendingThreadMessages(
+  const presentation = appendPendingThreadMessages(
     deriveThreadFeedPresentation(
       props.feed,
       props.latestRun,
@@ -1900,6 +1904,8 @@ function useThreadFeedPresentation(
     props.feed,
     props.queuedMessages,
   );
+  markThreadOpenStage(threadOpenTraceKey(props.environmentId, props.threadId), "feed-derived");
+  return presentation;
 }
 
 export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
@@ -2472,6 +2478,10 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   }, [clearUserScrollSettle, props.submittedMessageId, transitionEndFollow]);
 
   const handleViewportLayout = (event: LayoutChangeEvent) => {
+    markThreadOpenStage(
+      threadOpenTraceKey(props.environmentId, props.threadId),
+      "first-visible-viewport",
+    );
     const nextWidth = Math.round(event.nativeEvent.layout.width);
     const nextHeight = Math.round(event.nativeEvent.layout.height);
     setViewportWidth((current) => (Math.abs(current - nextWidth) > 1 ? nextWidth : current));
@@ -2885,6 +2895,10 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
               endFollowEnabled && !disclosureToggleSettling ? false : maintainVisibleContentPosition
             }
             data={presentedFeed}
+            onLayout={() => {
+              const key = threadOpenTraceKey(props.environmentId, props.threadId);
+              markThreadOpenStage(key, "final-list-layout");
+            }}
             extraData={listAppearanceData}
             renderItem={renderItem}
             viewabilityConfig={THREAD_MEDIA_VIEWABILITY_CONFIG}
