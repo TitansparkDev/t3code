@@ -7,8 +7,11 @@ import {
   replyReportsBlockedWork,
   goalSettingsProblem,
   goalTitle,
+  queueWorkerPrompt,
+  replyAttentionNote,
   replyNeedsAttention,
   replyReportsGoalComplete,
+  type QueueTaskAssignment,
 } from "./goals.ts";
 
 describe("goal completion", () => {
@@ -25,6 +28,68 @@ describe("needs attention", () => {
     expect(replyNeedsAttention("Blocked on a login.\nNEEDS ATTENTION")).toBe(true);
     expect(replyNeedsAttention("This needs attention soon.")).toBe(false);
     expect(replyNeedsAttention(undefined)).toBe(false);
+  });
+
+  it("counts a marker that starts a line, with markdown or a reason after it", () => {
+    expect(replyNeedsAttention("Done.\n\n**NEEDS ATTENTION**: I need a login.")).toBe(true);
+    expect(replyNeedsAttention("- NEEDS ATTENTION I'll inspect the tunnel.")).toBe(true);
+    expect(replyAttentionNote("Done.\n\nNEEDS ATTENTION: the migration is missing.")).toBe(
+      "the migration is missing.",
+    );
+  });
+
+  it("does not count a negated mention", () => {
+    expect(replyNeedsAttention("All green. No NEEDS ATTENTION is needed.")).toBe(false);
+    expect(replyNeedsAttention("Not NEEDS ATTENTION, the check passed.")).toBe(false);
+  });
+
+  it("does not count the marker in the middle of a sentence", () => {
+    expect(replyNeedsAttention("I will write NEEDS ATTENTION only if a login is missing.")).toBe(
+      false,
+    );
+    expect(replyAttentionNote("I will write NEEDS ATTENTION only if a login is missing.")).toBe(
+      undefined,
+    );
+  });
+});
+
+describe("queue worker prompt", () => {
+  const task: QueueTaskAssignment = {
+    taskId: "T1",
+    title: "Add the thing",
+    description: null,
+    verificationCommand: null,
+    worktreePath: "/wt/T1",
+    branch: "agentqueue/T1",
+    baseBranch: "agentqueue/goal/plan",
+    planPath: "PLAN.md",
+    retryCount: 0,
+    lastFailure: null,
+    repair: null,
+    allowedPaths: ["packages/**"],
+    resources: ["heavy_build"],
+    guards: [{ name: "finalizer", phase: "submit", command: "vp run check" }],
+  };
+  const goal = { name: "Finish", prompt: "Do the plan.", concurrency: 2 };
+
+  it("sends heavy commands through the queue with a deadline and a short defer", () => {
+    const prompt = queueWorkerPrompt(goal, task);
+    expect(prompt).toContain("--owner T1 --defer-after 30 --timeout <seconds> --");
+    expect(prompt).toContain("otherwise 1800");
+    expect(prompt).toContain("Never wait on such a command in the foreground");
+    expect(prompt).not.toContain("--defer-after 120");
+  });
+
+  it("explains finalize exit code 3 and passes scope requests to finalize", () => {
+    const prompt = queueWorkerPrompt(goal, task);
+    expect(prompt).toContain("Exit code 3 means not finished");
+    expect(prompt).toContain('--request "SCOPE-REQUEST: <path> — <why>"');
+  });
+
+  it("forbids the other claim systems and names agentq run as the only shared-tool path", () => {
+    const prompt = queueWorkerPrompt(goal, task);
+    expect(prompt).toContain("Do not use the parallel-worker skill, plan-work, Beads");
+    expect(prompt).toContain("shared tools go only through `agentq run`");
   });
 });
 

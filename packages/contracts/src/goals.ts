@@ -437,7 +437,16 @@ export function goalTitle(goal: Pick<Goal, "name">): string {
 }
 
 const GOAL_COMPLETE_LINE = new RegExp(`^\\s*${GOAL_COMPLETE_MARKER}\\s*$`, "mu");
-const GOAL_NEEDS_ATTENTION_LINE = new RegExp(`^\\s*${GOAL_NEEDS_ATTENTION_MARKER}\\s*$`, "mu");
+/**
+ * A marker counts only where a line starts with it (after markdown such as `**`, `#` or `- `),
+ * so prose that merely mentions it ("No NEEDS ATTENTION is needed", "...needs NEEDS ATTENTION")
+ * never escalates. Starting the line also rules out a negation in front of the marker.
+ */
+const MARKER_LINE_START = "^[ \\t]*(?:(?:#{1,6}|[-*+>]|\\*\\*|__)[ \\t]*)*";
+const GOAL_NEEDS_ATTENTION_LINE = new RegExp(
+  `${MARKER_LINE_START}${GOAL_NEEDS_ATTENTION_MARKER}\\b`,
+  "mu",
+);
 
 /** Whether an agent's reply says the goal has no work left. */
 export function replyReportsGoalComplete(reply: string | undefined): boolean {
@@ -450,7 +459,7 @@ export function replyNeedsAttention(reply: string | undefined): boolean {
 }
 
 const GOAL_ATTENTION_NOTE = new RegExp(
-  `^[ \\t]*${GOAL_NEEDS_ATTENTION_MARKER}\\b[ \\t]*[-–—:]?[ \\t]*([^]*)$`,
+  `${MARKER_LINE_START}${GOAL_NEEDS_ATTENTION_MARKER}\\b[ \\t]*[-–—:]?[ \\t]*([^]*)$`,
   "mu",
 );
 
@@ -472,7 +481,7 @@ export function replyAttentionNote(reply: string | undefined): string | undefine
 }
 
 const GOAL_BLOCKED_LINE = new RegExp(
-  `^[ \\t]*${GOAL_BLOCKED_MARKER}(?:[ \\t]*[-–—:][^\\r\\n]*)?[ \\t]*$`,
+  `${MARKER_LINE_START}${GOAL_BLOCKED_MARKER}(?:[ \\t]*[-–—:][^\\r\\n]*)?[ \\t]*$`,
   "mu",
 );
 
@@ -629,7 +638,7 @@ export interface QueueTaskAssignment {
   };
   /** Shared resources the task's checks use; their commands go through `agentq run`. */
   readonly resources?: ReadonlyArray<string>;
-  /** How long a command waits for a busy resource before it is stored as a job. Default 120. */
+  /** How long a command waits for a busy resource before it is stored as a job. Default 30. */
   readonly deferAfterSeconds?: number;
 }
 
@@ -654,12 +663,12 @@ function contractLines(task: QueueTaskAssignment): string[] {
   }
   if (submit.length > 0) {
     lines.push(
-      `--- Before you finish, run \`agentq task finalize ${task.taskId}\` in your worktree. It runs the repository's own finalizer (${submit.map((guard) => guard.name).join(", ")}) with your task's real allowed paths, and approves extra files your task needs the same way the server will, so a guard you run later never contradicts the server. Do not run the finalizer's raw command yourself. ---`,
+      `--- Before you finish, run \`agentq task finalize ${task.taskId}\` in your worktree. It runs the repository's own finalizer (${submit.map((guard) => guard.name).join(", ")}) with your task's real allowed paths, and approves extra files your task needs the same way the server will, so a guard you run later never contradicts the server. Do not run the finalizer's raw command yourself. Exit code 3 means not finished: read its output, fix what it names (add the SCOPE-REQUEST line it asks for or revert out-of-scope edits), and run finalize again. ---`,
     );
   }
   if ((task.allowedPaths?.length ?? 0) > 0) {
     lines.push(
-      `Your task's own paths: ${task.allowedPaths!.join(", ")}. Other files the task really needs (a model, a migration, a generated schema, a test) are fine to change: the server approves them by itself. It refuses protected files, pauses your task if another running task holds a file you need (and resumes you when it is free), and wants a reason for sensitive ones (credentials, CI, live data): add \`SCOPE-REQUEST: <path> — <why the task needs it>\` to your final message. Do not edit a file just to satisfy a guard.`,
+      `Your task's own paths: ${task.allowedPaths!.join(", ")}. Other files the task really needs (a model, a migration, a generated schema, a test) are fine to change: the server approves them by itself. It refuses protected files, pauses your task if another running task holds a file you need (and resumes you when it is free), and wants a reason for sensitive ones (credentials, CI, live data): write \`SCOPE-REQUEST: <path> — <why the task needs it>\` and pass it to finalize as \`--request "SCOPE-REQUEST: <path> — <why>"\` before you finish, not only in your final message. Do not edit a file just to satisfy a guard.`,
     );
   }
   if ((task.generatedPaths?.length ?? 0) > 0) {
@@ -674,8 +683,9 @@ function contractLines(task: QueueTaskAssignment): string[] {
 
 /** How a worker runs anything that contends for a shared machine resource. */
 function resourceLines(task: QueueTaskAssignment): string[] {
+  const defer = task.deferAfterSeconds ?? 30;
   return [
-    `Heavy or shared tools (Gradle, an emulator, Docker, a database, a GPU) go through the machine's fair queue: prefix the command with \`agentq run --owner ${task.taskId} --defer-after ${task.deferAfterSeconds ?? 120} --\`, for example \`agentq run --owner ${task.taskId} --defer-after ${task.deferAfterSeconds ?? 120} -- ./gradlew test\`. It waits its turn, holds the resource only while the command runs, and costs you nothing while it waits. Never start those tools without it${(task.resources?.length ?? 0) > 0 ? ` (this task's checks use ${task.resources!.join(", ")})` : ""}.`,
+    `Heavy or shared tools (Gradle, an emulator, Docker, a database, a GPU, compilers, test runs) go through the machine's fair queue: prefix the command with \`agentq run --owner ${task.taskId} --defer-after ${defer} --timeout <seconds> --\`, for example \`agentq run --owner ${task.taskId} --defer-after ${defer} --timeout 1800 -- ./gradlew test\`. The timeout is the task's declared check timeout when the task details give one, otherwise 1800; it kills a hung command so it cannot hold the shared slot forever. It waits its turn, holds the resource only while the command runs, and costs you nothing while it waits. Never start those tools without it${(task.resources?.length ?? 0) > 0 ? ` (this task's checks use ${task.resources!.join(", ")})` : ""}. Never wait on such a command in the foreground or as an untracked background job.`,
     `If \`agentq run\` answers QUEUED (exit 75) the command was stored and the server will run it and send the result into this same conversation: commit what you have and end your turn with the line \`WAITING FOR <the id it printed>\`. A busy resource, a queue or a wait is never a reason to stop, report a problem or write ${GOAL_NEEDS_ATTENTION_MARKER}.`,
   ];
 }
@@ -713,7 +723,7 @@ export function queueWorkerPrompt(
     ...contractLines(task),
     "",
     "--- Rules ---",
-    "1. Your task is fixed. Do not select, claim, announce or switch tasks or run any command that claims or releases them; the server owns the queue, other workers' branches and the integration.",
+    "1. Your task is fixed. Do not select, claim, announce or switch tasks or run any command that claims or releases them; the server owns the queue, other workers' branches and the integration. Do not use the parallel-worker skill, plan-work, Beads or `agent-resources run`: the assignment in this prompt is your only claim, and shared tools go only through `agentq run`.",
     "2. Change files only inside your worktree and commit your work on your branch with a clear message.",
     checkInstruction(
       task.verificationCommand,
