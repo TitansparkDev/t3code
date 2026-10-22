@@ -35,7 +35,9 @@ export function openQueueDatabase(options: QueueDatabaseOptions): NodeSqlite.Dat
   // Concurrency pragmas (ADR-0001)
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec("PRAGMA synchronous = NORMAL;");
-  db.exec("PRAGMA busy_timeout = 5000;");
+  // Under heavy machine load a writer can hold the lock for several seconds; 5 s made every
+  // queue call fail with "database is locked" on 2026-10-22.
+  db.exec("PRAGMA busy_timeout = 30000;");
   db.exec("PRAGMA foreign_keys = ON;");
 
   if (!options.readonly) {

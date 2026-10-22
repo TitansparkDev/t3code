@@ -243,6 +243,36 @@ describe("resource broker queue", () => {
     expect(broker.get(second.id)!.state).toBe("waiting");
   });
 
+  it("admits an 8 GiB build from an agent session when the host keeps its reserve and the agent budget has room", () => {
+    // The live 2026-10-22 shape: 20 GB free on the host, 12.9 GB left in the 16 GiB agent budget.
+    // Subtracting the 6 GB host reserve from the budget too left 6.9 GB, so no build ever started.
+    const budget = { mb: 12_900 };
+    const { broker } = makeBroker({
+      host: () => ({
+        totalMb: 25_430,
+        availableMb: 20_000,
+        budgetAvailableMb: budget.mb,
+        swapUsedMb: 0,
+        swapTotalMb: 8000,
+        cpus: 16,
+        load1: 1,
+      }),
+      config: () => ({
+        reserveMb: 6_144,
+        resources: { ...CONFIG.resources, heavy_build: { capacity: 1, memoryMb: 8_192 } },
+      }),
+    });
+    const build = broker.enqueue({ resources: [{ name: "heavy_build" }], pid: process.pid });
+    broker.pump();
+    expect(broker.get(build.id)!.state).toBe("granted");
+    broker.finish(build.id, { outcome: "ok" });
+    // A budget that is genuinely full still holds the next build back.
+    budget.mb = 5_000;
+    const next = broker.enqueue({ resources: [{ name: "heavy_build" }], pid: process.pid });
+    broker.pump();
+    expect(broker.get(next.id)!.state).toBe("waiting");
+  });
+
   it("holds memory requests during PSI or active swap pressure, then admits after recovery", () => {
     const pressure = { memoryPressure: 12, swapPressure: false };
     const { broker } = makeBroker({

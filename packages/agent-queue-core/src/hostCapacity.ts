@@ -14,6 +14,11 @@ export interface HostSnapshot {
   readonly totalMb: number;
   /** Memory the kernel can hand out without swapping (MemAvailable). */
   readonly availableMb: number;
+  /**
+   * Headroom left in the shared memory budget (cgroup limits above the caller's own scope), when
+   * one applies. Already a hard ceiling, so the host reserve is not subtracted from it again.
+   */
+  readonly budgetAvailableMb?: number;
   readonly swapUsedMb: number;
   readonly swapTotalMb: number;
   readonly cpus: number;
@@ -44,6 +49,7 @@ export function readHost(): HostSnapshot {
   const swapFreeMb = text ? meminfoField(text, "SwapFree") : 0;
   let memoryPressure: number | undefined;
   let swapPressure = false;
+  let budgetAvailableMb: number | undefined;
   if (text) {
     try {
       const cgroups = NodeFS.readFileSync("/proc/self/cgroup", "utf8");
@@ -51,7 +57,7 @@ export function readHost(): HostSnapshot {
       if (cgroupPath !== undefined) {
         let path = NodePath.resolve("/sys/fs/cgroup", `.${cgroupPath}`);
         const root = NodePath.resolve("/sys/fs/cgroup");
-        const levels: Array<{ max: string; current: string; stat: string }> = [];
+        const levels: Array<{ name: string; max: string; current: string; stat: string }> = [];
         const readLevel = (file: string) => {
           try {
             return NodeFS.readFileSync(file, "utf8");
@@ -61,6 +67,7 @@ export function readHost(): HostSnapshot {
         };
         while (path === root || path.startsWith(`${root}/`)) {
           levels.push({
+            name: NodePath.basename(path),
             max: readLevel(NodePath.join(path, "memory.max")),
             current: readLevel(NodePath.join(path, "memory.current")),
             stat: readLevel(NodePath.join(path, "memory.stat")),
@@ -68,9 +75,9 @@ export function readHost(): HostSnapshot {
           if (path === root) break;
           path = NodePath.dirname(path);
         }
-        const effective = effectiveMemorySnapshot({ totalMb, availableMb }, levels);
+        const effective = effectiveMemorySnapshot({ totalMb, availableMb }, sharedBudgetLevels(levels));
         totalMb = effective.totalMb;
-        availableMb = effective.availableMb;
+        budgetAvailableMb = effective.availableMb;
       }
       const psi = NodeFS.readFileSync("/proc/pressure/memory", "utf8");
       const some = /^some .*?avg10=(\d+(?:\.\d+)?)/m.exec(psi);
@@ -94,6 +101,7 @@ export function readHost(): HostSnapshot {
   return {
     totalMb,
     availableMb,
+    ...(budgetAvailableMb === undefined ? {} : { budgetAvailableMb }),
     swapUsedMb: Math.max(swapTotalMb - swapFreeMb, 0),
     swapTotalMb,
     cpus: NodeOS.cpus().length || 1,
@@ -111,6 +119,27 @@ export function parseCgroupMemoryValue(value: string): number | undefined {
   if (!/^\d+$/.test(trimmed)) return undefined;
   const bytes = Number(trimmed);
   return Number.isSafeInteger(bytes) ? bytes : undefined;
+}
+
+/**
+ * Levels that bound work the broker admits. The caller's own leaf scope (T3 puts each agent
+ * session in an 8 GiB `.scope`) is skipped: the kernel already caps the job inside it, and counting
+ * it made an 8 GiB compiler demand unadmissible from every agent session.
+ */
+export function sharedBudgetLevels<Level extends { readonly name: string }>(
+  levels: ReadonlyArray<Level>,
+): ReadonlyArray<Level> {
+  let first = 0;
+  while (first < levels.length && levels[first]!.name.endsWith(".scope")) first++;
+  return levels.slice(first);
+}
+
+/** Usable memory: the host keeps its reserve, a cgroup budget is its own ceiling. */
+export function freeMemoryMb(snapshot: HostSnapshot, reserveMb: number): number {
+  return Math.min(
+    snapshot.availableMb - reserveMb,
+    snapshot.budgetAvailableMb ?? Number.POSITIVE_INFINITY,
+  );
 }
 
 /** Return the effective memory ceiling and headroom across all visible ancestors. */
@@ -180,10 +209,11 @@ export function admitWorker(
   const snapshot = options.snapshot ?? readHost();
   const reserve = options.reserveMb ?? DEFAULT_RESERVE_MB;
   const footprint = options.footprintMb ?? WORKER_FOOTPRINT_MB;
-  if (snapshot.availableMb < reserve + footprint) {
+  const free = freeMemoryMb(snapshot, reserve);
+  if (free < footprint) {
     return {
       ok: false,
-      reason: `Only ${snapshot.availableMb} MB of memory is free (a new worker needs ${footprint} MB beyond a ${reserve} MB reserve).`,
+      reason: `Only ${Math.max(Math.round(free), 0)} MB of memory is usable (a new worker needs ${footprint} MB; the host keeps a ${reserve} MB reserve).`,
       snapshot,
     };
   }

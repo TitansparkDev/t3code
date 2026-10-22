@@ -26,7 +26,7 @@ import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
-import { DEFAULT_RESERVE_MB, readHost, type HostSnapshot } from "./hostCapacity.ts";
+import { DEFAULT_RESERVE_MB, freeMemoryMb, readHost, type HostSnapshot } from "./hostCapacity.ts";
 
 export interface ResourceDefinition {
   /** Tickets that may hold this resource at once. 0 means this machine does not have it. */
@@ -854,7 +854,7 @@ export class ResourceBroker {
         return true;
       });
       let headBlocked = false;
-      let freeMb = host.availableMb - config.reserveMb - rampingMb;
+      let freeMb = freeMemoryMb(host, config.reserveMb) - rampingMb;
       for (const row of stillWaiting) {
         if (headBlocked) break;
         const needs = parse<Ticket["resources"]>(row.resources_json, []);

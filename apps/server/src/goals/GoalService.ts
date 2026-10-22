@@ -316,6 +316,9 @@ function usageLimitOf(thread: GoalThreadView | undefined): UsageLimitHit | undef
   return limit === null ? undefined : { retryAt: limit.retryAt };
 }
 
+const isQueueContention = (error: AgentQueueError) =>
+  /database is locked|SQLITE_BUSY/i.test(error.message);
+
 export const make = Effect.gen(function* () {
   const threads = yield* GoalThreads;
   const store = yield* GoalStore;
@@ -677,6 +680,9 @@ export const make = Effect.gen(function* () {
       }));
       if (
         updated?.status === "running" &&
+        // A locked queue database is contention, not an outage: the queue is alive and a later
+        // tick succeeds once the load drops, so waiting is right and failing the goal is not.
+        !isQueueContention(error) &&
         (updated.queueErrors ?? 0) >= 3 &&
         now - since >= QUEUE_OUTAGE_MILLIS
       ) {

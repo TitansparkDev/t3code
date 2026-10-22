@@ -2,6 +2,8 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   effectiveCgroupMemory,
   effectiveMemorySnapshot,
+  freeMemoryMb,
+  sharedBudgetLevels,
   parseCgroupMemoryValue,
   admitWorker,
   type HostSnapshot,
@@ -49,6 +51,28 @@ describe("effective cgroup memory", () => {
       },
     ];
     expect(effectiveCgroupMemory(levels).availableBytes).toBe(15_000_000_000);
+  });
+
+  it("skips the caller's own session scope but keeps every shared budget above it", () => {
+    const levels = [
+      { name: "t3code-claude-ad93bf48.scope", max: "8589934592", current: "1200000000" },
+      { name: "app-t3code-agents.slice", max: "23009693696", current: "3600000000" },
+      { name: "app-t3code.slice", max: "17179869184", current: "3600000000" },
+    ];
+    expect(sharedBudgetLevels(levels).map((level) => level.name)).toEqual([
+      "app-t3code-agents.slice",
+      "app-t3code.slice",
+    ]);
+  });
+
+  it("keeps the host reserve on host memory only, never on a cgroup budget", () => {
+    expect(freeMemoryMb({ ...host, availableMb: 20_000, budgetAvailableMb: 12_900 }, 6_144)).toBe(
+      12_900,
+    );
+    expect(freeMemoryMb({ ...host, availableMb: 9_000, budgetAvailableMb: 12_900 }, 6_144)).toBe(
+      2_856,
+    );
+    expect(freeMemoryMb({ ...host, availableMb: 9_000 }, 6_144)).toBe(2_856);
   });
 
   it("keeps host capacity when the memory controller is absent", () => {

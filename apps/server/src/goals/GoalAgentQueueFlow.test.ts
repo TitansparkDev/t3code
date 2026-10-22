@@ -140,7 +140,7 @@ const makeFlow = (
   options: {
     readonly extraFiles?: Record<string, string>;
     readonly spacingMillis?: number;
-    readonly queueFaults?: { claims?: boolean; release?: boolean };
+    readonly queueFaults?: { claims?: boolean; release?: boolean; locked?: boolean };
     /** How many workspace binds fail before the engine accepts one. */
     readonly bindFailures?: number;
   } = {},
@@ -203,8 +203,22 @@ const makeFlow = (
     const queueLayer = options.queueFaults
       ? Layer.effect(
           AgentQueueService,
-          Effect.map(AgentQueueService, (base) =>
-            AgentQueueService.of({
+          Effect.map(AgentQueueService, (live) => {
+            // A locked queue database fails every operation alike, as it did under load.
+            const base = Object.fromEntries(
+              Object.entries(live).map(([name, operation]) => [
+                name,
+                typeof operation === "function"
+                  ? (...args: Array<unknown>) =>
+                      options.queueFaults?.locked
+                        ? Effect.fail(
+                            new AgentQueueError({ operation: name, message: "database is locked" }),
+                          )
+                        : (operation as (...input: Array<unknown>) => unknown)(...args)
+                  : operation,
+              ]),
+            ) as typeof live;
+            return AgentQueueService.of({
               ...base,
               activeClaims: (binding) =>
                 options.queueFaults?.claims
@@ -221,8 +235,8 @@ const makeFlow = (
                       new AgentQueueError({ operation: "release", message: "test release outage" }),
                     )
                   : base.release(...args),
-            }),
-          ),
+            });
+          }),
         ).pipe(Layer.provide(AgentQueueServiceLive))
       : AgentQueueServiceLive;
     let bindFailuresLeft = options.bindFailures ?? 0;
@@ -2408,6 +2422,38 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
         expect(done.queueErrors ?? 0).toBe(0);
       }).pipe(Effect.scoped),
     90_000,
+  );
+
+  it.effect(
+    "a queue database that stays locked under load waits instead of stopping the goal",
+    () =>
+      Effect.gen(function* () {
+        const faults = { locked: false };
+        const flow = yield* makeFlow(planWith([{ id: "T1" }, { id: "T2", deps: ["T1"] }]), {
+          queueFaults: faults,
+        });
+        const service = yield* flow.startServer;
+        yield* Effect.forkScoped(service.loop);
+        yield* Effect.yieldNow;
+        yield* service.create(settingsFor());
+        yield* flow.waitFor("thread.create", 1);
+        faults.locked = true;
+        yield* flow.eventually(
+          tickOnce.pipe(Effect.andThen(flow.goalOf(service))),
+          (g) => (g.queueErrors ?? 0) >= 3,
+          "the locked queue to be observed several times",
+        );
+        yield* TestClock.adjust(Duration.minutes(10));
+        const goal = yield* flow.eventually(
+          tickOnce.pipe(Effect.andThen(flow.goalOf(service))),
+          (g) => (g.queueErrors ?? 0) >= 4,
+          "another locked tick after the outage window",
+        );
+        expect(goal.status).toBe("running");
+        expect(goal.detail).toContain("database is locked");
+        faults.locked = false;
+      }).pipe(Effect.scoped),
+    60_000,
   );
 
   it.effect(
