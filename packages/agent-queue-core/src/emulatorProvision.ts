@@ -29,7 +29,10 @@ function sdkTool(env: NodeJS.ProcessEnv, ...relative: string[]): string | null {
   return null;
 }
 
-/** The AVD to boot: `AGENTQUEUE_AVD`, else the one named after the repository, else the only one. */
+/**
+ * The AVD to boot: `AGENTQUEUE_AVD`, else the one named after the repository, else the first by
+ * name. Any device beats failing a device check because no AVD matched the repository name.
+ */
 export function chooseAvd(
   avds: ReadonlyArray<string>,
   repo: string | null,
@@ -39,7 +42,7 @@ export function chooseAvd(
   const name = repo ? NodePath.basename(repo).toLowerCase() : "";
   const named = name ? avds.filter((avd) => avd.toLowerCase().includes(name)) : [];
   if (named.length > 0) return named[0]!;
-  return avds.length === 1 ? avds[0]! : null;
+  return [...avds].sort()[0] ?? null;
 }
 
 const booted = (adb: string, serial: string, env: NodeJS.ProcessEnv) =>
@@ -82,7 +85,7 @@ export async function ensureEmulator(
   if (!avd) {
     return {
       ready: false,
-      note: `no single AVD to boot among ${avds.join(", ") || "(none)"}; set AGENTQUEUE_AVD`,
+      note: "no AVD exists to boot; create one or set AGENTQUEUE_AVD",
     };
   }
   const child = NodeChildProcess.spawn(
