@@ -10,6 +10,7 @@ import {
   type ResourceConfig,
 } from "../src/resourceBroker.ts";
 import {
+  DEFAULT_RUN_MS,
   inferResourceDemands,
   inferResources,
   isCompilerCommand,
@@ -49,6 +50,24 @@ function makeBroker(home: string, free = 20_000) {
     config: () => CONFIG,
   });
 }
+
+describe("run deadline", () => {
+  it("gives a command with no deadline the default run limit", async () => {
+    const home = newHome();
+    const broker = makeBroker(home);
+    const ran = await runUnderBroker({
+      broker,
+      resources: [{ name: "heavy_build" }],
+      argv: ["true"],
+      cwd: home,
+      stdio: "pipe",
+    });
+    expect(ran.kind).toBe("ran");
+    if (ran.kind !== "ran") return;
+    expect(ran.ticket.runMs).toBe(DEFAULT_RUN_MS);
+    broker.close();
+  });
+});
 
 describe("compiler classification", () => {
   const launches = [

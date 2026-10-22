@@ -664,6 +664,12 @@ async function runNested(options: RunUnderBrokerOptions): Promise<CommandResult>
   return result;
 }
 
+/**
+ * Longest a command may run once it holds its resources when the caller gives no deadline.
+ * A hung build otherwise holds a single-slot resource for every other worker.
+ */
+export const DEFAULT_RUN_MS = 3_600_000;
+
 export interface RunUnderBrokerOptions extends Omit<ResourceRequest, "job"> {
   readonly argv: ReadonlyArray<string>;
   readonly cwd: string;
@@ -719,7 +725,7 @@ export async function runUnderBroker(
       ...(options.repo ? { repo: options.repo } : {}),
       ...(options.hints ? { hints: options.hints } : {}),
       ...(options.waitMs !== undefined ? { waitMs: options.waitMs } : {}),
-      ...(options.runMs !== undefined ? { runMs: options.runMs } : {}),
+      runMs: options.runMs ?? DEFAULT_RUN_MS,
     });
     if (ticket.state === "done") {
       return {
