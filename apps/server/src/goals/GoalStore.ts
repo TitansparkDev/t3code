@@ -33,6 +33,16 @@ export class GoalStore extends Context.Service<
   }
 >()("t3/goals/GoalStore") {}
 
+// Callers build `detail` from truncated messages; a trailing space or an empty string would
+// fail the trimmed-string schema.
+const normalizeDetail = (goal: Goal): Goal => {
+  if (goal.detail === undefined) return goal;
+  const detail = goal.detail.trim();
+  if (detail === goal.detail) return goal;
+  const { detail: _dropped, ...rest } = goal;
+  return detail === "" ? rest : { ...goal, detail: detail as never };
+};
+
 const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -55,6 +65,10 @@ const make = Effect.gen(function* () {
   const state = yield* Ref.make<ReadonlyArray<Goal>>(loaded);
   const writeLock = yield* Semaphore.make(1);
 
+  // Encoding happens before the in-memory state changes. A goal that violates the schema
+  // (a blank detail, a count out of range) must be refused here: if it reached memory first,
+  // every later write would fail to encode, the file would go stale, and every read of that
+  // goal would fail to encode too.
   const modify = <A>(
     change: (goals: ReadonlyArray<Goal>) => {
       readonly next: ReadonlyArray<Goal>;
@@ -63,27 +77,38 @@ const make = Effect.gen(function* () {
   ): Effect.Effect<A> =>
     writeLock.withPermit(
       Effect.gen(function* () {
-        const result = yield* Ref.modify(state, (goals) => {
-          const changed = change(goals);
-          return [changed, changed.next] as const;
-        });
+        const current = yield* Ref.get(state);
+        const changed = change(current);
+        const contents = yield* Effect.try(
+          () => `${encodeGoalFile({ goals: changed.next })}\n`,
+        ).pipe(
+          Effect.tapError((cause) =>
+            Effect.logError("goals.write-rejected", {
+              filePath,
+              reason: String(cause).slice(0, 500),
+            }),
+          ),
+          Effect.orDie,
+        );
+        yield* Ref.set(state, changed.next);
         yield* fs
-          .writeFileString(filePath, `${encodeGoalFile({ goals: result.next })}\n`)
+          .writeFileString(filePath, contents)
           .pipe(
             Effect.catch((cause) => Effect.logWarning("goals.persist-failed", { filePath, cause })),
           );
-        return result.value;
+        return changed.value;
       }),
     );
 
   return GoalStore.of({
     list: Ref.get(state),
-    add: (goal) => modify((goals) => ({ value: undefined, next: [goal, ...goals] })),
+    add: (goal) =>
+      modify((goals) => ({ value: undefined, next: [normalizeDetail(goal), ...goals] })),
     update: (id, update) =>
       modify((goals) => {
         const existing = goals.find((goal) => goal.id === id);
         if (!existing) return { value: undefined, next: goals };
-        const updated = update(existing);
+        const updated = normalizeDetail(update(existing));
         return { value: updated, next: goals.map((goal) => (goal.id === id ? updated : goal)) };
       }),
     remove: (id) =>

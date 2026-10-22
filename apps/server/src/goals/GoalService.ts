@@ -552,10 +552,12 @@ export const make = Effect.gen(function* () {
   /** Say, on the goal, that ready work is waiting for the machine to have room. */
   const markHostBusy = (goalId: GoalId, reason: string) =>
     store.update(goalId, (goal) => {
-      const detail = `Waiting for the machine: ${reason} The goal carries on by itself.`;
+      const detail = `Waiting for the machine: ${reason} The goal carries on by itself.`
+        .slice(0, 480)
+        .trim();
       return goal.hostBusy === true && goal.detail === detail
         ? goal
-        : { ...goal, hostBusy: true, detail: detail.slice(0, 480) as never };
+        : { ...goal, hostBusy: true, detail: detail as never };
     });
 
   /** The goal is no longer waiting on a provider. */
