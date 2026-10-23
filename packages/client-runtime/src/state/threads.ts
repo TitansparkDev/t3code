@@ -328,7 +328,13 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
                 ),
               )
             : Effect.void,
-      });
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (resumeCache?.owner === owner) resumeCache.owner = undefined;
+          }),
+        ),
+      );
     }),
   );
 

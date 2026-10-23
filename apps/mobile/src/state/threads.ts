@@ -21,8 +21,8 @@ export const threadEnvironment = createThreadEnvironmentAtoms(
 );
 export const environmentThreads = createEnvironmentThreadStateAtoms(connectionAtomRuntime, {
   idleTtlMs: 30 * 60_000,
-  maxEntries: 20,
-  maxBytes: 64 * 1024 * 1024,
+  maxEntries: 8,
+  maxBytes: 8 * 1024 * 1024,
 });
 export const environmentThreadDetails = createEnvironmentThreadDetailAtoms(
   environmentThreads.stateAtom,

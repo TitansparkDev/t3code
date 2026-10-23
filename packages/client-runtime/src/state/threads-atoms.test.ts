@@ -53,11 +53,11 @@ const THREAD: OrchestrationV2ThreadProjection = {
 const SNAPSHOT: OrchestrationV2ThreadDetailSnapshot = { snapshotSequence: 7, projection: THREAD };
 
 describe("thread snapshot retention", () => {
-  it("evicts the oldest snapshot when count or byte budgets are exceeded", () => {
+  it("evicts the oldest detached snapshot when the count budget is exceeded", () => {
     const retention = createThreadSnapshotRetention<{ readonly body: string }>({
       idleTtlMs: 1000,
       maxEntries: 2,
-      maxBytes: 30,
+      maxBytes: 100,
     });
     const first = retention.cache("environment\u0000first");
     const second = retention.cache("environment\u0000second");
@@ -68,6 +68,69 @@ describe("thread snapshot retention", () => {
     expect(first.snapshot).toBeUndefined();
     expect(second.snapshot).toEqual({ body: "bb" });
     expect(third.snapshot).toEqual({ body: "cc" });
+  });
+
+  it("evicts the oldest detached snapshot when the byte budget is exceeded", () => {
+    const retention = createThreadSnapshotRetention<{ readonly body: string }>({
+      idleTtlMs: 1000,
+      maxEntries: 8,
+      maxBytes: 24,
+    });
+    const first = retention.cache("environment\u0000first");
+    const second = retention.cache("environment\u0000second");
+    first.snapshot = { body: "aa" };
+    second.snapshot = { body: "bb" };
+    expect(first.snapshot).toBeUndefined();
+    expect(second.snapshot).toEqual({ body: "bb" });
+  });
+
+  it("keeps the selected snapshot leased outside the detached budget", () => {
+    const retention = createThreadSnapshotRetention<{ readonly body: string }>({
+      idleTtlMs: 1000,
+      maxEntries: 1,
+      maxBytes: 20,
+    });
+    const selected = retention.cache("environment\u0000selected");
+    const detached = retention.cache("environment\u0000detached");
+    selected.owner = {};
+    selected.snapshot = { body: "selected" };
+    detached.snapshot = { body: "cached" };
+    expect(selected.snapshot).toEqual({ body: "selected" });
+    expect(detached.snapshot).toEqual({ body: "cached" });
+    selected.owner = undefined;
+    expect(selected.snapshot).toBeUndefined();
+    expect(detached.snapshot).toEqual({ body: "cached" });
+  });
+
+  it("starts the idle window when a selected thread detaches", () => {
+    vi.useFakeTimers();
+    try {
+      const retention = createThreadSnapshotRetention<{ readonly body: string }>({
+        idleTtlMs: 100,
+        maxEntries: 1,
+      });
+      const selected = retention.cache("environment\u0000selected");
+      selected.owner = {};
+      selected.snapshot = { body: "recent" };
+      vi.advanceTimersByTime(101);
+      selected.owner = undefined;
+      expect(selected.snapshot).toEqual({ body: "recent" });
+      vi.advanceTimersByTime(101);
+      expect(selected.snapshot).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not retain an individually oversized detached snapshot", () => {
+    const retention = createThreadSnapshotRetention<{ readonly body: string }>({
+      idleTtlMs: 1000,
+      maxEntries: 8,
+      maxBytes: 8,
+    });
+    const oversized = retention.cache("environment\u0000oversized");
+    oversized.snapshot = { body: "larger than the complete budget" };
+    expect(oversized.snapshot).toBeUndefined();
   });
 
   it("expires snapshots by age and clears a saved environment", () => {
