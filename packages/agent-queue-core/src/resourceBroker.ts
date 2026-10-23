@@ -98,6 +98,22 @@ export function accountHome(): string {
 
 const underTest = () => process.env.VITEST !== undefined || process.env.NODE_ENV === "test";
 
+function hostSnapshot(): HostSnapshot {
+  const configured = process.env.AGENTQUEUE_TEST_HOST_MEMORY_MB;
+  const availableMb = Number(configured);
+  if (!underTest() || !configured || !Number.isFinite(availableMb) || availableMb <= 0)
+    return readHost();
+
+  // Fake-compiler tests run inside an agent's cgroup but still need to exercise real admission.
+  const host = readHost();
+  return {
+    ...host,
+    totalMb: Math.max(host.totalMb, availableMb),
+    availableMb,
+    budgetAvailableMb: undefined,
+  };
+}
+
 /**
  * Where the broker keeps its state. Every profile of this account reaches the same one (the
  * account's passwd home, never $HOME). A test run gets a private directory so it can neither
@@ -459,7 +475,7 @@ export class ResourceBroker {
     }
     this.db = db;
     this.now = options.now ?? Date.now;
-    this.host = options.host ?? readHost;
+    this.host = options.host ?? hostSnapshot;
     this.config = options.config ?? loadResourceConfig;
     this.killGroup =
       options.killGroup ??

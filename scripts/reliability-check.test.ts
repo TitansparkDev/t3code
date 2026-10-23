@@ -77,6 +77,7 @@ function runCheck(
     ...process.env,
     AGENTQUEUE_RESOURCE_HOME: fx.home,
     AGENTQUEUE_LOCK_ROOT: NodePath.join(fx.home, "locks"),
+    AGENTQUEUE_TEST_HOST_MEMORY_MB: "20000",
     ...options.env,
   };
   delete env.AGENTQUEUE_RESOURCE_TICKET;
