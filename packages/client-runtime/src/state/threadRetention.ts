@@ -4,6 +4,7 @@ export interface ThreadSnapshotRetentionPolicy {
   readonly idleTtlMs: number;
   readonly maxEntries?: number;
   readonly maxBytes?: number;
+  readonly persistBoundedCache?: boolean;
 }
 
 export const DEFAULT_THREAD_SNAPSHOT_RETENTION: ThreadSnapshotRetentionPolicy = {

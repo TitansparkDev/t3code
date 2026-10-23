@@ -47,6 +47,7 @@ import {
   type ThreadSnapshotLoadResult,
 } from "./threads.ts";
 import * as ThreadSnapshotLoader from "./threadSnapshotHttp.ts";
+import type { CachedThreadSnapshot } from "../platform/orchestrationCache.ts";
 
 const TARGET = new PrimaryConnectionTarget({
   environmentId: EnvironmentId.make("environment-1"),
@@ -102,6 +103,8 @@ function awaitThreadState(
 
 const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (options?: {
   readonly cached?: OrchestrationV2ThreadProjection;
+  readonly cachedSnapshot?: CachedThreadSnapshot;
+  readonly persistBoundedCache?: boolean;
   readonly cachedHistory?: {
     readonly historyCursor: string | null;
     readonly hasMoreHistory: boolean;
@@ -128,6 +131,7 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
   const lastAcceptCompactTurnItems = yield* Ref.make<true | undefined>(undefined);
   const wakeups = yield* Queue.unbounded<ConnectionWakeups.ConnectionWakeup>();
   const savedThreads = yield* Ref.make<ReadonlyArray<OrchestrationV2ThreadDetailSnapshot>>([]);
+  const savedWrites = yield* Queue.unbounded<OrchestrationV2ThreadDetailSnapshot>();
   const removedThreads = yield* Ref.make<ReadonlyArray<ThreadId>>([]);
   const supervisorState = yield* SubscriptionRef.make<SupervisorConnectionState>(
     AVAILABLE_CONNECTION_STATE,
@@ -190,26 +194,29 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
     loadThread: (_environmentId, threadId) =>
       options?.loadCached ??
       Effect.succeed(
-        threadId === THREAD_ID && options?.cached !== undefined
-          ? Option.some({
-              snapshotSequence: CACHED_SNAPSHOT_SEQUENCE,
-              projection: options.cached,
-              ...(options.cachedHistory === undefined
-                ? {}
-                : {
-                    historyCursor: options.cachedHistory.historyCursor,
-                    hasMoreHistory: options.cachedHistory.hasMoreHistory,
-                    ...(options.cachedHistory.latestLocalTurnOrdinal === undefined
-                      ? {}
-                      : {
-                          latestLocalTurnOrdinal: options.cachedHistory.latestLocalTurnOrdinal,
-                        }),
-                  }),
-            })
-          : Option.none(),
+        threadId === THREAD_ID && options?.cachedSnapshot !== undefined
+          ? Option.some(options.cachedSnapshot)
+          : threadId === THREAD_ID && options?.cached !== undefined
+            ? Option.some({
+                snapshotSequence: CACHED_SNAPSHOT_SEQUENCE,
+                projection: options.cached,
+                ...(options.cachedHistory === undefined
+                  ? {}
+                  : {
+                      historyCursor: options.cachedHistory.historyCursor,
+                      hasMoreHistory: options.cachedHistory.hasMoreHistory,
+                      ...(options.cachedHistory.latestLocalTurnOrdinal === undefined
+                        ? {}
+                        : {
+                            latestLocalTurnOrdinal: options.cachedHistory.latestLocalTurnOrdinal,
+                          }),
+                    }),
+              })
+            : Option.none(),
       ),
     saveThread: (environmentId, thread) =>
       Ref.update(savedThreads, (current) => [...current, thread]).pipe(
+        Effect.andThen(Queue.offer(savedWrites, thread)),
         Effect.andThen(options?.saveThread?.(environmentId, thread) ?? Effect.void),
       ),
     removeThread: (_environmentId, threadId) =>
@@ -222,7 +229,11 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
     clearVcsRefs: () => Effect.void,
     clear: () => Effect.void,
   });
-  let makeThreadState = makeEnvironmentThreadState(THREAD_ID, options?.resumeCache).pipe(
+  let makeThreadState = makeEnvironmentThreadState(
+    THREAD_ID,
+    options?.resumeCache,
+    options?.persistBoundedCache,
+  ).pipe(
     Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
     Effect.provideService(Persistence.EnvironmentCacheStore, cache),
     Effect.provideService(ThreadSnapshotLoader.ThreadSnapshotLoader, snapshotLoader),
@@ -274,6 +285,7 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
     supervisorState,
     supervisorSession,
     savedThreads,
+    savedWrites,
     removedThreads,
     wakeups,
     replaceSession: SubscriptionRef.set(
@@ -367,6 +379,42 @@ describe("EnvironmentThreads", () => {
     }),
   );
 
+  it.effect("refetches an authoritative snapshot before resuming a trimmed cached window", () =>
+    Effect.gen(function* () {
+      const cachedProjection = {
+        ...BASE_PROJECTION,
+        thread: { ...BASE_PROJECTION.thread, title: "Display-only cache" },
+      };
+      const harness = yield* makeHarness({
+        cachedSnapshot: {
+          snapshotSequence: 70,
+          projection: cachedProjection,
+          requiresSnapshot: true,
+        },
+        httpSnapshot: {
+          _tag: "present",
+          snapshot: {
+            snapshotSequence: 81,
+            projection: {
+              ...BASE_PROJECTION,
+              thread: { ...BASE_PROJECTION.thread, title: "Authoritative snapshot" },
+            },
+          },
+        },
+      });
+
+      const state = yield* awaitThreadState(
+        harness.observed,
+        (value) =>
+          value.status === "live" &&
+          Option.getOrNull(value.data)?.thread.title === "Authoritative snapshot",
+      );
+      expect(Option.getOrThrow(state.data).thread.title).toBe("Authoritative snapshot");
+      expect(yield* Ref.get(harness.loaderCalls)).toBe(1);
+      expect(yield* Ref.get(harness.lastSubscribeAfterSequence)).toBe(81);
+    }),
+  );
+
   it.effect("flushes newer data after an older background write completes", () =>
     Effect.gen(function* () {
       const writing = yield* Deferred.make<void>();
@@ -389,6 +437,7 @@ describe("EnvironmentThreads", () => {
             h.observed,
             (value) => Option.getOrNull(value.data)?.thread.title === "First update",
           );
+          yield* Effect.yieldNow;
           yield* TestClock.adjust("500 millis");
           yield* Deferred.await(writing);
           yield* Queue.offer(h.inputs, titleUpdated("Newer update", 9));
@@ -397,12 +446,15 @@ describe("EnvironmentThreads", () => {
             (value) => Option.getOrNull(value.data)?.thread.title === "Newer update",
           );
           yield* Deferred.succeed(release, undefined);
+          yield* Effect.yieldNow;
+          yield* TestClock.adjust("10 seconds");
           yield* Deferred.await(written);
-          return h.savedThreads;
+          return { savedThreads: h.savedThreads, savedWrites: h.savedWrites };
         }),
       );
+      yield* Queue.take(saved.savedWrites);
       expect(
-        (yield* Ref.get(saved)).map((snapshot) => [
+        (yield* Ref.get(saved.savedThreads)).map((snapshot) => [
           snapshot.snapshotSequence,
           snapshot.projection.thread.title,
         ]),
@@ -411,6 +463,21 @@ describe("EnvironmentThreads", () => {
         [9, "Newer update"],
       ]);
     }),
+  );
+
+  it.effect("flushes the latest mobile cache snapshot when the app backgrounds", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness({ persistBoundedCache: true });
+        yield* Queue.offer(harness.inputs, snapshot(BASE_PROJECTION, 12));
+        yield* awaitThreadState(harness.observed, (value) => value.status === "live");
+        yield* Queue.offer(harness.wakeups, "application-background");
+
+        const saved = yield* Queue.take(harness.savedWrites);
+        expect(saved.snapshotSequence).toBe(12);
+        expect(saved.projection.thread.title).toBe("Cached thread");
+      }),
+    ),
   );
 
   it.effect("does not resume past a canceled event whose data was not applied", () =>
@@ -447,6 +514,7 @@ describe("EnvironmentThreads", () => {
       yield* Queue.offer(first.inputs, update);
       yield* Deferred.await(applying);
       yield* Scope.close(scope, Exit.void);
+      yield* Queue.take(first.savedWrites);
       yield* first.threadState.semaphore.release(1);
 
       const resumed = yield* makeHarness({ resumeCache });
@@ -643,10 +711,29 @@ describe("EnvironmentThreads", () => {
       const interrupted = runRecord("interrupted", v2Now);
       const harness = yield* makeHarness({
         cached: { ...BASE_PROJECTION, runs: [running] },
+        persistBoundedCache: true,
       });
 
+      yield* Queue.offer(harness.inputs, titleUpdated("During run", CACHED_SNAPSHOT_SEQUENCE + 1));
+      yield* awaitThreadState(
+        harness.observed,
+        (value) => Option.getOrNull(value.data)?.thread.title === "During run",
+      );
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust("500 millis");
+      const activeSnapshot = yield* Queue.take(harness.savedWrites);
+      expect(activeSnapshot).toMatchObject({
+        snapshotSequence: CACHED_SNAPSHOT_SEQUENCE + 1,
+        projection: { thread: { title: "During run" }, runs: [{ status: "running" }] },
+      });
+      const restarted = yield* makeHarness({ cachedSnapshot: activeSnapshot });
+      yield* awaitThreadState(restarted.observed, (value) => value.status === "live");
+      expect(yield* Ref.get(restarted.lastSubscribeAfterSequence)).toBe(
+        CACHED_SNAPSHOT_SEQUENCE + 1,
+      );
+
       // The stop settled while the client was away; its replay arrives after the cache.
-      yield* Queue.offer(harness.inputs, runUpdated(interrupted, CACHED_SNAPSHOT_SEQUENCE + 1));
+      yield* Queue.offer(harness.inputs, runUpdated(interrupted, CACHED_SNAPSHOT_SEQUENCE + 2));
       yield* awaitThreadState(
         harness.observed,
         (value) =>
@@ -654,10 +741,14 @@ describe("EnvironmentThreads", () => {
           Option.isSome(value.data) &&
           value.data.value.runs[0]?.status === "interrupted",
       );
+      expect(yield* Queue.take(harness.savedWrites)).toMatchObject({
+        snapshotSequence: CACHED_SNAPSHOT_SEQUENCE + 2,
+        projection: { runs: [{ status: "interrupted" }] },
+      });
 
       // A stale copy of the running run, at a sequence already applied, must not win.
-      yield* Queue.offer(harness.inputs, runUpdated(running, CACHED_SNAPSHOT_SEQUENCE + 1));
-      yield* Queue.offer(harness.inputs, titleUpdated("After stop", CACHED_SNAPSHOT_SEQUENCE + 2));
+      yield* Queue.offer(harness.inputs, runUpdated(running, CACHED_SNAPSHOT_SEQUENCE + 2));
+      yield* Queue.offer(harness.inputs, titleUpdated("After stop", CACHED_SNAPSHOT_SEQUENCE + 3));
       const state = yield* awaitThreadState(
         harness.observed,
         (value) =>
@@ -744,8 +835,9 @@ describe("EnvironmentThreads", () => {
       expect(yield* Ref.get(harness.lastSubscribeAfterSequence)).toBeUndefined();
       expect(yield* Ref.get(harness.lastAcceptBoundedSnapshot)).toBe(true);
 
-      yield* TestClock.adjust("500 millis");
       yield* Effect.yieldNow;
+      yield* TestClock.adjust("500 millis");
+      yield* Queue.take(harness.savedWrites);
       expect((yield* Ref.get(harness.savedThreads)).at(-1)).toMatchObject({
         snapshotSequence: 14,
         historyCursor: "socket-history-cursor",
@@ -986,8 +1078,9 @@ describe("EnvironmentThreads", () => {
         "retained-request",
       ]);
 
-      yield* TestClock.adjust("500 millis");
       yield* Effect.yieldNow;
+      yield* TestClock.adjust("500 millis");
+      yield* Queue.take(harness.savedWrites);
       const saved = (yield* Ref.get(harness.savedThreads)).at(-1);
       expect(saved?.projection.turnItems.map((item) => String(item.id))).toEqual([
         "local-1",
@@ -1085,6 +1178,7 @@ describe("EnvironmentThreads", () => {
             return harness;
           }),
         );
+        yield* Queue.take(cold.savedWrites);
         const saved = (yield* Ref.get(cold.savedThreads)).at(-1);
         expect(saved).toMatchObject({
           snapshotSequence: 5,
@@ -1154,8 +1248,9 @@ describe("EnvironmentThreads", () => {
         error: null,
       });
 
-      yield* TestClock.adjust("500 millis");
       yield* Effect.yieldNow;
+      yield* TestClock.adjust("500 millis");
+      yield* Queue.take(harness.savedWrites);
       const saved = (yield* Ref.get(harness.savedThreads)).at(-1);
       expect(saved?.projection.thread.title).toBe("Full socket snapshot");
       expect(saved?.historyCursor).toBeNull();
@@ -1193,8 +1288,9 @@ describe("EnvironmentThreads", () => {
       );
       expect(seeded.history.latestLocalTurnOrdinal).toBe(15);
 
-      yield* TestClock.adjust("500 millis");
       yield* Effect.yieldNow;
+      yield* TestClock.adjust("500 millis");
+      yield* Queue.take(harness.savedWrites);
       const savedSeed = (yield* Ref.get(harness.savedThreads)).at(-1);
       expect(savedSeed?.latestLocalTurnOrdinal).toBe(15);
 
@@ -1279,7 +1375,9 @@ describe("EnvironmentThreads", () => {
       const harness = yield* makeHarness().pipe(Effect.provideService(Scope.Scope, scope));
       yield* Queue.offer(harness.inputs, snapshot(BASE_PROJECTION));
       yield* awaitThreadState(harness.observed, (value) => value.status === "live");
+      yield* Effect.yieldNow;
       yield* TestClock.adjust("500 millis");
+      yield* Queue.take(harness.savedWrites);
       expect(yield* Ref.get(harness.savedThreads)).toHaveLength(1);
 
       yield* Queue.offer(harness.inputs, titleUpdated("Queued before deletion"));

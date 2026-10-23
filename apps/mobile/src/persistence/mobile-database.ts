@@ -8,6 +8,8 @@ import type { SQLiteDatabase } from "expo-sqlite";
 
 const DATABASE_NAME = "t3code-client.db";
 const DATABASE_SCHEMA_VERSION = 1;
+const THREAD_CACHE_MAX_RECORDS = 100;
+const THREAD_CACHE_MAX_BYTES = 64 * 1024 * 1024;
 const LEGACY_CACHE_DIRECTORIES = [
   "connection-shell-snapshots",
   "shell-snapshots",
@@ -319,14 +321,19 @@ const makeAvailable = Effect.gen(function* () {
       (environmentId, kind, cacheKey, schemaVersion, payload) =>
         Effect.tryPromise({
           try: async () => {
+            const payloadBytes = new TextEncoder().encode(payload).byteLength;
             // Diffs can be large. Keep the offline PR cache within 32 MiB and 256
             // responses per environment, and don't let one huge diff evict it all.
-            if (
-              kind === "pull-request" &&
-              new TextEncoder().encode(payload).length > 4 * 1024 * 1024
-            )
-              return;
+            if (kind === "pull-request" && payloadBytes > 4 * 1024 * 1024) return;
+            if (kind === "thread" && payloadBytes > THREAD_CACHE_MAX_BYTES) return;
             const save = async (transaction: SQLiteDatabase) => {
+              const lastUpdated =
+                kind === "thread"
+                  ? await transaction.getFirstAsync<{ readonly updatedAt: number | null }>(
+                      "SELECT MAX(updated_at) AS updatedAt FROM client_cache WHERE kind = 'thread'",
+                    )
+                  : null;
+              const updatedAt = Math.max(Date.now(), (lastUpdated?.updatedAt ?? -1) + 1);
               await transaction.runAsync(
                 `INSERT INTO client_cache
                   (environment_id, kind, cache_key, schema_version, payload, updated_at)
@@ -340,7 +347,7 @@ const makeAvailable = Effect.gen(function* () {
                 cacheKey,
                 schemaVersion,
                 payload,
-                Date.now(),
+                updatedAt,
               );
               if (kind === "pull-request") {
                 await transaction.runAsync(
@@ -359,9 +366,38 @@ const makeAvailable = Effect.gen(function* () {
                   environmentId,
                   Date.now() - 30 * 24 * 60 * 60_000,
                 );
+              } else if (kind === "thread") {
+                const rows = await transaction.getAllAsync<{
+                  readonly environmentId: string;
+                  readonly cacheKey: string;
+                  readonly payloadBytes: number;
+                }>(
+                  `SELECT environment_id AS environmentId, cache_key AS cacheKey,
+                     LENGTH(CAST(payload AS BLOB)) AS payloadBytes
+                   FROM client_cache WHERE kind = 'thread'
+                   ORDER BY updated_at ASC, environment_id ASC, cache_key ASC`,
+                );
+                let totalBytes = rows.reduce((total, row) => total + row.payloadBytes, 0);
+                let remaining = rows.length;
+                for (const row of rows) {
+                  if (remaining <= THREAD_CACHE_MAX_RECORDS && totalBytes <= THREAD_CACHE_MAX_BYTES)
+                    break;
+                  if (row.environmentId === environmentId && row.cacheKey === cacheKey) continue;
+                  await transaction.runAsync(
+                    "DELETE FROM client_cache WHERE environment_id = ? AND kind = 'thread' AND cache_key = ?",
+                    row.environmentId,
+                    row.cacheKey,
+                  );
+                  totalBytes -= row.payloadBytes;
+                  remaining -= 1;
+                }
               }
             };
-            await save(database);
+            if (kind === "thread") {
+              await database.withExclusiveTransactionAsync(save);
+            } else {
+              await save(database);
+            }
           },
           catch: databaseError("save-cache"),
         }).pipe(Effect.asVoid),

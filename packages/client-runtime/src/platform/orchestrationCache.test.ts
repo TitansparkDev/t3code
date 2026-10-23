@@ -19,6 +19,7 @@ import {
 } from "../state/orchestrationV2TestFixtures.ts";
 
 import { applyOrchestrationV2ProjectionEvent } from "../state/orchestrationV2Projection.ts";
+import { boundedCachedThreadSnapshot } from "@t3tools/shared/orchestrationV2BoundedSnapshot";
 
 const environmentId = EnvironmentId.make("environment-cache-test");
 const StoredThreadSnapshotJson = Schema.fromJsonString(StoredOrchestrationThreadSnapshot);
@@ -88,6 +89,72 @@ describe("orchestration cache envelopes", () => {
       snapshot: v2ShellSnapshot,
     });
     expect(decodeStoredShellSnapshotSync(shell).schemaVersion).toBe(3);
+  });
+
+  it("marks a locally trimmed cache window for an authoritative snapshot refresh", () => {
+    const rows = Array.from({ length: 76 }, (_, ordinal) => {
+      const base = {
+        id: TurnItemId.make(`cached-item-${ordinal}`),
+        threadId: v2ThreadId,
+        runId: null,
+        nodeId: null,
+        providerThreadId: null,
+        providerTurnId: null,
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal,
+        status: "completed" as const,
+        title: null,
+        startedAt: v2Now,
+        completedAt: v2Now,
+        updatedAt: v2Now,
+      };
+      const item =
+        ordinal === 75
+          ? {
+              ...base,
+              type: "command_execution" as const,
+              input: "tool",
+              output: "x".repeat(20_000),
+            }
+          : { ...base, type: "system_notice" as const, message: `notice ${ordinal}` };
+      return {
+        item,
+        position: ordinal,
+        visibility: "local" as const,
+        sourceThreadId: v2ThreadId,
+        sourceItemId: item.id,
+      };
+    });
+    const cached = boundedCachedThreadSnapshot({
+      snapshotSequence: 42,
+      historyCursor: "opaque-server-cursor",
+      hasMoreHistory: true,
+      projection: {
+        ...v2Projection,
+        turnItems: rows.map((row) => row.item),
+        visibleTurnItems: rows,
+      },
+    });
+
+    expect(cached).toMatchObject({ snapshotSequence: 42, requiresSnapshot: true });
+    expect(cached).not.toHaveProperty("historyCursor");
+    expect(cached).not.toHaveProperty("hasMoreHistory");
+    expect(cached?.projection.visibleTurnItems).toHaveLength(75);
+    expect(cached?.projection.visibleTurnItems[0]?.item.ordinal).toBe(1);
+    expect(cached?.projection.visibleTurnItems.at(-1)?.item).toMatchObject({
+      type: "command_execution",
+      output: undefined,
+      outputOmitted: true,
+    });
+    if (cached === null) throw new Error("Expected a bounded cache snapshot");
+    const encoded = encodeStoredThreadSnapshotJson({
+      schemaVersion: ORCHESTRATION_THREAD_CACHE_SCHEMA_VERSION,
+      environmentId,
+      threadId: v2ThreadId,
+      snapshot: cached,
+    });
+    expect(decodeStoredThreadSnapshotJson(encoded).snapshot.requiresSnapshot).toBe(true);
   });
 
   it.effect("discards V1-versioned cache envelopes after a decode failure", () =>

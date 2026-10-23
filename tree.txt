@@ -27261,6 +27261,7 @@ packages/client-runtime/src/state/auth.test.ts
 packages/client-runtime/src/state/auth.ts
 packages/client-runtime/src/state/boundedThreadSnapshotHttp.test.ts
 packages/client-runtime/src/state/boundedThreadSnapshotHttp.ts
+packages/client-runtime/src/state/cachePersistence.test.ts
 packages/client-runtime/src/state/cachePersistence.ts
 packages/client-runtime/src/state/checkpointDiff.ts
 packages/client-runtime/src/state/commandOutput.test.ts

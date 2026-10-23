@@ -23,6 +23,7 @@ export const environmentThreads = createEnvironmentThreadStateAtoms(connectionAt
   idleTtlMs: 30 * 60_000,
   maxEntries: 8,
   maxBytes: 8 * 1024 * 1024,
+  persistBoundedCache: true,
 });
 export const environmentThreadDetails = createEnvironmentThreadDetailAtoms(
   environmentThreads.stateAtom,

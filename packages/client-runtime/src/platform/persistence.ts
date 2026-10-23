@@ -1,7 +1,6 @@
 import {
   type EnvironmentId,
   type OrchestrationV2ShellSnapshot,
-  type OrchestrationV2ThreadDetailSnapshot,
   type ServerConfig,
   type ThreadId,
   type VcsListRefsResult,
@@ -14,6 +13,7 @@ import * as Schema from "effect/Schema";
 import type { ConnectionRegistration } from "../connection/catalog.ts";
 import type { DeferredShellSnapshot } from "../state/shellPullRequests.ts";
 import type { ConnectionTarget, PersistedConnectionTarget } from "../connection/model.ts";
+import type { CachedThreadSnapshot } from "./orchestrationCache.ts";
 
 export class ConnectionPersistenceError extends Schema.TaggedError<ConnectionPersistenceError>()(
   "ConnectionPersistenceError",
@@ -90,13 +90,10 @@ export class EnvironmentCacheStore extends Context.Service<
     readonly loadThread: (
       environmentId: EnvironmentId,
       threadId: ThreadId,
-    ) => Effect.Effect<
-      Option.Option<OrchestrationV2ThreadDetailSnapshot>,
-      ConnectionPersistenceError
-    >;
+    ) => Effect.Effect<Option.Option<CachedThreadSnapshot>, ConnectionPersistenceError>;
     readonly saveThread: (
       environmentId: EnvironmentId,
-      snapshot: OrchestrationV2ThreadDetailSnapshot,
+      snapshot: CachedThreadSnapshot,
     ) => Effect.Effect<void, ConnectionPersistenceError>;
     readonly removeThread: (
       environmentId: EnvironmentId,
