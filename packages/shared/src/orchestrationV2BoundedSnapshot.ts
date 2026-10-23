@@ -9,6 +9,10 @@ const CACHED_THREAD_ITEM_LIMIT = 75;
 const CACHED_THREAD_BYTE_LIMIT = 1024 * 1024;
 const CACHED_TOOL_OUTPUT_LIMIT = 16 * 1024;
 
+function isPresent<T>(value: T | null | undefined): value is T {
+  return value !== null && value !== undefined;
+}
+
 function compactCachedTurnItem(item: OrchestrationV2TurnItem): OrchestrationV2TurnItem {
   if (item.type !== "command_execution" && item.type !== "dynamic_tool") return item;
   const output = item.output;
@@ -98,8 +102,6 @@ export function boundedCachedThreadSnapshot(
         )
         .map((run) => run.id),
       ...(latestRunId === undefined ? [] : [latestRunId]),
-      ...(projection.thread.activeRunId === null ? [] : [projection.thread.activeRunId]),
-      ...(projection.thread.latestRunId === null ? [] : [projection.thread.latestRunId]),
     ]);
     const runs = projection.runs.filter((run) => runIds.has(run.id));
     for (const run of runs) runIds.add(run.id);
@@ -112,14 +114,14 @@ export function boundedCachedThreadSnapshot(
       (node) => runIds.has(node.runId ?? "") || nodeIds.has(node.id),
     );
     for (const node of nodes) nodeIds.add(node.id);
-    const providerThreadIds = new Set<string>([
-      ...rows.flatMap((row) =>
-        row.item.providerThreadId === null ? [] : [row.item.providerThreadId],
-      ),
-      ...runs.flatMap((run) => (run.providerThreadId === null ? [] : [run.providerThreadId])),
-      ...attempts.map((attempt) => attempt.providerThreadId),
-      ...nodes.flatMap((node) => (node.providerThreadId === null ? [] : [node.providerThreadId])),
-    ]);
+    const providerThreadIds = new Set<string>(
+      [
+        ...rows.map((row) => row.item.providerThreadId),
+        ...runs.map((run) => run.providerThreadId),
+        ...attempts.map((attempt) => attempt.providerThreadId),
+        ...nodes.map((node) => node.providerThreadId),
+      ].filter(isPresent),
+    );
     const providerTurnIds = new Set<string>([
       ...rows.flatMap((row) => (row.item.providerTurnId === null ? [] : [row.item.providerTurnId])),
       ...attempts.flatMap((attempt) =>
@@ -163,7 +165,7 @@ export function boundedCachedThreadSnapshot(
       runs,
       attempts,
       nodes,
-      subagents: projection.subagents.filter((subagent) => nodeIds.has(subagent.nodeId)),
+      subagents: projection.subagents.filter((subagent) => nodeIds.has(subagent.id)),
       providerThreads: projection.providerThreads.filter((thread) =>
         providerThreadIds.has(thread.id),
       ),

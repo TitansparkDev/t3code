@@ -38,7 +38,7 @@ import * as EnvironmentRegistry from "../connection/registry.ts";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import { safeErrorLogAttributes } from "../errors/safeLog.ts";
 import * as Persistence from "../platform/persistence.ts";
-import { runCachePersistence } from "./cachePersistence.ts";
+import { runCachePersistence, type CachePersistenceItem } from "./cachePersistence.ts";
 import {
   isRpcClientError,
   request,
@@ -381,7 +381,7 @@ export const makeEnvironmentServerConfigState = Effect.fn("EnvironmentServerConf
         source: "cache" as const,
       })),
     );
-    const persistence = yield* Queue.sliding<ServerConfig>(1);
+    const persistence = yield* Queue.sliding<CachePersistenceItem<ServerConfig>>(1);
     const pendingPersistence = yield* Ref.make<Option.Option<ServerConfig>>(Option.none());
 
     const persist = Effect.fn("EnvironmentServerConfigState.persist")(function* (
@@ -440,7 +440,7 @@ export const makeEnvironmentServerConfigState = Effect.fn("EnvironmentServerConf
           }
           yield* Ref.set(pendingPersistence, Option.some(next.value.config));
           yield* SubscriptionRef.set(state, next);
-          yield* Queue.offer(persistence, next.value.config);
+          yield* Queue.offer(persistence, { snapshot: next.value.config });
         }),
       ),
       Effect.forkScoped,
