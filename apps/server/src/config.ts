@@ -5,6 +5,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as LogLevel from "effect/LogLevel";
 import * as Path from "effect/Path";
+import * as PlatformError from "effect/PlatformError";
 import type * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 
@@ -90,7 +91,8 @@ export class ServerConfig extends Context.Service<
   static readonly layerTest = (
     cwd: string,
     baseDirOrPrefix: string | { readonly prefix: string },
-  ) => layerTest(cwd, baseDirOrPrefix);
+  ): Layer.Layer<ServerConfig, PlatformError.PlatformError, FileSystem.FileSystem | Path.Path> =>
+    layerTest(cwd, baseDirOrPrefix);
 }
 
 export const make = (config: ServerConfig["Service"]) => ServerConfig.of(config);
@@ -231,7 +233,10 @@ const makeTest = Effect.fn("ServerConfig.makeTest")(function* (
   });
 });
 
-export const layerTest = (cwd: string, baseDirOrPrefix: string | { readonly prefix: string }) =>
+export const layerTest = (
+  cwd: string,
+  baseDirOrPrefix: string | { readonly prefix: string },
+): Layer.Layer<ServerConfig, PlatformError.PlatformError, FileSystem.FileSystem | Path.Path> =>
   Layer.effect(ServerConfig, makeTest(cwd, baseDirOrPrefix));
 
 export const resolveStaticDir = Effect.fn(function* () {

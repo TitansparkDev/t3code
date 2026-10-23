@@ -205,7 +205,9 @@ export class ServerSettingsService extends Context.Service<
     readonly subscribeChanges: Effect.Effect<Stream.Stream<ServerSettings>, never, Scope.Scope>;
   }
 >()("t3/serverSettings/ServerSettingsService") {
-  static readonly layerTest = (overrides: DeepPartial<ServerSettings> = {}) => layerTest(overrides);
+  static readonly layerTest = (
+    overrides: DeepPartial<ServerSettings> = {},
+  ): Layer.Layer<ServerSettingsService, ServerSettingsError, never> => layerTest(overrides);
 }
 
 const makeTest = Effect.fn("serverSettings.makeTest")(function* (
@@ -262,7 +264,9 @@ const makeTest = Effect.fn("serverSettings.makeTest")(function* (
   } satisfies ServerSettingsService["Service"];
 });
 
-export const layerTest = (overrides: DeepPartial<ServerSettings> = {}) =>
+export const layerTest = (
+  overrides: DeepPartial<ServerSettings> = {},
+): Layer.Layer<ServerSettingsService, ServerSettingsError, never> =>
   Layer.effect(ServerSettingsService, makeTest(overrides));
 
 // Migrate saved token delivery without accepting it in settings writes or

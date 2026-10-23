@@ -220,12 +220,7 @@ const makeFlow = (
         return AgentQueueService.of({
           ...base,
           // Flow tests exercise task scheduling; host admission has its own deterministic tests.
-          admit: (_running) =>
-            options.queueFaults?.locked
-              ? Effect.fail(
-                  new AgentQueueError({ operation: "admit", message: "database is locked" }),
-                )
-              : Effect.succeed({ ok: true, reason: null }),
+          admit: () => Effect.succeed({ ok: true, reason: null }),
           activeClaims: (binding) =>
             options.queueFaults?.claims
               ? Effect.fail(

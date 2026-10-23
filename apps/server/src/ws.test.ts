@@ -358,6 +358,8 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
   Layer.mock(WorktreeSetupTracker.WorktreeSetupTracker)({}),
 );
 
+class ServerConfigRpcGroup extends RpcGroup.make(WsSubscribeServerConfigRpc) {}
+
 const layerConfigSources = Layer.mergeAll(
   Keybindings.layer,
   ServerSettings.layer.pipe(Layer.provide(ServerSecretStore.layer)),
@@ -444,18 +446,15 @@ it.effect(
           subscribeChanges: settingsChanges,
         }),
       );
-      const server = yield* RpcServer.makeNoSerialization(
-        RpcGroup.make(WsSubscribeServerConfigRpc),
-        {
-          ...WS_RPC_SERVER_OPTIONS,
-          onFromServer: (response) =>
-            response._tag === "Chunk"
-              ? Effect.forEach(response.values, (event) => Queue.offer(responses, event), {
-                  discard: true,
-                })
-              : Effect.void,
-        },
-      ).pipe(
+      const server = yield* RpcServer.makeNoSerialization(ServerConfigRpcGroup, {
+        ...WS_RPC_SERVER_OPTIONS,
+        onFromServer: (response) =>
+          response._tag === "Chunk"
+            ? Effect.forEach(response.values, (event) => Queue.offer(responses, event), {
+                discard: true,
+              })
+            : Effect.void,
+      }).pipe(
         Effect.provide(
           layerWsRpc(
             {
