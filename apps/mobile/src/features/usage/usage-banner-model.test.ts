@@ -452,6 +452,25 @@ describe("configured accounts", () => {
     expect(cell?.rows[0]).toMatchObject({ percent: null, reset: { countdown: "—" } });
   });
 
+  it("hides retained quota windows when the account reports unsupported limits", () => {
+    const [cell] = accounts(
+      model(
+        environment("env-a", "Laptop", {
+          providers: [
+            codexWith("a@example.com", [], {
+              usageLimits: limits([window({ usedPercent: 45 })], {
+                unavailable: { reason: "unsupported" },
+              }),
+            }),
+          ],
+        }),
+      ),
+    );
+    expect(cell?.placeholder).toBe("No subscription limits");
+    expect(cell?.rows.map((row) => row.percent)).toEqual([null, null]);
+    expect(cell?.rows.map((row) => row.reset.countdown)).toEqual(["—", "—"]);
+  });
+
   it("keeps a configured account with a failed probe in place as a placeholder", () => {
     const result = model(
       environment("env-a", "Laptop", {
@@ -716,6 +735,8 @@ describe("Antigravity summary", () => {
       coverage: { reporting: 3, accounts: 3, timed: 3 },
     });
     expect(cell.accountCount).toBe(3);
+    expect(cell.accessibleLabel).toContain("next refill in 1 hour");
+    expect(cell.accessibleLabel).toContain("refill time known for 3");
   });
 
   it("pairs the chosen family's percentage with that family's reset, never another family's", () => {

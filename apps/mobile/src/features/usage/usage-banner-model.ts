@@ -354,8 +354,20 @@ function rowFor(
   pick: Pick | null,
   stale: readonly UsageBannerStaleReason[],
   now: number,
+  refill = false,
 ): UsageBannerRow {
-  const reset = resetFor(pick?.resetAt ?? null, now);
+  const measuredReset = resetFor(pick?.resetAt ?? null, now);
+  const reset = refill
+    ? {
+        ...measuredReset,
+        speech:
+          measuredReset.countdown === "—"
+            ? "next refill time unknown"
+            : measuredReset.countdown === "now"
+              ? "next refill time has passed, awaiting an update"
+              : measuredReset.speech.replace("resets in", "next refill in"),
+      }
+    : measuredReset;
   const reasons =
     pick === null ? [] : reset.countdown === "now" ? [...stale, "reset" as const] : stale;
   return {
@@ -375,7 +387,7 @@ function accountRows(
   connected: ReadonlySet<EnvironmentId>,
   now: number,
 ): readonly [UsageBannerRow, UsageBannerRow] {
-  const windows = candidate.limits?.windows ?? [];
+  const windows = candidate.placeholder === null ? (candidate.limits?.windows ?? []) : [];
   const stale = staleFor(candidate, connected, now);
   const provider = candidate.provider;
   const short = accountPick(provider, windows, "short");
@@ -469,8 +481,15 @@ function summaryCell(
     pick?.family && slot === "short"
       ? `lowest ${pick.family} quota pool`
       : `lowest ${SLOT_LABEL[slot]} pool`;
-  const shortRow = rowFor("short", labelFor("short", picks.short), picks.short, stale, now);
-  const weeklyRow = rowFor("weekly", labelFor("weekly", picks.weekly), picks.weekly, stale, now);
+  const shortRow = rowFor("short", labelFor("short", picks.short), picks.short, stale, now, true);
+  const weeklyRow = rowFor(
+    "weekly",
+    labelFor("weekly", picks.weekly),
+    picks.weekly,
+    stale,
+    now,
+    true,
+  );
   const coverage = shortRow.coverage ?? weeklyRow.coverage;
   const coverageSpeech = coverage
     ? `${coverage.reporting} of ${candidates.length} accounts reporting, refill time known for ${coverage.timed}`
@@ -551,7 +570,10 @@ function candidatesFor(snapshot: LimitAccountSnapshot, provider: UsageBannerProv
         reporters: account.reporters,
         limits: account.limits,
         account: null,
-        placeholder: account.limits?.windows.length ? null : unreadReason(account),
+        placeholder:
+          account.limits?.unavailable?.reason === "probeFailed" && account.limits.windows.length > 0
+            ? null
+            : unreadReason(account),
         unavailable: !account.available || account.limits?.unavailable?.reason === "probeFailed",
       },
     ];
