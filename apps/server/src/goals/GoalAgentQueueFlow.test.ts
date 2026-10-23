@@ -1579,6 +1579,7 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
         ].join("\n");
         const flow = yield* makeFlow(plan, {
           extraFiles: {
+            "package.json": '{"type":"commonjs"}\n',
             "scripts/check5.js": "process.exit(require('fs').existsSync('T1.txt') ? 5 : 0);\n",
           },
         });
@@ -2223,14 +2224,11 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
   // ───────────── a stalled queue: stale chats, missed events, blocked tasks ─────────────
 
   /** A check that fails with a named failing item until `open` exists in the folder. */
-  const gatedCheck = (dir: string) => {
-    const file = NodePath.join(dir, "gate.cjs");
-    NodeFS.writeFileSync(
-      file,
-      `const fs=require('fs');const path=require('path');if(!fs.existsSync(path.join(${JSON.stringify(dir)},'open'))){console.log('FAILED gate_check');process.exit(1)}\n`,
-    );
-    return `node ${file}`;
-  };
+  const gatedCheck = (dir: string) => ({
+    fileName: "gate.cjs",
+    command: "node gate.cjs",
+    source: `const fs=require('fs');const path=require('path');if(!fs.existsSync(path.join(${JSON.stringify(dir)},'open'))){console.log('FAILED gate_check');process.exit(1)}\n`,
+  });
 
   it.effect(
     "a conversation that went quiet without its end being seen cannot hold files forever: independent tasks keep running, the held one is finished, and the goal says what blocked it",
@@ -2321,12 +2319,14 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
     () =>
       Effect.gen(function* () {
         const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "goal-fu-"));
+        const check = gatedCheck(dir);
         const flow = yield* makeFlow(
           planWith([
-            { id: "T1", scope: "s/", verify: gatedCheck(dir) },
+            { id: "T1", scope: "s/", verify: check.command },
             { id: "T2", scope: "other/" },
             { id: "T3", deps: ["T1"], scope: "t/" },
           ]),
+          { extraFiles: { [check.fileName]: check.source } },
         );
         const service = yield* flow.startServer;
         yield* Effect.forkScoped(service.loop);
@@ -2532,14 +2532,16 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
     () =>
       Effect.gen(function* () {
         const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "goal-real-"));
+        const check = gatedCheck(dir);
         const flow = yield* makeFlow(
           planWith([
-            { id: "N2", scope: "db/", verify: gatedCheck(dir) },
+            { id: "N2", scope: "db/", verify: check.command },
             { id: "N1", scope: "db/" },
             { id: "N3", scope: "audio/" },
             { id: "N4", scope: "server/" },
             { id: "N8", deps: ["N1", "N2", "N3", "N4"] },
           ]),
+          { extraFiles: { [check.fileName]: check.source } },
         );
         const service = yield* flow.startServer;
         yield* Effect.forkScoped(service.loop);
