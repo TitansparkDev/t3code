@@ -10,8 +10,10 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 
 import { ServerConfig } from "../config.ts";
@@ -30,6 +32,11 @@ export class GoalStore extends Context.Service<
     /** Replace one goal with `update(goal)`. Returns the new goal, or undefined if it is gone. */
     readonly update: (id: GoalId, update: (goal: Goal) => Goal) => Effect.Effect<Goal | undefined>;
     readonly remove: (id: GoalId) => Effect.Effect<void>;
+    /**
+     * Signals after every committed change, so a waiter re-reads `list` on each signal.
+     * Subscribe before reading, or a change made in between is missed.
+     */
+    readonly subscribeChanges: Effect.Effect<PubSub.Subscription<void>, never, Scope.Scope>;
   }
 >()("t3/goals/GoalStore") {}
 
@@ -64,6 +71,7 @@ const make = Effect.gen(function* () {
 
   const state = yield* Ref.make<ReadonlyArray<Goal>>(loaded);
   const writeLock = yield* Semaphore.make(1);
+  const changes = yield* PubSub.unbounded<void>();
 
   // Encoding happens before the in-memory state changes. A goal that violates the schema
   // (a blank detail, a count out of range) must be refused here: if it reached memory first,
@@ -91,6 +99,7 @@ const make = Effect.gen(function* () {
           Effect.orDie,
         );
         yield* Ref.set(state, changed.next);
+        yield* PubSub.publish(changes, undefined);
         yield* fs
           .writeFileString(filePath, contents)
           .pipe(
@@ -113,6 +122,7 @@ const make = Effect.gen(function* () {
       }),
     remove: (id) =>
       modify((goals) => ({ value: undefined, next: goals.filter((goal) => goal.id !== id) })),
+    subscribeChanges: PubSub.subscribe(changes),
   });
 });
 
