@@ -27,6 +27,17 @@ export function shouldShowWorkspaceUsageBanner(
   return route.state === undefined || shouldShowWorkspaceUsageBanner(route.state);
 }
 
+export function isWorkspaceSettingsRoute(state: NavigationState | undefined): boolean {
+  if (!state) return false;
+  const route = state.routes[state.index];
+  if (!route) return false;
+  return (
+    route.name.startsWith("Settings") ||
+    route.name === "ThreadSettingsSheet" ||
+    isWorkspaceSettingsRoute(route.state)
+  );
+}
+
 const BASE_THREAD_ROUTE_PATTERN = /^\/threads\/[^/]+\/[^/]+\/?$/;
 
 export function isBaseThreadRoute(pathname: string): boolean {

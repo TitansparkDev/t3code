@@ -21,6 +21,7 @@ import {
 } from "@react-navigation/native-stack";
 import { useEffect, useRef, type ReactNode } from "react";
 import {
+  AppState,
   Platform,
   Pressable,
   ScrollView,
@@ -134,6 +135,7 @@ import { SettingsProjectGroupingRouteScreen } from "./features/settings/Settings
 import { SettingsProjectOverviewRouteScreen } from "./features/settings/SettingsProjectOverviewRouteScreen";
 import { UsageLimitAccountScreen } from "./features/usage/UsageLimitsPooled";
 import { UsageLimitBanner } from "./features/usage/UsageLimitBanner";
+import { usageBannerExpansionStore } from "./features/usage/usage-banner-expansion";
 import { shouldShowWorkspaceUsageBanner } from "./lib/adaptive-navigation";
 import { UsageRouteScreen } from "./features/usage/UsageRouteScreen";
 import { SettingsAboutRouteScreen } from "./features/settings/SettingsAboutRouteScreen";
@@ -648,6 +650,16 @@ function RootStackLayout(props: {
   const path = getPathFromState(props.state, navigationPathConfig);
   const pathname = path.startsWith("/") ? path : `/${path}`;
   const workspaceLocation = workspaceLocationFromState(props.state);
+  useEffect(() => {
+    usageBannerExpansionStore.syncNavigation(props.state);
+  }, [props.state]);
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (state) => {
+      usageBannerExpansionStore.setForeground(state === "active");
+    });
+    if (AppState.currentState !== "active") usageBannerExpansionStore.setForeground(false);
+    return () => subscription.remove();
+  }, []);
   useAgentNotificationNavigation(workspaceLocation.pathname);
   useConnectOnboardingNavigation();
   useAppShortcuts(props.state);

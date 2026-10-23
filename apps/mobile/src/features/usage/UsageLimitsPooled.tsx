@@ -408,8 +408,8 @@ export function UsageLimitsSection({
 
 type AccountScreenProps = StaticScreenProps<{
   accountKey: string;
-  windowId: string;
-  windowKind: LimitPoolWindow["kind"];
+  windowId: string | null;
+  windowKind: LimitPoolWindow["kind"] | null;
   environmentIds: readonly string[] | null;
   now: number;
 }>;
@@ -428,7 +428,13 @@ export function UsageLimitAccountScreen({ route }: AccountScreenProps) {
   const account = accounts.find((candidate) => candidate.key === accountKey);
   const pool = collectLimitPools(accounts, now)
     .find((candidate) => candidate.driver === account?.driver)
-    ?.windows.find((candidate) => candidate.id === windowId && candidate.kind === windowKind);
+    ?.windows.find(
+      (candidate) =>
+        windowId !== null &&
+        windowKind !== null &&
+        candidate.id === windowId &&
+        candidate.kind === windowKind,
+    );
   const window = pool?.members.find((member) => member.account.key === accountKey)?.window;
   const evenPace = window ? paceRemainingPercent(window, now) : null;
   const reset = pool?.resets.find((candidate) => candidate.member.account.key === accountKey);

@@ -17,6 +17,7 @@ import {
 import { ProviderIcon } from "../../components/ProviderIcon";
 import { AppText } from "../../components/ui/AppText";
 import { usageBannerPresentationsAtom } from "../../state/usage-banner";
+import { usageBannerExpansionStore, useUsageBannerExpanded } from "./usage-banner-expansion";
 import { useHardwareKeyboardCommand } from "../keyboard/hardwareKeyboardCommands";
 import { usageBannerCellWidth, usageBannerHeight } from "./usage-banner-layout";
 import {
@@ -131,7 +132,7 @@ export function UsageLimitBanner(props: { readonly visible: boolean }) {
   const { width, fontScale } = useWindowDimensions();
   const [now, setNow] = useState(() => Date.now());
   const [foreground, setForeground] = useState(AppState.currentState === "active");
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useUsageBannerExpanded();
   const [availableWidth, setAvailableWidth] = useState(0);
   const closeRef = useRef<View>(null);
   const summaryRef = useRef<View>(null);
@@ -142,6 +143,10 @@ export function UsageLimitBanner(props: { readonly visible: boolean }) {
   const bannerWidth = availableWidth || width;
   const cellWidth = usageBannerCellWidth(bannerWidth, count);
   const summaryAccountIds = summary?.accounts.map((account) => account.id).join("|") ?? "";
+  const accountIds = model.cells.flatMap((cell) =>
+    cell.kind === "account" ? [cell.id] : cell.accounts.map((account) => account.id),
+  );
+  const antigravityIds = summary?.accounts.map((account) => account.id) ?? [];
   const onLayout = (event: LayoutChangeEvent) => {
     const nextWidth = event.nativeEvent.layout.width;
     setAvailableWidth((current) => (current === nextWidth ? current : nextWidth));
@@ -189,20 +194,19 @@ export function UsageLimitBanner(props: { readonly visible: boolean }) {
   }, [collapse, expanded]);
 
   useEffect(() => {
-    if (!props.visible || summaryAccountIds === "") setExpanded(false);
-  }, [props.visible, summaryAccountIds]);
+    if (props.visible) usageBannerExpansionStore.syncAccounts(accountIds, antigravityIds);
+  }, [props.visible, summaryAccountIds, model.cells]);
 
   const openAccount = (cell: Exclude<UsageBannerCell, { kind: "antigravity" }>) => {
     const row = cell.rows.find((candidate) => candidate.window !== null) ?? cell.rows[0];
-    if (!row.window) return;
     navigation.navigate("SettingsSheet", {
       screen: "SettingsContent",
       params: {
         screen: "SettingsUsageAccount",
         params: {
           accountKey: cell.navigation.accountKey,
-          windowId: row.window.id,
-          windowKind: row.window.kind,
+          windowId: row.window?.id ?? null,
+          windowKind: row.window?.kind ?? null,
           environmentIds: cell.navigation.environmentIds,
           now,
         },
