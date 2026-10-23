@@ -8,6 +8,8 @@ import { presentConnectionDiagnosis } from "./diagnosis.ts";
 import { mapManagedRelayError, mapRemoteEnvironmentError } from "./errors.ts";
 import {
   AVAILABLE_CONNECTION_STATE,
+  ConnectionBlockedError,
+  ConnectionTransientError,
   type ConnectionAttemptError,
   type SupervisorConnectionState,
 } from "./model.ts";
@@ -51,6 +53,45 @@ const results = (state: SupervisorConnectionState, via?: "relay" | "direct") =>
   diagnose(state, via)?.hops.map((hop) => `${hop.hop}:${hop.result}`);
 
 describe("presentConnectionDiagnosis", () => {
+  it("attributes a pending cloud sign-in to the phone, never the host", () => {
+    // Legacy client errors had no hop; classify from the reason as well.
+    const pending = new ConnectionTransientError({
+      reason: "session-pending",
+      detail: "Waiting for the T3 Connect sign-in to load.",
+    });
+    const diagnosis = diagnose(backoff(pending));
+    expect(diagnosis?.headline).toBe("Waiting for T3 Connect sign-in on this device");
+    expect(results(backoff(pending))).toEqual([
+      "device:failed",
+      "relay:unchecked",
+      "tunnel:unchecked",
+      "server:unchecked",
+    ]);
+    expect(diagnosis?.steps.join(" ")).toContain("Settings > T3 Account");
+    expect(diagnosis?.steps.join(" ")).not.toContain("Mac mini");
+    expect(diagnosis?.moreInfoUrl).toContain("sign-in-account-or-link-problems");
+  });
+
+  it("attributes a changed cloud sign-in to this device", () => {
+    const changed = new ConnectionBlockedError({
+      reason: "authentication",
+      detail: "Your cloud sign-in changed. Sign in again to authorize the environment.",
+      hop: "device",
+      via: "relay",
+    });
+    const diagnosis = diagnose(backoff(changed));
+    expect(diagnosis?.headline).toBe("T3 Connect sign-in on this device needs attention");
+    expect(results(backoff(changed))).toEqual([
+      "device:failed",
+      "relay:unchecked",
+      "tunnel:unchecked",
+      "server:unchecked",
+    ]);
+    expect(diagnosis?.steps).toEqual([
+      "On this device, open Settings > T3 Account and sign in again.",
+    ]);
+  });
+
   it("tells a working tunnel apart from T3 Code not answering", () => {
     expect(diagnose(backoff(unavailable("origin_unreachable")))?.headline).toBe(
       "Tunnel works, but T3 Code on Mac mini did not answer",

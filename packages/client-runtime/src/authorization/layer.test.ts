@@ -727,6 +727,8 @@ describe("RemoteEnvironmentAuthorization", () => {
         expect(pending).toMatchObject({
           _tag: "ConnectionTransientError",
           reason: "session-pending",
+          hop: "device",
+          via: "relay",
         });
         yield* Ref.set(harness.session, Option.some({ accountId: "account-1" }));
         const loaded = yield* remote.authorizeDpopHttp({ expectedEnvironmentId: ENVIRONMENT_ID });

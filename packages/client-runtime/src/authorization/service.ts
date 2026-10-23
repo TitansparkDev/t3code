@@ -249,6 +249,8 @@ export const make = Effect.gen(function* () {
     new ConnectionBlockedError({
       reason: "authentication",
       detail: "Your cloud sign-in changed. Sign in again to authorize the environment.",
+      hop: "device",
+      via: "relay",
     });
 
   // A missing identity before the attempt captures one means the cloud session
@@ -258,6 +260,8 @@ export const make = Effect.gen(function* () {
     new ConnectionTransientError({
       reason: "session-pending",
       detail: "Waiting for the T3 Connect sign-in to load.",
+      hop: "device",
+      via: "relay",
     });
 
   const assertSession = Effect.fnUntraced(function* (
