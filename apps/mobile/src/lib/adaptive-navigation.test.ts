@@ -30,6 +30,10 @@ describe("shouldShowWorkspaceUsageBanner", () => {
     expect(shouldShowWorkspaceUsageBanner(state(name))).toBe(true);
   });
 
+  it("hides the strip for a blurred route beneath a translucent sheet", () => {
+    expect(shouldShowWorkspaceUsageBanner(state("Home"), false)).toBe(false);
+  });
+
   it("hides the banner in immersive media", () => {
     expect(shouldShowWorkspaceUsageBanner(state("McpAppFullscreen"))).toBe(false);
   });

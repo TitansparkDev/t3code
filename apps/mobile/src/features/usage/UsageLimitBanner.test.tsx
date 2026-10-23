@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { usageBannerCellWidth, usageBannerHeight } from "./UsageLimitBanner";
+import { usageBannerCellWidth, usageBannerHeight } from "./usage-banner-layout";
 
 describe("mobile usage banner layout", () => {
   it.each([320, 360, 390, 430])("keeps five collapsed cells within %i dp", (width) => {

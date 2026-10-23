@@ -16,8 +16,11 @@ const HIDDEN_WORKSPACE_BANNER_ROUTES = new Set([
 ]);
 
 /** Checks the active navigation branch so a translucent settings sheet hides the workspace underneath it. */
-export function shouldShowWorkspaceUsageBanner(state: NavigationState | undefined): boolean {
-  if (state === undefined) return false;
+export function shouldShowWorkspaceUsageBanner(
+  state: NavigationState | undefined,
+  focused = true,
+): boolean {
+  if (!focused || state === undefined) return false;
   const route = state.routes[state.index];
   if (!route || HIDDEN_WORKSPACE_BANNER_ROUTES.has(route.name)) return false;
   if (route.name.startsWith("Settings")) return false;

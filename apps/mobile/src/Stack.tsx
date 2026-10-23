@@ -12,6 +12,7 @@ import {
   getPathFromState,
   NavigationState,
   StackActions,
+  useIsFocused,
   useNavigation,
 } from "@react-navigation/native";
 import {
@@ -132,6 +133,8 @@ import {
 import { SettingsProjectGroupingRouteScreen } from "./features/settings/SettingsProjectGroupingRouteScreen";
 import { SettingsProjectOverviewRouteScreen } from "./features/settings/SettingsProjectOverviewRouteScreen";
 import { UsageLimitAccountScreen } from "./features/usage/UsageLimitsPooled";
+import { UsageLimitBanner } from "./features/usage/UsageLimitBanner";
+import { shouldShowWorkspaceUsageBanner } from "./lib/adaptive-navigation";
 import { UsageRouteScreen } from "./features/usage/UsageRouteScreen";
 import { SettingsAboutRouteScreen } from "./features/settings/SettingsAboutRouteScreen";
 import { SettingsNotificationsRouteScreen } from "./features/settings/SettingsNotificationsRouteScreen";
@@ -674,7 +677,6 @@ function RootStackLayout(props: {
             <AdaptiveWorkspaceLayout
               pathname={workspaceLocation.pathname}
               workspaceRouteKey={workspaceLocation.routeKey}
-              navigationState={props.state}
               selectedPullRequestKey={selectedPullRequestKey(props.state)}
             >
               {props.children}
@@ -1041,11 +1043,11 @@ const RootStackConfig = createWorkspaceStackNavigator({
       linking: "new",
       // A screen's layout replaces the navigator's screenLayout.
       layout: ({ children, route }) => (
-        <GuardedScreenLayout route={route}>
+        <WorkspaceRouteScreenLayout route={route}>
           <NewTaskFlowProvider>
             <View className="flex-1 bg-sheet-solid">{children}</View>
           </NewTaskFlowProvider>
-        </GuardedScreenLayout>
+        </WorkspaceRouteScreenLayout>
       ),
       options: {
         ...NESTED_NAVIGATOR_OPTIONS,
@@ -1076,6 +1078,21 @@ function GuardedScreenLayout(props: {
   );
 }
 
+function WorkspaceRouteScreenLayout(props: {
+  readonly children: ReactNode;
+  readonly route: { readonly name: string; readonly params?: object | undefined };
+}) {
+  const focused = useIsFocused();
+  const navigation = useNavigation();
+  const visible = shouldShowWorkspaceUsageBanner(navigation.getRootState(), focused);
+  return (
+    <GuardedScreenLayout route={props.route}>
+      <UsageLimitBanner visible={visible} />
+      {props.children}
+    </GuardedScreenLayout>
+  );
+}
+
 function ScreenRenderFallback(props: RenderFailureProps & { readonly routeName: string }) {
   const navigation = useNavigation();
   const exit = navigation.canGoBack()
@@ -1095,7 +1112,7 @@ export const RootStack = RootStackConfig.with(function AdaptiveRootStack({ Navig
 
   return (
     <Navigator
-      screenLayout={(props) => <GuardedScreenLayout {...props} />}
+      screenLayout={(props) => <WorkspaceRouteScreenLayout {...props} />}
       screenOptions={({ route }) => {
         if (route.name !== "SettingsSheet" && route.name !== "NewTaskSheet") {
           return Platform.OS === "android"

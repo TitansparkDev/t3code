@@ -18,6 +18,7 @@ import { ProviderIcon } from "../../components/ProviderIcon";
 import { AppText } from "../../components/ui/AppText";
 import { usageBannerPresentationsAtom } from "../../state/usage-banner";
 import { useHardwareKeyboardCommand } from "../keyboard/hardwareKeyboardCommands";
+import { usageBannerCellWidth, usageBannerHeight } from "./usage-banner-layout";
 import {
   buildUsageBannerModel,
   type UsageBannerCell,
@@ -25,14 +26,6 @@ import {
 } from "./usage-banner-model";
 
 const MINUTE = 60_000;
-
-export function usageBannerCellWidth(width: number, count: number): number {
-  return count === 0 ? 0 : Math.min(88, (width - 8 - 2 * (count - 1)) / count);
-}
-
-export function usageBannerHeight(fontScale: number): number {
-  return fontScale >= 1.15 ? Math.ceil(72 * fontScale + 8) : 48;
-}
 
 function RowValue({
   row,
