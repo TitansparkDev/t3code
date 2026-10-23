@@ -1,9 +1,9 @@
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import { expect, it } from "vite-plus/test";
-import { baselineResult, checkKey } from "../src/baseline.ts";
+import { baselineResult, checkKey, prepareVerificationDependencies } from "../src/baseline.ts";
 import { openQueueDatabase } from "../src/db.ts";
-import { createTestGitRepo, execCommand } from "./harness/gitHarness.ts";
+import { createTestGitRepo, createTestWorktree, execCommand } from "./harness/gitHarness.ts";
 
 it.each([false, true])(
   "checks baseline workspace source with installed dependencies (obsolete cache: %s)",
@@ -95,6 +95,52 @@ it.each([false, true])(
     }
   },
 );
+
+it("prepares a candidate despite missing dependencies in a vendored workspace", async () => {
+  const repo = await createTestGitRepo("aq-baseline-vendored-workspace-");
+  let probeRoot: string | undefined;
+  try {
+    const app = NodePath.join(repo.rootDir, "apps/app");
+    const shared = NodePath.join(repo.rootDir, "packages/shared");
+    const vendored = NodePath.join(repo.rootDir, ".repos/alchemy-effect/benchmarks/containers");
+    await NodeFSP.mkdir(NodePath.join(app, "node_modules/@fixture"), { recursive: true });
+    await NodeFSP.mkdir(shared, { recursive: true });
+    await NodeFSP.mkdir(vendored, { recursive: true });
+    await NodeFSP.writeFile(NodePath.join(repo.rootDir, ".gitignore"), "node_modules/\n");
+    await NodeFSP.writeFile(
+      NodePath.join(app, "package.json"),
+      '{"name":"@fixture/app","dependencies":{"@fixture/shared":"workspace:*"}}',
+    );
+    await NodeFSP.writeFile(
+      NodePath.join(shared, "package.json"),
+      '{"name":"@fixture/shared","exports":"./index.mjs"}',
+    );
+    await NodeFSP.writeFile(
+      NodePath.join(vendored, "package.json"),
+      '{"name":"@fixture/containers","dependencies":{"@distilled.cloud/aws":"workspace:*"}}',
+    );
+    await execCommand("git", ["add", "."], repo.rootDir);
+    await execCommand("git", ["commit", "-m", "vendored workspace fixture"], repo.rootDir);
+    await NodeFSP.symlink(shared, NodePath.join(app, "node_modules/@fixture/shared"), "dir");
+    const probe = await createTestWorktree(repo, "probe", "probe-vendored-workspace");
+    probeRoot = probe.worktreePath;
+
+    const preparation = prepareVerificationDependencies({
+      stage: "candidate",
+      sourceRoot: repo.rootDir,
+      probeRoot,
+    });
+
+    expect(preparation).toBeNull();
+    expect(
+      await NodeFSP.realpath(NodePath.join(probeRoot, "apps/app/node_modules/@fixture/shared")),
+    ).toBe(NodePath.join(probeRoot, "packages/shared"));
+  } finally {
+    if (probeRoot)
+      await execCommand("git", ["worktree", "remove", "--force", probeRoot], repo.rootDir);
+    await repo.cleanup();
+  }
+});
 
 it("reports a declared dependency that is not installed as a preparation failure, not a failing check", async () => {
   const repo = await createTestGitRepo("aq-baseline-missing-");

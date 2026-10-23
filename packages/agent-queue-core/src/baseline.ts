@@ -145,10 +145,14 @@ function git(cwd: string, args: ReadonlyArray<string>) {
   };
 }
 
-export function linkProbeDependencies(sourceRoot: string, probeRoot: string): void {
-  const manifests = git(probeRoot, ["ls-files", "--", "package.json", "**/package.json"])
+function trackedPackageManifests(root: string): string[] {
+  return git(root, ["ls-files", "--", "package.json", "**/package.json"])
     .stdout.split("\n")
-    .filter(Boolean);
+    .filter((manifest) => manifest && !manifest.startsWith(".repos/"));
+}
+
+export function linkProbeDependencies(sourceRoot: string, probeRoot: string): void {
+  const manifests = trackedPackageManifests(probeRoot);
   const workspaces = new Map<string, string>();
   const directories = new Set(["."]);
   for (const manifest of manifests) {
@@ -202,9 +206,7 @@ export function linkProbeDependencies(sourceRoot: string, probeRoot: string): vo
  * its node_modules or an ancestor's). Workspace siblings count: they are linked like any package.
  */
 function unresolvedDependency(root: string): string | null {
-  const manifests = git(root, ["ls-files", "--", "package.json", "**/package.json"])
-    .stdout.split("\n")
-    .filter(Boolean);
+  const manifests = trackedPackageManifests(root);
   for (const manifest of manifests) {
     let declared: {
       dependencies?: Record<string, string>;
