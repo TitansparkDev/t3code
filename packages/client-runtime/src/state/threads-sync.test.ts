@@ -340,14 +340,15 @@ describe("EnvironmentThreads", () => {
   it.effect("resubscribes after a native background wake to catch up on missed events", () =>
     Effect.gen(function* () {
       const h = yield* makeHarness({ cached: BASE_PROJECTION });
-      yield* SubscriptionRef.set(h.supervisorState, {
+      const connected: SupervisorConnectionState = {
         ...AVAILABLE_CONNECTION_STATE,
         desired: true,
         network: "online",
         phase: "connected",
         attempt: 1,
         generation: 1,
-      });
+      };
+      yield* SubscriptionRef.set(h.supervisorState, connected);
       expect(yield* Queue.take(h.subscriptionEvents)).toBe(1);
 
       yield* Queue.offer(h.wakeups, "native-wake");
