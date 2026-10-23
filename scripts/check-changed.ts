@@ -90,7 +90,7 @@ const steps = [
   })),
   affected.length > 0 && {
     name: `typecheck (${affected.length} packages)`,
-    args: ["run", "--cache", "--concurrency-limit", "4", ...filters(affected), "typecheck"],
+    args: ["run", "--cache", "--concurrency-limit", "1", ...filters(affected), "typecheck"],
   },
   // From the repo root, the root vite.config.ts hands each file to its package's config.
   tests.size > 0 && {
