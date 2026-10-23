@@ -270,6 +270,7 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
         ? offlineState(initialIntent, 0, 0, null)
         : connectingState(initialIntent, 0, 1, null),
   );
+  const establishedGeneration = yield* Ref.make(0);
   const session = yield* SubscriptionRef.make<Option.Option<RpcSession.RpcSession>>(Option.none());
   const prepared = yield* SubscriptionRef.make<Option.Option<PreparedConnection>>(Option.none());
   // Learned routes arrive while a session is live, so the route list is read
@@ -384,6 +385,7 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
     lastFailure: ConnectionAttemptError | null,
     progress: ConnectionDriver.ConnectionDriverProgress,
   ) {
+    if (generation < (yield* Ref.get(establishedGeneration))) return;
     if ("prepared" in progress) {
       yield* SubscriptionRef.set(prepared, Option.some(progress.prepared));
     }
@@ -505,7 +507,9 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
     );
   });
 
-  const waitForEstablishmentInterrupt = Effect.fnUntraced(function* () {
+  const waitForEstablishmentInterrupt = Effect.fnUntraced(function* (
+    replacementInProgress: boolean,
+  ) {
     for (;;) {
       const next = yield* Queue.take(signals);
       switch (next._tag) {
@@ -522,7 +526,8 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
           break;
         case "Wakeup":
           if (next.reason === "application-active-reconnect") {
-            return true;
+            if (!replacementInProgress) return true;
+            break;
           }
           if (next.reason === "credentials-changed" && usesRelay) {
             yield* logManagedRelayAccountChange;
@@ -574,7 +579,9 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
         if (next.reason === "application-active") {
           return CONNECTION_PROBE_TIMEOUT;
         }
-        return next.reason === "application-active-probe" || next.reason === "network-changed"
+        return next.reason === "application-active-probe" ||
+          next.reason === "native-wake" ||
+          next.reason === "network-changed"
           ? QUICK_CONNECTION_PROBE_TIMEOUT
           : undefined;
       case "ConnectRequested":
@@ -689,7 +696,7 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
           exit,
         })),
       ),
-      waitForEstablishmentInterrupt().pipe(
+      waitForEstablishmentInterrupt(ignoreOffline).pipe(
         Effect.map((resetRetry): EstablishmentEvent => ({
           _tag: "Interrupted",
           resetRetry,
@@ -915,6 +922,7 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
       replacing = false;
       const failedProbe = yield* Ref.getAndSet(probeUnanswered, false);
       if (outcome.established) {
+        yield* Ref.set(establishedGeneration, nextGeneration);
         generation = nextGeneration;
         // A session came up, so no earlier failure describes the connection.
         // Losing a live session is not a failed connection either, for example

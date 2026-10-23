@@ -16,3 +16,15 @@ export function mobileApplicationActiveWakeup(
     ? "application-active-reconnect"
     : "application-active-probe";
 }
+
+export function mobileNativeWakeup(
+  appState: string | null | undefined,
+  foregroundedAtMs: number | null,
+  nowMs: number,
+): "native-wake" | null {
+  return appState === "active" &&
+    foregroundedAtMs !== null &&
+    nowMs - foregroundedAtMs >= MOBILE_BACKGROUND_RECONNECT_AFTER_MS
+    ? "native-wake"
+    : null;
+}

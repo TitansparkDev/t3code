@@ -27,7 +27,8 @@ import { appAtomRegistry } from "../state/atom-registry";
 import { clearThreadOutboxEnvironment } from "../state/thread-outbox-removal";
 import { clearComposerDraftsEnvironment } from "../state/use-composer-drafts";
 import { clearThreadComposerErrorsForEnvironment } from "../state/thread-composer-error";
-import { mobileApplicationActiveWakeup } from "./app-state-wakeups";
+import { subscribeAndroidBackgroundConnectionWake } from "./android-background";
+import { mobileApplicationActiveWakeup, mobileNativeWakeup } from "./app-state-wakeups";
 import * as ConnectionStorage from "./storage";
 
 function networkStatus(state: Network.NetworkState): "unknown" | "offline" | "online" {
@@ -124,25 +125,41 @@ const networkPathChanges = Stream.callback<"network-changed">((queue) =>
 const layerWakeups = Wakeups.layer({
   changes: Stream.mergeAll(
     [
-      Stream.callback<"application-active-probe" | "application-active-reconnect">((queue) =>
+      Stream.callback<Wakeups.ConnectionWakeup>((queue) =>
         Effect.acquireRelease(
           Effect.sync(() => {
             let backgroundedAtMs = AppState.currentState === "background" ? Date.now() : null;
-            return AppState.addEventListener("change", (state) => {
+            let foregroundedAtMs = AppState.currentState === "active" ? Date.now() : null;
+            const appStateSubscription = AppState.addEventListener("change", (state) => {
               if (state === "background") {
                 backgroundedAtMs = Date.now();
+                foregroundedAtMs = null;
                 return;
               }
               if (state === "active") {
-                Queue.offerUnsafe(
-                  queue,
-                  mobileApplicationActiveWakeup(backgroundedAtMs, Date.now()),
-                );
+                const now = Date.now();
+                Queue.offerUnsafe(queue, mobileApplicationActiveWakeup(backgroundedAtMs, now));
                 backgroundedAtMs = null;
+                foregroundedAtMs = now;
+                return;
               }
+              foregroundedAtMs = null;
             });
+            const removeNativeWake = subscribeAndroidBackgroundConnectionWake(() => {
+              const wakeup = mobileNativeWakeup(
+                AppState.currentState,
+                foregroundedAtMs,
+                Date.now(),
+              );
+              if (wakeup !== null) Queue.offerUnsafe(queue, wakeup);
+            });
+            return { appStateSubscription, removeNativeWake };
           }),
-          (subscription) => Effect.sync(() => subscription.remove()),
+          ({ appStateSubscription, removeNativeWake }) =>
+            Effect.sync(() => {
+              appStateSubscription.remove();
+              removeNativeWake();
+            }),
         ).pipe(Effect.asVoid),
       ),
       managedRelayAccountChanges(appAtomRegistry).pipe(

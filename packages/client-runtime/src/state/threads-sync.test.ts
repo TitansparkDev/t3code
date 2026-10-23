@@ -120,6 +120,7 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
   const latest = yield* Ref.make<EnvironmentThreadState>(EMPTY_ENVIRONMENT_THREAD_STATE);
   const retryCount = yield* Ref.make(0);
   const subscriptionCount = yield* Ref.make(0);
+  const subscriptionEvents = yield* Queue.unbounded<number>();
   const loaderCalls = yield* Ref.make(0);
   const lastSubscribeAfterSequence = yield* Ref.make<number | undefined>(undefined);
   const lastRequestCompletionMarker = yield* Ref.make(false);
@@ -146,6 +147,7 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
     }) =>
       Stream.unwrap(
         Ref.updateAndGet(subscriptionCount, (count) => count + 1).pipe(
+          Effect.tap((count) => Queue.offer(subscriptionEvents, count)),
           Effect.andThen(Ref.set(lastSubscribeAfterSequence, input.afterSequence)),
           Effect.andThen(
             Ref.set(lastRequestCompletionMarker, input.requestCompletionMarker === true),
@@ -263,6 +265,7 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
     latest,
     retryCount,
     subscriptionCount,
+    subscriptionEvents,
     loaderCalls,
     lastSubscribeAfterSequence,
     lastRequestCompletionMarker,
@@ -322,6 +325,26 @@ const deleted = (sequence = 3): OrchestrationV2ThreadStreamItem => {
 };
 
 describe("EnvironmentThreads", () => {
+  it.effect("resubscribes after a native background wake to catch up on missed events", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness({ cached: BASE_PROJECTION });
+      yield* SubscriptionRef.set(h.supervisorState, {
+        ...AVAILABLE_CONNECTION_STATE,
+        desired: true,
+        network: "online",
+        phase: "connected",
+        attempt: 1,
+        generation: 1,
+      });
+      expect(yield* Queue.take(h.subscriptionEvents)).toBe(1);
+
+      yield* Queue.offer(h.wakeups, "native-wake");
+
+      expect(yield* Queue.take(h.subscriptionEvents)).toBe(2);
+      expect(yield* Ref.get(h.subscriptionCount)).toBe(2);
+    }),
+  );
+
   it.effect("loads the server thread when its local cache read fails", () =>
     Effect.gen(function* () {
       const h = yield* makeHarness({
