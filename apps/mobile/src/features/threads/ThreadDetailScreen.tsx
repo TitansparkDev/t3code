@@ -167,7 +167,10 @@ import { useThreadTurnSubagents } from "./ThreadAgentsSheet";
 import { ComposerQueuedEditBanner } from "./ComposerQueuedEdit";
 import { useThreadQueuedCount } from "./ThreadQueueControl";
 import type { ThreadContentPresentation } from "./threadContentPresentation";
-import { resolveThreadFeedSubmissionAnchor } from "./thread-feed-live-follow";
+import {
+  isThreadFeedActivityCurrent,
+  resolveThreadFeedSubmissionAnchor,
+} from "./thread-feed-live-follow";
 import { useGlobalVoiceInput } from "../voice-input/VoiceInputProvider";
 
 export interface ThreadDetailScreenProps {
@@ -434,6 +437,11 @@ function ThreadVisitWatermark(props: {
 }
 
 export const ThreadDetailScreen = function ThreadDetailScreen(props: ThreadDetailScreenProps) {
+  const activityIsCurrent = isThreadFeedActivityCurrent(props.threadSyncStatus);
+  const activityRun = activityIsCurrent ? props.activityRun : null;
+  const activeWorkStartedAt = activityIsCurrent ? props.activeWorkStartedAt : null;
+  const runlessWorkActive = activityIsCurrent && (props.runlessWorkActive ?? false);
+  const isCompacting = activityIsCurrent && props.isCompacting;
   const usesNativeWorkspaceColumns = useNativeWorkspaceColumnsSupported();
   const navigation = useNavigation();
   const { session: voiceInputSession } = useGlobalVoiceInput();
@@ -704,11 +712,11 @@ export const ThreadDetailScreen = function ThreadDetailScreen(props: ThreadDetai
         },
       };
     }
-    if (props.isCompacting && contentPresentationKind === "ready") {
+    if (isCompacting && contentPresentationKind === "ready") {
       return { kind: "compacting" };
     }
-    if (props.activeWorkStartedAt !== null && contentPresentationKind === "ready") {
-      return { kind: "working", startedAt: props.activeWorkStartedAt };
+    if (activeWorkStartedAt !== null && contentPresentationKind === "ready") {
+      return { kind: "working", startedAt: activeWorkStartedAt };
     }
     if (pendingBackgroundWork !== null && contentPresentationKind === "ready") {
       return {
@@ -1335,7 +1343,7 @@ export const ThreadDetailScreen = function ThreadDetailScreen(props: ThreadDetai
               feed={props.selectedThreadFeed}
               pendingHandoff={props.pendingHandoff}
               worktreeSetup={props.worktreeSetup}
-              setupWorkingStartedAt={props.setupWorkingStartedAt}
+              setupWorkingStartedAt={activityIsCurrent ? props.setupWorkingStartedAt : null}
               queuedMessages={props.queuedMessages}
               dispatchingMessageId={props.dispatchingMessageId}
               // A native subagent has no composer to edit a pending message in;
@@ -1344,9 +1352,9 @@ export const ThreadDetailScreen = function ThreadDetailScreen(props: ThreadDetai
               contentPresentation={props.contentPresentation}
               agentLabel={agentLabel}
               threadTitle={props.selectedThread.title}
-              latestRun={props.activityRun}
-              activeWorkStartedAt={props.activeWorkStartedAt}
-              runlessWorkActive={props.runlessWorkActive ?? false}
+              latestRun={activityRun}
+              activeWorkStartedAt={activeWorkStartedAt}
+              runlessWorkActive={runlessWorkActive}
               listRef={listRef}
               freeze={freeze}
               anchorMessageId={anchorMessageId}
@@ -1594,7 +1602,7 @@ export const ThreadDetailScreen = function ThreadDetailScreen(props: ThreadDetai
                           providerSubagentProvider?.models,
                           reportedModelSelection,
                         )}
-                        status={props.providerSubagentStatus ?? null}
+                        status={activityIsCurrent ? (props.providerSubagentStatus ?? null) : null}
                         onOpenParent={
                           props.selectedThread.lineage.parentThreadId === null
                             ? null
@@ -1627,13 +1635,11 @@ export const ThreadDetailScreen = function ThreadDetailScreen(props: ThreadDetai
                         connectionState={props.connectionStateLabel}
                         environmentLabel={props.environmentLabel}
                         selectedThread={props.selectedThread}
-                        hasCompactableConversation={
-                          hasCompactableConversation && !props.isCompacting
-                        }
+                        hasCompactableConversation={hasCompactableConversation && !isCompacting}
                         serverConfig={props.serverConfig}
                         queueCount={props.selectedThreadQueueCount}
-                        activeThreadBusy={props.activeThreadBusy}
-                        canStopThread={props.canStopThread}
+                        activeThreadBusy={activityIsCurrent && props.activeThreadBusy}
+                        canStopThread={activityIsCurrent && props.canStopThread}
                         environmentId={props.environmentId}
                         projectCwd={props.threadCwd ?? props.projectWorkspaceRoot}
                         // Follow-ups typed before the server creates the thread wait in

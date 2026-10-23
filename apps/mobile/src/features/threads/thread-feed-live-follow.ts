@@ -1,3 +1,5 @@
+import type { EnvironmentThreadStatus } from "@t3tools/client-runtime/state/threads";
+
 export type ThreadFeedLiveFollowEvent =
   | { readonly type: "reset" }
   | { readonly type: "user-scroll-begin" }
@@ -11,6 +13,10 @@ export type ThreadFeedLiveFollowEvent =
       readonly isAtEnd: boolean;
       readonly userScrollSessionActive: boolean;
     };
+
+export function isThreadFeedActivityCurrent(status: EnvironmentThreadStatus | undefined): boolean {
+  return status === undefined || status === "live";
+}
 
 export interface ThreadWorkGroupScrollPosition {
   readonly rowId: string;

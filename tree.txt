@@ -23228,6 +23228,7 @@ apps/mobile/src/features/threads/subagent-card-presentation.test.ts
 apps/mobile/src/features/threads/subagent-card-presentation.ts
 apps/mobile/src/features/threads/thread-command-output.tsx
 apps/mobile/src/features/threads/thread-context-divider.tsx
+apps/mobile/src/features/threads/thread-feed-item-size.test.ts
 apps/mobile/src/features/threads/thread-feed-item-size.ts
 apps/mobile/src/features/threads/thread-feed-live-follow.test.ts
 apps/mobile/src/features/threads/thread-feed-live-follow.ts

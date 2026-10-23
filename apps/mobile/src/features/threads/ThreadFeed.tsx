@@ -1887,22 +1887,40 @@ function useThreadFeedPresentation(
   expandedWorkGroups: Record<string, boolean>,
 ) {
   const [feedCache] = useState(createThreadFeedCache);
-  const presentation = appendPendingThreadMessages(
-    deriveThreadFeedPresentation(
-      props.feed,
-      props.latestRun,
-      expandedTurnIds,
+  const expandedWorkGroupIds = useMemo(
+    () =>
       new Set(
         Object.entries(expandedWorkGroups)
           .filter(([, expanded]) => expanded)
           .map(([groupId]) => groupId),
       ),
-      props.activeWorkStartedAt,
-      props.runlessWorkActive ?? false,
+    [expandedWorkGroups],
+  );
+  const presentation = useMemo(
+    () =>
+      appendPendingThreadMessages(
+        deriveThreadFeedPresentation(
+          props.feed,
+          props.latestRun,
+          expandedTurnIds,
+          expandedWorkGroupIds,
+          props.activeWorkStartedAt,
+          props.runlessWorkActive ?? false,
+          feedCache,
+        ),
+        props.feed,
+        props.queuedMessages,
+      ),
+    [
+      expandedTurnIds,
+      expandedWorkGroupIds,
       feedCache,
-    ),
-    props.feed,
-    props.queuedMessages,
+      props.activeWorkStartedAt,
+      props.feed,
+      props.latestRun,
+      props.queuedMessages,
+      props.runlessWorkActive,
+    ],
   );
   markThreadOpenStage(threadOpenTraceKey(props.environmentId, props.threadId), "feed-derived");
   return presentation;
@@ -1938,10 +1956,14 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   const headerMaterialVisibleRef = useRef(false);
   const { width: windowWidth, fontScale } = useWindowDimensions();
   const { appearance } = useAppearancePreferences();
-  const workRowSizing = deriveThreadWorkLogSizing({
-    baseFontSize: appearance.baseFontSize,
-    fontScale,
-  });
+  const workRowSizing = useMemo(
+    () =>
+      deriveThreadWorkLogSizing({
+        baseFontSize: appearance.baseFontSize,
+        fontScale,
+      }),
+    [appearance.baseFontSize, fontScale],
+  );
   const previousTextSize = useRef(workRowSizing.textSizeKey);
   useLayoutEffect(() => {
     if (previousTextSize.current === workRowSizing.textSizeKey) {
@@ -2376,25 +2398,46 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   // LegendList does not invalidate visible rows when only the renderItem closure changes.
   // Include turn completion so unchanged message rows reveal their footer and spacing
   // even when the final message update arrives before the turn settles.
-  const listAppearanceData = {
-    worktreeSetup: props.worktreeSetup,
-    setupWorkingStartedAt: props.setupWorkingStartedAt,
-    dispatchingMessageId: props.dispatchingMessageId,
-    unsettledTurnId,
-    copiedRowId,
-    expandedWorkGroups,
-    expandedWorkRows,
-    workRowSizing,
-    iconSubtleColor,
-    markdownStyles,
-    reviewCommentColors,
-    themeAppearance,
-    userBubbleColor,
-    viewportWidth,
-    contentWidth,
-    skills: props.skills,
-    workflowOpening,
-  };
+  const listAppearanceData = useMemo(
+    () => ({
+      worktreeSetup: props.worktreeSetup,
+      setupWorkingStartedAt: props.setupWorkingStartedAt,
+      dispatchingMessageId: props.dispatchingMessageId,
+      unsettledTurnId,
+      copiedRowId,
+      expandedWorkGroups,
+      expandedWorkRows,
+      workRowSizing,
+      iconSubtleColor,
+      markdownStyles,
+      reviewCommentColors,
+      themeAppearance,
+      userBubbleColor,
+      viewportWidth,
+      contentWidth,
+      skills: props.skills,
+      workflowOpening,
+    }),
+    [
+      copiedRowId,
+      contentWidth,
+      expandedWorkGroups,
+      expandedWorkRows,
+      iconSubtleColor,
+      markdownStyles,
+      props.dispatchingMessageId,
+      props.setupWorkingStartedAt,
+      props.skills,
+      props.worktreeSetup,
+      reviewCommentColors,
+      themeAppearance,
+      unsettledTurnId,
+      userBubbleColor,
+      viewportWidth,
+      workRowSizing,
+      workflowOpening,
+    ],
+  );
   const reportHeaderMaterialVisibility = (visible: boolean) => {
     if (headerMaterialVisibleRef.current === visible) {
       return;
@@ -2505,14 +2548,20 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   }, [feedThreadKey, reportHeaderMaterialVisibility]);
 
   const presentedFeed = useThreadFeedPresentation(props, expandedTurnIds, expandedWorkGroups);
-  const setupAnchorIndex = presentedFeed.findIndex(
-    (entry) => entry.type === "message" && entry.message.role === "user",
+  const setupAnchorIndex = useMemo(
+    () =>
+      presentedFeed.findIndex((entry) => entry.type === "message" && entry.message.role === "user"),
+    [presentedFeed],
   );
   // The empty↔filled key below remounts the list and resets its imperative
   // content-inset override. Seed the fresh instance synchronously with the
   // current overlay height before the scroll integration's next reaction;
   // on Android the declarative contentInset floor covers this same window.
-  const listMountKey = `${feedThreadKey}:${presentedFeed.some((entry) => entry.type !== "thinking") ? "filled" : "empty"}`;
+  const hasPresentedContent = useMemo(
+    () => presentedFeed.some((entry) => entry.type !== "thinking"),
+    [presentedFeed],
+  );
+  const listMountKey = `${feedThreadKey}:${hasPresentedContent ? "filled" : "empty"}`;
   useLayoutEffect(() => {
     const bottom = props.contentInsetEndAdjustment.value;
     if (bottom > 0) {

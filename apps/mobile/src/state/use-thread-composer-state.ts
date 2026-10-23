@@ -13,7 +13,7 @@ import {
   deriveThreadRuntime,
   threadRuntimeHasInterruptibleRun,
 } from "@t3tools/client-runtime/state/thread-execution";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   CommandId,
@@ -186,6 +186,7 @@ export function useThreadComposerState() {
     selectedEnvironmentRuntime,
   } = useThreadSelection();
   const selectedThreadProjection = useSelectedThreadProjection();
+  const selectedThreadProjectionData = selectedThreadProjection?.projection;
   const selectedThreadVisibleTurnItems = useSelectedThreadVisibleTurnItems();
   const acknowledgedMessages = useAtomValue(acknowledgedThreadMessagesAtom);
   const queuedMessagesByThreadKey = useThreadOutboxMessages();
@@ -330,12 +331,20 @@ export function useThreadComposerState() {
     thread: selectedThreadShell,
     projection: selectedThreadProjection?.projection,
   });
-  const selectedThreadRuntime = selectedThreadProjection
-    ? deriveThreadRuntime(selectedThreadProjection.projection)
-    : (selectedThreadShell?.runtime ?? null);
-  const selectedThreadActivityRun = selectedThreadProjection
-    ? deriveThreadActivityRun(selectedThreadProjection.projection)
-    : (selectedThreadShell?.latestRun ?? null);
+  const selectedThreadRuntime = useMemo(
+    () =>
+      selectedThreadProjectionData
+        ? deriveThreadRuntime(selectedThreadProjectionData)
+        : (selectedThreadShell?.runtime ?? null),
+    [selectedThreadProjectionData, selectedThreadShell?.runtime],
+  );
+  const selectedThreadActivityRun = useMemo(
+    () =>
+      selectedThreadProjectionData
+        ? deriveThreadActivityRun(selectedThreadProjectionData)
+        : (selectedThreadShell?.latestRun ?? null),
+    [selectedThreadProjectionData, selectedThreadShell?.latestRun],
+  );
 
   const isCompacting = (() => {
     const queuedCompact = selectedThreadQueuedMessages.some(
@@ -379,9 +388,13 @@ export function useThreadComposerState() {
   // is resumed; the queue sheet lists only the user's own messages.
   const queueHeld = queueWorkflow?.isHeld === true;
 
-  const runlessWorkStartedAt = selectedThreadProjection
-    ? deriveRunlessWorkStartedAt(selectedThreadProjection.projection)
-    : null;
+  const runlessWorkStartedAt = useMemo(
+    () =>
+      selectedThreadProjectionData
+        ? deriveRunlessWorkStartedAt(selectedThreadProjectionData)
+        : null,
+    [selectedThreadProjectionData],
+  );
   const activeWorkStartedAt = (() => {
     if (!selectedThreadShell) {
       return null;
@@ -395,9 +408,13 @@ export function useThreadComposerState() {
   })();
   const runlessWorkActive = runlessWorkStartedAt !== null;
 
-  const providerSubagentStatus = selectedThreadProjection
-    ? deriveProviderSubagentStatus(selectedThreadProjection.projection)
-    : null;
+  const providerSubagentStatus = useMemo(
+    () =>
+      selectedThreadProjectionData
+        ? deriveProviderSubagentStatus(selectedThreadProjectionData)
+        : null,
+    [selectedThreadProjectionData],
+  );
 
   const selectedThreadRuns = selectedThreadProjection?.projection.runs;
   const editedRunId = queuedRunEdit?.runId ?? null;
