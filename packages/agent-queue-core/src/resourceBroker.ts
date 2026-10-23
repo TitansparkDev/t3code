@@ -111,6 +111,8 @@ function hostSnapshot(): HostSnapshot {
     totalMb: Math.max(host.totalMb, availableMb),
     availableMb,
     budgetAvailableMb: undefined,
+    memoryPressure: 0,
+    swapPressure: false,
   };
 }
 
