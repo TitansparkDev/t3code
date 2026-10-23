@@ -4,6 +4,7 @@ import type * as Stream from "effect/Stream";
 
 export type ConnectionWakeup =
   | "application-active"
+  | "application-background"
   | "application-active-probe"
   | "application-active-reconnect"
   | "native-wake"

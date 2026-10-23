@@ -134,6 +134,7 @@ const layerWakeups = Wakeups.layer({
               if (state === "background") {
                 backgroundedAtMs = Date.now();
                 foregroundedAtMs = null;
+                Queue.offerUnsafe(queue, "application-background");
                 return;
               }
               if (state === "active") {

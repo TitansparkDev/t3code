@@ -10,7 +10,14 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 export const ORCHESTRATION_CACHE_SCHEMA_VERSION = 3 as const;
-export const ORCHESTRATION_THREAD_CACHE_SCHEMA_VERSION = 4 as const;
+export const ORCHESTRATION_THREAD_CACHE_SCHEMA_VERSION = 5 as const;
+
+export const CachedThreadSnapshot = OrchestrationV2ThreadDetailSnapshot.mapFields((fields) => ({
+  ...fields,
+  projection: OrchestrationV2ThreadProjectionJson,
+  requiresSnapshot: Schema.optionalKey(Schema.Literal(true)),
+}));
+export type CachedThreadSnapshot = typeof CachedThreadSnapshot.Type;
 
 export const StoredOrchestrationShellSnapshot = Schema.Struct({
   schemaVersion: Schema.Literal(ORCHESTRATION_CACHE_SCHEMA_VERSION),
@@ -22,10 +29,7 @@ export const StoredOrchestrationThreadSnapshot = Schema.Struct({
   schemaVersion: Schema.Literal(ORCHESTRATION_THREAD_CACHE_SCHEMA_VERSION),
   environmentId: EnvironmentId,
   threadId: ThreadId,
-  snapshot: OrchestrationV2ThreadDetailSnapshot.mapFields((fields) => ({
-    ...fields,
-    projection: OrchestrationV2ThreadProjectionJson,
-  })),
+  snapshot: CachedThreadSnapshot,
 });
 
 export function decodeOrDiscardOrchestrationCache<A, E, R, E2, R2>(
