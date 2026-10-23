@@ -674,6 +674,7 @@ function RootStackLayout(props: {
             <AdaptiveWorkspaceLayout
               pathname={workspaceLocation.pathname}
               workspaceRouteKey={workspaceLocation.routeKey}
+              navigationState={props.state}
               selectedPullRequestKey={selectedPullRequestKey(props.state)}
             >
               {props.children}

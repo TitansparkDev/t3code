@@ -1,9 +1,39 @@
 import { describe, expect, it } from "vite-plus/test";
+import type { NavigationState } from "@react-navigation/native";
 
 import {
   resolveThreadSelectionNavigationAction,
   resolveThreadSelectionOverlayState,
+  shouldShowWorkspaceUsageBanner,
 } from "./adaptive-navigation";
+
+describe("shouldShowWorkspaceUsageBanner", () => {
+  const state = (name: string, nested?: NavigationState): NavigationState =>
+    ({
+      key: "root",
+      type: "stack",
+      stale: false as const,
+      index: 0,
+      routeNames: [name],
+      routes: [{ key: name, name, ...(nested ? { state: nested } : {}) }],
+    }) as NavigationState;
+
+  it("hides the underlying workspace when a settings sheet or nested settings route is active", () => {
+    expect(
+      shouldShowWorkspaceUsageBanner(
+        state("SettingsSheet", state("SettingsContent", state("SettingsUsage"))),
+      ),
+    ).toBe(false);
+  });
+
+  it.each(["Home", "Thread", "NewTaskSheet", "Goals"])("shows on %s", (name) => {
+    expect(shouldShowWorkspaceUsageBanner(state(name))).toBe(true);
+  });
+
+  it("hides the banner in immersive media", () => {
+    expect(shouldShowWorkspaceUsageBanner(state("McpAppFullscreen"))).toBe(false);
+  });
+});
 
 describe("resolveThreadSelectionNavigationAction", () => {
   it("replaces nested thread content when a persistent sidebar selects a peer", () => {

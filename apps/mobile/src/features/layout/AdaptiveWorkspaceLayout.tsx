@@ -11,6 +11,7 @@ import {
   NavigationRouteContext,
   StackActions,
   useNavigation,
+  type NavigationState,
 } from "@react-navigation/native";
 import {
   createContext,
@@ -87,6 +88,8 @@ import {
 import { useNativeLayoutMetrics } from "../../native/native-layout-metrics";
 import { AndroidHingeObserver } from "../../native/AndroidHingeObserver";
 import { WindowHingeContext } from "../../native/window-hinge-context";
+import { UsageLimitBanner } from "../usage/UsageLimitBanner";
+import { shouldShowWorkspaceUsageBanner } from "../../lib/adaptive-navigation";
 
 interface AdaptiveWorkspaceContextValue {
   readonly layout: Layout;
@@ -215,6 +218,7 @@ export function AdaptiveWorkspaceLayout(props: {
   readonly children: ReactNode;
   readonly pathname: string;
   readonly workspaceRouteKey: string | undefined;
+  readonly navigationState: NavigationState;
   readonly selectedPullRequestKey?: string | null;
 }) {
   const preferencesResult = useAtomValue(mobilePreferencesAtom);
@@ -241,6 +245,7 @@ function AdaptiveWorkspaceLayoutContent(
     readonly children: ReactNode;
     readonly pathname: string;
     readonly workspaceRouteKey: string | undefined;
+    readonly navigationState: NavigationState;
     readonly selectedPullRequestKey?: string | null;
   } & {
     readonly projectGroupingMode: SidebarProjectGroupingMode;
@@ -754,6 +759,7 @@ function AdaptiveWorkspaceLayoutContent(
           <NativeWorkspaceInspectorContext
             value={{ render: workspaceInspector?.render, visible: inspectorColumnTargetWidth > 0 }}
           >
+            <UsageLimitBanner visible={shouldShowWorkspaceUsageBanner(props.navigationState)} />
             {props.children}
           </NativeWorkspaceInspectorContext>
         </AdaptiveWorkspaceContext>
@@ -859,6 +865,9 @@ function AdaptiveWorkspaceLayoutContent(
                       Platform.OS === "android" && layout.usesSplitView ? contentTargetWidth : null
                     }
                   >
+                    <UsageLimitBanner
+                      visible={shouldShowWorkspaceUsageBanner(props.navigationState)}
+                    />
                     {props.children}
                   </WorkspaceSettledContentWidthContext>
                 </WorkspaceContentWidthContext>

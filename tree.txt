@@ -23288,6 +23288,8 @@ apps/mobile/src/features/updates/app-updates.ts
 apps/mobile/src/features/usage/ChatGptUsageSummary.tsx
 apps/mobile/src/features/usage/UsageDailyChart.ios.tsx
 apps/mobile/src/features/usage/UsageDailyChart.tsx
+apps/mobile/src/features/usage/UsageLimitBanner.test.tsx
+apps/mobile/src/features/usage/UsageLimitBanner.tsx
 apps/mobile/src/features/usage/UsageLimitsPooled.tsx
 apps/mobile/src/features/usage/UsageLimitsSection.test.ts
 apps/mobile/src/features/usage/UsageLimitsSection.tsx
