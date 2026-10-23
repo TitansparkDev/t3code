@@ -37,9 +37,11 @@ export function usageBannerHeight(fontScale: number): number {
 function RowValue({
   row,
   fontScale,
+  dense,
 }: {
   readonly row: UsageBannerRow;
   readonly fontScale: number;
+  readonly dense: boolean;
 }) {
   const value = row.percent === null ? "—" : `${row.percent}%`;
   const timerBelow = fontScale >= 1.15;
@@ -54,13 +56,13 @@ function RowValue({
       <AppText
         numberOfLines={1}
         adjustsFontSizeToFit={false}
-        className={`${fontScale >= 1.15 ? "text-xs" : "text-[11px]"} font-t3-medium tabular-nums text-foreground`}
+        className={`${fontScale >= 1.15 || !dense ? "text-xs" : "text-[11px]"} font-t3-medium tabular-nums text-foreground`}
       >
         {value}
       </AppText>
       <AppText
         numberOfLines={1}
-        className={`${fontScale >= 1.15 ? "text-[10px]" : "text-[9px]"} tabular-nums text-foreground-muted`}
+        className={`${fontScale >= 1.15 || !dense ? "text-[10px]" : "text-[9px]"} tabular-nums text-foreground-muted`}
       >
         {row.reset.countdown}
       </AppText>
@@ -72,6 +74,7 @@ function BannerCell({
   cell,
   width,
   fontScale,
+  dense,
   expanded,
   ref,
   onPress,
@@ -79,6 +82,7 @@ function BannerCell({
   readonly cell: UsageBannerCell;
   readonly width: number;
   readonly fontScale: number;
+  readonly dense?: boolean;
   readonly expanded?: boolean;
   readonly ref?: React.Ref<View>;
   readonly onPress: () => void;
@@ -117,7 +121,7 @@ function BannerCell({
       >
         {cell.rows.map((row) => (
           <View key={row.slot} className="flex-1 flex-row items-center justify-center">
-            <RowValue row={row} fontScale={fontScale} />
+            <RowValue row={row} fontScale={fontScale} dense={dense ?? false} />
           </View>
         ))}
       </View>
@@ -263,6 +267,7 @@ export function UsageLimitBanner(props: { readonly visible: boolean }) {
                 usageBannerCellWidth(bannerWidth, Math.min(3, summary.accounts.length)),
               )}
               fontScale={fontScale}
+              dense={false}
               onPress={() => openAccount(account)}
             />
           ))}
@@ -297,6 +302,7 @@ export function UsageLimitBanner(props: { readonly visible: boolean }) {
               cell={cell}
               width={cellWidth}
               fontScale={fontScale}
+              dense={count > 3}
               expanded={cell.kind === "antigravity" ? expanded : undefined}
               ref={cell.kind === "antigravity" ? summaryRef : undefined}
               onPress={() => (cell.kind === "antigravity" ? toggleExpansion() : openAccount(cell))}
