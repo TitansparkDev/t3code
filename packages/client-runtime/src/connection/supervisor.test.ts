@@ -640,6 +640,25 @@ describe("EnvironmentSupervisor", () => {
     }),
   );
 
+  it.effect("probes and catches up after a native background wake", () =>
+    Effect.gen(function* () {
+      const probeCalled = yield* Deferred.make<void>();
+      const harness = yield* makeHarness({
+        probe: () => Deferred.succeed(probeCalled, undefined),
+      });
+      const supervisor = yield* EnvironmentSupervisor.make(TARGET_ENTRY, {
+        initiallyDesired: true,
+      }).pipe(Effect.provide(harness.dependencies));
+
+      yield* awaitState(supervisor.state, (state) => state.phase === "connected");
+      yield* harness.wake("native-wake");
+      yield* Deferred.await(probeCalled);
+
+      expect(yield* Ref.get(harness.sessionCount)).toBe(1);
+      expect((yield* SubscriptionRef.get(supervisor.state)).phase).toBe("connected");
+    }),
+  );
+
   it.effect("immediately replaces a mobile session after a long background resume", () =>
     Effect.gen(function* () {
       const probeCount = yield* Ref.make(0);
@@ -664,6 +683,40 @@ describe("EnvironmentSupervisor", () => {
       expect(yield* Ref.get(harness.sessionCount)).toBe(2);
       expect(yield* Ref.get(harness.releaseCount)).toBe(1);
     }),
+  );
+
+  it.effect("keeps a healthy replacement when another long-resume wake is queued", () =>
+    Effect.gen(function* () {
+      const allowReplacement = yield* Deferred.make<void>();
+      const harness = yield* makeHarness({
+        prepare: (attempt) =>
+          attempt === 2
+            ? Deferred.await(allowReplacement).pipe(Effect.as(PREPARED_CONNECTION))
+            : Effect.succeed(PREPARED_CONNECTION),
+      });
+      const supervisor = yield* EnvironmentSupervisor.make(TARGET_ENTRY, {
+        initiallyDesired: true,
+      }).pipe(Effect.provide(harness.dependencies));
+
+      yield* awaitState(supervisor.state, (state) => state.phase === "connected");
+      yield* harness.wake("application-active-reconnect");
+      yield* awaitState(
+        supervisor.state,
+        (state) => state.phase === "connecting" && state.attempt === 1,
+      );
+      yield* harness.wake("application-active-reconnect");
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+      yield* Deferred.succeed(allowReplacement, undefined);
+
+      yield* awaitState(
+        supervisor.state,
+        (state) => state.phase === "connected" && state.generation === 2,
+      );
+      expect(yield* Ref.get(harness.prepareCount)).toBe(2);
+      expect(yield* Ref.get(harness.sessionCount)).toBe(2);
+      expect(yield* Ref.get(harness.releaseCount)).toBe(1);
+    }).pipe(Effect.provide(TestClock.layer())),
   );
 
   it.effect("replaces a mobile session when a long resume interrupts an active probe", () =>

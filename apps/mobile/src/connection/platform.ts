@@ -27,6 +27,7 @@ import { appAtomRegistry } from "../state/atom-registry";
 import { clearThreadOutboxEnvironment } from "../state/thread-outbox-removal";
 import { clearComposerDraftsEnvironment } from "../state/use-composer-drafts";
 import { clearThreadComposerErrorsForEnvironment } from "../state/thread-composer-error";
+import { subscribeAndroidBackgroundConnectionWake } from "./android-background";
 import { mobileApplicationActiveWakeup } from "./app-state-wakeups";
 import * as ConnectionStorage from "./storage";
 
@@ -121,6 +122,17 @@ const networkPathChanges = Stream.callback<"network-changed">((queue) =>
   ).pipe(Effect.asVoid),
 );
 
+const androidNativeWakeChanges = Stream.callback<"native-wake">((queue) =>
+  Effect.acquireRelease(
+    Effect.sync(() =>
+      subscribeAndroidBackgroundConnectionWake(() => {
+        Queue.offerUnsafe(queue, "native-wake");
+      }),
+    ),
+    (remove) => Effect.sync(remove),
+  ).pipe(Effect.asVoid),
+);
+
 const layerWakeups = Wakeups.layer({
   changes: Stream.mergeAll(
     [
@@ -148,6 +160,7 @@ const layerWakeups = Wakeups.layer({
       managedRelayAccountChanges(appAtomRegistry).pipe(
         Stream.map(() => "credentials-changed" as const),
       ),
+      androidNativeWakeChanges,
       networkPathChanges,
     ],
     { concurrency: "unbounded" },
