@@ -12,7 +12,7 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { expect, it } from "@effect/vitest";
+import { expect, it, it as liveIt } from "@effect/vitest";
 import {
   defaultGoalSetup,
   goalSetupToSettings,
@@ -80,7 +80,7 @@ const provider = (instanceId: string): ServerProvider =>
   }) as unknown as ServerProvider;
 
 /** A time hours in the past, for edits that have clearly been abandoned. */
-const longAgo = () => new Date(Date.now() - 6 * 3600_000);
+const longAgo = () => new Date("2026-10-04T06:00:00.000Z");
 
 const PASS = 'node -e "process.exit(0)"';
 
@@ -312,18 +312,39 @@ const makeFlow = (
       return yield* commandsOf(type);
     });
 
-    /** Poll something the server does in the background (git work), without a fixed sleep. */
+    /**
+     * Re-reads `read` after each committed goal change, so the wait ends on the change that makes
+     * `done` true. The subscription opens before the first read, so no change is missed.
+     */
     const eventually = Effect.fn("eventually")(function* <A>(
       read: Effect.Effect<A>,
       done: (value: A) => boolean,
-      what: string,
+      _what: string,
     ) {
-      for (let attempt = 0; attempt < 400; attempt++) {
-        const value = yield* read;
-        if (done(value)) return value;
-        yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 50)));
+      return yield* Effect.scoped(
+        Effect.gen(function* () {
+          const changes = yield* goalStore.subscribeChanges;
+          let value = yield* read;
+          while (!done(value)) {
+            yield* PubSub.take(changes);
+            value = yield* read;
+          }
+          return value;
+        }),
+      );
+    });
+
+    /** The next orchestration command that matches, once it has been logged or arrives. */
+    const awaitCommand = Effect.fn("awaitCommand")(function* (
+      match: (command: OrchestrationCommand) => boolean,
+    ) {
+      const seen = (yield* drain).find(match);
+      if (seen) return seen;
+      while (true) {
+        const next = yield* Queue.take(commands);
+        log.push(next);
+        if (match(next)) return next;
       }
-      return yield* Effect.die(new Error(`Timed out waiting for ${what}`));
     });
 
     const sessionEvent = (threadId: string, session: Record<string, unknown>) =>
@@ -448,6 +469,7 @@ const makeFlow = (
       drain,
       commandsOf,
       waitFor,
+      awaitCommand,
       eventually,
       sessionEvent,
       work,
@@ -719,7 +741,8 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
 
         const waiting = yield* flow.eventually(
           flow.goalOf(first),
-          (g) => g.queueProgress?.phase === "waiting-publication",
+          (g) =>
+            g.queueProgress?.phase === "waiting-publication" && g.queueProgress.note !== undefined,
           "publication to wait",
         );
         expect(waiting.status).toBe("running");
@@ -1323,8 +1346,9 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
         // Genuinely finished: no turn, no background job. Now it is checked, merged and settled.
         flow.scripts.set(threadId, { ...flow.scripts.get(threadId)!, busy: false });
         yield* tickOnce;
+        for (let round = 0; round < 3; round++) yield* tickOnce;
         yield* flow.eventually(
-          tickOnce.pipe(Effect.andThen(flow.taskRow("T1"))),
+          flow.taskRow("T1"),
           (row) => row.status === "completed",
           "T1 to merge once it is really finished",
         );
@@ -1369,8 +1393,9 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
         ).toHaveLength(0);
         faults.release = true;
         flow.liveness.delete(created.threadId);
+        for (let round = 0; round < 3; round++) yield* tickOnce;
         yield* flow.eventually(
-          tickOnce.pipe(Effect.andThen(flow.goalOf(service))),
+          flow.goalOf(service),
           (g) => g.chats[0]?.taskOutcome === "returned",
           "the deferred usage limit to be processed",
         );
@@ -1493,10 +1518,9 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
         yield* tickOnce;
         expect(NodeFS.existsSync(created.worktreePath!)).toBe(true);
         faults.claims = false;
+        for (let round = 0; round < 3; round++) yield* tickOnce;
         yield* flow.eventually(
-          tickOnce.pipe(
-            Effect.andThen(Effect.sync(() => NodeFS.existsSync(created.worktreePath!))),
-          ),
+          Effect.sync(() => NodeFS.existsSync(created.worktreePath!)),
           (exists) => !exists,
           "the worktree to be removed after its checkpoint was saved",
         );
@@ -1840,16 +1864,13 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
         expect(flow.log.filter((c) => c.type === "thread.session.stop")).toHaveLength(0);
         // Once it is quiet, the same conversation is asked to finish the merge.
         flow.scripts.set(first, { ...flow.scripts.get(first)!, busy: false });
-        let resumed: OrchestrationCommand | undefined;
-        for (let round = 0; round < 10 && resumed === undefined; round++) {
-          yield* tickOnce;
-          resumed = (yield* flow.drain).find(
-            (c) =>
-              c.type === "thread.turn.start" &&
-              c.threadId === first &&
-              c.message.text.includes("shared.txt"),
-          );
-        }
+        yield* tickOnce;
+        const resumed = yield* flow.awaitCommand(
+          (c) =>
+            c.type === "thread.turn.start" &&
+            c.threadId === first &&
+            c.message.text.includes("shared.txt"),
+        );
         expect(resumed).toBeDefined();
         expect(flow.log.filter((c) => c.type === "thread.create")).toHaveLength(2);
       }).pipe(Effect.scoped),
@@ -1995,7 +2016,7 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
         expect(note.status).toBe("blocked");
       }).pipe(Effect.scoped),
   );
-  it.effect(
+  liveIt.live(
     "a worker that queued a command for a busy resource is parked without using a lane, and its own conversation gets the result",
     () =>
       Effect.gen(function* () {
@@ -2054,19 +2075,12 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
         // The emulator frees up: the server runs the stored command and tells the SAME conversation.
         broker.finish(holder, { outcome: "ok" });
         broker.close();
-        let resumed: OrchestrationCommand | undefined;
-        for (let round = 0; round < 40 && resumed === undefined; round++) {
-          yield* TestClock.adjust(Duration.seconds(5));
-          yield* Effect.yieldNow;
-          yield* TestClock.adjust(Duration.seconds(1));
-          yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 150)));
-          resumed = (yield* flow.drain).find(
-            (turn) =>
-              turn.type === "thread.turn.start" &&
-              turn.threadId === first.threadId &&
-              turn.message.text.includes("emulator-tests-passed"),
-          );
-        }
+        const resumed = yield* flow.awaitCommand(
+          (turn) =>
+            turn.type === "thread.turn.start" &&
+            turn.threadId === first.threadId &&
+            turn.message.text.includes("emulator-tests-passed"),
+        );
         expect(resumed).toBeDefined();
         expect(flow.log.filter((c) => c.type === "thread.create")).toHaveLength(2);
 
@@ -2078,8 +2092,7 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
           (row) => row.status === "completed",
           "the resumed worker's task to merge",
         );
-      }).pipe(Effect.scoped),
-    60_000,
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
   it.effect(
@@ -2147,9 +2160,8 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
         );
         expect(done.chats).toHaveLength(2);
       }).pipe(Effect.scoped),
-    90_000,
   );
-  it.effect(
+  liveIt.live(
     "a restart while a worker waits on a stored job parks it, runs the job, and tells the same conversation",
     () =>
       Effect.gen(function* () {
@@ -2198,23 +2210,15 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
         expect((yield* flow.taskRow("T1")).status).toBe("claimed");
         broker.finish(holder, { outcome: "ok" });
         broker.close();
-        let delivered: OrchestrationCommand | undefined;
-        for (let round = 0; round < 40 && delivered === undefined; round++) {
-          yield* TestClock.adjust(Duration.seconds(5));
-          yield* Effect.yieldNow;
-          yield* TestClock.adjust(Duration.seconds(1));
-          yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 150)));
-          delivered = (yield* flow.drain).find(
-            (c) =>
-              c.type === "thread.turn.start" &&
-              c.threadId === created.threadId &&
-              c.message.text.includes("survived-the-restart"),
-          );
-        }
+        const delivered = yield* flow.awaitCommand(
+          (c) =>
+            c.type === "thread.turn.start" &&
+            c.threadId === created.threadId &&
+            c.message.text.includes("survived-the-restart"),
+        );
         expect(delivered).toBeDefined();
         expect(flow.log.filter((c) => c.type === "thread.create")).toHaveLength(1);
-      }).pipe(Effect.scoped),
-    60_000,
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
   // ───────────── a stalled queue: stale chats, missed events, blocked tasks ─────────────
 
@@ -2279,12 +2283,8 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
 
         // The scheduler stops waiting for an event that is not coming, finishes the chat from the
         // thread's own state, lands T1, frees its files, and T2 starts. T3 is never touched.
-        for (let round = 0; round < 40; round++) {
-          yield* TestClock.adjust(Duration.seconds(5));
-          yield* Effect.yieldNow;
-          yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 100)));
-          if ((yield* flow.drain).filter((c) => c.type === "thread.create").length >= 3) break;
-        }
+        for (let round = 0; round < 40; round++) yield* tickOnce;
+        yield* flow.awaitCommand((c) => c.type === "thread.create" && c.title.includes("T2"));
         const creates = flow.log.filter((c) => c.type === "thread.create");
         expect(creates).toHaveLength(3);
         expect(creates.some((c) => c.type === "thread.create" && c.title.includes("T2"))).toBe(
@@ -2306,7 +2306,6 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
         );
         expect(flow.log.filter((c) => c.type === "thread.session.stop")).toHaveLength(0);
       }).pipe(Effect.scoped),
-    90_000,
   );
 
   it.effect(
@@ -2371,7 +2370,6 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
         expect(done.chats.filter((chat) => chat.taskId === "T1-FU1")).toHaveLength(1);
         expect(done.chats.find((chat) => chat.threadId === t1.threadId)?.status).toBe("completed");
       }).pipe(Effect.scoped),
-    120_000,
   );
 
   it.effect("clicking +N agents with several ready tasks and room starts them all at once", () =>
@@ -2421,7 +2419,6 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
         );
         expect(done.queueErrors ?? 0).toBe(0);
       }).pipe(Effect.scoped),
-    90_000,
   );
 
   it.effect(
@@ -2438,14 +2435,16 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
         yield* service.create(settingsFor());
         yield* flow.waitFor("thread.create", 1);
         faults.locked = true;
+        for (let round = 0; round < 3; round++) yield* tickOnce;
         yield* flow.eventually(
-          tickOnce.pipe(Effect.andThen(flow.goalOf(service))),
+          flow.goalOf(service),
           (g) => (g.queueErrors ?? 0) >= 3,
           "the locked queue to be observed several times",
         );
         yield* TestClock.adjust(Duration.minutes(10));
+        for (let round = 0; round < 6; round++) yield* tickOnce;
         const goal = yield* flow.eventually(
-          tickOnce.pipe(Effect.andThen(flow.goalOf(service))),
+          flow.goalOf(service),
           (g) => (g.queueErrors ?? 0) >= 4,
           "another locked tick after the outage window",
         );
@@ -2453,7 +2452,6 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
         expect(goal.detail).toContain("database is locked");
         faults.locked = false;
       }).pipe(Effect.scoped),
-    60_000,
   );
 
   it.effect(
@@ -2469,14 +2467,16 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
         const dbFile = NodePath.join(flow.repo.gitCommonDir, "agentqueue", "queue.sqlite");
         NodeFS.renameSync(dbFile, `${dbFile}.away`);
         NodeFS.mkdirSync(dbFile);
+        for (let round = 0; round < 3; round++) yield* tickOnce;
         yield* flow.eventually(
-          tickOnce.pipe(Effect.andThen(flow.goalOf(service))),
+          flow.goalOf(service),
           (g) => (g.queueErrors ?? 0) > 0,
           "the outage to be observed before advancing its duration",
         );
         yield* TestClock.adjust(Duration.minutes(4));
+        for (let round = 0; round < 6; round++) yield* tickOnce;
         const goal = yield* flow.eventually(
-          tickOnce.pipe(Effect.andThen(flow.goalOf(service))),
+          flow.goalOf(service),
           (g) => g.status === "failed",
           "the sustained outage to stop the goal",
         );
@@ -2485,7 +2485,6 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
         NodeFS.rmdirSync(dbFile);
         NodeFS.renameSync(`${dbFile}.away`, dbFile);
       }).pipe(Effect.scoped),
-    60_000,
   );
 
   it.effect(
@@ -2520,7 +2519,6 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
         yield* flow.waitFor("thread.create", 2);
         expect(flow.createdFor("T2")).toBeDefined();
       }).pipe(Effect.scoped),
-    60_000,
   );
   it.effect(
     "a realistic multi-worker goal: independent tasks keep launching and merging while one task's follow-up is repaired, and everything finishes",
@@ -2623,6 +2621,5 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
         }
         expect(yield* flow.taskRow("N2-FU1")).toMatchObject({ status: "completed" });
       }).pipe(Effect.scoped),
-    180_000,
   );
 });
