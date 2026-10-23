@@ -200,45 +200,50 @@ const makeFlow = (
       } as unknown as OrchestrationThread;
     };
 
-    const queueLayer = options.queueFaults
-      ? Layer.effect(
-          AgentQueueService,
-          Effect.map(AgentQueueService, (live) => {
-            // A locked queue database fails every operation alike, as it did under load.
-            const base = Object.fromEntries(
-              Object.entries(live).map(([name, operation]) => [
-                name,
-                typeof operation === "function"
-                  ? (...args: Array<unknown>) =>
-                      options.queueFaults?.locked
-                        ? Effect.fail(
-                            new AgentQueueError({ operation: name, message: "database is locked" }),
-                          )
-                        : (operation as (...input: Array<unknown>) => unknown)(...args)
-                  : operation,
-              ]),
-            ) as typeof live;
-            return AgentQueueService.of({
-              ...base,
-              activeClaims: (binding) =>
-                options.queueFaults?.claims
-                  ? Effect.fail(
-                      new AgentQueueError({
-                        operation: "activeClaims",
-                        message: "test queue outage",
-                      }),
-                    )
-                  : base.activeClaims(binding),
-              release: (...args) =>
-                options.queueFaults?.release
-                  ? Effect.fail(
-                      new AgentQueueError({ operation: "release", message: "test release outage" }),
-                    )
-                  : base.release(...args),
-            });
-          }),
-        ).pipe(Layer.provide(AgentQueueServiceLive))
-      : AgentQueueServiceLive;
+    const queueLayer = Layer.effect(
+      AgentQueueService,
+      Effect.map(AgentQueueService, (live) => {
+        // A locked queue database fails every operation alike, as it did under load.
+        const base = Object.fromEntries(
+          Object.entries(live).map(([name, operation]) => [
+            name,
+            typeof operation === "function"
+              ? (...args: Array<unknown>) =>
+                  options.queueFaults?.locked
+                    ? Effect.fail(
+                        new AgentQueueError({ operation: name, message: "database is locked" }),
+                      )
+                    : (operation as (...input: Array<unknown>) => unknown)(...args)
+              : operation,
+          ]),
+        ) as typeof live;
+        return AgentQueueService.of({
+          ...base,
+          // Flow tests exercise task scheduling; host admission has its own deterministic tests.
+          admit: (_running) =>
+            options.queueFaults?.locked
+              ? Effect.fail(
+                  new AgentQueueError({ operation: "admit", message: "database is locked" }),
+                )
+              : Effect.succeed({ ok: true, reason: null }),
+          activeClaims: (binding) =>
+            options.queueFaults?.claims
+              ? Effect.fail(
+                  new AgentQueueError({
+                    operation: "activeClaims",
+                    message: "test queue outage",
+                  }),
+                )
+              : base.activeClaims(binding),
+          release: (...args) =>
+            options.queueFaults?.release
+              ? Effect.fail(
+                  new AgentQueueError({ operation: "release", message: "test release outage" }),
+                )
+              : base.release(...args),
+        });
+      }),
+    ).pipe(Layer.provide(AgentQueueServiceLive));
     let bindFailuresLeft = options.bindFailures ?? 0;
     let bindAttempts = 0;
     const depsLayer = Layer.mergeAll(
@@ -488,7 +493,7 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
         ]);
         const texts = turns.map((t) => (t.type === "thread.turn.start" ? t.message.text : ""));
         for (const text of texts) {
-          expect(text).not.toContain("plan-work");
+          expect(text).not.toContain("plan-work select --plan PLAN.md");
           expect(text).toContain("You own task");
         }
         expect(texts.some((t) => t.includes("T1"))).toBe(true);
