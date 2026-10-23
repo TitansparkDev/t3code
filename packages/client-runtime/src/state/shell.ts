@@ -25,7 +25,7 @@ import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import * as ConnectionWakeups from "../connection/wakeups.ts";
 import { safeErrorLogAttributes } from "../errors/safeLog.ts";
 import * as Persistence from "../platform/persistence.ts";
-import { runCachePersistence } from "./cachePersistence.ts";
+import { runCachePersistence, type CachePersistenceItem } from "./cachePersistence.ts";
 import { subscribeDynamic } from "../rpc/client.ts";
 import type { RpcSession } from "../rpc/session.ts";
 import * as ShellSnapshotLoader from "./shellSnapshotHttp.ts";
@@ -96,7 +96,7 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
   const latestLiveSnapshot = yield* Ref.make<Option.Option<OrchestrationV2ShellSnapshot>>(
     Option.none(),
   );
-  const persistence = yield* Queue.sliding<OrchestrationV2ShellSnapshot>(1);
+  const persistence = yield* Queue.sliding<CachePersistenceItem<OrchestrationV2ShellSnapshot>>(1);
 
   const persistenceLock = yield* Semaphore.make(1);
   let lastPersisted: OrchestrationV2ShellSnapshot | undefined;
@@ -238,7 +238,7 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
       }
     }
     if (next.snapshot !== initial.snapshot && Option.isSome(next.snapshot)) {
-      yield* Queue.offer(persistence, next.snapshot.value);
+      yield* Queue.offer(persistence, { snapshot: next.snapshot.value });
     }
   }, snapshotWriteLock.withPermit);
 
@@ -301,7 +301,7 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
       if (Option.isNone(live)) return;
       const latest = Option.isSome(filled) ? filled : live;
       yield* Ref.set(latestLiveSnapshot, latest);
-      yield* Queue.offer(persistence, latest.value);
+      yield* Queue.offer(persistence, { snapshot: latest.value });
     },
     (effect) => snapshotWriteLock.withPermit(effect),
   );
