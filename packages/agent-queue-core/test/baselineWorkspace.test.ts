@@ -66,7 +66,7 @@ it.each([false, true])(
           `INSERT INTO check_baselines
            (check_key, ref_commit, state, failing_json, summary, run_at)
            VALUES (?, ?, 'failed', '[]', 'Dependencies were missing', ?)`,
-        ).run(checkKey(check), tip.stdout.trim(), new Date().toISOString());
+        ).run(checkKey(check), tip.stdout.trim(), "2000-01-01T00:00:00.000Z");
       }
       const input = {
         planId: null,

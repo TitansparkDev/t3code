@@ -589,7 +589,7 @@ describe("one task that cannot be prepared", () => {
       // A1's branch is already checked out somewhere else, so its worktree cannot be made.
       const { planWorktree } = await import("../src/worktreeManager.ts");
       const planned = planWorktree(t.repo.rootDir, "A1", "Task A1");
-      other = NodePath.join(NodeOS.tmpdir(), `aq-elsewhere-${Date.now()}`);
+      other = NodePath.join(NodeOS.tmpdir(), `aq-elsewhere-${NodePath.basename(t.repo.rootDir)}`);
       await execCommand(
         "git",
         ["worktree", "add", "-b", planned.branch, other, t.goal],
@@ -648,7 +648,10 @@ describe("one task that cannot be prepared", () => {
         .run(tip.trim(), "A1");
 
       // Keep A1's candidate branch checked out, but move it away from the expected repair path.
-      movedWorktree = NodePath.join(NodeOS.tmpdir(), `aq-repair-away-${Date.now()}`);
+      movedWorktree = NodePath.join(
+        NodeOS.tmpdir(),
+        `aq-repair-away-${NodePath.basename(t.repo.rootDir)}`,
+      );
       await execCommand(
         "git",
         ["worktree", "move", repair.worktreePath, movedWorktree],

@@ -7,13 +7,13 @@ import {
   RunId,
   ThreadId,
   TurnItemId,
-} from "../packages/contracts/src/index.ts";
+} from "@t3tools/contracts";
 
 import {
   v2Now,
   v2Projection,
   v2ShellSnapshot,
-} from "../packages/client-runtime/src/state/orchestrationV2TestFixtures.ts";
+} from "@t3tools/client-runtime/testing/orchestration-v2-fixtures";
 
 const RTT_MS = [0, 80, 250] as const;
 const BANDWIDTH_MBPS = [1, 5, 20, 100] as const;

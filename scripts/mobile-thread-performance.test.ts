@@ -5,7 +5,7 @@ import * as Fiber from "effect/Fiber";
 import * as TestClock from "effect/testing/TestClock";
 
 import { report } from "./mobile-thread-performance.ts";
-import { ThreadOpenTraceRecorder } from "../packages/client-runtime/src/state/threadOpenPerformance.ts";
+import { ThreadOpenTraceRecorder } from "@t3tools/client-runtime/state/thread-open-performance";
 
 it("builds isolated v2 fixture workloads across the RTT, bandwidth and cache matrix", () => {
   const result = report() as {

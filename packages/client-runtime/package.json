@@ -319,6 +319,10 @@
       "types": "./src/state/threadOpenPerformance.ts",
       "default": "./src/state/threadOpenPerformance.ts"
     },
+    "./testing/orchestration-v2-fixtures": {
+      "types": "./src/state/orchestrationV2TestFixtures.ts",
+      "default": "./src/state/orchestrationV2TestFixtures.ts"
+    },
     "./state/thread-requests": {
       "types": "./src/state/threadRequests.ts",
       "default": "./src/state/threadRequests.ts"
