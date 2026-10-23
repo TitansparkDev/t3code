@@ -26261,7 +26261,6 @@ apps/web/src/hostedPairing.ts
 apps/web/src/index.css
 apps/web/src/keybindings.test.ts
 apps/web/src/keybindings.ts
-apps/web/src/latestRelease.ts
 apps/web/src/legalLinks.ts
 apps/web/src/lib/addProjectToMachine.test.ts
 apps/web/src/lib/addProjectToMachine.ts
