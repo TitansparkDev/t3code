@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vite-plus/test";
-import type { NavigationState } from "@react-navigation/native";
+import type { NavigationState, PartialState } from "@react-navigation/native";
 
 import {
+  isWorkspaceSettingsRoute,
   resolveThreadSelectionNavigationAction,
   resolveThreadSelectionOverlayState,
   shouldShowWorkspaceUsageBanner,
@@ -36,6 +37,18 @@ describe("shouldShowWorkspaceUsageBanner", () => {
 
   it("hides the banner in immersive media", () => {
     expect(shouldShowWorkspaceUsageBanner(state("McpAppFullscreen"))).toBe(false);
+  });
+
+  it("uses the last route while a nested state is partially hydrated", () => {
+    const partialState: PartialState<NavigationState> = {
+      routes: [
+        { name: "Home" },
+        { name: "SettingsSheet", state: { routes: [{ name: "SettingsUsage" }] } },
+      ],
+    };
+
+    expect(shouldShowWorkspaceUsageBanner(partialState)).toBe(false);
+    expect(isWorkspaceSettingsRoute(partialState)).toBe(true);
   });
 });
 

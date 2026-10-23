@@ -1,4 +1,6 @@
-import type { NavigationState } from "@react-navigation/native";
+import type { NavigationState, PartialState } from "@react-navigation/native";
+
+type NavigationBranchState = NavigationState | PartialState<NavigationState>;
 
 export type AdaptiveNavigationAction = "push" | "replace" | "set-params";
 
@@ -17,19 +19,19 @@ const HIDDEN_WORKSPACE_BANNER_ROUTES = new Set([
 
 /** Checks the active navigation branch so a translucent settings sheet hides the workspace underneath it. */
 export function shouldShowWorkspaceUsageBanner(
-  state: NavigationState | undefined,
+  state: NavigationBranchState | undefined,
   focused = true,
 ): boolean {
   if (!focused || state === undefined) return false;
-  const route = state.routes[state.index];
+  const route = state.routes[state.index ?? state.routes.length - 1];
   if (!route || HIDDEN_WORKSPACE_BANNER_ROUTES.has(route.name)) return false;
   if (route.name.startsWith("Settings")) return false;
   return route.state === undefined || shouldShowWorkspaceUsageBanner(route.state);
 }
 
-export function isWorkspaceSettingsRoute(state: NavigationState | undefined): boolean {
+export function isWorkspaceSettingsRoute(state: NavigationBranchState | undefined): boolean {
   if (!state) return false;
-  const route = state.routes[state.index];
+  const route = state.routes[state.index ?? state.routes.length - 1];
   if (!route) return false;
   return (
     route.name.startsWith("Settings") ||
