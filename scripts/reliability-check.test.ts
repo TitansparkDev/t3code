@@ -129,7 +129,7 @@ describe("typecheck wrapper", () => {
     expect(typecheckGrants(fx.home)).toBe(1);
     expect([first.code, second.code]).toEqual([0, 0]);
     expect(first.stdout + second.stdout).toContain("checked");
-  }, 30_000);
+  });
 
   it("answers a later identical request from the stored receipt, with the same exit status", async () => {
     const fx = fixture();
@@ -140,7 +140,7 @@ describe("typecheck wrapper", () => {
     expect(launches(fx.home)).toBe(1);
     expect(second.stderr).toContain("no compiler was launched");
     expect(second.stdout).toContain("checked");
-  }, 30_000);
+  });
 
   it("launches a fresh check when a tracked file changed", async () => {
     const fx = fixture();
@@ -149,7 +149,7 @@ describe("typecheck wrapper", () => {
     const changed = await runCheck(fx);
     expect(changed.code).toBe(0);
     expect(launches(fx.home)).toBe(2);
-  }, 30_000);
+  });
 
   it("launches a fresh check when an untracked file's content changed", async () => {
     const fx = fixture();
@@ -159,7 +159,7 @@ describe("typecheck wrapper", () => {
     NodeFS.writeFileSync(extra, "export const scratch = 2;\n");
     await runCheck(fx);
     expect(launches(fx.home)).toBe(2);
-  }, 30_000);
+  });
 
   it("runs again with --fresh even when a receipt exists", async () => {
     const fx = fixture();
@@ -167,7 +167,7 @@ describe("typecheck wrapper", () => {
     const fresh = await runCheck(fx, { flags: ["--fresh"] });
     expect(fresh.code).toBe(0);
     expect(launches(fx.home)).toBe(2);
-  }, 30_000);
+  });
 
   it("runs a check nested in a granted check under that grant, instead of waiting on itself", async () => {
     const fx = fixture();
@@ -184,7 +184,7 @@ describe("typecheck wrapper", () => {
     expect(run.code).toBe(0);
     expect(launches(fx.home)).toBe(1);
     expect(typecheckGrants(fx.home)).toBe(1);
-  }, 30_000);
+  });
 
   it("stops the whole process tree at its time limit, reports 124, and releases the lock", async () => {
     const fx = fixture();
@@ -199,5 +199,5 @@ describe("typecheck wrapper", () => {
     const next = await runCheck(fx);
     expect(next.code).toBe(0);
     expect(launches(fx.home)).toBe(1);
-  }, 30_000);
+  });
 });
