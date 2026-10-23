@@ -1096,7 +1096,7 @@ function WorkspaceRouteScreenLayout(props: {
 }) {
   const focused = useIsFocused();
   const navigation = useNavigation();
-  const visible = shouldShowWorkspaceUsageBanner(navigation.getRootState(), focused);
+  const visible = shouldShowWorkspaceUsageBanner(navigation.getState(), focused);
   return (
     <GuardedScreenLayout route={props.route}>
       <UsageLimitBanner visible={visible} />
