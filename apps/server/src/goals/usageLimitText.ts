@@ -10,13 +10,16 @@ export interface ProviderUsageLimit {
   readonly retryAt?: IsoDateTime;
 }
 
+function retryAtFromEpochSeconds(value: number | undefined): IsoDateTime | undefined {
+  if (value === undefined || !Number.isFinite(value)) return undefined;
+  const milliseconds = value < 10_000_000_000 ? value * 1_000 : value;
+  // An out-of-range instant is no credible reset time: drop it, never throw.
+  const parsed = DateTime.make(milliseconds);
+  return parsed._tag === "Some" ? (DateTime.formatIso(parsed.value) as IsoDateTime) : undefined;
+}
+
 function absoluteIso(value: unknown): IsoDateTime | undefined {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    const milliseconds = value < 10_000_000_000 ? value * 1_000 : value;
-    // An out-of-range instant is no credible reset time: drop it, never throw.
-    const parsed = DateTime.make(milliseconds);
-    return parsed._tag === "Some" ? (DateTime.formatIso(parsed.value) as IsoDateTime) : undefined;
-  }
+  if (typeof value === "number") return retryAtFromEpochSeconds(value);
   if (typeof value !== "string") return undefined;
   const parsed = DateTime.make(value);
   return parsed._tag === "Some" ? (DateTime.formatIso(parsed.value) as IsoDateTime) : undefined;
@@ -58,10 +61,6 @@ export function providerUsageLimitFromError(input: {
   if (!USAGE_LIMIT_MESSAGE.test(input.message) && !detailIsUsageLimit(input.detail)) return null;
   const retryAt = input.retryAt ?? retryAtFromDetail(input.detail);
   return retryAt === undefined ? {} : { retryAt };
-}
-
-export function retryAtFromEpochSeconds(value: number | undefined): IsoDateTime | undefined {
-  return value === undefined ? undefined : absoluteIso(value);
 }
 
 export function nextUsageLimitRetryAt(input: {

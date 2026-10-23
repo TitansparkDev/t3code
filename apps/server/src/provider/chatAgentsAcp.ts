@@ -23,7 +23,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeReadline from "node:readline";
 
-export const CHAT_AGENTS_MODEL = "chatgpt-desktop";
+const CHAT_AGENTS_MODEL = "chatgpt-desktop";
 
 const DEFAULT_WORKER_PATH = "/srv/chatagents-w/deploy/current/desktop/chatgpt_worker_w.py";
 const DEFAULT_PYTHON_PATH = "/srv/chatagents-w/desktop-venv/bin/python";

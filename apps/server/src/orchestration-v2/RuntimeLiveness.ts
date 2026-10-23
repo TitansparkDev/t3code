@@ -5,7 +5,7 @@
  */
 export const OWNED_RUNTIME_DEADLINE_MS = 16 * 60 * 60 * 1_000;
 export const OWNED_RUNTIME_SUSPICION_MS = 15 * 60 * 1_000;
-export const OWNED_RUNTIME_CLEANUP_GRACE_MS = 2 * 60 * 1_000;
+const OWNED_RUNTIME_CLEANUP_GRACE_MS = 2 * 60 * 1_000;
 
 export type RuntimeWaitState = "approval" | "quota" | "bounded" | null;
 

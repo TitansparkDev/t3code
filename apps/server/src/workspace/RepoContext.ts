@@ -88,8 +88,7 @@ const SECRET_PATHSPEC_EXCLUDES = [
 
 const SECRET_DIRECTORY_NAMES = new Set([".git", ".t3", "secrets"]);
 
-/** Exported for handler tests and for reuse by other read-only surfaces. */
-export const isSecretRelativePath = (relativePath: string): boolean => {
+const isSecretRelativePath = (relativePath: string): boolean => {
   const parts = relativePath.split(/[\\/]/).filter((part) => part.length > 0);
   const name = parts.at(-1);
   if (parts.some((part) => SECRET_DIRECTORY_NAMES.has(part))) return true;
@@ -171,8 +170,8 @@ const make = Effect.gen(function* () {
 
   // Git is the source of truth for which checkouts belong to a project, so a
   // goal worker's worktree is included without a registry of its own.
-  const worktreeRoots = (workspaceRoot: string) =>
-    Effect.gen(function* () {
+  const worktreeRoots = Effect.fn("RepoContext.worktreeRoots")(
+    function* (workspaceRoot: string) {
       const output = yield* vcs.run({
         operation: "RepoContext.worktrees",
         command: "git",
@@ -186,7 +185,9 @@ const make = Effect.gen(function* () {
       return yield* Effect.forEach(roots, (root) =>
         fileSystem.realPath(root).pipe(Effect.orElseSucceed(() => undefined)),
       ).pipe(Effect.map((real) => real.filter((root): root is string => root !== undefined)));
-    }).pipe(Effect.orElseSucceed((): ReadonlyArray<string> => []));
+    },
+    Effect.orElseSucceed((): ReadonlyArray<string> => []),
+  );
 
   const resolveBase = Effect.fn("RepoContext.resolveBase")(function* (target: RepoTarget) {
     const root = yield* realPath(target.workspaceRoot, "target_not_found");

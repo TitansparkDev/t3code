@@ -188,7 +188,7 @@ export function goalThreadViewOf(
   };
 }
 
-export const make = Effect.gen(function* () {
+const make = Effect.gen(function* () {
   const orchestrator = yield* OrchestratorV2.OrchestratorV2;
   const launcher = yield* ThreadLaunch.ThreadLaunchService;
   const management = yield* ThreadManagement.ThreadManagementService;
@@ -221,8 +221,8 @@ export const make = Effect.gen(function* () {
           creationSource: "server",
         })
         .pipe(Effect.asVoid, failed("launch")),
-    send: (input) =>
-      Effect.gen(function* () {
+    send: Effect.fn("GoalThreads.send")(
+      function* (input) {
         const key = yield* uuid;
         yield* management.sendToThread({
           projectId: input.projectId,
@@ -236,7 +236,10 @@ export const make = Effect.gen(function* () {
           createdBy: "agent",
           creationSource: "server",
         });
-      }).pipe(Effect.asVoid, failed("send")),
+      },
+      Effect.asVoid,
+      failed("send"),
+    ),
     bindWorkspace: (input) =>
       management
         .bindWorkspace({
@@ -283,13 +286,15 @@ export const make = Effect.gen(function* () {
         Effect.asVoid,
         failed("settle"),
       ),
-    read: (threadId) =>
-      Effect.gen(function* () {
+    read: Effect.fn("GoalThreads.read")(
+      function* (threadId) {
         const shell = yield* orchestrator.getThreadShell(threadId);
         if (shell === null || shell.deletedAt !== null) return undefined;
         const projection = yield* orchestrator.getThreadProjection(threadId);
         return goalThreadViewOf(shell, projection);
-      }).pipe(Effect.catchCause(() => Effect.succeed(undefined))),
+      },
+      Effect.catchCause(() => Effect.succeed(undefined)),
+    ),
     backgroundWork: (threadId) =>
       orchestrator.getThreadShell(threadId).pipe(
         Effect.map((shell) => (shell?.pendingBackgroundTasks ?? []).length > 0),

@@ -17,5 +17,3 @@ export function isClaudePeakTime(now: number | Date = Date.now()): boolean {
   const hour = rawHour === undefined ? Number.NaN : Number(rawHour === "24" ? "0" : rawHour);
   return weekday !== undefined && !["Sat", "Sun"].includes(weekday) && hour >= 5 && hour < 11;
 }
-
-export const CLAUDE_PEAK_TIME_LABEL = "Claude peak time: weekdays, 5–11 a.m. Pacific";
