@@ -157,9 +157,10 @@ function encodedBytes(fixture: WorkloadFixture): number {
 
 function report(): object {
   const fixtures = makeFixtures();
+  const fixtureBytes = new Map(fixtures.map((fixture) => [fixture.name, encodedBytes(fixture)]));
   const scenarios = [];
   for (const fixture of fixtures) {
-    const bytes = encodedBytes(fixture);
+    const bytes = fixtureBytes.get(fixture.name)!;
     for (const cache of CACHE_STATES) {
       for (const rttMs of RTT_MS) {
         for (const bandwidthMbps of BANDWIDTH_MBPS) {
@@ -208,7 +209,7 @@ function report(): object {
     fixtures: fixtures.map((fixture) => ({
       name: fixture.name,
       items: fixture.items,
-      bytes: encodedBytes(fixture),
+      bytes: fixtureBytes.get(fixture.name)!,
       active: fixture.active,
       largeBodies: fixture.largeBodies,
     })),

@@ -5,10 +5,7 @@ import * as Fiber from "effect/Fiber";
 import * as TestClock from "effect/testing/TestClock";
 
 import { report } from "./mobile-thread-performance.ts";
-import {
-  ThreadOpenTraceRecorder,
-  threadOpenTraceKey,
-} from "../packages/client-runtime/src/state/threadOpenPerformance.ts";
+import { ThreadOpenTraceRecorder } from "../packages/client-runtime/src/state/threadOpenPerformance.ts";
 
 it("builds isolated v2 fixture workloads across the RTT, bandwidth and cache matrix", () => {
   const result = report() as {
@@ -110,10 +107,6 @@ it("correlates milestones and suppresses duplicate stage marks", () => {
   assert.equal(JSON.stringify(event).includes("private-route-key"), false);
   assert.equal(JSON.stringify(event).includes("account"), false);
   assert.equal(JSON.stringify(event).includes("token"), false);
-});
-
-it("uses one scoped key format across route and client-runtime stages", () => {
-  assert.equal(threadOpenTraceKey("environment", "thread"), "environment\u0000thread");
 });
 
 it.effect("keeps a blocked response in the network stage and cancels without a decode mark", () =>

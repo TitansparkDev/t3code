@@ -2478,15 +2478,27 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   }, [clearUserScrollSettle, props.submittedMessageId, transitionEndFollow]);
 
   const handleViewportLayout = (event: LayoutChangeEvent) => {
-    markThreadOpenStage(
-      threadOpenTraceKey(props.environmentId, props.threadId),
-      "first-visible-viewport",
-    );
     const nextWidth = Math.round(event.nativeEvent.layout.width);
     const nextHeight = Math.round(event.nativeEvent.layout.height);
     setViewportWidth((current) => (Math.abs(current - nextWidth) > 1 ? nextWidth : current));
     setViewportHeight((current) => (Math.abs(current - nextHeight) > 1 ? nextHeight : current));
   };
+
+  const handleViewableItemsChanged = useCallback(
+    ({
+      viewableItems,
+    }: {
+      readonly viewableItems: readonly { readonly isViewable: boolean }[];
+    }) => {
+      if (viewableItems.some((item) => item.isViewable)) {
+        markThreadOpenStage(
+          threadOpenTraceKey(props.environmentId, props.threadId),
+          "first-visible-viewport",
+        );
+      }
+    },
+    [props.environmentId, props.threadId],
+  );
 
   useEffect(() => {
     reportHeaderMaterialVisibility(false);
@@ -2899,6 +2911,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
               const key = threadOpenTraceKey(props.environmentId, props.threadId);
               markThreadOpenStage(key, "final-list-layout");
             }}
+            onViewableItemsChanged={handleViewableItemsChanged}
             extraData={listAppearanceData}
             renderItem={renderItem}
             viewabilityConfig={THREAD_MEDIA_VIEWABILITY_CONFIG}
