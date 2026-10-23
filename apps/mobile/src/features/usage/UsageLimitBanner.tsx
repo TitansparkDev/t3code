@@ -11,6 +11,7 @@ import {
   ScrollView,
   View,
   type LayoutChangeEvent,
+  type ViewInstance,
   useWindowDimensions,
 } from "react-native";
 
@@ -78,7 +79,7 @@ function BannerCell({
   readonly fontScale: number;
   readonly dense?: boolean;
   readonly expanded?: boolean;
-  readonly ref?: React.Ref<View>;
+  readonly ref?: React.Ref<ViewInstance>;
   readonly onPress: () => void;
 }) {
   const provider = cell.kind === "antigravity" ? "antigravity" : cell.provider;
@@ -134,8 +135,8 @@ export function UsageLimitBanner(props: { readonly visible: boolean }) {
   const [foreground, setForeground] = useState(AppState.currentState === "active");
   const [expanded, setExpanded] = useUsageBannerExpanded();
   const [availableWidth, setAvailableWidth] = useState(0);
-  const closeRef = useRef<View>(null);
-  const summaryRef = useRef<View>(null);
+  const closeRef = useRef<ViewInstance>(null);
+  const summaryRef = useRef<ViewInstance>(null);
   const model = useMemo(() => buildUsageBannerModel(presentations, now), [presentations, now]);
   const summary = model.cells.find((cell) => cell.kind === "antigravity");
   const height = usageBannerHeight(fontScale);
@@ -155,7 +156,7 @@ export function UsageLimitBanner(props: { readonly visible: boolean }) {
     setExpanded(false);
     requestAnimationFrame(() => {
       const tag = findNodeHandle(summaryRef.current);
-      if (tag !== null) AccessibilityInfo.setAccessibilityFocus(tag);
+      if (tag != null) AccessibilityInfo.setAccessibilityFocus(tag);
     });
   }, []);
   const dismissExpansion = useCallback(() => {
@@ -221,12 +222,12 @@ export function UsageLimitBanner(props: { readonly visible: boolean }) {
       AccessibilityInfo.announceForAccessibility(`${summary.accountCount} Antigravity accounts`);
       requestAnimationFrame(() => {
         const tag = findNodeHandle(closeRef.current);
-        if (tag !== null) AccessibilityInfo.setAccessibilityFocus(tag);
+        if (tag != null) AccessibilityInfo.setAccessibilityFocus(tag);
       });
     } else {
       requestAnimationFrame(() => {
         const tag = findNodeHandle(summaryRef.current);
-        if (tag !== null) AccessibilityInfo.setAccessibilityFocus(tag);
+        if (tag != null) AccessibilityInfo.setAccessibilityFocus(tag);
       });
     }
   };
