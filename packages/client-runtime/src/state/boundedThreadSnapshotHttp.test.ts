@@ -1,6 +1,7 @@
 import { ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 
 import { PrimaryConnectionTarget, type PreparedConnection } from "../connection/model.ts";
@@ -249,4 +250,114 @@ describe("boundedThreadSnapshotLoader", () => {
       );
     },
   );
+
+  it.effect("shares one bounded HTTP load between concurrent opens of the same thread", () => {
+    let fetchCalls = 0;
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const fetchFn = (async () => {
+      fetchCalls += 1;
+      markStarted();
+      await gate;
+      return Response.json(boundedBody(true));
+    }) satisfies typeof fetch;
+
+    return Effect.gen(function* () {
+      const loader = yield* ThreadSnapshotLoader.ThreadSnapshotLoader;
+      const opens = yield* Effect.forkChild(
+        Effect.all([loader.load(PREPARED, THREAD_ID), loader.load(PREPARED, THREAD_ID)], {
+          concurrency: "unbounded",
+        }),
+      );
+      yield* Effect.promise(() => started);
+      yield* Effect.sync(() => release());
+      const [first, second] = yield* Fiber.join(opens);
+      expect(fetchCalls).toBe(1);
+      expect(first).toEqual(second);
+      expect(first._tag).toBe("present");
+    }).pipe(
+      Effect.provide(
+        Layer.provide(BoundedThreadSnapshotHttp.layer, RpcHttp.layerRemoteHttpClient(fetchFn)),
+      ),
+    );
+  });
+
+  it.effect(
+    "keeps a shared load for other waiters when one aborted navigation stops waiting",
+    () => {
+      let fetchCalls = 0;
+      let markStarted!: () => void;
+      const started = new Promise<void>((resolve) => {
+        markStarted = resolve;
+      });
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const fetchFn = (async () => {
+        fetchCalls += 1;
+        markStarted();
+        await gate;
+        return Response.json(boundedBody(true));
+      }) satisfies typeof fetch;
+
+      return Effect.gen(function* () {
+        const loader = yield* ThreadSnapshotLoader.ThreadSnapshotLoader;
+        const abandoned = yield* Effect.forkChild(loader.load(PREPARED, THREAD_ID));
+        const current = yield* Effect.forkChild(loader.load(PREPARED, THREAD_ID));
+        yield* Effect.promise(() => started);
+        yield* Fiber.interrupt(abandoned);
+        yield* Effect.sync(() => release());
+        const result = yield* Fiber.join(current);
+        expect(fetchCalls).toBe(1);
+        expect(result._tag).toBe("present");
+        if (result._tag !== "present") return;
+        expect(result.snapshot.snapshotSequence).toBe(12);
+      }).pipe(
+        Effect.provide(
+          Layer.provide(BoundedThreadSnapshotHttp.layer, RpcHttp.layerRemoteHttpClient(fetchFn)),
+        ),
+      );
+    },
+  );
+
+  it.effect("does not join a load started on a different connection generation", () => {
+    let fetchCalls = 0;
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const fetchFn = (async () => {
+      fetchCalls += 1;
+      markStarted();
+      await gate;
+      return Response.json(boundedBody(true));
+    }) satisfies typeof fetch;
+    const reconnected: PreparedConnection = { ...PREPARED };
+
+    return Effect.gen(function* () {
+      const loader = yield* ThreadSnapshotLoader.ThreadSnapshotLoader;
+      const previous = yield* Effect.forkChild(loader.load(PREPARED, THREAD_ID));
+      yield* Effect.promise(() => started);
+      const next = yield* Effect.forkChild(loader.load(reconnected, THREAD_ID));
+      yield* Effect.sync(() => release());
+      yield* Fiber.join(previous);
+      yield* Fiber.join(next);
+      expect(fetchCalls).toBe(2);
+    }).pipe(
+      Effect.provide(
+        Layer.provide(BoundedThreadSnapshotHttp.layer, RpcHttp.layerRemoteHttpClient(fetchFn)),
+      ),
+    );
+  });
 });
