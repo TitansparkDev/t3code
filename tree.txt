@@ -23292,6 +23292,8 @@ apps/mobile/src/features/usage/UsageLimitsPooled.tsx
 apps/mobile/src/features/usage/UsageLimitsSection.test.ts
 apps/mobile/src/features/usage/UsageLimitsSection.tsx
 apps/mobile/src/features/usage/UsageRouteScreen.tsx
+apps/mobile/src/features/usage/usage-banner-model.test.ts
+apps/mobile/src/features/usage/usage-banner-model.ts
 apps/mobile/src/features/usage/usageChartData.ts
 apps/mobile/src/features/usage/usageEnvironmentSelection.test.ts
 apps/mobile/src/features/usage/usageEnvironmentSelection.ts
@@ -23614,6 +23616,7 @@ apps/mobile/src/state/thread-provider-switching.test.ts
 apps/mobile/src/state/thread-provider-switching.ts
 apps/mobile/src/state/thread-task-permissions.test.ts
 apps/mobile/src/state/threads.ts
+apps/mobile/src/state/usage-banner.ts
 apps/mobile/src/state/usage.ts
 apps/mobile/src/state/use-atom-command.ts
 apps/mobile/src/state/use-atom-query-runner.ts
