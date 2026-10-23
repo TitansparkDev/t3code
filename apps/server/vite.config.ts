@@ -67,6 +67,17 @@ export default mergeConfig(
   defineConfig({
     run: {
       tasks: {
+        "typecheck:resource": {
+          command: "node ../../scripts/reliability-check.ts typecheck -- tsc-rs --noEmit",
+          cache: {
+            env: [
+              "AGENTQUEUE_RESOURCE_TICKET",
+              "AGENTQUEUE_RESOURCE_HOME",
+              "AGENTQUEUE_LOCK_ROOT",
+              "AGENTQUEUE_CHECK_CHAIN",
+            ],
+          },
+        },
         build: {
           command: "node scripts/cli.ts build",
           dependsOn: ["@t3tools/web#build"],
