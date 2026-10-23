@@ -11,8 +11,16 @@ export const DEFAULT_THREAD_SNAPSHOT_RETENTION: ThreadSnapshotRetentionPolicy = 
   idleTtlMs: THREAD_SNAPSHOT_IDLE_TTL_MS,
 };
 
-/** Keeps snapshots in the existing resumable state cache, bounded for mobile's larger detours. */
-export function createThreadSnapshotRetention<T>(policy: ThreadSnapshotRetentionPolicy) {
+/**
+ * Keeps snapshots in the existing resumable state cache, bounded for mobile's larger detours.
+ * The cache is read through synchronous getters inside Atom definitions, so it cannot yield
+ * `Clock.currentTimeMillis`; the clock is injected so tests control idle expiry deterministically.
+ */
+export function createThreadSnapshotRetention<T>(
+  policy: ThreadSnapshotRetentionPolicy,
+  // @effect-diagnostics-next-line globalDate:off -- synchronous atom getters have no Effect fiber to read Clock from
+  clock: () => number = () => Date.now(),
+) {
   type Entry = {
     snapshot: T | undefined;
     owner: object | undefined;
@@ -66,20 +74,20 @@ export function createThreadSnapshotRetention<T>(policy: ThreadSnapshotRetention
   const cache = (key: string) => {
     const current =
       entries.get(key) ??
-      ({ snapshot: undefined, owner: undefined, bytes: 0, touchedAt: Date.now() } satisfies Entry);
+      ({ snapshot: undefined, owner: undefined, bytes: 0, touchedAt: clock() } satisfies Entry);
     return {
       get snapshot() {
         if (current.owner === undefined && current.snapshot !== undefined) {
-          const now = Date.now();
-          if (now - current.touchedAt > policy.idleTtlMs) forget(key, current);
-          else current.touchedAt = now;
+          const at = clock();
+          if (at - current.touchedAt > policy.idleTtlMs) forget(key, current);
+          else current.touchedAt = at;
         }
         return current.snapshot;
       },
       set snapshot(snapshot: T | undefined) {
         current.snapshot = snapshot;
         current.bytes = snapshot === undefined ? 0 : estimateBytes(snapshot);
-        current.touchedAt = Date.now();
+        current.touchedAt = clock();
         if (snapshot === undefined && current.owner === undefined) entries.delete(key);
         else entries.set(key, current);
         enforceDetachedBudget(current.touchedAt);
@@ -88,17 +96,17 @@ export function createThreadSnapshotRetention<T>(policy: ThreadSnapshotRetention
         return current.owner;
       },
       set owner(owner: object | undefined) {
-        const now = Date.now();
+        const at = clock();
         if (current.owner !== undefined && owner === undefined && current.snapshot !== undefined) {
-          current.touchedAt = now;
+          current.touchedAt = at;
         } else if (current.owner === undefined && current.snapshot !== undefined) {
-          if (now - current.touchedAt > policy.idleTtlMs) forget(key, current);
-          else current.touchedAt = now;
+          if (at - current.touchedAt > policy.idleTtlMs) forget(key, current);
+          else current.touchedAt = at;
         }
         current.owner = owner;
         if (current.snapshot !== undefined || owner !== undefined) entries.set(key, current);
         else entries.delete(key);
-        enforceDetachedBudget(now);
+        enforceDetachedBudget(at);
       },
     };
   };

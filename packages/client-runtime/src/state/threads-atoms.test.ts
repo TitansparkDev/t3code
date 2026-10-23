@@ -85,11 +85,14 @@ describe("thread snapshot retention", () => {
   });
 
   it("keeps the selected snapshot leased outside the detached budget", () => {
-    const retention = createThreadSnapshotRetention<{ readonly body: string }>({
-      idleTtlMs: 1000,
-      maxEntries: 1,
-      maxBytes: 20,
-    });
+    const retention = createThreadSnapshotRetention<{ readonly body: string }>(
+      {
+        idleTtlMs: 1000,
+        maxEntries: 1,
+        maxBytes: 20,
+      },
+      () => 0,
+    );
     const selected = retention.cache("environment\u0000selected");
     const detached = retention.cache("environment\u0000detached");
     selected.owner = {};
