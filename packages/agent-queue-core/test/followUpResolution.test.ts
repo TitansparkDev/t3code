@@ -32,17 +32,14 @@ import {
 } from "../src/toolchain.ts";
 import { createTestGitRepo, execCommand } from "./harness/gitHarness.ts";
 
-/**
- * Checks are plain commands (no shell control), so each scenario's behaviour lives in a small script
- * in its own folder, driven by marker files next to it. Returns the command to put in the plan.
- */
-async function script(dir: string, name: string, body: string) {
-  const file = NodePath.join(dir, `${name}.cjs`);
-  await NodeFSP.writeFile(
-    file,
-    `const fs=require('fs');const path=require('path');const here=${JSON.stringify(dir)};\n${body}\n`,
-  );
-  return `node ${file}`;
+/** Keep executable checks inside their fixture repo; only their mutable marker state lives in tmp. */
+function script(dir: string, name: string, body: string) {
+  const fileName = `${name}.cjs`;
+  return {
+    command: `node ${fileName}`,
+    fileName,
+    source: `const fs=require('fs');const path=require('path');const here=${JSON.stringify(dir)};\n${body}\n`,
+  };
 }
 
 const tempDir = (prefix: string) => NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), prefix));
@@ -176,11 +173,27 @@ describe("a repair follow-up whose problem is already gone", () => {
   const scenario = async () => {
     const dir = await tempDir("aq-gate-");
     const gate = NodePath.join(dir, "open");
+    const gateCheck = gated(dir);
+    const flakyCheck = script(
+      dir,
+      "flaky",
+      "const c=path.join(here,'runs');const n=fs.existsSync(c)?+fs.readFileSync(c,'utf8'):0;fs.writeFileSync(c,String(n+1));if(n===0){console.log('FAILED flaky_check');process.exit(1)}",
+    );
+    const brokenCheck = script(
+      dir,
+      "broken",
+      `fs.appendFileSync(path.join(here,'env-runs'),'x');console.error(${JSON.stringify(SDK_ERROR)});process.exit(1)`,
+    );
     const t = await setup(
       planOf([
-        { id: "A1", verify: await gated(dir) },
+        { id: "A1", verify: gateCheck.command },
         { id: "B1", verify: 'node -e "process.exit(0)"' },
       ]),
+      {
+        [gateCheck.fileName]: gateCheck.source,
+        [flakyCheck.fileName]: flakyCheck.source,
+        [brokenCheck.fileName]: brokenCheck.source,
+      },
     );
     const a = await t.reserveTask("wa", "A1");
     const b = await t.reserveTask("wb", "B1");
@@ -199,7 +212,7 @@ describe("a repair follow-up whose problem is already gone", () => {
       .prepare("SELECT 1 FROM tasks WHERE id = 'A1-FU1' AND status = 'pending'")
       .get();
     expect(followUp).toBeDefined();
-    return { t, gate, dir };
+    return { t, gate, dir, flakyCheck, brokenCheck };
   };
 
   const claimFollowUp = async (t: Awaited<ReturnType<typeof setup>>) => {
@@ -326,21 +339,16 @@ describe("a repair follow-up whose problem is already gone", () => {
   });
 
   it("calls a check that fails once and then passes flaky, resolves it, and says so", async () => {
-    const { t, gate, dir } = await scenario();
+    const { t, gate, dir, flakyCheck } = await scenario();
     try {
       const claim = await claimFollowUp(t);
       // The stored check now fails on its first run only.
       const counter = NodePath.join(dir, "runs");
-      const flaky = await script(
-        dir,
-        "flaky",
-        "const c=path.join(here,'runs');const n=fs.existsSync(c)?+fs.readFileSync(c,'utf8'):0;fs.writeFileSync(c,String(n+1));if(n===0){console.log('FAILED flaky_check');process.exit(1)}",
-      );
       t.db
         .prepare(
           "UPDATE tasks SET verification_command = ?, verification_spec = NULL WHERE id = 'A1-FU1'",
         )
-        .run(flaky);
+        .run(flakyCheck.command);
       expect(NodeFS.existsSync(gate)).toBe(false);
 
       const outcome = await submitFollowUp(t, claim);
@@ -357,20 +365,15 @@ describe("a repair follow-up whose problem is already gone", () => {
   });
 
   it("holds for the machine, without demanding a commit or rerunning, when the toolchain is missing", async () => {
-    const { t, dir } = await scenario();
+    const { t, dir, brokenCheck } = await scenario();
     try {
       const claim = await claimFollowUp(t);
       const counter = NodePath.join(dir, "env-runs");
-      const broken = await script(
-        dir,
-        "broken",
-        `fs.appendFileSync(path.join(here,'env-runs'),'x');console.error(${JSON.stringify(SDK_ERROR)});process.exit(1)`,
-      );
       t.db
         .prepare(
           "UPDATE tasks SET verification_command = ?, verification_spec = NULL WHERE id = 'A1-FU1'",
         )
-        .run(broken);
+        .run(brokenCheck.command);
 
       const outcome = await submitFollowUp(t, claim);
 
@@ -416,17 +419,15 @@ describe("failures that belong to the machine, not the code", () => {
 
   it("does not turn a missing SDK into a follow-up task or a repair: the task is held for the machine", async () => {
     const dir = await tempDir("aq-sdk-missing-");
+    const check = script(dir, "sdk", `console.error(${JSON.stringify(SDK_ERROR)});process.exit(1)`);
     const t = await setup(
       planOf([
         {
           id: "A1",
-          verify: await script(
-            dir,
-            "sdk",
-            `console.error(${JSON.stringify(SDK_ERROR)});process.exit(1)`,
-          ),
+          verify: check.command,
         },
       ]),
+      { [check.fileName]: check.source },
     );
     try {
       const a = await t.reserveTask("wa", "A1");
@@ -453,16 +454,17 @@ describe("failures that belong to the machine, not the code", () => {
     const ready = NodePath.join(dir, "ready");
     // Passes on its first run (when submitted, on the base it started from); after that it fails on
     // this machine with the SDK error until `ready` exists.
-    const check = await script(
+    const check = script(
       dir,
       "merge-env",
       `const c=path.join(here,'runs');fs.appendFileSync(c,'x');if(!fs.existsSync(path.join(here,'ready'))&&fs.readFileSync(c,'utf8').length>1){console.error(${JSON.stringify(SDK_ERROR)});process.exit(1)}`,
     );
     const t = await setup(
       planOf([
-        { id: "A1", verify: check },
+        { id: "A1", verify: check.command },
         { id: "B1", verify: 'node -e "process.exit(0)"' },
       ]),
+      { [check.fileName]: check.source },
     );
     const previous = { home: process.env.ANDROID_HOME, root: process.env.ANDROID_SDK_ROOT };
     try {
@@ -735,8 +737,10 @@ describe("a follow-up whose checks need dependencies that are not installed", ()
 
   it("still reports a genuinely failing check once its dependencies are installed", async () => {
     const dir = await tempDir("aq-gate-deps-");
-    const t = await setup(planOf([{ id: "A1", verify: await gated(dir) }]), {
+    const check = gated(dir);
+    const t = await setup(planOf([{ id: "A1", verify: check.command }]), {
       "package.json": MANIFEST,
+      [check.fileName]: check.source,
     });
     try {
       await NodeFSP.mkdir(NodePath.join(t.repo.rootDir, "node_modules", "external-dep"), {
