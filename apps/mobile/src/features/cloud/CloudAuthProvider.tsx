@@ -65,7 +65,9 @@ function CloudAuthBridge(props: { readonly children: ReactNode }) {
 
   useEffect(() => {
     let cancelled = false;
-    if (!isLoaded) {
+    // Clerk can be loaded while a pending sign-in still has no definitive state.
+    // Do not treat that interval as a sign-out and tear down a valid relay session.
+    if (!isLoaded || isSignedIn === undefined) {
       return;
     }
 

@@ -62,6 +62,11 @@ function locate(input: ConnectionDiagnosisInput): Located | null {
   if (failure?._tag === "ConnectionBlockedError" && failure.serverUpdateRequired) {
     return { hop: "server", cause: "outdated" };
   }
+  // A pending cloud session is local to the client. Older versions of the
+  // authorization layer omitted the hop, so classify the reason explicitly too.
+  if (failure?.reason === "session-pending") {
+    return { hop: "device", cause: null };
+  }
   if (failure?.hop !== undefined) {
     return { hop: failure.hop, cause: failure.failureCause ?? null };
   }
@@ -117,7 +122,11 @@ function headline(host: string, located: Located, failure: ConnectionAttemptErro
   }
   switch (located.hop) {
     case "device":
-      return "This device could not prepare the connection";
+      return failure?.reason === "session-pending"
+        ? "Waiting for T3 Connect sign-in on this device"
+        : failure?.reason === "authentication"
+          ? "T3 Connect sign-in on this device needs attention"
+          : "This device could not prepare the connection";
     case "relay":
       return failure?.reason === "authentication"
         ? "T3 Connect did not accept this device's sign-in"
@@ -181,6 +190,15 @@ function steps(host: string, located: Located, failure: ConnectionAttemptError |
   }
   switch (located.hop) {
     case "device":
+      if (failure?.reason === "session-pending") {
+        return [
+          "On this device, open Settings > T3 Account and check that sign-in has completed.",
+          "Return to Environments and retry. If it remains pending, restart this app and sign in again.",
+        ];
+      }
+      if (failure?.reason === "authentication") {
+        return ["On this device, open Settings > T3 Account and sign in again."];
+      }
       return [
         "Restart T3 Code on this device.",
         `If it keeps failing, remove ${host} from this device and add it again.`,
@@ -247,7 +265,9 @@ function helpSection(
     failure?.reason === "timeout";
   switch (located.hop) {
     case "device":
-      return "this-device-cant-reach-t3-connect";
+      return failure?.reason === "session-pending" || failure?.reason === "authentication"
+        ? "sign-in-account-or-link-problems"
+        : "this-device-cant-reach-t3-connect";
     case "relay":
       return failure?.reason === "authentication"
         ? "sign-in-account-or-link-problems"
