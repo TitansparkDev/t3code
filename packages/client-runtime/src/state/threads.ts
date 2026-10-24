@@ -1,15 +1,18 @@
 import {
+  isOrchestrationV2WorkActive,
   ORCHESTRATION_V2_WS_METHODS,
   type EnvironmentId as EnvironmentIdType,
   type OrchestrationV2ThreadDetailSnapshot,
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2ThreadStreamItem,
+  type OrchestrationV2TurnItem,
   type ThreadId as ThreadIdType,
 } from "@t3tools/contracts";
 import {
   boundedCachedThreadSnapshot,
   boundedSnapshotProjection,
 } from "@t3tools/shared/orchestrationV2BoundedSnapshot";
+import { pendingBackgroundTurnItems } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -33,7 +36,7 @@ import * as Persistence from "../platform/persistence.ts";
 import type { CachedThreadSnapshot } from "../platform/orchestrationCache.ts";
 import { runCachePersistence } from "./cachePersistence.ts";
 import * as ManagedRelay from "../relay/managedRelay.ts";
-import { subscribeDynamic } from "../rpc/client.ts";
+import { request, subscribeDynamic } from "../rpc/client.ts";
 import { parseThreadKey, threadKey } from "./entities.ts";
 import { applyOrchestrationV2ProjectionEvent } from "./orchestrationV2Projection.ts";
 import {
@@ -130,6 +133,29 @@ function hasActiveRun(thread: OrchestrationV2ThreadProjection): boolean {
   return thread.runs.some(
     (run) => run.status === "preparing" || run.status === "starting" || run.status === "running",
   );
+}
+
+// Only still-active local copies take the server's item: events applied meanwhile win,
+// and inherited rows belong to another thread.
+function settleTurnItems(
+  threadId: ThreadIdType,
+  projection: OrchestrationV2ThreadProjection,
+  settled: ReadonlyMap<string, OrchestrationV2TurnItem>,
+): OrchestrationV2ThreadProjection {
+  let changed = false;
+  const settle = (item: OrchestrationV2TurnItem, id: string) => {
+    const server = settled.get(id);
+    if (server === undefined || !isOrchestrationV2WorkActive(item.status)) return item;
+    changed = true;
+    return server;
+  };
+  const turnItems = projection.turnItems.map((item) => settle(item, item.id));
+  const visibleTurnItems = projection.visibleTurnItems.map((row) => {
+    if (row.sourceThreadId !== threadId) return row;
+    const item = settle(row.item, row.sourceItemId);
+    return item === row.item ? row : { ...row, item };
+  });
+  return changed ? { ...projection, turnItems, visibleTurnItems } : projection;
 }
 
 interface ThreadResumeSnapshot {
@@ -288,8 +314,14 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     readonly flush?: true;
   }>(1);
   const persistenceLock = yield* Semaphore.make(1);
+  let queuedSnapshot: OrchestrationV2ThreadDetailSnapshot | undefined =
+    Option.getOrUndefined(cached);
+  let savedSnapshot = queuedSnapshot;
   const enqueuePersistence = (snapshot: OrchestrationV2ThreadDetailSnapshot, flush = false) =>
-    Queue.offer(persistence, { snapshot, ...(flush ? { flush: true as const } : {}) });
+    Effect.suspend(() => {
+      queuedSnapshot = snapshot;
+      return Queue.offer(persistence, { snapshot, ...(flush ? { flush: true as const } : {}) });
+    });
 
   const persist = Effect.fn("EnvironmentThreadState.persist")(function* (
     snapshot: OrchestrationV2ThreadDetailSnapshot,
@@ -315,6 +347,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         yield* cache.saveThread(environmentId, cachedSnapshot).pipe(
           Effect.tap(() =>
             Effect.sync(() => {
+              savedSnapshot = snapshot;
               if (
                 !matchesThreadSnapshot(
                   committed,
@@ -377,8 +410,15 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         Option.isNone(current.data) ||
         current.status === "deleted" ||
         !shouldPersistThread(current.data.value, current.history, persistBoundedCache)
-      )
-        return releaseOwner;
+      ) {
+        // The consumer may still be waiting out its delay; an expanded thread queues
+        // only cache repairs, which must survive leaving the thread.
+        return current.status !== "deleted" &&
+          queuedSnapshot !== undefined &&
+          queuedSnapshot !== savedSnapshot
+          ? persist(queuedSnapshot).pipe(Effect.ensuring(releaseOwner))
+          : releaseOwner;
+      }
       const finalSave = persist(
         snapshotToPersist(
           snapshotSequence,
@@ -812,11 +852,80 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     );
   });
 
+  // A cached item can stay running after the server finished it, and no event will ever
+  // name it again: it can sit outside every bounded window, and a repeated Stop records
+  // nothing new (#18188). Stop asks the server about each pending item instead of
+  // inferring status from what a snapshot omits, and settles only those items.
+  const reconcilePendingWork = Effect.fn("EnvironmentThreadState.reconcilePendingWork")(
+    function* () {
+      const current = yield* SubscriptionRef.get(state);
+      if (current.status === "deleted" || Option.isNone(current.data)) return;
+      const pending = pendingBackgroundTurnItems(current.data.value);
+      if (pending.length === 0) return;
+      const queried = new Set<string>(pending.map((item) => item.id));
+      const fetched = yield* Effect.forEach(
+        pending,
+        (item) =>
+          request(ORCHESTRATION_V2_WS_METHODS.getTurnItem, { threadId, itemId: item.id }).pipe(
+            Effect.timeout("10 seconds"),
+            Effect.map((result) => result.item),
+            Effect.orElseSucceed(() => null),
+          ),
+        { concurrency: 4 },
+      );
+      const settled = new Map(
+        fetched.flatMap((item) =>
+          item === null || isOrchestrationV2WorkActive(item.status) ? [] : [[item.id, item]],
+        ),
+      );
+      yield* applyLock.withPermits(1)(
+        Effect.gen(function* () {
+          const latest = yield* SubscriptionRef.get(state);
+          if (latest.status === "deleted" || Option.isNone(latest.data)) return;
+          const thread = settleTurnItems(threadId, latest.data.value, settled);
+          if (thread !== latest.data.value) {
+            yield* setThread(thread);
+            yield* remember;
+          }
+          // An expanded timeline is never saved, so reload would bring the stale row back.
+          // Repair the snapshot last handed to the cache instead, keeping its window and cursor.
+          // A resumed state skipped the cache load, so read the saved snapshot then.
+          if (shouldPersistThread(thread, latest.history, persistBoundedCache)) return;
+          // A terminal event that landed during the lookup is newer than any reply, and the
+          // expanded live state never saves it, whatever the lookup returned.
+          const latestItems = new Map(settled);
+          for (const item of thread.turnItems) {
+            if (queried.has(item.id) && !isOrchestrationV2WorkActive(item.status)) {
+              latestItems.set(item.id, item);
+            }
+          }
+          if (latestItems.size === 0) return;
+          const saved =
+            queuedSnapshot ??
+            Option.getOrUndefined(
+              yield* cache
+                .loadThread(environmentId, threadId)
+                .pipe(Effect.orElseSucceed(() => Option.none())),
+            );
+          if (saved === undefined) return;
+          const projection = settleTurnItems(threadId, saved.projection, latestItems);
+          if (projection !== saved.projection) yield* enqueuePersistence({ ...saved, projection });
+        }),
+      );
+    },
+  );
+
   if (Option.isSome(historyController)) {
     const scope = yield* Scope.Scope;
     const registration = yield* historyController.value.register(environmentId, threadId, {
       loadEarlier: (throughEntryId) =>
         loadEarlier(throughEntryId).pipe(Effect.forkIn(scope), Effect.flatMap(Fiber.join)),
+      reconcilePendingWork: () =>
+        reconcilePendingWork().pipe(
+          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+          Effect.forkIn(scope),
+          Effect.flatMap(Fiber.join),
+        ),
     });
     yield* Effect.addFinalizer(() => historyController.value.unregister(registration));
   }

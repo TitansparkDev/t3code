@@ -1,4 +1,4 @@
-import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
   defaultGoalSetup,
   goalSetupProblem,
@@ -730,7 +730,12 @@ export function GoalSetupRouteScreen({ route }: StaticScreenProps<GoalSetupParam
   const navigation = useNavigation();
   return (
     <CreateGoalScreen
-      close={() => (navigation.getParent() ?? navigation).goBack()}
+      close={() => {
+        // Starting a goal finishes the new-task flow, so the project picker closes with it.
+        const state = navigation.getState();
+        const fromPicker = state?.routes[state.index - 1]?.name === "NewTaskProject";
+        navigation.dispatch(StackActions.pop(fromPicker ? 2 : 1));
+      }}
       environmentId={route.params.environmentId as EnvironmentId}
       projectId={route.params.projectId as ProjectId}
       title={route.params.title}

@@ -27,7 +27,7 @@ describe("shouldShowWorkspaceUsageBanner", () => {
     ).toBe(false);
   });
 
-  it.each(["Home", "Thread", "NewTaskSheet", "Goals"])("shows on %s", (name) => {
+  it.each(["Home", "Thread", "NewTaskProject", "Goals"])("shows on %s", (name) => {
     expect(shouldShowWorkspaceUsageBanner(state(name))).toBe(true);
   });
 
@@ -53,6 +53,15 @@ describe("shouldShowWorkspaceUsageBanner", () => {
 });
 
 describe("resolveThreadSelectionNavigationAction", () => {
+  it("retains the draft screen despite its query-shaped path", () => {
+    expect(
+      resolveThreadSelectionNavigationAction({
+        usesSplitView: true,
+        pathname: "/threads?draft=local",
+        workspaceRouteName: "Thread",
+      }),
+    ).toBe("set-params");
+  });
   it("replaces nested thread content when a persistent sidebar selects a peer", () => {
     expect(
       resolveThreadSelectionNavigationAction({
@@ -128,4 +137,24 @@ describe("resolveThreadSelectionOverlayState", () => {
       ).toEqual({ ...stack, index: 1, routes: [route, { name: "Thread", params }] });
     },
   );
+});
+
+it("replacing a draft underneath an overlay removes its draft identity", () => {
+  const result = resolveThreadSelectionOverlayState({
+    state: {
+      key: "root",
+      type: "stack",
+      stale: false,
+      routeNames: ["Thread", "SettingsSheet"],
+      index: 1,
+      routes: [
+        { key: "draft", name: "Thread", params: { draft: { draftId: "old" } } },
+        { key: "settings", name: "SettingsSheet" },
+      ],
+    },
+    workspaceRouteKey: "draft",
+    action: "set-params",
+    params: { environmentId: "env", threadId: "live" },
+  });
+  expect(result?.routes[0]?.params).toEqual({ environmentId: "env", threadId: "live" });
 });
