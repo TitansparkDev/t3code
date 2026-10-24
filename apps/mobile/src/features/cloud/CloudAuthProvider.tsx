@@ -1,6 +1,10 @@
 import { ClerkProvider, useAuth } from "@clerk/expo";
 import { tokenCache } from "@clerk/expo/token-cache";
-import { ManagedRelay, setManagedRelaySession } from "@t3tools/client-runtime/relay";
+import {
+  ManagedRelay,
+  managedRelaySignedOutAtom,
+  setManagedRelaySession,
+} from "@t3tools/client-runtime/relay";
 import {
   reportAtomCommandResult,
   settleAsyncResult,
@@ -148,6 +152,7 @@ function CloudAuthBridge(props: { readonly children: ReactNode }) {
       const previous = previousTokenProviderRef.current;
       previousTokenProviderRef.current = null;
       deactivateCloudRelayAccount();
+      appAtomRegistry.set(managedRelaySignedOutAtom, true);
       if (previousObservedAccount !== null) {
         void settlePromise(() => queueAccountCleanup(previous)).then((result) => {
           reportAtomCommandResult(result, { label: "cloud account cleanup" });
@@ -164,6 +169,7 @@ function CloudAuthBridge(props: { readonly children: ReactNode }) {
         return;
       }
       previousTokenProviderRef.current = { userId, provider: tokenProvider.provider };
+      appAtomRegistry.set(managedRelaySignedOutAtom, false);
       activateCloudRelayAccount(userId, tokenProvider.provider);
       if (isAccountTransition) {
         requestConnectOnboarding(userId);

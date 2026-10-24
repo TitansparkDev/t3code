@@ -264,6 +264,16 @@ export const make = Effect.gen(function* () {
       via: "relay",
     });
 
+  // Retrying cannot help a device that is signed out; the account change that
+  // follows a sign-in wakes the connection again.
+  const sessionSignedOut = () =>
+    new ConnectionBlockedError({
+      reason: "authentication",
+      detail: "Sign in to T3 Connect on this device to reach this environment.",
+      hop: "device",
+      via: "relay",
+    });
+
   const assertSession = Effect.fnUntraced(function* (
     identity: ClientCapabilities.CloudSessionIdentity,
   ) {
@@ -375,7 +385,8 @@ export const make = Effect.gen(function* () {
   ) {
     const session = yield* cloudSession.identity;
     if (Option.isNone(session)) {
-      return yield* sessionPending();
+      const signedOut = cloudSession.signedOut ? yield* cloudSession.signedOut : false;
+      return yield* signedOut ? sessionSignedOut() : sessionPending();
     }
     const identity = session.value;
     const thumbprint = yield* signer.thumbprint.pipe(

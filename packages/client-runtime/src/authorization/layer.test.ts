@@ -107,6 +107,7 @@ const makeHarness = Effect.fn("TestRemoteAuthorization.makeHarness")(function* (
   readonly beforeBootstrap?: Effect.Effect<void, ManagedRelay.ManagedRelayClientError>;
   readonly beforePut?: Effect.Effect<void>;
   readonly clerkToken?: ClientCapabilities.CloudSession["Service"]["clerkToken"];
+  readonly signedOut?: boolean;
 }) {
   const tokens = yield* Ref.make(
     new Map(
@@ -194,6 +195,7 @@ const makeHarness = Effect.fn("TestRemoteAuthorization.makeHarness")(function* (
         Layer.succeed(ClientCapabilities.CloudSession, {
           identity: Ref.get(session),
           clerkToken: input.clerkToken ?? Effect.succeed("clerk-session"),
+          ...(input.signedOut === undefined ? {} : { signedOut: Effect.succeed(input.signedOut) }),
         }),
         Layer.succeed(ClientCapabilities.RelayDeviceIdentity, {
           deviceId: Effect.succeedSome("device-1"),
@@ -735,6 +737,26 @@ describe("RemoteEnvironmentAuthorization", () => {
         expect(loaded.httpAuthorization.accessToken).toBe("loaded-token");
       }).pipe(Effect.provide(harness.layer));
       expect(yield* Ref.get(harness.bootstrapCalls)).toBe(1);
+    }),
+  );
+
+  it.effect("blocks instead of retrying while this device is signed out", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({ responses: [], signedOut: true });
+      yield* Ref.set(harness.session, Option.none());
+      yield* Effect.gen(function* () {
+        const remote = yield* RemoteEnvironmentAuthorization.RemoteEnvironmentAuthorization;
+        const failure = yield* remote
+          .authorizeDpopHttp({ expectedEnvironmentId: ENVIRONMENT_ID })
+          .pipe(Effect.flip);
+        expect(failure).toMatchObject({
+          _tag: "ConnectionBlockedError",
+          reason: "authentication",
+          hop: "device",
+          via: "relay",
+        });
+      }).pipe(Effect.provide(harness.layer));
+      expect(yield* Ref.get(harness.bootstrapCalls)).toBe(0);
     }),
   );
 

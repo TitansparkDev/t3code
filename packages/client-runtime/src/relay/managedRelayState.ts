@@ -73,6 +73,12 @@ export const managedRelaySessionAtom = Atom.make<ManagedRelaySession | null>(nul
   Atom.withLabel("managed-relay:session"),
 );
 
+/** Set by the client once its sign-in has loaded with nobody signed in. */
+export const managedRelaySignedOutAtom = Atom.make(false).pipe(
+  Atom.keepAlive,
+  Atom.withLabel("managed-relay:signed-out"),
+);
+
 const managedRelaySessionControls = new WeakMap<ManagedRelaySession, ManagedRelaySessionControl>();
 
 export function createManagedRelaySession(input: ManagedRelaySessionInput): ManagedRelaySession {

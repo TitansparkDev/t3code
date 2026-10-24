@@ -29,6 +29,12 @@ export class CloudSession extends Context.Service<
   CloudSession,
   {
     readonly identity: Effect.Effect<Option.Option<CloudSessionIdentity>>;
+    /**
+     * True once the sign-in has loaded and nobody is signed in, so a missing
+     * identity is not a session that is still loading. Clients that cannot
+     * tell the two apart leave it out.
+     */
+    readonly signedOut?: Effect.Effect<boolean>;
     readonly clerkToken: Effect.Effect<string, ConnectionAttemptError>;
   }
 >()("@t3tools/client-runtime/platform/capabilities/CloudSession") {}

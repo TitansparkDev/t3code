@@ -9,7 +9,11 @@ import {
   Connectivity,
   Wakeups,
 } from "@t3tools/client-runtime/connection";
-import { managedRelayAccountChanges, managedRelaySessionAtom } from "@t3tools/client-runtime/relay";
+import {
+  managedRelayAccountChanges,
+  managedRelaySessionAtom,
+  managedRelaySignedOutAtom,
+} from "@t3tools/client-runtime/relay";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -181,6 +185,7 @@ const layerCapabilities = Layer.effectContext(
         identity: Effect.sync(() =>
           Option.fromNullishOr(appAtomRegistry.get(managedRelaySessionAtom)),
         ),
+        signedOut: Effect.sync(() => appAtomRegistry.get(managedRelaySignedOutAtom)),
         clerkToken: Effect.gen(function* () {
           const session = appAtomRegistry.get(managedRelaySessionAtom);
           if (session === null) {
