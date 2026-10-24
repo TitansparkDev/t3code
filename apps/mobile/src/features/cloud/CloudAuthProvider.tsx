@@ -62,6 +62,32 @@ function CloudAuthBridge(props: { readonly children: ReactNode }) {
   } | null>(null);
   const observedAccountRef = useRef<string | null | undefined>(undefined);
   const accountTransitionRef = useRef<Promise<void> | null>(null);
+  const accountTokenProviderRef = useRef<{
+    readonly userId: string;
+    readonly provider: () => Promise<string | null>;
+    readonly updateReader: (reader: () => Promise<string | null>) => void;
+  } | null>(null);
+
+  // Clerk can replace getToken during a routine refresh. Update the reader
+  // independently: re-running the account activation effect would cancel its
+  // pending draft restoration and strand T3 Connect in session-pending.
+  useEffect(() => {
+    if (!isLoaded || !isSignedIn || !userId) return;
+    const readToken = () => getToken(resolveRelayClerkTokenOptions());
+    const current = accountTokenProviderRef.current;
+    if (current?.userId === userId) {
+      current.updateReader(readToken);
+      return;
+    }
+    let reader = readToken;
+    accountTokenProviderRef.current = {
+      userId,
+      provider: () => reader(),
+      updateReader: (nextReader) => {
+        reader = nextReader;
+      },
+    };
+  }, [getToken, isLoaded, isSignedIn, userId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -131,13 +157,14 @@ function CloudAuthBridge(props: { readonly children: ReactNode }) {
     }
 
     const previous = previousTokenProviderRef.current;
-    const tokenProvider = () => getToken(resolveRelayClerkTokenOptions());
+    const tokenProvider = accountTokenProviderRef.current;
+    if (tokenProvider?.userId !== userId) return;
     const activateSession = () => {
       if (cancelled) {
         return;
       }
-      previousTokenProviderRef.current = { userId, provider: tokenProvider };
-      activateCloudRelayAccount(userId, tokenProvider);
+      previousTokenProviderRef.current = { userId, provider: tokenProvider.provider };
+      activateCloudRelayAccount(userId, tokenProvider.provider);
       if (isAccountTransition) {
         requestConnectOnboarding(userId);
       }
@@ -174,7 +201,7 @@ function CloudAuthBridge(props: { readonly children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [getToken, isLoaded, isSignedIn, removeRelayEnvironments, userId]);
+  }, [isLoaded, isSignedIn, removeRelayEnvironments, userId]);
 
   useEffect(
     () => () => {

@@ -22741,6 +22741,7 @@ apps/mobile/src/features/browser/preview-stream-document.ts
 apps/mobile/src/features/browser/preview-stream.browser.ts
 apps/mobile/src/features/browser/previewPromptText.test.ts
 apps/mobile/src/features/browser/previewPromptText.ts
+apps/mobile/src/features/cloud/CloudAuthProvider.session.test.tsx
 apps/mobile/src/features/cloud/CloudAuthProvider.test.ts
 apps/mobile/src/features/cloud/CloudAuthProvider.tsx
 apps/mobile/src/features/cloud/ConnectOnboardingRouteScreen.tsx
