@@ -9,6 +9,7 @@ import { useHardwareKeyboardCommand } from "../keyboard/hardwareKeyboardCommands
 import { WorkspaceListToolbarRow } from "../workspace/WorkspaceListToolbarRow";
 import { useWorkspaceTabs } from "../workspace/WorkspaceTabsContext";
 import { usePullRequestFilterMenu } from "./PullRequestFilterMenuContext";
+import { UsageBannerSlot } from "../usage/UsageBannerSlot";
 
 /** PR search shares the thread list's Android header row. */
 export function PullRequestToolbar(props: { readonly onRequestVisibility?: () => void }) {
@@ -54,50 +55,53 @@ export function PullRequestToolbar(props: { readonly onRequestVisibility?: () =>
   }, [searching, closeSearch, listFocused, navigation, isTabActive]);
   const { paddingTop, paddingBottom } = useToolbarLayout();
   return (
-    <View className="bg-header px-2" style={{ paddingTop, paddingBottom }}>
-      <WorkspaceListToolbarRow
-        searching={searching}
-        searchField={
-          <SearchField
-            inputRef={input}
-            accessibilityLabel="Search pull requests"
-            clearAccessibilityLabel="Clear search"
-            placeholder="Search pull requests"
-            value={tab.query}
-            onChangeText={(query) => dispatch({ type: "query", tab: "pullRequests", query })}
-          />
-        }
-        onCloseSearch={closeSearch}
-        onOpenSearch={openSearch}
-        searchAccessibilityLabel="Search pull requests"
-        titleAccessibilityLabel="T3 Code, Pull requests"
-        onOpenEnvironments={() =>
-          navigation.navigate("SettingsSheet", {
-            screen: "SettingsContent",
-            params: { screen: "SettingsEnvironments" },
-          })
-        }
-        filter={
-          filters ? (
-            <AndroidAnchoredMenu
-              actions={filters.actions}
-              onPressAction={({ nativeEvent }) => filters.onSelect(nativeEvent.event)}
-            >
-              {(open) => (
-                <AndroidHeaderIconButton
-                  accessibilityLabel="Filter pull requests"
-                  icon={
-                    filters.customized
-                      ? "line.3.horizontal.decrease.circle.fill"
-                      : "line.3.horizontal.decrease.circle"
-                  }
-                  onPress={open}
-                />
-              )}
-            </AndroidAnchoredMenu>
-          ) : null
-        }
-      />
-    </View>
+    <>
+      <View className="bg-header px-2" style={{ paddingTop, paddingBottom }}>
+        <WorkspaceListToolbarRow
+          searching={searching}
+          searchField={
+            <SearchField
+              inputRef={input}
+              accessibilityLabel="Search pull requests"
+              clearAccessibilityLabel="Clear search"
+              placeholder="Search pull requests"
+              value={tab.query}
+              onChangeText={(query) => dispatch({ type: "query", tab: "pullRequests", query })}
+            />
+          }
+          onCloseSearch={closeSearch}
+          onOpenSearch={openSearch}
+          searchAccessibilityLabel="Search pull requests"
+          titleAccessibilityLabel="T3 Code, Pull requests"
+          onOpenEnvironments={() =>
+            navigation.navigate("SettingsSheet", {
+              screen: "SettingsContent",
+              params: { screen: "SettingsEnvironments" },
+            })
+          }
+          filter={
+            filters ? (
+              <AndroidAnchoredMenu
+                actions={filters.actions}
+                onPressAction={({ nativeEvent }) => filters.onSelect(nativeEvent.event)}
+              >
+                {(open) => (
+                  <AndroidHeaderIconButton
+                    accessibilityLabel="Filter pull requests"
+                    icon={
+                      filters.customized
+                        ? "line.3.horizontal.decrease.circle.fill"
+                        : "line.3.horizontal.decrease.circle"
+                    }
+                    onPress={open}
+                  />
+                )}
+              </AndroidAnchoredMenu>
+            ) : null
+          }
+        />
+      </View>
+      <UsageBannerSlot />
+    </>
   );
 }

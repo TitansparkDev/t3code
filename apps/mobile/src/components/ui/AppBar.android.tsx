@@ -19,6 +19,7 @@ import { SearchField } from "./SearchField";
 import { androidHeaderMenuActions, findHeaderMenuAction } from "./headerMenu.android";
 import type { AppBarProps } from "./AppBar.types";
 import { useAndroidControlSizing } from "./useAndroidControlSizing";
+import { UsageBannerSlot } from "../../features/usage/UsageBannerSlot";
 
 export function AppBar(props: AppBarProps) {
   const { search } = props;
@@ -148,6 +149,7 @@ export function AppBar(props: AppBarProps) {
             {menuView}
           </View>
         </View>
+        <UsageBannerSlot />
       </>
     );
   }

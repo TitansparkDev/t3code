@@ -23288,6 +23288,7 @@ apps/mobile/src/features/threads/worktree-setup-state.ts
 apps/mobile/src/features/updates/app-updates.test.ts
 apps/mobile/src/features/updates/app-updates.ts
 apps/mobile/src/features/usage/ChatGptUsageSummary.tsx
+apps/mobile/src/features/usage/UsageBannerSlot.tsx
 apps/mobile/src/features/usage/UsageDailyChart.ios.tsx
 apps/mobile/src/features/usage/UsageDailyChart.tsx
 apps/mobile/src/features/usage/UsageLimitBanner.test.tsx

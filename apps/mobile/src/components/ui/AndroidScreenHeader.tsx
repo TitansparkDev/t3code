@@ -12,6 +12,7 @@ import { splitAndroidHeaderActions } from "./headerMenu.android";
 import { useScaledTextRole } from "../../features/settings/appearance/useScaledTextRole";
 import { useToolbarLayout } from "./useToolbarLayout";
 import { useControlTheme } from "./useControlTheme";
+import { UsageBannerSlot } from "../../features/usage/UsageBannerSlot";
 
 export interface AndroidHeaderAction {
   readonly accessibilityLabel: string;
@@ -58,49 +59,40 @@ export function AndroidScreenHeader(props: {
   );
 
   return (
-    <View
-      onLayout={(event) => setHeaderWidth(event.nativeEvent.layout.width)}
-      className="border-b border-header-border bg-header"
-      style={{
-        paddingTop,
-        paddingBottom,
-        borderBottomWidth: props.hideBottomBorder ? 0 : undefined,
-      }}
-    >
-      <NativeAppBar
-        singleLine={props.compact}
-        navigationIcon={
-          props.onBack || props.leading ? (
-            <View collapsable={false} className="flex-row items-center">
-              {props.onBack ? (
-                <IconButton
-                  accessibilityLabel="Navigate up"
-                  icon="arrow.left"
-                  tintColorClassName="accent-header-foreground"
-                  onPress={props.onBack}
-                />
-              ) : null}
+    <>
+      <View
+        onLayout={(event) => setHeaderWidth(event.nativeEvent.layout.width)}
+        className="border-b border-header-border bg-header"
+        style={{
+          paddingTop,
+          paddingBottom,
+          borderBottomWidth: props.hideBottomBorder ? 0 : undefined,
+        }}
+      >
+        <NativeAppBar
+          singleLine={props.compact}
+          navigationIcon={
+            props.onBack || props.leading ? (
+              <View collapsable={false} className="flex-row items-center">
+                {props.onBack ? (
+                  <IconButton
+                    accessibilityLabel="Navigate up"
+                    icon="arrow.left"
+                    tintColorClassName="accent-header-foreground"
+                    onPress={props.onBack}
+                  />
+                ) : null}
 
-              {props.leading}
-            </View>
-          ) : undefined
-        }
-        title={
-          props.titleContent ? (
-            <RNHostView matchContents={{ vertical: true }}>
-              <View collapsable={false}>{props.titleContent}</View>
-            </RNHostView>
-          ) : !props.subtitle ? (
-            <NativeText
-              color={colors["--color-header-foreground"]}
-              maxLines={1}
-              overflow="ellipsis"
-              style={titleTypography}
-            >
-              {props.title}
-            </NativeText>
-          ) : props.compact ? (
-            <Row verticalAlignment="center" horizontalArrangement={{ spacedBy: 8 }}>
+                {props.leading}
+              </View>
+            ) : undefined
+          }
+          title={
+            props.titleContent ? (
+              <RNHostView matchContents={{ vertical: true }}>
+                <View collapsable={false}>{props.titleContent}</View>
+              </RNHostView>
+            ) : !props.subtitle ? (
               <NativeText
                 color={colors["--color-header-foreground"]}
                 maxLines={1}
@@ -109,93 +101,105 @@ export function AndroidScreenHeader(props: {
               >
                 {props.title}
               </NativeText>
-              <NativeText
-                color={colors["--color-foreground-muted"]}
-                maxLines={1}
-                overflow="ellipsis"
-                style={subtitleTypography}
-                modifiers={[weight(1)]}
-              >
-                {props.subtitle}
-              </NativeText>
-            </Row>
-          ) : (
-            <Column>
-              <NativeText
-                color={colors["--color-header-foreground"]}
-                maxLines={1}
-                overflow="ellipsis"
-                style={titleTypography}
-              >
-                {props.title}
-              </NativeText>
-              {props.subtitle ? (
+            ) : props.compact ? (
+              <Row verticalAlignment="center" horizontalArrangement={{ spacedBy: 8 }}>
+                <NativeText
+                  color={colors["--color-header-foreground"]}
+                  maxLines={1}
+                  overflow="ellipsis"
+                  style={titleTypography}
+                >
+                  {props.title}
+                </NativeText>
                 <NativeText
                   color={colors["--color-foreground-muted"]}
                   maxLines={1}
                   overflow="ellipsis"
                   style={subtitleTypography}
+                  modifiers={[weight(1)]}
                 >
                   {props.subtitle}
                 </NativeText>
-              ) : null}
-            </Column>
-          )
-        }
-        actions={
-          visibleActions.length > 0 || overflowActions.length > 0 || props.trailing ? (
-            <View collapsable={false} className="flex-row items-center">
-              {visibleActions.map((action) =>
-                action.loading ? (
-                  <View
-                    key={action.accessibilityLabel}
-                    accessibilityLabel={action.accessibilityLabel}
-                    className="size-12 items-center justify-center"
-                  >
-                    <AppActivityIndicator colorClassName="accent-header-foreground" />
-                  </View>
-                ) : (
-                  <AndroidHeaderIconButton
-                    key={action.accessibilityLabel}
-                    accessibilityLabel={action.accessibilityLabel}
-                    disabled={action.disabled}
-                    selected={action.selected}
-                    icon={action.icon}
-                    onPress={action.onPress}
-                  />
-                ),
-              )}
-              {overflowActions.length > 0 ? (
-                <AndroidAnchoredMenu
-                  actions={overflowActions.map((action, index) => ({
-                    id: String(index),
-                    title: action.accessibilityLabel,
-                    attributes: {
-                      disabled: Boolean(action.disabled),
-                      destructive: action.destructive,
-                      state: action.selected ? "on" : undefined,
-                    },
-                  }))}
-                  onPressAction={({ nativeEvent }) =>
-                    overflowActions[Number(nativeEvent.event)]?.onPress()
-                  }
+              </Row>
+            ) : (
+              <Column>
+                <NativeText
+                  color={colors["--color-header-foreground"]}
+                  maxLines={1}
+                  overflow="ellipsis"
+                  style={titleTypography}
                 >
-                  {(open) => (
-                    <IconButton
-                      accessibilityLabel="More actions"
-                      icon="ellipsis"
-                      tintColorClassName="accent-header-foreground"
-                      onPress={open}
+                  {props.title}
+                </NativeText>
+                {props.subtitle ? (
+                  <NativeText
+                    color={colors["--color-foreground-muted"]}
+                    maxLines={1}
+                    overflow="ellipsis"
+                    style={subtitleTypography}
+                  >
+                    {props.subtitle}
+                  </NativeText>
+                ) : null}
+              </Column>
+            )
+          }
+          actions={
+            visibleActions.length > 0 || overflowActions.length > 0 || props.trailing ? (
+              <View collapsable={false} className="flex-row items-center">
+                {visibleActions.map((action) =>
+                  action.loading ? (
+                    <View
+                      key={action.accessibilityLabel}
+                      accessibilityLabel={action.accessibilityLabel}
+                      className="size-12 items-center justify-center"
+                    >
+                      <AppActivityIndicator colorClassName="accent-header-foreground" />
+                    </View>
+                  ) : (
+                    <AndroidHeaderIconButton
+                      key={action.accessibilityLabel}
+                      accessibilityLabel={action.accessibilityLabel}
+                      disabled={action.disabled}
+                      selected={action.selected}
+                      icon={action.icon}
+                      onPress={action.onPress}
                     />
-                  )}
-                </AndroidAnchoredMenu>
-              ) : null}
-              {props.trailing}
-            </View>
-          ) : undefined
-        }
-      />
-    </View>
+                  ),
+                )}
+                {overflowActions.length > 0 ? (
+                  <AndroidAnchoredMenu
+                    actions={overflowActions.map((action, index) => ({
+                      id: String(index),
+                      title: action.accessibilityLabel,
+                      attributes: {
+                        disabled: Boolean(action.disabled),
+                        destructive: action.destructive,
+                        state: action.selected ? "on" : undefined,
+                      },
+                    }))}
+                    onPressAction={({ nativeEvent }) =>
+                      overflowActions[Number(nativeEvent.event)]?.onPress()
+                    }
+                  >
+                    {(open) => (
+                      <IconButton
+                        accessibilityLabel="More actions"
+                        icon="ellipsis"
+                        tintColorClassName="accent-header-foreground"
+                        onPress={open}
+                      />
+                    )}
+                  </AndroidAnchoredMenu>
+                ) : null}
+                {props.trailing}
+              </View>
+            ) : undefined
+          }
+        />
+      </View>
+      {props.embedded ? null : <UsageBannerSlot />}
+    </>
   );
 }
 

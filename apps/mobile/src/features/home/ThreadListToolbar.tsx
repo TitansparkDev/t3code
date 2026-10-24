@@ -18,6 +18,7 @@ import { useHardwareKeyboardCommand } from "../keyboard/hardwareKeyboardCommands
 import { WorkspaceListToolbarRow } from "../workspace/WorkspaceListToolbarRow";
 import { useWorkspaceConnectionState } from "../../state/workspace";
 import { useToolbarLayout } from "../../components/ui/useToolbarLayout";
+import { UsageBannerSlot } from "../usage/UsageBannerSlot";
 
 /** One toolbar height for the compact list and expanded sidebar, including search. */
 export function ThreadListToolbar(props: {
@@ -101,21 +102,26 @@ export function ThreadListToolbar(props: {
   ) : null;
 
   return (
-    <View
-      onLayout={props.onLayout}
-      className={props.sidebar ? "absolute inset-x-0 top-0 z-[4] bg-header px-2" : "bg-header px-2"}
-      style={{ paddingTop, paddingBottom }}
-    >
-      <WorkspaceListToolbarRow
-        searching={searching}
-        searchField={searchField}
-        onCloseSearch={closeSearch}
-        onOpenSearch={openSearch}
-        searchAccessibilityLabel="Search threads"
-        titleAccessibilityLabel="T3 Code, Threads"
-        onOpenEnvironments={props.onOpenEnvironments}
-        filter={filterButton}
-      />
-    </View>
+    <>
+      <View
+        onLayout={props.onLayout}
+        className={
+          props.sidebar ? "absolute inset-x-0 top-0 z-[4] bg-header px-2" : "bg-header px-2"
+        }
+        style={{ paddingTop, paddingBottom }}
+      >
+        <WorkspaceListToolbarRow
+          searching={searching}
+          searchField={searchField}
+          onCloseSearch={closeSearch}
+          onOpenSearch={openSearch}
+          searchAccessibilityLabel="Search threads"
+          titleAccessibilityLabel="T3 Code, Threads"
+          onOpenEnvironments={props.onOpenEnvironments}
+          filter={filterButton}
+        />
+      </View>
+      {props.sidebar ? null : <UsageBannerSlot />}
+    </>
   );
 }

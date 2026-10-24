@@ -708,29 +708,18 @@ export function useThreadActions() {
     const wokeAt = resolved
       ? threadWokeAt(resolved.thread, { now: new Date().toISOString() })
       : null;
-    const undoPlan = ThreadUndo.planThreadUndo("settle", resolved?.thread);
     // An older unpin/snooze Undo would re-pin or re-snooze, and the server
     // treats either as a promotion that un-settles; settling supersedes them.
+    // Settling deliberately offers no Undo notice of its own.
     ThreadUndo.invalidate("pin", scopedThreadKey(target));
     ThreadUndo.invalidate("snooze", scopedThreadKey(target));
-    const action = ThreadUndo.begin("settle", scopedThreadKey(target));
     const result = await settleThreadMutation({
       environmentId: target.environmentId,
       input: { threadId: target.threadId },
     });
-    if (result._tag !== "Success") {
-      action.finish();
-      return result;
-    }
-    if (wokeAt !== null) {
+    if (result._tag === "Success" && wokeAt !== null) {
       markThreadVisited(scopedThreadKey(target), wokeAt);
     }
-    showThreadUndoNotice({
-      action: "Settled",
-      claim: action,
-      undo: () => runUndoPlan(target, undoPlan),
-      failureTitle: "Failed to undo settle",
-    });
     return result;
   };
 

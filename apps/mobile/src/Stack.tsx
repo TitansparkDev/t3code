@@ -135,6 +135,7 @@ import { SettingsProjectGroupingRouteScreen } from "./features/settings/Settings
 import { SettingsProjectOverviewRouteScreen } from "./features/settings/SettingsProjectOverviewRouteScreen";
 import { UsageLimitAccountScreen } from "./features/usage/UsageLimitsPooled";
 import { UsageLimitBanner } from "./features/usage/UsageLimitBanner";
+import { UsageBannerSlotProvider } from "./features/usage/UsageBannerSlot";
 import { usageBannerExpansionStore } from "./features/usage/usage-banner-expansion";
 import { shouldShowWorkspaceUsageBanner } from "./lib/adaptive-navigation";
 import { UsageRouteScreen } from "./features/usage/UsageRouteScreen";
@@ -1099,8 +1100,14 @@ function WorkspaceRouteScreenLayout(props: {
   const visible = shouldShowWorkspaceUsageBanner(navigation.getState(), focused);
   return (
     <GuardedScreenLayout route={props.route}>
-      <UsageLimitBanner visible={visible} />
-      {props.children}
+      {Platform.OS === "android" ? (
+        <UsageBannerSlotProvider visible={visible}>{props.children}</UsageBannerSlotProvider>
+      ) : (
+        <>
+          <UsageLimitBanner visible={visible} />
+          {props.children}
+        </>
+      )}
     </GuardedScreenLayout>
   );
 }
