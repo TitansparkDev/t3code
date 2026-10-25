@@ -98,4 +98,13 @@ describe("effective cgroup memory", () => {
     expect(admitWorker({ snapshot: { ...host, swapPressure: true }, running: 2 }).ok).toBe(false);
     expect(admitWorker({ snapshot: host, running: 2 }).ok).toBe(true);
   });
+
+  it("waits while the disk is below its reserve, whatever is filling it", () => {
+    const low = admitWorker({ snapshot: { ...host, diskFreeMb: 20_000 }, diskReserveMb: 40_960 });
+    expect(low.ok).toBe(false);
+    expect(low.reason).toContain("disk");
+    expect(
+      admitWorker({ snapshot: { ...host, diskFreeMb: 90_000 }, diskReserveMb: 40_960 }).ok,
+    ).toBe(true);
+  });
 });

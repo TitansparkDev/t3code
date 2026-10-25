@@ -27,6 +27,8 @@ export interface HostSnapshot {
   /** Recent memory stalls (PSI avg10, percent) and swap activity, when Linux exposes them. */
   readonly memoryPressure?: number;
   readonly swapPressure?: boolean;
+  /** Space an unprivileged process can still write on the disk holding the account's home. */
+  readonly diskFreeMb?: number;
 }
 
 const meminfoField = (text: string, key: string): number => {
@@ -75,7 +77,10 @@ export function readHost(): HostSnapshot {
           if (path === root) break;
           path = NodePath.dirname(path);
         }
-        const effective = effectiveMemorySnapshot({ totalMb, availableMb }, sharedBudgetLevels(levels));
+        const effective = effectiveMemorySnapshot(
+          { totalMb, availableMb },
+          sharedBudgetLevels(levels),
+        );
         totalMb = effective.totalMb;
         budgetAvailableMb = effective.availableMb;
       }
@@ -98,6 +103,7 @@ export function readHost(): HostSnapshot {
       // Cgroups, PSI and vmstat are not available on every Linux host/container.
     }
   }
+  const diskFreeMb = readDiskFreeMb();
   return {
     totalMb,
     availableMb,
@@ -108,7 +114,29 @@ export function readHost(): HostSnapshot {
     load1: NodeOS.loadavg()[0] ?? 0,
     ...(memoryPressure === undefined ? {} : { memoryPressure }),
     swapPressure,
+    ...(diskFreeMb === undefined ? {} : { diskFreeMb }),
   };
+}
+
+/**
+ * Free space on the disk that holds worktrees, caches and build output. Whatever is filling it,
+ * work that writes there waits below the reserve instead of taking the disk to 100%.
+ */
+export function readDiskFreeMb(path?: string): number | undefined {
+  try {
+    let home = path;
+    if (home === undefined) {
+      try {
+        home = NodeOS.userInfo().homedir;
+      } catch {
+        home = NodeOS.homedir();
+      }
+    }
+    const stats = NodeFS.statfsSync(home);
+    return Math.floor((stats.bavail * stats.bsize) / 1048576);
+  } catch {
+    return undefined;
+  }
 }
 
 let previousSwapCounters: { in: number; out: number; at: number } | undefined;
@@ -183,6 +211,8 @@ export function effectiveMemorySnapshot(
 
 /** Memory kept free for the desktop, the T3 server and the agents' own processes. */
 export const DEFAULT_RESERVE_MB = 3072;
+/** Free disk kept for the system, T3's database and running work; new heavy work waits below it. */
+export const DEFAULT_DISK_RESERVE_MB = 40 * 1024;
 /** What one running worker (provider process, tools, a first build) is expected to need. */
 export const WORKER_FOOTPRINT_MB = 1200;
 
@@ -200,6 +230,7 @@ export interface AdmissionVerdict {
 export function admitWorker(
   options: {
     readonly reserveMb?: number;
+    readonly diskReserveMb?: number;
     readonly footprintMb?: number;
     readonly snapshot?: HostSnapshot;
     /** Number of workers already running. */
@@ -217,6 +248,14 @@ export function admitWorker(
       snapshot,
     };
   }
+  const diskReserve = options.diskReserveMb ?? DEFAULT_DISK_RESERVE_MB;
+  if (snapshot.diskFreeMb !== undefined && snapshot.diskFreeMb < diskReserve) {
+    return {
+      ok: false,
+      reason: diskLowReason(snapshot.diskFreeMb, diskReserve),
+      snapshot,
+    };
+  }
   if ((snapshot.memoryPressure ?? 0) >= 10 || snapshot.swapPressure === true) {
     return {
       ok: false,
@@ -225,4 +264,9 @@ export function admitWorker(
     };
   }
   return { ok: true, reason: null, snapshot };
+}
+
+export function diskLowReason(freeMb: number, reserveMb: number): string {
+  const gb = (mb: number) => `${Math.max(Math.round(mb / 1024), 0)} GB`;
+  return `Only ${gb(freeMb)} of disk is free; new work waits until ${gb(reserveMb)} is free so the disk never fills.`;
 }

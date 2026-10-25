@@ -117,7 +117,7 @@ const fmtMs = (ms: number) =>
 function statusText(broker: ResourceBroker): string {
   const { resources, host, reserveMb } = broker.status();
   const lines = [
-    `Host: ${host.availableMb} MB available of ${host.totalMb} MB (reserve ${reserveMb} MB), ${host.swapUsedMb} MB swapped, load ${host.load1.toFixed(1)} on ${host.cpus} CPUs`,
+    `Host: ${host.availableMb} MB available of ${host.totalMb} MB (reserve ${reserveMb} MB), ${host.swapUsedMb} MB swapped, load ${host.load1.toFixed(1)} on ${host.cpus} CPUs${host.diskFreeMb === undefined ? "" : `, ${Math.round(host.diskFreeMb / 1024)} GB disk free`}`,
   ];
   for (const resource of resources) {
     if (resource.capacity === 0 && resource.active === 0 && resource.waiting === 0) {

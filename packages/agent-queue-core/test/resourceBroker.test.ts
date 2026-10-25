@@ -151,6 +151,41 @@ describe("resource broker queue", () => {
     expect(broker.get(c.id)!.state).toBe("granted");
   });
 
+  it("starts nothing new while the disk is below its reserve, even resources that need no memory", () => {
+    const disk = { mb: 10_000 };
+    const { broker } = makeBroker({
+      host: () => ({
+        totalMb: 25_430,
+        availableMb: 20_000,
+        swapUsedMb: 0,
+        swapTotalMb: 8000,
+        cpus: 16,
+        load1: 1,
+        diskFreeMb: disk.mb,
+      }),
+      config: () => ({ ...CONFIG, diskReserveMb: 40_960 }),
+    });
+    const build = broker.enqueue({
+      resources: [{ name: "heavy_build" }],
+      pid: process.pid,
+      label: "b",
+    });
+    const docker = broker.enqueue({
+      resources: [{ name: "docker" }],
+      pid: process.pid,
+      label: "d",
+    });
+    broker.pump();
+    for (const ticket of [build, docker]) {
+      expect(broker.get(ticket.id)!.state).toBe("waiting");
+      expect(broker.get(ticket.id)!.note).toMatch(/disk/);
+    }
+    disk.mb = 60_000;
+    broker.pump();
+    expect(broker.get(build.id)!.state).toBe("granted");
+    expect(broker.get(docker.id)!.state).toBe("granted");
+  });
+
   it("does not admit a compiler's 7.5 GiB demand under a 3.5 GB per-unit estimate", () => {
     const { broker, free } = makeBroker({
       free: { mb: 5_000 },

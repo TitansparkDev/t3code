@@ -72,12 +72,12 @@ describe("serverSettings helpers", () => {
       }).storageCleanup,
     ).toEqual({
       worktreeAfterDays: null,
-      worktreeSettledAfterDays: null,
+      worktreeSettledAfterDays: 0,
       worktreeOnMerge: true,
-      worktreeOnDelete: false,
+      worktreeOnDelete: true,
       worktreeUnchanged: false,
       worktreeKeepWhen: "uncommitted-changes",
-      browserArtifactsAfterDays: null,
+      browserArtifactsAfterDays: 14,
       logsAfterDays: 30,
     });
   });

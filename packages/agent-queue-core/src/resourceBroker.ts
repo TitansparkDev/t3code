@@ -21,12 +21,20 @@
  *
  * @module resourceBroker
  */
+import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
-import { DEFAULT_RESERVE_MB, freeMemoryMb, readHost, type HostSnapshot } from "./hostCapacity.ts";
+import {
+  DEFAULT_DISK_RESERVE_MB,
+  DEFAULT_RESERVE_MB,
+  diskLowReason,
+  freeMemoryMb,
+  readHost,
+  type HostSnapshot,
+} from "./hostCapacity.ts";
 
 export interface ResourceDefinition {
   /** Tickets that may hold this resource at once. 0 means this machine does not have it. */
@@ -96,16 +104,47 @@ export function accountHome(): string {
   }
 }
 
+/**
+ * Asks the machine's disk guard (when installed) to clean now rather than at its next timer. Every
+ * waiting process pumps, so a marker file shared by all of them limits this to once per 10 minutes.
+ */
+function requestDiskCleanup(now: number): void {
+  if (underTest()) return;
+  const marker = NodePath.join(brokerHome(), "disk-cleanup-requested");
+  try {
+    if (now - NodeFS.statSync(marker).mtimeMs < 10 * 60_000) return;
+  } catch {
+    // Never requested yet.
+  }
+  try {
+    NodeFS.mkdirSync(brokerHome(), { recursive: true });
+    NodeFS.writeFileSync(marker, String(now));
+    NodeChildProcess.spawn("systemctl", ["--user", "start", "--no-block", "disk-guard.service"], {
+      stdio: "ignore",
+      detached: true,
+    })
+      .on("error", () => {})
+      .unref();
+  } catch {
+    // No systemd user session or no disk guard: waiting is still the safe outcome.
+  }
+}
+
 const underTest = () => process.env.VITEST !== undefined || process.env.NODE_ENV === "test";
 
 function hostSnapshot(): HostSnapshot {
+  if (!underTest()) return readHost();
+  // Tests never wait on this machine's real disk; they set the free space they need.
+  const { diskFreeMb: _disk, ...measured } = readHost();
+  const disk = Number(process.env.AGENTQUEUE_TEST_HOST_DISK_MB);
+  const testHost: HostSnapshot =
+    Number.isFinite(disk) && disk > 0 ? { ...measured, diskFreeMb: disk } : measured;
   const configured = process.env.AGENTQUEUE_TEST_HOST_MEMORY_MB;
   const availableMb = Number(configured);
-  if (!underTest() || !configured || !Number.isFinite(availableMb) || availableMb <= 0)
-    return readHost();
+  if (!configured || !Number.isFinite(availableMb) || availableMb <= 0) return testHost;
 
   // Fake-compiler tests run inside an agent's cgroup but still need to exercise real admission.
-  const host = readHost();
+  const host = testHost;
   return {
     ...host,
     totalMb: Math.max(host.totalMb, availableMb),
@@ -154,6 +193,8 @@ function configPath(): string {
 export interface ResourceConfig {
   readonly resources: Readonly<Record<string, ResourceDefinition>>;
   readonly reserveMb: number;
+  /** Free disk kept; nothing new is granted below it. */
+  readonly diskReserveMb?: number;
 }
 
 /** Built-in defaults overlaid with the machine's configuration file. Never throws. */
@@ -164,10 +205,12 @@ export function loadResourceConfig(): ResourceConfig {
     resources.gpu = { capacity: 1, memoryMb: 0, description: "simulated GPU for tests" };
   }
   let reserveMb = DEFAULT_RESERVE_MB;
+  let diskReserveMb = DEFAULT_DISK_RESERVE_MB;
   try {
     const raw = JSON.parse(NodeFS.readFileSync(configPath(), "utf8")) as {
       resources?: Record<string, Partial<ResourceDefinition>>;
       reserveMb?: number;
+      diskReserveMb?: number;
     };
     for (const [name, value] of Object.entries(raw.resources ?? {})) {
       const key = normalizeResource(name);
@@ -179,10 +222,12 @@ export function loadResourceConfig(): ResourceConfig {
       };
     }
     if (typeof raw.reserveMb === "number" && raw.reserveMb >= 0) reserveMb = raw.reserveMb;
+    if (typeof raw.diskReserveMb === "number" && raw.diskReserveMb >= 0)
+      diskReserveMb = raw.diskReserveMb;
   } catch {
     // No file, or an unreadable one: the measured defaults stand.
   }
-  return { resources, reserveMb };
+  return { resources, reserveMb, diskReserveMb };
 }
 
 export type TicketState = "waiting" | "granted" | "running" | "done" | "cancelled" | "expired";
@@ -873,8 +918,21 @@ export class ResourceBroker {
       });
       let headBlocked = false;
       let freeMb = freeMemoryMb(host, config.reserveMb) - rampingMb;
+      const diskReserveMb = config.diskReserveMb ?? DEFAULT_DISK_RESERVE_MB;
+      const diskLow = host.diskFreeMb !== undefined && host.diskFreeMb < diskReserveMb;
+      if (diskLow && stillWaiting.length > 0) requestDiskCleanup(now);
       for (const row of stillWaiting) {
         if (headBlocked) break;
+        if (diskLow) {
+          // Whatever is filling the disk, starting more work there is what takes it to 100%.
+          this.db
+            .prepare("UPDATE tickets SET note = ? WHERE id = ?")
+            .run(
+              `waiting for disk space: ${diskLowReason(host.diskFreeMb!, diskReserveMb)}`,
+              row.id,
+            );
+          continue;
+        }
         const needs = parse<Ticket["resources"]>(row.resources_json, []);
         const aged = now - row.enqueued_at >= STARVATION_MS;
         let runner: (typeof liveRunners)[number] | undefined;

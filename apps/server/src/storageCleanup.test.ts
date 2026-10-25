@@ -233,9 +233,21 @@ const allocatedBytes = (fs: FileSystem.FileSystem, file: string) =>
     ),
   );
 
+// Each test enables exactly the rules it exercises; the shipped defaults turn several on.
+const CLEANUP_OFF: StorageCleanupSettings = {
+  worktreeKeepWhen: "uncommitted-changes",
+  worktreeAfterDays: null,
+  worktreeSettledAfterDays: null,
+  worktreeOnMerge: false,
+  worktreeOnDelete: false,
+  worktreeUnchanged: false,
+  browserArtifactsAfterDays: null,
+  logsAfterDays: null,
+};
+
 const cleanupFixture = (
   storageCleanup: StorageCleanupSettings = {
-    ...DEFAULT_SERVER_SETTINGS.storageCleanup,
+    ...CLEANUP_OFF,
     worktreeAfterDays: 8,
     worktreeOnDelete: true,
   },
@@ -414,6 +426,8 @@ const cleanupFixture = (
           storageCleanup: {
             ...settings.storageCleanup,
             worktreeAfterDays: null,
+            worktreeSettledAfterDays: null,
+            worktreeOnMerge: false,
             worktreeOnDelete: false,
           },
         };
@@ -692,7 +706,7 @@ describe("subagent worktree ownership", () => {
       const fixture = yield* cleanupFixture();
       fixture.setSettings({
         storageCleanup: {
-          ...DEFAULT_SERVER_SETTINGS.storageCleanup,
+          ...CLEANUP_OFF,
           worktreeSettledAfterDays: scenario === "recent-inactive" ? null : 8,
           worktreeAfterDays: scenario === "recent-inactive" ? 8 : null,
         },
@@ -887,7 +901,7 @@ describe("deleted thread worktrees", () => {
       Effect.gen(function* () {
         yield* TestClock.setTime(NOW_MS);
         const fixture = yield* cleanupFixture({
-          ...DEFAULT_SERVER_SETTINGS.storageCleanup,
+          ...CLEANUP_OFF,
           worktreeAfterDays: null,
           worktreeOnDelete: true,
         });
@@ -908,7 +922,7 @@ describe("deleted thread worktrees", () => {
     Effect.gen(function* () {
       yield* TestClock.setTime(NOW_MS);
       const fixture = yield* cleanupFixture({
-        ...DEFAULT_SERVER_SETTINGS.storageCleanup,
+        ...CLEANUP_OFF,
         worktreeAfterDays: 8,
         worktreeOnDelete: false,
       });
@@ -930,7 +944,7 @@ describe("deleted thread worktrees", () => {
     Effect.gen(function* () {
       yield* TestClock.setTime(NOW_MS);
       const fixture = yield* cleanupFixture({
-        ...DEFAULT_SERVER_SETTINGS.storageCleanup,
+        ...CLEANUP_OFF,
         worktreeAfterDays: null,
         worktreeOnDelete: true,
       });
@@ -1624,7 +1638,7 @@ describe("storage cleanup reports and local file policies", () => {
       runCleanupTest(
         Effect.gen(function* () {
           const { service, fs, repo, worktree, command } = yield* cleanupFixture({
-            ...DEFAULT_SERVER_SETTINGS.storageCleanup,
+            ...CLEANUP_OFF,
             worktreeUnchanged: true,
           });
           const remote = yield* fs.makeTempDirectoryScoped({ prefix: "cleanup-remote-" });
@@ -1649,7 +1663,7 @@ describe("storage cleanup reports and local file policies", () => {
       runCleanupTest(
         Effect.gen(function* () {
           const { service, fs, repo, worktree, command } = yield* cleanupFixture({
-            ...DEFAULT_SERVER_SETTINGS.storageCleanup,
+            ...CLEANUP_OFF,
             worktreeUnchanged: true,
           });
           const remote = yield* fs.makeTempDirectoryScoped({ prefix: "cleanup-remote-" });
@@ -1677,7 +1691,7 @@ describe("storage cleanup reports and local file policies", () => {
     runCleanupTest(
       Effect.gen(function* () {
         const { service, fs, repo, worktree, command } = yield* cleanupFixture({
-          ...DEFAULT_SERVER_SETTINGS.storageCleanup,
+          ...CLEANUP_OFF,
           worktreeUnchanged: true,
         });
         const remote = yield* fs.makeTempDirectoryScoped({ prefix: "cleanup-remote-" });
@@ -1848,7 +1862,7 @@ describe("settled worktree rechecks", () => {
           });
           fixture.setSettings({
             storageCleanup: {
-              ...DEFAULT_SERVER_SETTINGS.storageCleanup,
+              ...CLEANUP_OFF,
               worktreeSettledAfterDays: 0,
             },
           });
@@ -1872,7 +1886,7 @@ it.live("keeps saved usage data when removing a settled checkout", () =>
     Effect.gen(function* () {
       const fixture = yield* cleanupFixture();
       fixture.setSettings({
-        storageCleanup: { ...DEFAULT_SERVER_SETTINGS.storageCleanup, worktreeSettledAfterDays: 0 },
+        storageCleanup: { ...CLEANUP_OFF, worktreeSettledAfterDays: 0 },
       });
       fixture.setThreads([
         shell({ branch: "feature", worktreePath: fixture.worktree, settledAt: at(0) }),
