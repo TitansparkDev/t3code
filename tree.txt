@@ -28739,6 +28739,7 @@ scripts/fixtures/issue-16534/seed.py
 scripts/fixtures/issue-16534/transcript.py
 scripts/fixtures/issue-18188/seed-stale-thread-command.js
 scripts/fixtures/issue-21397.json
+scripts/fork-local-release.sh
 scripts/install.ps1
 scripts/install.sh
 scripts/install.test.ts
