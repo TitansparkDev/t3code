@@ -22,7 +22,7 @@ import {
   classifyScope,
   make,
   ownedAgentSlice,
-  privateAgentMemoryLimitsMb,
+  privateAgentMemoryMaxMb,
   type ScopeState,
 } from "./agentScope.ts";
 
@@ -47,14 +47,10 @@ describe("classifyScope", () => {
   });
 });
 
-describe("privateAgentMemoryLimitsMb", () => {
-  it("throttles at 8192 MiB and kills at 14336 MiB, plus an admitted child reservation", () => {
-    expect(privateAgentMemoryLimitsMb(64 * GiB)).toEqual({ highMb: 8192, maxMb: 14336 });
-    expect(privateAgentMemoryLimitsMb(64 * GiB, 2048)).toEqual({ highMb: 10240, maxMb: 16384 });
-  });
-
-  it("caps small hosts at the host-derived agent ceiling", () => {
-    expect(privateAgentMemoryLimitsMb(8 * GiB, 8192)).toEqual({ highMb: 6144, maxMb: 6144 });
+describe("privateAgentMemoryMaxMb", () => {
+  it("lets one agent use everything the agents slice may", () => {
+    expect(privateAgentMemoryMaxMb(64 * GiB)).toBe(60 * 1024);
+    expect(privateAgentMemoryMaxMb(8 * GiB)).toBe(6 * 1024);
   });
 });
 
@@ -267,9 +263,10 @@ describe("AgentScope service", () => {
         expect(sliceOf(agent)).toBe(ownedAgentSlice(stateDir));
         expect(agent.args).toContain("--property=TimeoutStopSec=10s");
         const effectiveTotalBytes = Math.min(NodeOS.totalmem(), readHost().totalMb * 1024 ** 2);
-        const privateLimits = privateAgentMemoryLimitsMb(effectiveTotalBytes);
-        expect(agent.args).toContain(`--property=MemoryHigh=${privateLimits.highMb * 1024 ** 2}`);
-        expect(agent.args).toContain(`--property=MemoryMax=${privateLimits.maxMb * 1024 ** 2}`);
+        expect(agent.args).toContain(
+          `--property=MemoryMax=${privateAgentMemoryMaxMb(effectiveTotalBytes) * 1024 ** 2}`,
+        );
+        expect(agent.args.some((arg) => arg.startsWith("--property=MemoryHigh="))).toBe(false);
         const terminal = yield* scope.wrap({
           command: "agent",
           args: [],

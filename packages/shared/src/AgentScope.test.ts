@@ -27,7 +27,7 @@ describe.skipIf(HostProcess.Platform.defaultValue() !== "linux")("agentScopeComm
     expect(args).toEqual(["a b", "$HOME"]);
   });
 
-  it("throttles the owning scope at a soft limit and kills only at the hard ceiling", () => {
+  it("bounds the owning scope by one memory ceiling", () => {
     const launch = agentScopeCommand({
       command: "agent",
       args: [],
@@ -37,11 +37,9 @@ describe.skipIf(HostProcess.Platform.defaultValue() !== "linux")("agentScopeComm
         unit: "t3code-agent-test.scope",
         runtimeDir: "/run/user/1",
         options: [],
-        memoryHighMb: 8192,
         memoryMaxMb: 14336,
       },
     });
-    expect(launch.args).toContain(`--property=MemoryHigh=${8192 * 1024 * 1024}`);
     expect(launch.args).toContain(`--property=MemoryMax=${14336 * 1024 * 1024}`);
   });
 });

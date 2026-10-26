@@ -10,8 +10,6 @@ export interface AgentScopeShape {
     readonly env?: NodeJS.ProcessEnv | undefined;
     /** Terminals may survive restarts; agents must remain eligible for orphan cleanup. */
     readonly survivesRestart?: boolean | undefined;
-    /** Extra memory already reserved for a child resource job; it raises this private scope's ceiling. */
-    readonly reservationMb?: number | undefined;
     /**
      * Keep a shared process running after a tool OOM when supported.
      * Falls back to ordinary scope behavior on older systemd.
@@ -54,9 +52,6 @@ export const AgentScopeThreadId = Context.Reference<string | undefined>(
 );
 
 export const AGENT_OOM_SCORE_ADJ = 800;
-/** Past the soft limit an agent is throttled and reclaimed; only the hard ceiling kills. */
-export const PRIVATE_AGENT_MEMORY_HIGH_MB = 8192;
-export const PRIVATE_AGENT_MEMORY_MAX_MB = 14336;
 
 export const RAISE_OOM_SCORE_LINE = `{ echo ${AGENT_OOM_SCORE_ADJ} >/proc/self/oom_score_adj; } 2>/dev/null`;
 
@@ -77,7 +72,6 @@ export interface AgentSystemdScope {
   readonly unit: string;
   readonly runtimeDir: string;
   readonly options: ReadonlyArray<string>;
-  readonly memoryHighMb?: number | undefined;
   readonly memoryMaxMb?: number | undefined;
 }
 
@@ -105,9 +99,6 @@ export function agentScopeCommand(input: {
       `--slice=${scope.slice}`,
       `--unit=${scope.unit}`,
       ...scope.options,
-      ...(scope.memoryHighMb === undefined
-        ? []
-        : [`--property=MemoryHigh=${scope.memoryHighMb * 1024 * 1024}`]),
       ...(scope.memoryMaxMb === undefined
         ? []
         : [`--property=MemoryMax=${scope.memoryMaxMb * 1024 * 1024}`]),

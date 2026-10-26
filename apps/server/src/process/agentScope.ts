@@ -7,8 +7,6 @@ import {
   agentScopeCommand,
   type AgentScopeShape,
   type AgentSystemdScope,
-  PRIVATE_AGENT_MEMORY_HIGH_MB,
-  PRIVATE_AGENT_MEMORY_MAX_MB,
 } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { resolveCommandPath } from "@t3tools/shared/shell";
@@ -43,14 +41,13 @@ export function agentSliceMemoryLimits(totalBytes: number) {
   };
 }
 
-/** One agent is throttled at `highMb` and killed only at `maxMb`, both within the host's agent ceiling. */
-export function privateAgentMemoryLimitsMb(totalBytes: number, reservationMb = 0) {
-  const hostCeilingMb = Math.floor(agentSliceMemoryLimits(totalBytes).max / (1024 * 1024));
-  const reservation = Number.isFinite(reservationMb) ? Math.max(0, reservationMb) : 0;
-  return {
-    highMb: Math.min(hostCeilingMb, PRIVATE_AGENT_MEMORY_HIGH_MB + reservation),
-    maxMb: Math.min(hostCeilingMb, PRIVATE_AGENT_MEMORY_MAX_MB + reservation),
-  };
+/**
+ * An agent may use everything the agents slice may: the slice's own limits are the budget, so a lone
+ * agent is never held below the host while others share it fairly. (A flat 8 GiB per agent killed
+ * three Android builds on an idle host, 2026-10-26.)
+ */
+export function privateAgentMemoryMaxMb(totalBytes: number): number {
+  return Math.floor(agentSliceMemoryLimits(totalBytes).max / (1024 * 1024));
 }
 
 export interface ScopeState {
@@ -365,7 +362,6 @@ export const make = Effect.gen(function* () {
       threadId,
       env,
       survivesRestart,
-      reservationMb,
       shared,
     }) {
       const resolved = yield* resolve(command, env ?? hostEnvironment);
@@ -378,7 +374,6 @@ export const make = Effect.gen(function* () {
       const continuing = shared === true && scope.supportsOomPolicy;
       const owned = threadId !== undefined && !continuing;
       if (threadId !== undefined) yield* track(scope.systemctl, threadId, owned ? unit : undefined);
-      const privateLimits = privateAgentMemoryLimitsMb(effectiveTotalBytes, reservationMb);
       const systemdScope: AgentSystemdScope = {
         systemdRun: scope.systemdRun,
         runtimeDir: scope.runtimeDir,
@@ -387,8 +382,7 @@ export const make = Effect.gen(function* () {
         ...(threadId === undefined
           ? {}
           : {
-              memoryHighMb: privateLimits.highMb,
-              memoryMaxMb: privateLimits.maxMb,
+              memoryMaxMb: privateAgentMemoryMaxMb(effectiveTotalBytes),
             }),
         // Without an owning thread nothing reads the result, so let systemd
         // unload the unit even when it fails.
