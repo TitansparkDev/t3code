@@ -54,7 +54,9 @@ export const AgentScopeThreadId = Context.Reference<string | undefined>(
 );
 
 export const AGENT_OOM_SCORE_ADJ = 800;
-export const PRIVATE_AGENT_MEMORY_LIMIT_MB = 8192;
+/** Past the soft limit an agent is throttled and reclaimed; only the hard ceiling kills. */
+export const PRIVATE_AGENT_MEMORY_HIGH_MB = 8192;
+export const PRIVATE_AGENT_MEMORY_MAX_MB = 14336;
 
 export const RAISE_OOM_SCORE_LINE = `{ echo ${AGENT_OOM_SCORE_ADJ} >/proc/self/oom_score_adj; } 2>/dev/null`;
 
@@ -75,7 +77,8 @@ export interface AgentSystemdScope {
   readonly unit: string;
   readonly runtimeDir: string;
   readonly options: ReadonlyArray<string>;
-  readonly memoryLimitMb?: number | undefined;
+  readonly memoryHighMb?: number | undefined;
+  readonly memoryMaxMb?: number | undefined;
 }
 
 /** Exec at every step preserves the agent PID, stdio, and signals; systemd-run places it and descendants in the scope. */
@@ -102,9 +105,12 @@ export function agentScopeCommand(input: {
       `--slice=${scope.slice}`,
       `--unit=${scope.unit}`,
       ...scope.options,
-      ...(scope.memoryLimitMb === undefined
+      ...(scope.memoryHighMb === undefined
         ? []
-        : [`--property=MemoryMax=${scope.memoryLimitMb * 1024 * 1024}`]),
+        : [`--property=MemoryHigh=${scope.memoryHighMb * 1024 * 1024}`]),
+      ...(scope.memoryMaxMb === undefined
+        ? []
+        : [`--property=MemoryMax=${scope.memoryMaxMb * 1024 * 1024}`]),
       "--",
       command,
       ...args,

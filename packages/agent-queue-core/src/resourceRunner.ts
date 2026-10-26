@@ -12,6 +12,7 @@
  * @module resourceRunner
  */
 import { ensureEmulator } from "./emulatorProvision.ts";
+import { cgroupOomKills, cgroupUsedKb } from "./hostCapacity.ts";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
@@ -412,9 +413,18 @@ export interface CommandResult {
   readonly exitCode: number;
   readonly tail: string;
   readonly logPath: string | null;
-  /** Largest resident memory the command's process tree reached, in KiB (0 when it cannot be read). */
+  /** Most memory the command held, in KiB: its process tree, or what its cgroup grew by (0 when unreadable). */
   readonly peakRssKb: number;
+  /** The kernel killed something in the caller's cgroup for memory while the command ran. */
+  readonly oomKilled: boolean;
 }
+
+/** Where memory is read from; tests replace it. */
+export interface MemoryProbes {
+  readonly usedKb: () => number | undefined;
+  readonly oomKills: () => number | undefined;
+}
+const SYSTEM_PROBES: MemoryProbes = { usedKb: cgroupUsedKb, oomKills: cgroupOomKills };
 
 const TAIL_BYTES = 6000;
 
@@ -460,6 +470,7 @@ interface TreeRun {
   readonly timedOut: boolean;
   readonly tail: string;
   readonly peakRssKb: number;
+  readonly oomKilled: boolean;
 }
 
 /**
@@ -475,8 +486,15 @@ async function runTree(
     readonly logFile?: string;
   },
   runMs: number | null,
-  hooks: { readonly onStart?: (pgid: number | null) => void; readonly onBeat?: () => void } = {},
+  hooks: {
+    readonly onStart?: (pgid: number | null) => void;
+    readonly onBeat?: () => void;
+    readonly probes?: MemoryProbes;
+  } = {},
 ): Promise<TreeRun> {
+  const probes = hooks.probes ?? SYSTEM_PROBES;
+  const oomBefore = probes.oomKills();
+  const usedBefore = probes.usedKb();
   let logFd: number | null = null;
   if (command.logFile) {
     NodeFS.mkdirSync(NodePath.dirname(command.logFile), { recursive: true });
@@ -514,6 +532,10 @@ async function runTree(
       ? null
       : setInterval(() => {
           peakRssKb = Math.max(peakRssKb, treeResidentKb(pgid));
+          // Detached daemons (Gradle, Metro workers) leave the process group; the cgroup still sees them.
+          const used = probes.usedKb();
+          if (used !== undefined && usedBefore !== undefined)
+            peakRssKb = Math.max(peakRssKb, used - usedBefore);
         }, 1000);
   let timedOut = false;
   const limit =
@@ -549,7 +571,9 @@ async function runTree(
   process.off("SIGTERM", onTerm);
   process.off("SIGINT", onInt);
   if (logFd !== null) NodeFS.closeSync(logFd);
-  return { code, timedOut, tail: tail.join("").slice(-TAIL_BYTES), peakRssKb };
+  const oomAfter = probes.oomKills();
+  const oomKilled = oomBefore !== undefined && oomAfter !== undefined && oomAfter > oomBefore;
+  return { code, timedOut, tail: tail.join("").slice(-TAIL_BYTES), peakRssKb, oomKilled };
 }
 
 /**
@@ -568,6 +592,9 @@ export async function runGranted(
     logFile?: string;
     /** Runs after the command ended and before its ticket is released, so what it records is visible to the next waiter. */
     beforeFinish?: (result: CommandResult) => void;
+    /** A stored job killed for memory goes back in line instead of failing. */
+    requeueOnOom?: boolean;
+    probes?: MemoryProbes;
   },
 ): Promise<CommandResult> {
   const files = ticketLockFiles(ticket);
@@ -589,9 +616,16 @@ export async function runGranted(
         if (pgid !== null) broker.heartbeat(ticket.id, { pgid });
       },
       onBeat: () => broker.heartbeat(ticket.id),
+      ...(command.probes ? { probes: command.probes } : {}),
     },
   );
   const logPath = command.logFile ?? null;
+  const names = ticket.resources.map((item) => item.name);
+  const measuredMb = run.peakRssKb / 1024;
+  if (measuredMb > 0 && !run.timedOut) {
+    // A kill hides the real need; ask for half as much again next time.
+    broker.recordPeak(names, run.oomKilled ? Math.max(measuredMb * 1.5, 4096) : measuredMb * 1.1);
+  }
   const lockTimedOut = run.code === 111 && files.length > 0;
   const outcome: TicketOutcome = run.timedOut
     ? "timed-out"
@@ -607,7 +641,15 @@ export async function runGranted(
     tail: run.tail,
     logPath,
     peakRssKb: run.peakRssKb,
+    oomKilled: run.oomKilled,
   };
+  if (
+    run.oomKilled &&
+    command.requeueOnOom === true &&
+    broker.requeueJob(ticket.id, "Killed for memory; waiting for more headroom.")
+  ) {
+    return result;
+  }
   try {
     command.beforeFinish?.(result);
   } finally {
@@ -659,6 +701,7 @@ async function runNested(options: RunUnderBrokerOptions): Promise<CommandResult>
     tail: run.tail,
     logPath: options.logFile ?? null,
     peakRssKb: run.peakRssKb,
+    oomKilled: false,
   };
   options.beforeFinish?.(result);
   return result;
@@ -685,6 +728,9 @@ export interface RunUnderBrokerOptions extends Omit<ResourceRequest, "job"> {
   readonly beforeRun?: () => boolean;
   /** Told how the command ended, before its resources are released. */
   readonly beforeFinish?: (result: CommandResult) => void;
+  /** Told when a command killed for memory goes back in line (attempt 1 of `MAX_MEMORY_RETRIES`). */
+  readonly onMemoryRetry?: (attempt: number) => void;
+  readonly probes?: MemoryProbes;
   readonly broker?: ResourceBroker;
   readonly brokerOptions?: BrokerOptions;
 }
@@ -700,10 +746,26 @@ export type RunUnderBrokerResult =
       readonly ticket: Ticket;
     };
 
-/** The one door a command goes through: wait for its resources, run, report how it ended. */
+/** How many times a command the kernel killed for memory is queued again before the kill is reported. */
+export const MAX_MEMORY_RETRIES = 2;
+
+/**
+ * The one door a command goes through: wait for its resources, run, report how it ended. A command
+ * killed for memory is not a failure of the work: its measured peak raises the next admission, so it
+ * waits in line until the host has that much room and runs again.
+ */
 export async function runUnderBroker(
   options: RunUnderBrokerOptions,
 ): Promise<RunUnderBrokerResult> {
+  for (let attempt = 1; ; attempt++) {
+    const outcome = await runUnderBrokerOnce(options);
+    if (outcome.kind !== "ran" || !outcome.result.oomKilled || attempt > MAX_MEMORY_RETRIES)
+      return outcome;
+    options.onMemoryRetry?.(attempt);
+  }
+}
+
+async function runUnderBrokerOnce(options: RunUnderBrokerOptions): Promise<RunUnderBrokerResult> {
   const broker = options.broker ?? openBroker(options.brokerOptions);
   const owned = options.broker === undefined;
   try {
@@ -979,6 +1041,7 @@ export function createJobRunner(options: {
           cwd: ticket.job.cwd,
           env: ticket.job.env,
           logFile,
+          requeueOnOom: true,
         })
           .catch((error) => {
             broker.finish(ticket.id, {

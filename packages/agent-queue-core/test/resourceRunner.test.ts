@@ -69,6 +69,29 @@ describe("run deadline", () => {
   });
 });
 
+describe("memory kills", () => {
+  it("queues a command the kernel killed for memory again, then reports it after the last retry", async () => {
+    const home = newHome();
+    const broker = makeBroker(home);
+    let kills = 0;
+    const probes = { usedKb: () => 0, oomKills: () => kills++ };
+    const retries: number[] = [];
+    const ran = await runUnderBroker({
+      broker,
+      resources: [{ name: "heavy_build" }],
+      argv: ["true"],
+      cwd: home,
+      stdio: "pipe",
+      probes,
+      onMemoryRetry: (attempt) => retries.push(attempt),
+    });
+    expect(retries).toEqual([1, 2]);
+    expect(ran.kind).toBe("ran");
+    if (ran.kind === "ran") expect(ran.result.oomKilled).toBe(true);
+    broker.close();
+  });
+});
+
 describe("compiler classification", () => {
   const launches = [
     "tsc --noEmit",

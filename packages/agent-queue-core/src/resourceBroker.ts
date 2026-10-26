@@ -441,6 +441,10 @@ CREATE TABLE IF NOT EXISTS runners (
   repo TEXT,
   heartbeat_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS resource_peaks (
+  key TEXT PRIMARY KEY,
+  peak_mb INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS resource_hints (
   name TEXT PRIMARY KEY,
   capacity INTEGER NOT NULL,
@@ -458,6 +462,8 @@ export const RAMP_MS = 90_000;
 const KEEP_FINISHED_MS = 24 * 3600_000;
 export const DEFAULT_WAIT_MS = 3 * 3600_000;
 const MAX_JOB_ATTEMPTS = 3;
+/** A measured peak above this is treated as a runaway and not trusted as the next demand. */
+const MAX_OBSERVED_PEAK_MB = 16_384;
 
 export interface BrokerOptions {
   readonly home?: string;
@@ -1007,12 +1013,58 @@ export class ResourceBroker {
   }
 
   private memoryOf(needs: Ticket["resources"], config: ResourceConfig): number {
-    return needs.reduce(
+    const declared = needs.reduce(
       (sum, item) =>
         sum +
         item.units * Math.max(item.memoryMb ?? 0, this.definitionOf(item.name, config).memoryMb),
       0,
     );
+    return declared === 0 ? 0 : Math.max(declared, this.observedPeakMb(needs.map((n) => n.name)));
+  }
+
+  private static peakKey(names: ReadonlyArray<string>): string {
+    return [...new Set(names)].sort().join("+");
+  }
+
+  /** What commands that held these resources together actually needed the last few times. */
+  observedPeakMb(names: ReadonlyArray<string>): number {
+    const row = this.db
+      .prepare("SELECT peak_mb FROM resource_peaks WHERE key = ?")
+      .get(ResourceBroker.peakKey(names)) as { peak_mb: number } | undefined;
+    return row?.peak_mb ?? 0;
+  }
+
+  /**
+   * Remember a command's measured peak so the next one is admitted on what it needs, not on a
+   * guess. Older peaks fade by a fifth per run, so one outlier does not hold the queue forever.
+   */
+  recordPeak(names: ReadonlyArray<string>, peakMb: number): void {
+    if (!Number.isFinite(peakMb) || peakMb <= 0) return;
+    const key = ResourceBroker.peakKey(names);
+    const faded = Math.floor(this.observedPeakMb(names) * 0.8);
+    const next = Math.min(Math.max(Math.ceil(peakMb), faded), MAX_OBSERVED_PEAK_MB);
+    this.db
+      .prepare(
+        `INSERT INTO resource_peaks (key, peak_mb) VALUES (?, ?)
+         ON CONFLICT(key) DO UPDATE SET peak_mb = excluded.peak_mb`,
+      )
+      .run(key, next);
+  }
+
+  /** Put a stored job back in line (its command was killed for memory) unless it keeps failing. */
+  requeueJob(id: string, note: string): boolean {
+    const row = this.db.prepare("SELECT attempts, kind FROM tickets WHERE id = ?").get(id) as
+      | { attempts: number; kind: string }
+      | undefined;
+    if (!row || row.kind !== "job" || row.attempts + 1 >= MAX_JOB_ATTEMPTS) return false;
+    const result = this.db
+      .prepare(
+        `UPDATE tickets SET state = 'waiting', attempts = ?, pid = NULL, pid_start = NULL, pgid = NULL,
+           slots_json = '{}', granted_at = NULL, heartbeat_at = NULL, note = ?
+         WHERE id = ? AND state IN ('granted','running')`,
+      )
+      .run(row.attempts + 1, note, id);
+    return Number(result.changes) > 0;
   }
 
   /** Where a waiting ticket stands in line for each of its resources (1 = next). */

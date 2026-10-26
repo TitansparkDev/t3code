@@ -43,6 +43,13 @@ two different AVDs run together (8.5 GB); a 2 GB-heap Gradle build needs about 3
 `docker` 3, `postgres` 6, `gpu` 0. A GPU requirement is therefore held as unavailable, not queued. New workers are also
 admitted by memory and load (`hostCapacity.admitWorker`), not by a fixed count.
 
+**Memory ceilings are soft first, and demands are learned.** An agent's systemd scope is throttled and reclaimed at 8 GiB (`MemoryHigh`)
+and killed only at 14 GiB (`MemoryMax`); it used to die at a flat 8 GiB with the host mostly idle (three Android builds on 2026-10-26).
+Every command's peak is sampled from its process tree and from what its cgroup grew by, because Gradle and Metro workers leave the
+process group, and kept per resource set (`resource_peaks`; each run fades older peaks by a fifth) so admission uses what the work
+needs, not the static estimate. A command the kernel killed for memory is queued again with a higher demand (twice for `agentq run`,
+and a stored job is simply put back in line); only a command that still dies reports the kill.
+
 **Compilers declare their own demand.** `tsc`, `tsgo`, `tsc-rs`, `effect-tsgo` and the repository's `typecheck` script take
 `heavy_build` with an 8 GiB demand (`TYPECHECK_DEMAND_MB`): one `apps/server` check measured 4.4 GiB resident on 2026-10-21 and
 the incident peaked at 7.5 GiB, so admitting it on the 3.5 GB Gradle estimate was wrong. Identical checks (same source, lock file,

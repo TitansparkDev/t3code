@@ -20,6 +20,7 @@ import {
   inferResourceDemands,
   loadContract,
   loadResourceConfig,
+  MAX_MEMORY_RETRIES,
   normalizeResource,
   openBroker,
   readHost,
@@ -209,6 +210,10 @@ export async function runResourceCommand(
       ...(typeof flags.timeout === "string" ? { runMs: num(flags.timeout, 0) * 1000 } : {}),
       stdio: "inherit",
       ...(deferAfter > 0 && owner ? { deferAfterMs: deferAfter * 1000 } : {}),
+      onMemoryRetry: (attempt) =>
+        process.stderr.write(
+          `[agentq] the command was killed for memory; waiting for more headroom, then running it again (retry ${attempt} of ${MAX_MEMORY_RETRIES})\n`,
+        ),
       onWaiting: (ticket, position) =>
         process.stderr.write(
           `[agentq] waiting for ${ticket.resources.map((r) => r.name).join(", ")} (${position === 1 ? "next in line" : `#${position} in line`}; ${ticket.note ?? "queued"})\n`,
@@ -229,7 +234,13 @@ export async function runResourceCommand(
           stderr: `[agentq] could not take the lock file for the resource: ${result.ticket.note ?? ""}`,
         };
       }
-      return { exitCode: result.result.exitCode, stdout: "", stderr: "" };
+      return {
+        exitCode: result.result.exitCode,
+        stdout: "",
+        stderr: result.result.oomKilled
+          ? `[agentq] the command was killed for memory ${MAX_MEMORY_RETRIES + 1} times (peak ${Math.round(result.result.peakRssKb / 1024)} MB); it needs more room than the agent's memory ceiling.`
+          : "",
+      };
     }
     if (result.kind === "deferred") {
       return {

@@ -151,6 +151,28 @@ describe("resource broker queue", () => {
     expect(broker.get(c.id)!.state).toBe("granted");
   });
 
+  it("admits on what earlier commands actually needed, and lets one outlier fade", () => {
+    const { broker, clock, free } = makeBroker({ free: { mb: 6_000 } });
+    const request = (label: string) =>
+      broker.enqueue({ resources: [{ name: "heavy_build" }], pid: process.pid, label });
+    // 6000 - 1000 reserve leaves 5000: a 3000 MB estimate fits.
+    const first = request("first");
+    broker.pump();
+    expect(broker.get(first.id)!.state).toBe("granted");
+    broker.recordPeak(["heavy_build"], 7_000);
+    const second = request("second");
+    broker.pump();
+    expect(broker.get(second.id)!.state).toBe("waiting");
+    expect(broker.get(second.id)!.note).toMatch(/needs 7000 MB/);
+    clock.now += RAMP_MS + 1;
+    free.mb = 9_000;
+    broker.pump();
+    expect(broker.get(second.id)!.state).toBe("granted");
+    // Smaller runs pull the demand back down by a fifth each time.
+    broker.recordPeak(["heavy_build"], 1_000);
+    expect(broker.observedPeakMb(["heavy_build"])).toBe(5_600);
+  });
+
   it("starts nothing new while the disk is below its reserve, even resources that need no memory", () => {
     const disk = { mb: 10_000 };
     const { broker } = makeBroker({

@@ -139,6 +139,31 @@ export function readDiskFreeMb(path?: string): number | undefined {
   }
 }
 
+function ownCgroupFile(file: string): string | undefined {
+  try {
+    const path = /^0::(.+)$/m.exec(NodeFS.readFileSync("/proc/self/cgroup", "utf8"))?.[1];
+    if (path === undefined) return undefined;
+    return NodeFS.readFileSync(NodePath.resolve("/sys/fs/cgroup", `.${path}`, file), "utf8");
+  } catch {
+    return undefined;
+  }
+}
+
+/** Memory the caller's cgroup holds that cannot simply be dropped (anonymous, kernel, shared), in KiB. */
+export function cgroupUsedKb(): number | undefined {
+  const stat = ownCgroupFile("memory.stat");
+  if (stat === undefined) return undefined;
+  const field = (name: string) => Number(new RegExp(`^${name} (\\d+)`, "m").exec(stat)?.[1] ?? 0);
+  return Math.round((field("anon") + field("kernel") + field("shmem")) / 1024);
+}
+
+/** Processes the kernel has killed for memory in the caller's cgroup so far. */
+export function cgroupOomKills(): number | undefined {
+  const events = ownCgroupFile("memory.events");
+  if (events === undefined) return undefined;
+  return Number(/^oom_kill (\d+)/m.exec(events)?.[1] ?? 0);
+}
+
 let previousSwapCounters: { in: number; out: number; at: number } | undefined;
 
 /** Parse cgroup-v2 byte limits; `max`, missing controllers and invalid values are unbounded. */
@@ -151,7 +176,7 @@ export function parseCgroupMemoryValue(value: string): number | undefined {
 
 /**
  * Levels that bound work the broker admits. The caller's own leaf scope (T3 puts each agent
- * session in an 8 GiB `.scope`) is skipped: the kernel already caps the job inside it, and counting
+ * session in its own `.scope`) is skipped: the kernel already bounds the job inside it, and counting
  * it made an 8 GiB compiler demand unadmissible from every agent session.
  */
 export function sharedBudgetLevels<Level extends { readonly name: string }>(

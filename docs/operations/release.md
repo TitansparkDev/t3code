@@ -326,7 +326,7 @@ unreleased major and get its first beta build approved.
 
 ## Fork local release
 
-GitHub Actions does not run on this fork, so releases are built with `scripts/fork-local-release.sh <version> [cli|desktop|windows|android|all]` and uploaded with `gh release create`. Run each stage under `agentq run --resource heavy_build`. The script pins Node to `engines.node`, cross-builds the Windows resource monitor with mingw (no MSVC linker), and builds the Android JS bundle in its own Gradle run with `CI=1`: an agent's cgroup is 8 GiB, and Expo's Metro without `CI=1` peaks near 6 GB. A resident Serena MCP server (1.5-2 GB) counts against the same cap.
+GitHub Actions does not run on this fork, so releases are built with `scripts/fork-local-release.sh <version> [cli|desktop|windows|android|all]` and uploaded with `gh release create`. Run each stage under `agentq run --resource heavy_build`. The script pins Node to `engines.node`, cross-builds the Windows resource monitor with mingw (no MSVC linker), and builds the Android JS bundle in its own Gradle run with `CI=1`: an agent is throttled at 8 GiB and killed at 14 GiB, and Expo's Metro without `CI=1` peaks near 6 GB. A resident Serena MCP server (1.5-2 GB) counts against the same cap.
 
 ## Android APK mirror
 

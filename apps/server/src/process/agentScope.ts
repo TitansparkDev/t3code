@@ -7,7 +7,8 @@ import {
   agentScopeCommand,
   type AgentScopeShape,
   type AgentSystemdScope,
-  PRIVATE_AGENT_MEMORY_LIMIT_MB,
+  PRIVATE_AGENT_MEMORY_HIGH_MB,
+  PRIVATE_AGENT_MEMORY_MAX_MB,
 } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { resolveCommandPath } from "@t3tools/shared/shell";
@@ -42,10 +43,14 @@ export function agentSliceMemoryLimits(totalBytes: number) {
   };
 }
 
-export function privateAgentMemoryLimitMb(totalBytes: number, reservationMb = 0): number {
+/** One agent is throttled at `highMb` and killed only at `maxMb`, both within the host's agent ceiling. */
+export function privateAgentMemoryLimitsMb(totalBytes: number, reservationMb = 0) {
   const hostCeilingMb = Math.floor(agentSliceMemoryLimits(totalBytes).max / (1024 * 1024));
   const reservation = Number.isFinite(reservationMb) ? Math.max(0, reservationMb) : 0;
-  return Math.min(hostCeilingMb, PRIVATE_AGENT_MEMORY_LIMIT_MB + reservation);
+  return {
+    highMb: Math.min(hostCeilingMb, PRIVATE_AGENT_MEMORY_HIGH_MB + reservation),
+    maxMb: Math.min(hostCeilingMb, PRIVATE_AGENT_MEMORY_MAX_MB + reservation),
+  };
 }
 
 export interface ScopeState {
@@ -373,6 +378,7 @@ export const make = Effect.gen(function* () {
       const continuing = shared === true && scope.supportsOomPolicy;
       const owned = threadId !== undefined && !continuing;
       if (threadId !== undefined) yield* track(scope.systemctl, threadId, owned ? unit : undefined);
+      const privateLimits = privateAgentMemoryLimitsMb(effectiveTotalBytes, reservationMb);
       const systemdScope: AgentSystemdScope = {
         systemdRun: scope.systemdRun,
         runtimeDir: scope.runtimeDir,
@@ -381,7 +387,8 @@ export const make = Effect.gen(function* () {
         ...(threadId === undefined
           ? {}
           : {
-              memoryLimitMb: privateAgentMemoryLimitMb(effectiveTotalBytes, reservationMb),
+              memoryHighMb: privateLimits.highMb,
+              memoryMaxMb: privateLimits.maxMb,
             }),
         // Without an owning thread nothing reads the result, so let systemd
         // unload the unit even when it fails.
