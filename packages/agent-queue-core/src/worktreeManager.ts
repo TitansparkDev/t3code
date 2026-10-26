@@ -120,8 +120,6 @@ export async function provisionWorktree(
 ): Promise<ProvisionWorktreeResult> {
   const planned = planWorktree(repoRoot, taskId, title, options.prefix);
   const worktreePath = planned.worktreePath;
-  // A branch that already holds this task's earlier work keeps its name.
-  const branch = options.branch ?? planned.branch;
   NodeFS.mkdirSync(NodePath.dirname(worktreePath), { recursive: true });
   ensureExcluded(repoRoot, options.ignore ?? []);
   execGit(["worktree", "prune"], repoRoot);
@@ -130,6 +128,15 @@ export async function provisionWorktree(
   const realPath = NodeFS.existsSync(worktreePath)
     ? NodeFS.realpathSync(worktreePath)
     : worktreePath;
+  // A branch that already holds this task's earlier work keeps its name, unless a stale claim
+  // remembers the base branch or one open in another checkout: git refuses those, every time.
+  const busy = [...registered].some(
+    ([path, open]) => open === options.branch && path !== realPath && path !== worktreePath,
+  );
+  const branch =
+    options.branch !== undefined && options.branch !== baseRef && !busy
+      ? options.branch
+      : planned.branch;
   const existingBranch = registered.get(realPath) ?? registered.get(worktreePath);
   if (existingBranch !== undefined && NodeFS.existsSync(worktreePath)) {
     if (existingBranch === null) {

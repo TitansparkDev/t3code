@@ -75,6 +75,20 @@ Priority: 200
     expect(() => validatePlanDag(tasks)).toThrow(MissingDependencyError);
   });
 
+  it("reads a priority written as a task bullet", () => {
+    const { tasks } = parsePlanMarkdown(
+      [
+        "- [ ] **L1 — Long chain head.**",
+        "  - Depends on: none.",
+        "  - Priority: 150",
+        "  - Scope: src/a.ts",
+        "  - Verify: none — docs only.",
+      ].join("\n"),
+    );
+    expect(tasks[0]?.priority).toBe(150);
+    expect(tasks[0]?.description ?? "").not.toContain("Priority");
+  });
+
   it("computes ready-task sets respecting completion state and priority", () => {
     const tasks = [
       { id: "A", status: "completed", dependencies: [] },

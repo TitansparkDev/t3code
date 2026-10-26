@@ -50,6 +50,26 @@ const booted = (adb: string, serial: string, env: NodeJS.ProcessEnv) =>
   "1";
 
 /**
+ * Where the AVDs live. An agent on its own account home (`HOME=~/.ai-homes/claude-2`) has no
+ * `~/.android/avd`, so `emulator -list-avds` found nothing and every device check ran without a
+ * device; the login user's home is looked at as well.
+ */
+export function avdHome(
+  env: NodeJS.ProcessEnv,
+  homes: ReadonlyArray<string> = [NodeOS.homedir(), NodeOS.userInfo().homedir],
+): string | undefined {
+  if (env.ANDROID_AVD_HOME) return env.ANDROID_AVD_HOME;
+  const roots = [env.ANDROID_USER_HOME, ...homes.map((home) => NodePath.join(home, ".android"))];
+  for (const root of roots) {
+    if (!root) continue;
+    const dir = NodePath.join(root, "avd");
+    if (NodeFS.existsSync(dir) && NodeFS.readdirSync(dir).some((name) => name.endsWith(".ini")))
+      return dir;
+  }
+  return undefined;
+}
+
+/**
  * Makes sure the emulator behind `env.ANDROID_SERIAL` is running and booted. Best effort: when
  * it cannot (no SDK, no suitable AVD, no boot in time) the command runs anyway and reports the
  * missing device itself.
@@ -65,6 +85,8 @@ export async function ensureEmulator(
     return { ready: true, note: "emulator provisioning is off" };
   }
   const full: NodeJS.ProcessEnv = { ...process.env, ...env };
+  const home = avdHome(full);
+  if (home) full.ANDROID_AVD_HOME = home;
   const adb = sdkTool(full, "platform-tools", "adb") ?? "adb";
   const deadline = Date.now() + (options.bootTimeoutMs ?? 300_000);
   const waitBooted = async () => {

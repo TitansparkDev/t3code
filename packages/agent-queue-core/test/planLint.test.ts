@@ -141,4 +141,48 @@ describe("plan lint finds what stops small agents before any of them starts", ()
       await repo.cleanup();
     }
   });
+
+  it("flags a pytest check whose marker filter leaves no test to run", async () => {
+    const repo = await createTestGitRepo("aq-lint-pytest-");
+    try {
+      const files: Record<string, string> = {
+        "server/pyproject.toml": "[tool.pytest.ini_options]\naddopts = '-m \"not integration\"'\n",
+        "server/tests/test_db.py":
+          "import pytest\n\n@pytest.mark.integration\nasync def test_a():\n    pass\n\n@pytest.mark.integration\ndef test_b():\n    pass\n",
+        "server/tests/test_unit.py": "def test_c():\n    pass\n",
+      };
+      const task = (id: string, check: string) => [
+        `- [ ] **${id} — Change the database layer.**`,
+        "  - Depends on: none.",
+        "  - Scope: server/tests/",
+        "  - Checks:",
+        `    - \`${check}\` (cwd: server, timeout: 5m)`,
+        "  - Update the tests.",
+        "",
+      ];
+      const plan = [
+        "# Plan",
+        "",
+        ...task("P1", "uv run pytest tests/test_db.py -q"),
+        ...task("P2", "uv run pytest tests/test_db.py -m 'not integration' -q"),
+        ...task("P3", "uv run pytest tests/test_db.py -m integration -q"),
+        ...task("P4", "uv run pytest tests/test_db.py tests/test_unit.py -q"),
+      ].join("\n");
+      for (const [path, content] of Object.entries(files)) {
+        await NodeFSP.mkdir(NodePath.dirname(NodePath.join(repo.rootDir, path)), {
+          recursive: true,
+        });
+        await NodeFSP.writeFile(NodePath.join(repo.rootDir, path), content);
+      }
+      await NodeFSP.writeFile(NodePath.join(repo.rootDir, "PLAN.md"), plan);
+      await execCommand("git", ["add", "-A"], repo.rootDir);
+      await execCommand("git", ["commit", "-m", "fixture"], repo.rootDir);
+      const flagged = lintPlanFile(repo.rootDir, "PLAN.md")
+        .findings.filter((finding) => finding.code === "check-selects-nothing")
+        .map((finding) => finding.taskId);
+      expect(flagged).toEqual(["P1", "P2"]);
+    } finally {
+      await repo.cleanup();
+    }
+  });
 });

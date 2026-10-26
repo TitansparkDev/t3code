@@ -446,7 +446,9 @@ export function parsePlanMarkdown(markdown: string): ParsedPlan {
         continue;
       }
 
-      const prioMatch = trimmed.match(/^Priority\s*:\s*(\d+)$/i);
+      const prioMatch = trimmed.match(
+        /^(?:[-*]\s*)?(?:\*\*)?Priority(?:\*\*)?\s*:(?:\*\*)?\s*(\d+)\.?$/i,
+      );
       if (prioMatch) {
         currentTask.priority = parseInt(prioMatch[1]!, 10);
         continue;

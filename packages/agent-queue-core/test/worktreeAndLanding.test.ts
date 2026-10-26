@@ -44,6 +44,31 @@ describe("AgentQueue Worktrees, Verification & Landing (AQ-019 - AQ-028)", () =>
     }
   });
 
+  it("does not reuse a remembered branch that is checked out elsewhere", async () => {
+    const repo = await createTestGitRepo("busy-branch-");
+    try {
+      const other = await provisionWorktree(repo.rootDir, "OTHER", "main", "Other task");
+      // A stale claim remembers the base branch (open in the main checkout) or another task's branch.
+      for (const remembered of ["main", other.branch]) {
+        const { worktreePath, branch } = await provisionWorktree(
+          repo.rootDir,
+          "STALE",
+          "main",
+          "Stale claim",
+          { branch: remembered },
+        );
+        expect(branch).toBe(sanitizeBranchName("STALE", "Stale claim"));
+        await teardownWorktree(repo.rootDir, worktreePath, branch, {
+          isSuccess: true,
+          keepIfDirty: false,
+          deleteBranch: true,
+        });
+      }
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
   it("sanitizes branch names cleanly", () => {
     expect(sanitizeBranchName("AQ-019", "Safe Worktree Provisioning")).toBe(
       "agentqueue/AQ-019-safe-worktree-provisioning",

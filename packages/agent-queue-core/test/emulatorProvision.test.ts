@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vite-plus/test";
-import { chooseAvd, ensureEmulator } from "../src/emulatorProvision.ts";
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+import { avdHome, chooseAvd, ensureEmulator } from "../src/emulatorProvision.ts";
 
 describe("emulator provisioning", () => {
   it("picks the AVD named by the environment, then the repository, then the first by name", () => {
@@ -13,5 +16,21 @@ describe("emulator provisioning", () => {
 
   it("leaves a command without an emulator slot alone", async () => {
     expect((await ensureEmulator({})).ready).toBe(true);
+  });
+
+  it("finds the AVDs in the login home when the agent runs on its own account home", () => {
+    const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "avd-home-"));
+    try {
+      const agentHome = NodePath.join(root, "agent");
+      const loginHome = NodePath.join(root, "login");
+      NodeFS.mkdirSync(NodePath.join(agentHome, ".android"), { recursive: true });
+      NodeFS.mkdirSync(NodePath.join(loginHome, ".android", "avd"), { recursive: true });
+      NodeFS.writeFileSync(NodePath.join(loginHome, ".android", "avd", "pixel.ini"), "");
+      expect(avdHome({}, [agentHome, loginHome])).toBe(NodePath.join(loginHome, ".android", "avd"));
+      expect(avdHome({ ANDROID_AVD_HOME: "/set" }, [agentHome, loginHome])).toBe("/set");
+      expect(avdHome({}, [agentHome])).toBeUndefined();
+    } finally {
+      NodeFS.rmSync(root, { recursive: true, force: true });
+    }
   });
 });

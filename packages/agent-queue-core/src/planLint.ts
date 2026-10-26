@@ -552,6 +552,31 @@ export function lintPlan(input: PlanLintInput): PlanFinding[] {
           });
         }
       }
+
+      // pytest exits 5 when its marker filter leaves nothing to run: CA1, CA28, CA36 and CA47
+      // named files whose every test is `integration` under `-m 'not integration'` (or the
+      // project's default addopts), so their checks could never pass, whatever the worker did.
+      if (/\bpytest\b/.test(check.run) && !/-m\s+['"]?integration\b/.test(check.run)) {
+        const prefix = check.cwd && check.cwd !== "." ? `${check.cwd}/` : "";
+        const config = git(repoRoot, ["show", `${ref}:${prefix}pyproject.toml`]);
+        const excludes =
+          /-m\s+['"][^'"]*not integration/.test(check.run) ||
+          (!/\s-m\s/.test(check.run) && /addopts\s*=.*not integration/.test(config));
+        const files = (
+          check.run.match(/(?:^|\s)((?:[\w.-]+\/)*test_[\w.-]*\.py)(?=\s|$|::)/g) ?? []
+        )
+          .map((file) => file.trim())
+          .map((file) => git(repoRoot, ["show", `${ref}:${prefix}${file}`]));
+        if (excludes && files.length > 0 && files.every((source) => onlyIntegrationTests(source))) {
+          add({
+            level: "error",
+            code: "check-selects-nothing",
+            taskId: task.id,
+            message: `${task.id}'s check \`${check.run}\` selects no tests: every test in the files it names is marked integration and the check excludes integration tests, so pytest exits 5 and the check can never pass.`,
+            fix: "Run those files with `-m integration` (and the resource they need), or name the unit test files that cover the change.",
+          });
+        }
+      }
     }
 
     // 7. Dependencies.
@@ -632,6 +657,9 @@ export function lintPlan(input: PlanLintInput): PlanFinding[] {
     reach.set(id, seen);
     return seen;
   };
+  // One finding per task: a pair-by-pair list ran to 2,107 warnings on Overseer's plan, which
+  // nobody reads, while one file shared by parallel tasks sent VO8 back eight times.
+  const overlaps = new Map<string, string[]>();
   for (let i = 0; i < tasks.length; i++) {
     for (let j = i + 1; j < tasks.length; j++) {
       const a = tasks[i]!;
@@ -639,15 +667,18 @@ export function lintPlan(input: PlanLintInput): PlanFinding[] {
       if (!(a.scopePatterns?.length && b.scopePatterns?.length)) continue;
       if (ancestors(a.id).has(b.id) || ancestors(b.id).has(a.id)) continue;
       if (scopesIntersect(a.scopePatterns, b.scopePatterns)) {
-        add({
-          level: "warning",
-          code: "scope-overlap",
-          taskId: a.id,
-          message: `${a.id} and ${b.id} overlap in scope with no order between them; one will wait for the other.`,
-          fix: "Bundle them if they are one change, or narrow a scope, or accept one real dependency.",
-        });
+        overlaps.set(a.id, [...(overlaps.get(a.id) ?? []), b.id]);
       }
     }
+  }
+  for (const [id, peers] of overlaps) {
+    add({
+      level: "warning",
+      code: "scope-overlap",
+      taskId: id,
+      message: `${id} overlaps in scope with ${peers.length} task(s) that have no order with it (${peers.slice(0, 8).join(", ")}${peers.length > 8 ? ", …" : ""}); whichever starts second waits for the file, and its worker is sent back each time.`,
+      fix: "Narrow the scopes to the files each task really edits, bundle tasks that are one change, or add the one real dependency.",
+    });
   }
 
   // Tests that bind a fixed port or name a fixed container make parallel workers collide: the
@@ -691,6 +722,26 @@ export function lintPlan(input: PlanLintInput): PlanFinding[] {
 }
 
 /** Findings as a readable report. */
+/** Every test in a pytest module is `integration`-marked (module-wide or one by one). */
+export function onlyIntegrationTests(source: string): boolean {
+  if (!source) return false;
+  if (/^pytestmark\s*=.*pytest\.mark\.integration\b/m.test(source)) return true;
+  const lines = source.split("\n");
+  let tests = 0;
+  for (let index = 0; index < lines.length; index++) {
+    if (!/^(?:async\s+)?def test_/.test(lines[index]!)) continue;
+    tests++;
+    let above = index - 1;
+    let marked = false;
+    while (above >= 0 && /^@/.test(lines[above]!)) {
+      if (/^@pytest\.mark\.integration\b/.test(lines[above]!)) marked = true;
+      above--;
+    }
+    if (!marked) return false;
+  }
+  return tests > 0;
+}
+
 export function formatFindings(findings: ReadonlyArray<PlanFinding>): string {
   if (findings.length === 0) return "No problems found.";
   return findings
