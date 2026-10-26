@@ -1,4 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off globalDate:off globalDateInEffect:off - only the server's own cgroup and memory counters are read, and samples are stamped with wall-clock time for operators.
+// @effect-diagnostics nodeBuiltinImport:off globalDate:off globalDateInEffect:off effectFnOpportunity:off - only the server's own cgroup and memory counters are read, and samples are stamped with wall-clock time for operators.
 import * as NodeFSP from "node:fs/promises";
 
 import { RotatingFileSink } from "@t3tools/shared/logging";
@@ -154,20 +154,22 @@ export const layerWith = (filePath: string, makeSample: typeof sampleProcess = s
       const recentlyCancelled: Array<RuntimeActivity & { readonly finishedAt: number }> = [];
       const samples: Array<RuntimeResourceSample> = [];
       let lastPrunedAt = Date.now();
-      yield* Effect.tryPromise(() => pruneExpiredFiles(filePath)).pipe(
-        Effect.catch(() => Effect.void),
+      yield* Effect.tryPromise(() => pruneExpiredFiles(filePath)).pipe(Effect.ignore);
+      let sink: RotatingFileSink | undefined = yield* Effect.try(
+        () =>
+          new RotatingFileSink({
+            filePath,
+            maxBytes: FILE_MAX_BYTES,
+            maxFiles: FILE_COUNT,
+            throwOnError: true,
+          }),
+      ).pipe(
+        Effect.catch(() =>
+          Effect.logWarning("runtime resource diagnostic log unavailable").pipe(
+            Effect.as(undefined),
+          ),
+        ),
       );
-      let sink: RotatingFileSink | undefined;
-      try {
-        sink = new RotatingFileSink({
-          filePath,
-          maxBytes: FILE_MAX_BYTES,
-          maxFiles: FILE_COUNT,
-          throwOnError: true,
-        });
-      } catch {
-        yield* Effect.logWarning("runtime resource diagnostic log unavailable");
-      }
       const key = (runtimeId: string, runId: string) => `${runtimeId}\u0000${runId}`;
       const service = RuntimeResourceDiagnostics.of({
         begin: (input) =>
@@ -214,9 +216,7 @@ export const layerWith = (filePath: string, makeSample: typeof sampleProcess = s
       });
       const tick = Effect.gen(function* () {
         if (Date.now() - lastPrunedAt > 24 * 60 * 60 * 1000) {
-          yield* Effect.tryPromise(() => pruneExpiredFiles(filePath)).pipe(
-            Effect.catch(() => Effect.void),
-          );
+          yield* Effect.tryPromise(() => pruneExpiredFiles(filePath)).pipe(Effect.ignore);
           lastPrunedAt = Date.now();
         }
         const result = yield* Effect.tryPromise(() =>
@@ -235,8 +235,8 @@ export const layerWith = (filePath: string, makeSample: typeof sampleProcess = s
         retainSample(samples, attributed);
         yield* increment(runtimeResourceSamplesTotal, { stage: attributed.stage });
         if (sink) {
-          const line = yield* encodeLine(attributed).pipe(Effect.catch(() => Effect.succeed("{}")));
-          yield* Effect.try(() => sink!.write(`${line}\n`)).pipe(Effect.catch(() => Effect.void));
+          const line = yield* encodeLine(attributed).pipe(Effect.orElseSucceed(() => "{}"));
+          yield* Effect.try(() => sink!.write(`${line}\n`)).pipe(Effect.ignore);
         }
       });
       yield* Effect.forever(Effect.sleep(SAMPLE_INTERVAL).pipe(Effect.andThen(tick))).pipe(

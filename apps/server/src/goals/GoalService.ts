@@ -1,4 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off preferSchemaOverJson:off globalConsole:off
+// @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off preferSchemaOverJson:off globalConsole:off effectFnOpportunity:off
 import {
   AgentQueueError,
   AgentQueueService,
@@ -1203,7 +1203,7 @@ export const make = Effect.gen(function* () {
     const binding = goal.agentQueue;
     if (!binding) return;
     const status = yield* queue.status(binding).pipe(
-      Effect.map(Option.some),
+      Effect.asSome,
       Effect.catch((error) =>
         logQueueError("goals.agentqueue-status-failed")(error).pipe(Effect.as(Option.none())),
       ),
@@ -1322,7 +1322,7 @@ export const make = Effect.gen(function* () {
     if (!goal || !binding) return;
     if (!(yield* worktreeFree(goal, worktreePath))) return;
     const outcome = yield* queue.teardown(binding, worktreePath, branch, true).pipe(
-      Effect.map(Option.some),
+      Effect.asSome,
       Effect.catch((error) =>
         logQueueError("goals.agentqueue-worktree-cleanup-failed")(error).pipe(
           Effect.as(Option.none()),
@@ -1365,7 +1365,7 @@ export const make = Effect.gen(function* () {
       let progressed = false;
       for (const candidate of pending) {
         const outcome = yield* queue.integrate(binding, candidate.taskId).pipe(
-          Effect.map(Option.some),
+          Effect.asSome,
           Effect.catch((error) =>
             queueFailed(goalId, "integrate", error).pipe(Effect.as(Option.none())),
           ),
@@ -1489,7 +1489,7 @@ export const make = Effect.gen(function* () {
       }
       const info = yield* queue
         .taskInfo(binding, chat.taskId!)
-        .pipe(Effect.catch(() => Effect.succeed(null)));
+        .pipe(Effect.orElseSucceed(() => null));
       const scopeRequests = parseScopeRequests(
         lastAssistantReply(yield* readThread(threadId)) ?? "",
       );
@@ -1704,7 +1704,7 @@ export const make = Effect.gen(function* () {
 
     // 1. Evidence first: what does the queue say about this task right now?
     const info = chat.taskId
-      ? yield* queue.taskInfo(binding, chat.taskId).pipe(Effect.catch(() => Effect.succeed(null)))
+      ? yield* queue.taskInfo(binding, chat.taskId).pipe(Effect.orElseSucceed(() => null))
       : null;
     const claims = yield* queue.activeClaims(binding).pipe(Effect.option);
     if (Option.isNone(claims)) {
@@ -1732,7 +1732,7 @@ export const make = Effect.gen(function* () {
     if (!holdsClaim) {
       const candidates = yield* queue
         .candidates(binding)
-        .pipe(Effect.catch(() => Effect.succeed([] as const)));
+        .pipe(Effect.orElseSucceed(() => [] as const));
       const candidate = candidates.find((entry) => entry.taskId === chat.taskId);
       if (candidate && candidate.state !== "repairing") {
         yield* updateChat(goalId, threadId, {
@@ -1951,7 +1951,7 @@ export const make = Effect.gen(function* () {
       if (chat.status === "running" && !(yield* chatAlive(chat))) continue;
       const renewed = yield* queue
         .heartbeat(binding, chat.claimToken)
-        .pipe(Effect.catch(() => Effect.succeed(false)));
+        .pipe(Effect.orElseSucceed(() => false));
       if (!renewed) {
         yield* Effect.logWarning("goals.agentqueue-lease-lost", {
           goalId,
@@ -1994,7 +1994,7 @@ export const make = Effect.gen(function* () {
     if (goal.chats.some((chat) => chat.status === "running")) return;
 
     const status = yield* queue.status(binding).pipe(
-      Effect.map(Option.some),
+      Effect.asSome,
       Effect.catch((error) => queueFailed(goalId, "status", error).pipe(Effect.as(Option.none()))),
     );
     if (Option.isNone(status)) return;
@@ -2044,7 +2044,7 @@ export const make = Effect.gen(function* () {
         // Re-read at the moment of commitment, so a late event cannot slip through.
         const confirmed = yield* queue
           .completion(binding, { runFinalCheck: false })
-          .pipe(Effect.catch(() => Effect.succeed(null)));
+          .pipe(Effect.orElseSucceed(() => null));
         const latest = yield* currentGoal(goalId);
         if (confirmed?.complete && latest?.status === "running") {
           yield* setStatus(
@@ -2655,7 +2655,7 @@ export const make = Effect.gen(function* () {
     if (goal.agentQueue && chat?.taskId !== undefined) {
       queueBriefing = yield* queue.briefing(goal.agentQueue, escalation.reason).pipe(
         Effect.map((text) => text.slice(0, 8000)),
-        Effect.catch(() => Effect.succeed(undefined)),
+        Effect.orElseSucceed(() => undefined),
       );
     }
     const previous = (goal.escalations ?? []).filter(
@@ -3247,7 +3247,7 @@ export const make = Effect.gen(function* () {
       if (!(yield* workerQuiet(chat.threadId))) continue;
       const info = yield* queue
         .taskInfo(binding, chat.taskId)
-        .pipe(Effect.catch(() => Effect.succeed(null)));
+        .pipe(Effect.orElseSucceed(() => null));
       const text = queueResumePrompt(
         {
           taskId: chat.taskId,
@@ -3320,7 +3320,7 @@ export const make = Effect.gen(function* () {
       if (goal.status !== "running" || !binding) continue;
       const batch = yield* queue
         .events(binding, goal.queueEventCursor ?? -1)
-        .pipe(Effect.catch(() => Effect.succeed(undefined)));
+        .pipe(Effect.orElseSucceed(() => undefined));
       if (!batch) continue;
       if (batch.last !== goal.queueEventCursor) {
         yield* store.update(goal.id, (current) => ({ ...current, queueEventCursor: batch.last }));
@@ -3489,7 +3489,7 @@ export const make = Effect.gen(function* () {
       };
     }
     const bound = yield* queue.bind(preview.repoRoot, preview.planPath ?? previous?.planPath).pipe(
-      Effect.map(Option.some),
+      Effect.asSome,
       Effect.catch((error) =>
         Effect.succeed(Option.none<string>()).pipe(
           Effect.tap(() =>

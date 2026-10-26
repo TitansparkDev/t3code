@@ -21,6 +21,7 @@ import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
+import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
@@ -49,7 +50,12 @@ import {
   type ThreadSnapshotLoadResult,
 } from "./threads.ts";
 import * as ThreadSnapshotLoader from "./threadSnapshotHttp.ts";
-import type { CachedThreadSnapshot } from "../platform/orchestrationCache.ts";
+import {
+  type CachedThreadSnapshot,
+  ORCHESTRATION_THREAD_CACHE_SCHEMA_VERSION,
+  StoredOrchestrationThreadSnapshot,
+  decodeOrDiscardOrchestrationCache,
+} from "../platform/orchestrationCache.ts";
 
 const TARGET = new PrimaryConnectionTarget({
   environmentId: EnvironmentId.make("environment-1"),
@@ -127,7 +133,7 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
   const observed = yield* Queue.unbounded<EnvironmentThreadState>();
   const latest = yield* Ref.make<EnvironmentThreadState>(EMPTY_ENVIRONMENT_THREAD_STATE);
   const retryCount = yield* Ref.make(0);
-  const subscriptionCount = yield* Ref.make(0);
+  const subscriptionCount = yield* SubscriptionRef.make(0);
   const subscriptionEvents = yield* Queue.unbounded<number>();
   const loaderCalls = yield* Ref.make(0);
   const lastSubscribeAfterSequence = yield* Ref.make<number | undefined>(undefined);
@@ -155,7 +161,7 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
       readonly acceptCompactTurnItems?: true;
     }) =>
       Stream.unwrap(
-        Ref.updateAndGet(subscriptionCount, (count) => count + 1).pipe(
+        SubscriptionRef.updateAndGet(subscriptionCount, (count) => count + 1).pipe(
           Effect.tap((count) => Queue.offer(subscriptionEvents, count)),
           Effect.andThen(Ref.set(lastSubscribeAfterSequence, input.afterSequence)),
           Effect.andThen(
@@ -362,29 +368,93 @@ describe("EnvironmentThreads", () => {
       yield* Queue.offer(h.wakeups, "native-wake");
 
       expect(yield* Queue.take(h.subscriptionEvents)).toBe(2);
-      expect(yield* Ref.get(h.subscriptionCount)).toBe(2);
+      expect(yield* SubscriptionRef.get(h.subscriptionCount)).toBe(2);
     }),
   );
 
-  it.effect("loads the server thread when its local cache read fails", () =>
+  it.effect.each(["read failure", "cache miss"] as const)(
+    "loads the server thread after a %s",
+    (scenario) =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness({
+          loadCached:
+            scenario === "cache miss"
+              ? Effect.succeedNone
+              : Effect.fail(
+                  new Persistence.ConnectionPersistenceError({
+                    operation: "load-thread",
+                    message: "The database connection is closing.",
+                  }),
+                ),
+          httpSnapshot: {
+            _tag: "present",
+            snapshot: { snapshotSequence: 7, projection: BASE_PROJECTION },
+          },
+        });
+
+        const state = yield* awaitThreadState(h.observed, (value) => value.status === "live");
+        expect(Option.getOrThrow(state.data)).toEqual(BASE_PROJECTION);
+        expect(yield* Ref.get(h.loaderCalls)).toBe(1);
+        expect(yield* SubscriptionRef.get(h.subscriptionCount)).toBe(1);
+      }),
+  );
+
+  it.effect("discards an oversized version-4 cache and requests a fresh bounded snapshot", () =>
     Effect.gen(function* () {
+      const item: OrchestrationV2TurnItem = {
+        id: TurnItemId.make("old-unbounded-cache-item"),
+        threadId: THREAD_ID,
+        runId: null,
+        nodeId: null,
+        providerThreadId: null,
+        providerTurnId: null,
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal: 1,
+        status: "completed",
+        title: null,
+        startedAt: BASE_PROJECTION.updatedAt,
+        completedAt: BASE_PROJECTION.updatedAt,
+        updatedAt: BASE_PROJECTION.updatedAt,
+        type: "system_notice",
+        message: "x".repeat(1_100_000),
+      };
+      const schema = Schema.fromJsonString(StoredOrchestrationThreadSnapshot);
+      const encoded = yield* Schema.encodeEffect(schema)({
+        schemaVersion: ORCHESTRATION_THREAD_CACHE_SCHEMA_VERSION,
+        environmentId: TARGET.environmentId,
+        threadId: THREAD_ID,
+        snapshot: {
+          snapshotSequence: CACHED_SNAPSHOT_SEQUENCE,
+          projection: { ...BASE_PROJECTION, turnItems: [item] },
+        },
+      });
+      const stale = encoded.replace(
+        `"schemaVersion":${ORCHESTRATION_THREAD_CACHE_SCHEMA_VERSION}`,
+        '"schemaVersion":4',
+      );
+      let discarded = false;
       const h = yield* makeHarness({
-        loadCached: Effect.fail(
-          new Persistence.ConnectionPersistenceError({
-            operation: "load-thread",
-            message: "The database connection is closing.",
+        loadCached: decodeOrDiscardOrchestrationCache(
+          Schema.decodeEffect(schema)(stale).pipe(
+            Effect.map((stored) => Option.some(stored.snapshot)),
+          ),
+          Effect.sync(() => {
+            discarded = true;
           }),
         ),
         httpSnapshot: {
           _tag: "present",
-          snapshot: { snapshotSequence: 7, projection: BASE_PROJECTION },
+          snapshot: { snapshotSequence: CACHED_SNAPSHOT_SEQUENCE, projection: BASE_PROJECTION },
+          history: { historyCursor: "fresh-bounded-cursor", hasMoreHistory: true },
         },
       });
-
       const state = yield* awaitThreadState(h.observed, (value) => value.status === "live");
-      expect(Option.getOrThrow(state.data)).toEqual(BASE_PROJECTION);
+      expect(discarded).toBe(true);
       expect(yield* Ref.get(h.loaderCalls)).toBe(1);
-      expect(yield* Ref.get(h.subscriptionCount)).toBe(1);
+      expect(Option.getOrThrow(state.data)).toEqual(BASE_PROJECTION);
+      expect(state.history.historyCursor).toBe("fresh-bounded-cursor");
+      expect(state.history.hasMoreHistory).toBe(true);
     }),
   );
 
@@ -1268,7 +1338,6 @@ describe("EnvironmentThreads", () => {
         historyCursor: "socket-history-cursor",
         hasMoreHistory: true,
         latestLocalTurnOrdinal: 47,
-        payloadBudgetExceeded: false,
       });
 
       const state = yield* awaitThreadState(
@@ -1384,7 +1453,6 @@ describe("EnvironmentThreads", () => {
           historyCursor: "progressive-cursor",
           hasMoreHistory: true,
           latestLocalTurnOrdinal: 47,
-          payloadBudgetExceeded: false,
         });
         yield* awaitThreadState(
           harness.observed,
@@ -1493,7 +1561,6 @@ describe("EnvironmentThreads", () => {
         historyCursor: "compact-cursor",
         hasMoreHistory: true,
         latestLocalTurnOrdinal: 2,
-        payloadBudgetExceeded: false,
         turnItemsOmitLocalVisible: true,
       });
 
@@ -1640,9 +1707,7 @@ describe("EnvironmentThreads", () => {
         });
 
         const warm = yield* makeHarness(
-          cacheKind === "retained"
-            ? { resumeCache }
-            : { loadCached: Effect.succeed(Option.some(saved!)) },
+          cacheKind === "retained" ? { resumeCache } : { loadCached: Effect.succeedSome(saved!) },
         );
         yield* Queue.offer(warm.inputs, titleUpdated("Grown while closed", 200));
         yield* awaitThreadState(
@@ -1816,7 +1881,7 @@ describe("EnvironmentThreads", () => {
 
       expect(Option.getOrThrow(state.data).thread.title).toBe("Socket title");
       expect(yield* Ref.get(harness.loaderCalls)).toBeGreaterThanOrEqual(1);
-      expect(yield* Ref.get(harness.subscriptionCount)).toBe(1);
+      expect(yield* SubscriptionRef.get(harness.subscriptionCount)).toBe(1);
       expect(yield* Ref.get(harness.removedThreads)).toEqual([]);
     }),
   );
@@ -1869,7 +1934,7 @@ describe("EnvironmentThreads", () => {
 
       yield* harness.replaceSession;
       for (let attempt = 0; attempt < 100; attempt += 1) {
-        if ((yield* Ref.get(harness.subscriptionCount)) >= 2) {
+        if ((yield* SubscriptionRef.get(harness.subscriptionCount)) >= 2) {
           break;
         }
         yield* Effect.yieldNow;
@@ -1890,7 +1955,7 @@ describe("EnvironmentThreads", () => {
       );
 
       expect(Option.isNone(recovered.error)).toBe(true);
-      expect(yield* Ref.get(harness.subscriptionCount)).toBe(2);
+      expect(yield* SubscriptionRef.get(harness.subscriptionCount)).toBe(2);
     }),
   );
 
@@ -1978,10 +2043,10 @@ describe("EnvironmentThreads", () => {
 
       yield* harness.replaceSession;
       for (let attempt = 0; attempt < 100; attempt += 1) {
-        if ((yield* Ref.get(harness.subscriptionCount)) >= 2) break;
+        if ((yield* SubscriptionRef.get(harness.subscriptionCount)) >= 2) break;
         yield* Effect.yieldNow;
       }
-      expect(yield* Ref.get(harness.subscriptionCount)).toBe(2);
+      expect(yield* SubscriptionRef.get(harness.subscriptionCount)).toBe(2);
       expect(yield* Ref.get(harness.lastSubscribeAfterSequence)).toBe(CACHED_SNAPSHOT_SEQUENCE + 4);
     }),
   );

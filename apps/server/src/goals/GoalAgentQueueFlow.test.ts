@@ -269,7 +269,7 @@ const makeFlow = (
           return Queue.offer(commands, command);
         },
         events: subscription,
-        detail: (threadId) => Effect.succeed(Option.some(thread(threadId))),
+        detail: (threadId) => Effect.succeedSome(thread(threadId)),
         shell: (threadId) =>
           script(threadId).livenessReadFails
             ? Effect.die("liveness unavailable")

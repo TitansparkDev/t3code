@@ -10,7 +10,10 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 export const ORCHESTRATION_CACHE_SCHEMA_VERSION = 3 as const;
-export const ORCHESTRATION_THREAD_CACHE_SCHEMA_VERSION = 5 as const;
+// Older caches may hold human turns that bypassed server history budgets (upstream's 5) or predate
+// `requiresSnapshot` (this fork's 5). 6 is the compact format (threadCacheEncoding.ts), so the full
+// format skips to 7 and drops both kinds of 5.
+export const ORCHESTRATION_THREAD_CACHE_SCHEMA_VERSION = 7 as const;
 
 export const CachedThreadSnapshot = OrchestrationV2ThreadDetailSnapshot.mapFields((fields) => ({
   ...fields,

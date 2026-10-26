@@ -1,6 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AccessibilityInfo,
   AppState,
@@ -152,18 +152,18 @@ export function UsageLimitBanner(props: { readonly visible: boolean }) {
     const nextWidth = event.nativeEvent.layout.width;
     setAvailableWidth((current) => (current === nextWidth ? current : nextWidth));
   };
-  const collapse = useCallback(() => {
+  const collapse = () => {
     setExpanded(false);
     requestAnimationFrame(() => {
       const tag = findNodeHandle(summaryRef.current);
       if (tag != null) AccessibilityInfo.setAccessibilityFocus(tag);
     });
-  }, []);
-  const dismissExpansion = useCallback(() => {
+  };
+  const dismissExpansion = () => {
     if (!expanded) return false;
     collapse();
     return true;
-  }, [collapse, expanded]);
+  };
   useHardwareKeyboardCommand("paletteDismiss", dismissExpansion);
 
   useEffect(() => {
@@ -200,18 +200,12 @@ export function UsageLimitBanner(props: { readonly visible: boolean }) {
 
   const openAccount = (cell: Exclude<UsageBannerCell, { kind: "antigravity" }>) => {
     const row = cell.rows.find((candidate) => candidate.window !== null) ?? cell.rows[0];
-    navigation.navigate("SettingsSheet", {
-      screen: "SettingsContent",
-      params: {
-        screen: "SettingsUsageAccount",
-        params: {
-          accountKey: cell.navigation.accountKey,
-          windowId: row.window?.id ?? null,
-          windowKind: row.window?.kind ?? null,
-          environmentIds: cell.navigation.environmentIds,
-          now,
-        },
-      },
+    navigation.navigate("SettingsUsageAccount", {
+      accountKey: cell.navigation.accountKey,
+      windowId: row.window?.id ?? null,
+      windowKind: row.window?.kind ?? null,
+      environmentIds: cell.navigation.environmentIds,
+      now,
     });
   };
 

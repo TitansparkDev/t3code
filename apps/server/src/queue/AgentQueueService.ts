@@ -1,4 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off preferSchemaOverJson:off globalConsole:off
+// @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off preferSchemaOverJson:off globalConsole:off effectFnOpportunity:off
 /**
  * The server's only door to AgentQueue. Goals never touch the queue database or git
  * directly: they ask this service to bind a plan, reserve a task, land it, and read

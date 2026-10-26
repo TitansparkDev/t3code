@@ -1,3 +1,4 @@
+// @effect-diagnostics effectFnOpportunity:off - fork service predating the rule; convert to Effect.fn as it is touched.
 /**
  * Goals, kept in one JSON file in the state directory so they survive a
  * restart. Every change is serialized through one lock and written whole.

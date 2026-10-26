@@ -187,6 +187,7 @@ export const layerFromLegacyHarness = (harness: {
           Effect.map((thread) =>
             Option.isSome(thread) ? viewOf(threadId, thread.value) : undefined,
           ),
+          // @effect-diagnostics-next-line effectSucceedWithVoid:off - callers read the value as `undefined`, not void.
           Effect.catchCause(() => Effect.succeed(undefined)),
         ),
       backgroundWork: (threadId) =>

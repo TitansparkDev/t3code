@@ -17,7 +17,7 @@ import {
 } from "@t3tools/contracts/goals";
 import { useNavigate } from "@tanstack/react-router";
 import { PlusIcon, XIcon } from "lucide-react";
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 
 import { isElectron } from "../../env";
 import { deriveProviderInstanceEntries } from "../../providerInstances";
@@ -174,19 +174,14 @@ export function GoalSetupPage({
   goal?: Goal;
 }) {
   const navigate = useNavigate();
-  const { environments } = useEnvironments();
   const projects = useProjects();
   const { create, update, restart } = useGoals();
   const project = projects.find(
     (candidate) => candidate.environmentId === environmentId && candidate.id === projectId,
   );
   const providersByEnvironment = useEnvironmentProviders();
-  const instances = useMemo(
-    () =>
-      deriveProviderInstanceEntries(
-        environmentId ? (providersByEnvironment.get(environmentId) ?? []) : [],
-      ),
-    [providersByEnvironment, environmentId],
+  const instances = deriveProviderInstanceEntries(
+    environmentId ? (providersByEnvironment.get(environmentId) ?? []) : [],
   );
   const [form, setForm] = useState<GoalSetupForm>(() =>
     goal
@@ -231,7 +226,7 @@ export function GoalSetupPage({
   const finished = useRef(false);
   const [draftSavedAt, setDraftSavedAt] = useState<string | null>(null);
 
-  const saveDraft = useCallback(() => {
+  const saveDraft = () => {
     if (!keepsDraft || !environmentId || !dirty.current || finished.current) return;
     const settings = goalSetupToDraftSettings(latest.current);
     if (!settings) return;
@@ -246,7 +241,7 @@ export function GoalSetupPage({
         // Try again with the next change.
         dirty.current = true;
       });
-  }, [keepsDraft, environmentId, create, update]);
+  };
 
   useEffect(() => {
     if (!dirty.current) return;

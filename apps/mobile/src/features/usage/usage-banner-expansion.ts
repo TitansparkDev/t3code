@@ -1,7 +1,7 @@
 import type { NavigationState } from "@react-navigation/native";
 import { useSyncExternalStore } from "react";
 
-import { isWorkspaceSettingsRoute } from "../../lib/adaptive-navigation";
+import { isWorkspaceSettingsRoute } from "./usage-banner-routes";
 
 export function createUsageBannerExpansionStore() {
   let expanded = false;

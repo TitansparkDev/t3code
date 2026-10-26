@@ -133,10 +133,7 @@ function GoalCard(props: {
         <Button
           label="Edit"
           onPress={() =>
-            navigation.navigate("SettingsSheet", {
-              screen: "SettingsContent",
-              params: { screen: "SettingsGoalEdit", params: { environmentId, goalId: goal.id } },
-            })
+            navigation.navigate("SettingsGoalEdit", { environmentId, goalId: goal.id })
           }
         />
         <Button
@@ -207,12 +204,7 @@ export function GoalsRouteScreen() {
         </Text>
         <Button
           label="New goal"
-          onPress={() =>
-            navigation.navigate("SettingsSheet", {
-              screen: "SettingsContent",
-              params: { screen: "SettingsGoalProject" },
-            })
-          }
+          onPress={() => navigation.navigate("SettingsGoalProject")}
           tone="primary"
         />
         {environments.map((environment) => (

@@ -45,7 +45,7 @@ export const fetchEnvironmentBoundedThreadSnapshot = Effect.fn(
 }) {
   const endpoint = {
     params: { threadId: input.threadId },
-    query: { compactTurnItems: "1" },
+    query: { compactTurnItems: "1", dedupeBodies: "1", compactIds: "1" },
   };
   const key = threadOpenTraceKey(input.prepared.environmentId, input.threadId);
   return yield* executeAuthenticatedEnvironmentHttpRequest({
@@ -139,35 +139,20 @@ export const layer: Layer.Layer<
     const remoteAuthorization = yield* Effect.serviceOption(
       RemoteEnvironmentAuthorization.RemoteEnvironmentAuthorization,
     );
-    const loadUncoalesced = (prepared: PreparedConnection, threadId: ThreadId) => {
-      const fullSnapshotRequest = ThreadSnapshotLoader.fetchEnvironmentThreadSnapshot({
+    const loadUncoalesced = Effect.fn("ThreadSnapshotLoader.load")(function (
+      prepared: PreparedConnection,
+      threadId: ThreadId,
+    ) {
+      const loadFullFallback = ThreadSnapshotLoader.fetchEnvironmentThreadSnapshot({
         prepared,
         threadId,
         signer,
         remoteAuthorization,
-      });
-      const observedFullSnapshotRequest = isThreadOpenPerformanceEnabled()
-        ? fullSnapshotRequest.pipe(
-            Effect.tap(() =>
-              Effect.sync(() =>
-                markThreadOpenStage(
-                  threadOpenTraceKey(prepared.environmentId, threadId),
-                  "http-response",
-                ),
-              ),
-            ),
-          )
-        : fullSnapshotRequest;
-      const loadFullFallback = observedFullSnapshotRequest.pipe(
-        Effect.map((snapshot): ThreadSnapshotLoader.ThreadSnapshotLoadResult => {
-          if (isThreadOpenPerformanceEnabled()) {
-            markThreadOpenStage(
-              threadOpenTraceKey(prepared.environmentId, threadId),
-              "snapshot-decode",
-            );
-          }
-          return { _tag: "present", snapshot };
-        }),
+      }).pipe(
+        Effect.map((snapshot): ThreadSnapshotLoader.ThreadSnapshotLoadResult => ({
+          _tag: "present",
+          snapshot,
+        })),
         Effect.provideService(HttpClient.HttpClient, httpClient),
         Effect.catchTags({
           EnvironmentResourceNotFoundError: () =>
@@ -247,8 +232,9 @@ export const layer: Layer.Layer<
           ),
         ),
       );
-    };
+    });
     return ThreadSnapshotLoader.ThreadSnapshotLoader.of({
+      // @effect-diagnostics-next-line effectFnOpportunity:off - loadUncoalesced owns the span; this only shares it.
       load: (prepared, threadId) => loadCoalesced(prepared, threadId, loadUncoalesced),
     });
   }),

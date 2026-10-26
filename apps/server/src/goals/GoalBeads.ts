@@ -1,3 +1,4 @@
+// @effect-diagnostics effectFnOpportunity:off - fork service predating the rule; convert to Effect.fn as it is touched.
 /**
  * Reads a project's Beads queue (the `bd` command) for goals that schedule
  * from it. Beads owns what exists, what is ready, what is blocked and who has
@@ -213,18 +214,5 @@ export const layer = Layer.effect(
           "goal chat ended without finishing",
         ]).pipe(Effect.ignoreCause({ log: true })),
     });
-  }),
-);
-
-/** No Beads anywhere: goals run plain agents. */
-const layerNone = Layer.succeed(
-  GoalBeads,
-  GoalBeads.of({
-    available: () => Effect.succeed(false),
-    snapshot: () => Effect.fail(new GoalBeadsError({ message: "Beads is not available." })),
-    describe: () => Effect.succeed({ blocked: [], claimed: [] }),
-    repoContext: () => Effect.succeed(""),
-    statusOf: () => Effect.succeed(undefined),
-    release: () => Effect.void,
   }),
 );

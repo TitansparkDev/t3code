@@ -854,7 +854,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
 
   // A cached item can stay running after the server finished it, and no event will ever
   // name it again: it can sit outside every bounded window, and a repeated Stop records
-  // nothing new (#18188). Stop asks the server about each pending item instead of
+  // nothing new. Stop asks the server about each pending item instead of
   // inferring status from what a snapshot omits, and settles only those items.
   const reconcilePendingWork = Effect.fn("EnvironmentThreadState.reconcilePendingWork")(
     function* () {
@@ -1061,8 +1061,13 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
           ...(canResume ? { afterSequence: sequence } : {}),
           ...(supportsCompletionMarker ? { requestCompletionMarker: true as const } : {}),
           ...(acceptBoundedSnapshot
-            ? { acceptBoundedSnapshot: true as const, acceptCompactTurnItems: true as const }
+            ? {
+                acceptBoundedSnapshot: true as const,
+                acceptCompactTurnItems: true as const,
+                acceptCompactIds: true as const,
+              }
             : {}),
+          acceptDedupedBodies: true as const,
         };
       }),
       {
@@ -1157,5 +1162,7 @@ export * from "./composerPathSearch.ts";
 export * from "./threadCommands.ts";
 export * from "./threadFeedback.ts";
 export * from "./threadDetail.ts";
+export * from "./threadFamilies.ts";
+export * from "./olderSettledThreads.ts";
 export * from "./threadShell.ts";
 export * from "./threadState.ts";

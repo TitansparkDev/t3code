@@ -36,16 +36,10 @@ export function GoalProjectRouteScreen() {
               key={`${project.environmentId}:${project.id}`}
               label={project.title}
               onPress={() =>
-                navigation.navigate("SettingsSheet", {
-                  screen: "SettingsContent",
-                  params: {
-                    screen: "SettingsGoalNew",
-                    params: {
-                      environmentId: project.environmentId,
-                      projectId: project.id,
-                      title: project.title,
-                    },
-                  },
+                navigation.navigate("SettingsGoalNew", {
+                  environmentId: project.environmentId,
+                  projectId: project.id,
+                  title: project.title,
                 })
               }
             />

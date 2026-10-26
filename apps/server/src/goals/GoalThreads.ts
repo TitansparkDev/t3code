@@ -1,3 +1,4 @@
+// @effect-diagnostics effectFnOpportunity:off - fork service predating the rule; convert to Effect.fn as it is touched.
 /**
  * The goal runner's whole view of the orchestration engine: start a worker thread, say
  * something to it, stop or settle it, and read how it is doing. Goals only ever need the
@@ -298,6 +299,7 @@ const make = Effect.gen(function* () {
         const projection = yield* orchestrator.getThreadProjection(threadId);
         return goalThreadViewOf(shell, projection);
       },
+      // @effect-diagnostics-next-line effectSucceedWithVoid:off - callers read the value as `undefined`, not void.
       Effect.catchCause(() => Effect.succeed(undefined)),
     ),
     backgroundWork: (threadId) =>
@@ -308,6 +310,7 @@ const make = Effect.gen(function* () {
     workspaceRoot: (projectId) =>
       projects.listShells({ projectIds: [projectId] }).pipe(
         Effect.map((shells) => shells[0]?.workspaceRoot),
+        // @effect-diagnostics-next-line effectSucceedWithVoid:off - callers read the value as `undefined`, not void.
         Effect.catchCause(() => Effect.succeed(undefined)),
       ),
     runChanges: orchestrator.streamDomainEvents.pipe(

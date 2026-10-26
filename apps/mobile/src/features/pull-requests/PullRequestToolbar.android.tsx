@@ -9,6 +9,7 @@ import { useHardwareKeyboardCommand } from "../keyboard/hardwareKeyboardCommands
 import { WorkspaceListToolbarRow } from "../workspace/WorkspaceListToolbarRow";
 import { useWorkspaceTabs } from "../workspace/WorkspaceTabsContext";
 import { usePullRequestFilterMenu } from "./PullRequestFilterMenuContext";
+import { openSettings } from "../settings/settings-navigation";
 import { UsageBannerSlot } from "../usage/UsageBannerSlot";
 
 /** PR search shares the thread list's Android header row. */
@@ -73,12 +74,7 @@ export function PullRequestToolbar(props: { readonly onRequestVisibility?: () =>
           onOpenSearch={openSearch}
           searchAccessibilityLabel="Search pull requests"
           titleAccessibilityLabel="T3 Code, Pull requests"
-          onOpenEnvironments={() =>
-            navigation.navigate("SettingsSheet", {
-              screen: "SettingsContent",
-              params: { screen: "SettingsEnvironments" },
-            })
-          }
+          onOpenEnvironments={() => openSettings(navigation, "SettingsEnvironments")}
           filter={
             filters ? (
               <AndroidAnchoredMenu

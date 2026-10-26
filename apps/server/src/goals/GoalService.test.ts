@@ -127,7 +127,7 @@ const makeHarnessWith = (spacing: number) =>
             events: subscription,
             detail: () =>
               Ref.get(threadState).pipe(Effect.map((state) => Option.some(thread(state)))),
-            shell: () => Effect.succeed(Option.none()),
+            shell: () => Effect.succeedNone,
             projectRoot: (projectId) => (projectId === PROJECT ? "/work" : undefined),
           }),
           Layer.mock(ProviderRegistry)({ getProviders: Ref.get(providers) }),

@@ -21,6 +21,17 @@ if (
     // An ACP agent the server runs as a local command: stdout carries only protocol messages.
     const { runChatAgentsAcp } = await import("./provider/chatAgentsAcp.ts");
     await runChatAgentsAcp(process.argv.slice(3));
+  } else if (command === "__document-text") {
+    const { extractDocumentText } = await import("./provider/documentTextWorker.ts");
+    try {
+      process.stdout.write(await extractDocumentText(process.argv[3]!, process.argv[4]!));
+    } catch (error) {
+      if (error instanceof Error && "code" in error && /^E[A-Z0-9]+$/.test(String(error.code))) {
+        throw error;
+      }
+      // Exit 2 identifies document rejections; OS and process failures remain retryable.
+      process.exitCode = 2;
+    }
   } else if (command === "__managed-chatgpt-token") {
     const { runManagedChatGptTokenCli } = await import("./cli/managedChatGptToken.ts");
     await runManagedChatGptTokenCli(process.argv.slice(3));
@@ -28,8 +39,7 @@ if (
     const { runAcpMcpCliFastPath } = await import("./mcp/AcpMcpStdioBridge.ts");
     await runAcpMcpCliFastPath(command, process.argv.slice(3));
   } else {
-    // Before anything reads stdin: the desktop app's Windows launcher starts
-    // the CLI without one. Never for the fast paths, whose stdin is a pipe.
+    // Windows desktop launches without stdin; attach before reading, except on fast paths using pipes.
     const { attachConsoleStdin } = await import("./cli/consoleStdin.ts");
     attachConsoleStdin();
     const { runCli } = await import("./binCli.ts");
