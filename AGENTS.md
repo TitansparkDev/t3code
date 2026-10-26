@@ -207,6 +207,15 @@ Architecture and its constraints: `docs/internals/overview.md`. Glossary: `docs/
 
 ## Recent request log
 
+- 2026-10-26 — v0.1.10: goal-worker audit and upstream merge (299 commits). Every overseer had run on
+  Chat Agents and died on the locked desktop keyring while each failure spent an escalation round
+  (thread items were counted as progress); goals now take rotating overseer models with usage checks
+  (Goal setup → Other settings, `overseerAgents`). Gemini 3.8 Flash + effort maps to the account's
+  effort model again. AgentQueue: piped `--json` no longer truncated at 64 KB, stale claim branches no
+  longer break worktrees, AVDs found from agent account homes, a locked queue database no longer fails
+  finished workers, plan lint reports checks that select no tests. The autonomous-plan skill was
+  rewritten (owner questions only at planning, checks placed by cost, additive "Addition" sections).
+  GitHub Actions has not run on this fork since 2026-10-14; releases are built locally.
 - 2026-10-22 — v0.1.5: goal-worker pipeline audit. Queue workers are told the `agentq run` deadline,
   what finalize exit 3 means and that the old claim tools are banned; a run with no `--timeout` gets one
   hour; `agentq --help` prints usage; NEEDS ATTENTION / BLOCKED TASKS count only as their own status line.
