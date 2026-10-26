@@ -17,7 +17,7 @@ import {
 } from "@t3tools/contracts/goals";
 import { useNavigate } from "@tanstack/react-router";
 import { PlusIcon, XIcon } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { isElectron } from "../../env";
 import { deriveProviderInstanceEntries } from "../../providerInstances";
@@ -41,6 +41,80 @@ function firstAgent(instances: ProviderInstances): Omit<GoalSetupAgent, "count">
   const instance = instances.find((candidate) => candidate.enabled && candidate.models.length > 0);
   const model = instance?.models.find((candidate) => candidate.isDefault) ?? instance?.models[0];
   return instance && model ? { instanceId: instance.instanceId, model: model.slug } : null;
+}
+
+/** One provider account, model and its options, with room for extra controls such as a count. */
+function GoalModelRow({
+  agent,
+  instances,
+  onChange,
+  onRemove,
+  children,
+}: {
+  agent: Omit<GoalSetupAgent, "count">;
+  instances: ProviderInstances;
+  onChange: (change: Partial<Omit<GoalSetupAgent, "count">>) => void;
+  onRemove: (() => void) | undefined;
+  children?: ReactNode;
+}) {
+  const instance = instances.find((candidate) => candidate.instanceId === agent.instanceId);
+  return (
+    <li className="space-y-2 rounded-md border border-border/60 p-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <select
+          aria-label="Provider"
+          className="rounded-md border border-border bg-background px-2 py-1 text-xs"
+          onChange={(event) => {
+            const next = instances.find((candidate) => candidate.instanceId === event.target.value);
+            const model = next?.models.find((candidate) => candidate.isDefault) ?? next?.models[0];
+            if (next && model) {
+              onChange({ instanceId: next.instanceId, model: model.slug, options: undefined });
+            }
+          }}
+          value={agent.instanceId}
+        >
+          {instances
+            .filter((candidate) => candidate.enabled)
+            .map((candidate) => (
+              <option key={candidate.instanceId} value={candidate.instanceId}>
+                {candidate.displayName}
+              </option>
+            ))}
+        </select>
+        <select
+          aria-label="Model"
+          className="min-w-0 flex-1 rounded-md border border-border bg-background px-2 py-1 text-xs"
+          onChange={(event) => onChange({ model: event.target.value, options: undefined })}
+          value={agent.model}
+        >
+          {(instance?.models ?? []).map((model) => (
+            <option key={model.slug} value={model.slug}>
+              {model.name || model.slug}
+            </option>
+          ))}
+        </select>
+        {children}
+        {onRemove ? (
+          <Button
+            aria-label="Remove this model"
+            onClick={onRemove}
+            size="sm"
+            type="button"
+            variant="ghost"
+          >
+            <XIcon className="size-3.5" />
+          </Button>
+        ) : null}
+      </div>
+      {instance ? (
+        <ProviderOptionsPicker
+          instance={instance}
+          onChange={(next) => onChange({ options: next.options })}
+          target={agent}
+        />
+      ) : null}
+    </li>
+  );
 }
 
 /**
@@ -327,98 +401,35 @@ export function GoalSetupPage({
                   Models, effort, and how many of each run at once
                 </h2>
                 <ul className="space-y-2">
-                  {agents.map((agent, index) => {
-                    const instance = instances.find(
-                      (candidate) => candidate.instanceId === agent.instanceId,
-                    );
-                    return (
-                      <li
-                        className="space-y-2 rounded-md border border-border/60 p-3"
-                        key={`${agent.instanceId}:${index}`}
-                      >
-                        <div className="flex flex-wrap items-center gap-2">
-                          <select
-                            aria-label="Provider"
-                            className="rounded-md border border-border bg-background px-2 py-1 text-xs"
-                            onChange={(event) => {
-                              const next = instances.find(
-                                (candidate) => candidate.instanceId === event.target.value,
-                              );
-                              const model =
-                                next?.models.find((candidate) => candidate.isDefault) ??
-                                next?.models[0];
-                              if (next && model) {
-                                setAgent(index, {
-                                  instanceId: next.instanceId,
-                                  model: model.slug,
-                                  options: undefined,
-                                });
-                              }
-                            }}
-                            value={agent.instanceId}
-                          >
-                            {instances
-                              .filter((candidate) => candidate.enabled)
-                              .map((candidate) => (
-                                <option key={candidate.instanceId} value={candidate.instanceId}>
-                                  {candidate.displayName}
-                                </option>
-                              ))}
-                          </select>
-                          <select
-                            aria-label="Model"
-                            className="min-w-0 flex-1 rounded-md border border-border bg-background px-2 py-1 text-xs"
-                            onChange={(event) =>
-                              setAgent(index, { model: event.target.value, options: undefined })
-                            }
-                            value={agent.model}
-                          >
-                            {(instance?.models ?? []).map((model) => (
-                              <option key={model.slug} value={model.slug}>
-                                {model.name || model.slug}
-                              </option>
-                            ))}
-                          </select>
-                          <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                            At once
-                            <Input
-                              className="w-16"
-                              inputMode="numeric"
-                              max={MAX_GOAL_AGENT_COUNT}
-                              min={1}
-                              onChange={(event) =>
-                                setAgent(index, { count: Number(event.target.value) || 1 })
-                              }
-                              type="number"
-                              value={agent.count}
-                            />
-                          </label>
-                          {agents.length > 1 ? (
-                            <Button
-                              aria-label="Remove this model"
-                              onClick={() =>
-                                patch({
-                                  agents: agents.filter((_, position) => position !== index),
-                                })
-                              }
-                              size="sm"
-                              type="button"
-                              variant="ghost"
-                            >
-                              <XIcon className="size-3.5" />
-                            </Button>
-                          ) : null}
-                        </div>
-                        {instance ? (
-                          <ProviderOptionsPicker
-                            instance={instance}
-                            onChange={(next) => setAgent(index, { options: next.options })}
-                            target={agent}
-                          />
-                        ) : null}
-                      </li>
-                    );
-                  })}
+                  {agents.map((agent, index) => (
+                    <GoalModelRow
+                      agent={agent}
+                      instances={instances}
+                      key={`${agent.instanceId}:${index}`}
+                      onChange={(change) => setAgent(index, change)}
+                      onRemove={
+                        agents.length > 1
+                          ? () =>
+                              patch({ agents: agents.filter((_, position) => position !== index) })
+                          : undefined
+                      }
+                    >
+                      <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                        At once
+                        <Input
+                          className="w-16"
+                          inputMode="numeric"
+                          max={MAX_GOAL_AGENT_COUNT}
+                          min={1}
+                          onChange={(event) =>
+                            setAgent(index, { count: Number(event.target.value) || 1 })
+                          }
+                          type="number"
+                          value={agent.count}
+                        />
+                      </label>
+                    </GoalModelRow>
+                  ))}
                 </ul>
                 <Button
                   disabled={firstAgent(instances) === null}
@@ -466,6 +477,51 @@ export function GoalSetupPage({
                     When the goal gets stuck, ask an overseer agent what to do before stopping
                   </span>
                 </label>
+                {current.overseer ? (
+                  <div className="space-y-2 pl-6">
+                    <p className="text-2xs text-muted-foreground">
+                      Overseer models take turns, skipping any that are out of usage or failing.
+                      With none, Chat Agents runs it, or the goal&apos;s own models.
+                    </p>
+                    {current.overseerAgents.length > 0 ? (
+                      <ul className="space-y-2">
+                        {current.overseerAgents.map((agent, index) => (
+                          <GoalModelRow
+                            agent={agent}
+                            instances={instances}
+                            key={`${agent.instanceId}:${index}`}
+                            onChange={(change) =>
+                              patch({
+                                overseerAgents: current.overseerAgents.map((entry, position) =>
+                                  position === index ? { ...entry, ...change } : entry,
+                                ),
+                              })
+                            }
+                            onRemove={() =>
+                              patch({
+                                overseerAgents: current.overseerAgents.filter(
+                                  (_, position) => position !== index,
+                                ),
+                              })
+                            }
+                          />
+                        ))}
+                      </ul>
+                    ) : null}
+                    <Button
+                      disabled={firstAgent(instances) === null}
+                      onClick={() => {
+                        const next = firstAgent(instances);
+                        if (next) patch({ overseerAgents: [...current.overseerAgents, next] });
+                      }}
+                      size="sm"
+                      type="button"
+                      variant="outline"
+                    >
+                      <PlusIcon className="size-3.5" /> Add an overseer model
+                    </Button>
+                  </div>
+                ) : null}
                 <label className="flex items-center gap-2">
                   <Input
                     className="w-16"

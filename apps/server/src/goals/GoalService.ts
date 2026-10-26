@@ -1513,6 +1513,9 @@ export const make = Effect.gen(function* () {
         const now = yield* nowIso;
         if (!outcome.ok) {
           yield* queueFailed(goalId, "submit", outcome.error);
+          // A busy queue database is not a verdict on the work: the tick submits it again, and
+          // handing it back made finished workers count as failures (BE1, BE3, BE6 on 2026-10-22).
+          if (isQueueContention(outcome.error)) return;
           yield* handBack(binding, current, "retry", `Submission failed: ${outcome.error.message}`);
           yield* updateChat(goalId, threadId, {
             status: "failed",
@@ -2161,7 +2164,10 @@ export const make = Effect.gen(function* () {
     }
   });
 
-  /** A submission that was cut off by a restart is verified again; its worker is already done. */
+  /**
+   * A submission cut off by a restart or a busy queue database is sent again; its worker is
+   * already done. Each claim is submitted once at a time.
+   */
   const resumeSubmissions = Effect.fn("GoalService.resumeSubmissions")(function* (goal: Goal) {
     for (const chat of goal.chats) {
       if (
@@ -2180,33 +2186,40 @@ export const make = Effect.gen(function* () {
   });
 
   /**
-   * Who should oversee: Chat Agents when that provider is ready (it is not tied to
-   * the goal's own usage), otherwise the goal's first agent that can start a chat now.
+   * Who should oversee. The goal's overseer models take turns, starting after the last one used,
+   * so one account's usage is not spent alone; without any, Chat Agents runs it when ready (it is
+   * not tied to the goal's own usage). Otherwise the goal's first agent that can start a chat now.
    */
   const overseerAgent = Effect.fn("GoalService.overseerAgent")(function* (goal: Goal) {
     const now = yield* nowMillis;
     const providers = yield* registry.getProviders.pipe(
       Effect.catchCause(() => Effect.succeed([] as ReadonlyArray<ServerProvider>)),
     );
-    for (const provider of providers) {
-      const model = provider.models[0]?.slug;
-      // Chat Agents is a local ACP command now, so it is known by its instance id.
-      if ((provider.driver !== "chatAgents" && provider.instanceId !== "chatAgents") || !model)
-        continue;
-      if (providerBlock(provider, model, now)) continue;
-      // A provider that just failed to run an overseer (a locked keyring, a login) is left alone.
-      if (
-        (goal.pauses ?? []).some(
-          (pause) => pause.instanceId === provider.instanceId && Date.parse(pause.until) > now,
-        )
-      ) {
-        continue;
-      }
-      return {
-        agentIndex: 0,
-        modelSelection: { instanceId: provider.instanceId, model },
-      } as const;
-    }
+    // A provider that just failed to run an overseer (a locked keyring, a login, a limit) is left alone.
+    const free = ({ instanceId, model }: Goal["agents"][number]["modelSelection"]) =>
+      providerBlock(
+        providers.find((provider) => provider.instanceId === instanceId),
+        model,
+        now,
+      ) === undefined &&
+      !(goal.pauses ?? []).some(
+        (pause) => Date.parse(pause.until) > now && pauseCovers(pause, instanceId, model),
+      );
+    const chosen = goal.overseerAgents ?? [];
+    const runs = goal.chats.filter((chat) => chat.overseer).length;
+    const candidates =
+      chosen.length > 0
+        ? chosen.map((_, step) => chosen[(runs + step) % chosen.length]!)
+        : providers.flatMap((provider) => {
+            const model = provider.models[0]?.slug;
+            // Chat Agents is a local ACP command now, so it is known by its instance id.
+            return (provider.driver === "chatAgents" || provider.instanceId === "chatAgents") &&
+              model
+              ? [{ instanceId: provider.instanceId, model }]
+              : [];
+          });
+    const modelSelection = candidates.find(free);
+    if (modelSelection) return { agentIndex: 0, modelSelection } as const;
     const unavailable = yield* unavailableAgents(goal);
     const index = goal.agents.findIndex((_, candidate) => !unavailable.has(candidate));
     // Nothing is free and a person must sign in: relaunching would only repeat the failure.
@@ -2550,7 +2563,12 @@ export const make = Effect.gen(function* () {
       yield* pauseAgent(
         goal.id,
         { modelSelection: thread.modelSelection } as Goal["agents"][number],
-        isLoginFailure(providerFailure) ? "login" : "errors",
+        isLoginFailure(providerFailure)
+          ? "login"
+          : usageLimitOf(thread) !== undefined
+            ? "usage-limit"
+            : "errors",
+        usageLimitOf(thread)?.retryAt,
       );
     }
     if (fresh.status !== "running") {
@@ -3274,6 +3292,7 @@ export const make = Effect.gen(function* () {
       if (goal.status !== "running") continue;
       if (goal.agentQueue) {
         yield* ensureIntegration(goal.id);
+        yield* resumeSubmissions(goal);
         yield* settleFinishedChats(goal);
         yield* sweepIdleChats(goal.id);
         yield* sweepLandedWorktrees(goal);

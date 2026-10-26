@@ -47,6 +47,8 @@ export interface GoalSetupForm {
   readonly stopAfterProblems: number;
   /** Ask an overseer agent what to do when the goal gets stuck, before giving up. */
   readonly overseer: boolean;
+  /** Models that take turns running the overseer. Empty uses Chat Agents or the goal's agents. */
+  readonly overseerAgents: ReadonlyArray<Omit<GoalSetupAgent, "count">>;
   /** How workers get work: `auto` uses AgentQueue when the project has a valid active plan. */
   readonly queueMode: "auto" | "standard" | "agentqueue";
   /** The plan file (relative to the repository). Empty picks the repository's active plan. */
@@ -83,6 +85,7 @@ export function defaultGoalSetup(input: {
     standardRules: true,
     stopAfterProblems: DEFAULT_GOAL_STOP_AFTER_PROBLEMS,
     overseer: true,
+    overseerAgents: [],
     queueMode: "auto",
     planPath: "",
     checkoutPolicy: "reconcile",
@@ -108,6 +111,11 @@ export function goalToSetup(goal: Goal): GoalSetupForm {
     standardRules: goal.standardRules,
     stopAfterProblems: goal.stopAfterProblems ?? DEFAULT_GOAL_STOP_AFTER_PROBLEMS,
     overseer: goal.overseer !== false,
+    overseerAgents: (goal.overseerAgents ?? []).map((selection) => ({
+      instanceId: selection.instanceId,
+      model: selection.model,
+      options: selection.options,
+    })),
     // Goals saved before AgentQueue existed keep running the way they always did.
     queueMode: goal.queueMode ?? (goal.useAgentQueue ? "agentqueue" : "standard"),
     planPath: goal.planPath ?? "",
@@ -116,6 +124,12 @@ export function goalToSetup(goal: Goal): GoalSetupForm {
 }
 
 const whole = (value: number) => Math.round(value);
+
+const toModelSelection = (agent: Omit<GoalSetupAgent, "count">): ModelSelection => ({
+  instanceId: agent.instanceId,
+  model: agent.model,
+  ...(agent.options && agent.options.length > 0 ? { options: agent.options } : {}),
+});
 
 /** Why the form cannot be started yet, or undefined when it can. */
 export function goalSetupProblem(form: GoalSetupForm): string | undefined {
@@ -171,6 +185,8 @@ export function goalSetupToSettings(form: GoalSetupForm): GoalSettings | undefin
     standardRules: form.standardRules,
     stopAfterProblems: whole(form.stopAfterProblems),
     overseer: form.overseer,
+    // Always sent, even empty: an update keeps any setting it leaves out.
+    overseerAgents: form.overseerAgents.map(toModelSelection),
     queueMode: form.queueMode,
     checkoutPolicy: form.checkoutPolicy,
     ...(form.planPath.trim() ? { planPath: form.planPath.trim() } : {}),
@@ -205,6 +221,8 @@ export function goalSetupToDraftSettings(form: GoalSetupForm): GoalSettings | un
     standardRules: form.standardRules,
     stopAfterProblems: clamp(form.stopAfterProblems, MAX_GOAL_STOP_AFTER_PROBLEMS),
     overseer: form.overseer,
+    // Always sent, even empty: an update keeps any setting it leaves out.
+    overseerAgents: form.overseerAgents.map(toModelSelection),
     queueMode: form.queueMode,
     checkoutPolicy: form.checkoutPolicy,
     ...(form.planPath.trim() ? { planPath: form.planPath.trim() } : {}),

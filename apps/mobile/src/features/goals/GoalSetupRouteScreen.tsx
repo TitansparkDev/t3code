@@ -237,6 +237,8 @@ function AgentCard(props: {
   readonly agent: GoalSetupAgent;
   readonly options: ReadonlyArray<ModelOption>;
   readonly canRemove: boolean;
+  /** Overseer models have no count: they run one chat at a time. */
+  readonly counted?: boolean;
   readonly onChange: (agent: GoalSetupAgent) => void;
   readonly onRemove: () => void;
 }) {
@@ -334,13 +336,17 @@ function AgentCard(props: {
         );
       })}
       <View className="flex-row items-center justify-between gap-3">
-        <Field label={`Run at once (up to ${MAX_GOAL_AGENT_COUNT})`}>
-          <NumberInput
-            accessibilityLabel="Agents of this model at once"
-            onChange={(count) => props.onChange({ ...props.agent, count })}
-            value={props.agent.count}
-          />
-        </Field>
+        {props.counted === false ? (
+          <View />
+        ) : (
+          <Field label={`Run at once (up to ${MAX_GOAL_AGENT_COUNT})`}>
+            <NumberInput
+              accessibilityLabel="Agents of this model at once"
+              onChange={(count) => props.onChange({ ...props.agent, count })}
+              value={props.agent.count}
+            />
+          </Field>
+        )}
         {props.canRemove ? <Button label="Remove" onPress={props.onRemove} tone="text" /> : null}
       </View>
     </View>
@@ -569,6 +575,45 @@ export function GoalForm(props: {
               onChange={(overseer) => patch({ overseer })}
               value={current.overseer}
             />
+            {current.overseer ? (
+              <View className="gap-3">
+                <Text className="text-sm text-foreground-muted">
+                  Overseer models take turns, skipping any that are out of usage or failing. With
+                  none, Chat Agents runs it, or the goal&apos;s own models.
+                </Text>
+                {current.overseerAgents.map((agent, index) => (
+                  <AgentCard
+                    agent={{ ...agent, count: 1 }}
+                    canRemove
+                    counted={false}
+                    key={`${agent.instanceId}:${index}`}
+                    onChange={({ count: _count, ...next }) =>
+                      patch({
+                        overseerAgents: current.overseerAgents.map((entry, at) =>
+                          at === index ? next : entry,
+                        ),
+                      })
+                    }
+                    onRemove={() =>
+                      patch({
+                        overseerAgents: current.overseerAgents.filter((_, at) => at !== index),
+                      })
+                    }
+                    options={modelOptions}
+                  />
+                ))}
+                <Button
+                  disabled={modelOptions.length === 0}
+                  label="Add an overseer model"
+                  onPress={() => {
+                    if (defaultOption) {
+                      const { count: _count, ...next } = agentFromOption(defaultOption, 1);
+                      patch({ overseerAgents: [...current.overseerAgents, next] });
+                    }
+                  }}
+                />
+              </View>
+            ) : null}
             <Field label="Stop the goal after this many agents in a row cannot finish">
               <NumberInput
                 accessibilityLabel="Stop after agents that cannot finish"

@@ -173,6 +173,13 @@ export const GoalSettings = Schema.Struct({
    */
   overseer: Schema.optional(Schema.Boolean),
   /**
+   * The models that run the overseer, taken in turn so its usage is spread over several accounts.
+   * One that is out of usage, signed out or failing is skipped. Missing or empty uses Chat Agents
+   * when it is ready, otherwise the goal's own agents; those agents are also the fallback when no
+   * overseer model is free.
+   */
+  overseerAgents: Schema.optional(Schema.Array(ModelSelection)),
+  /**
    * How workers get work. `auto` (what the setup pages send) uses AgentQueue when the
    * project has a valid active plan and standard `plan-work` otherwise; `agentqueue`
    * refuses to start without a valid plan; `standard` never uses the queue. Records

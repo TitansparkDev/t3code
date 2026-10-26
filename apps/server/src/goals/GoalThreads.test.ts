@@ -20,9 +20,14 @@ const shell = (overrides: Record<string, unknown> = {}) =>
     ...overrides,
   }) as never;
 
-const projection = (runStatus: string, messages: ReadonlyArray<[string, string]> = []) =>
+const projection = (
+  runStatus: string,
+  messages: ReadonlyArray<[string, string]> = [],
+  turnItems: ReadonlyArray<{ type: string; nativeItemRef: unknown }> = [],
+) =>
   ({
     messages: messages.map(([role, text]) => ({ role, text, streaming: false })),
+    turnItems,
     runs: [
       {
         id: "run-1",
@@ -84,4 +89,35 @@ it("treats an interrupted run as ended without an error", () => {
   const view = goalThreadViewOf(shell({ status: "interrupted" }), projection("interrupted"));
   expect(view.latestTurn?.state).toBe("interrupted");
   expect(view.session.status).toBe("ready");
+});
+
+it("does not count the prompt, workspace preparation and a provider error as progress", () => {
+  const view = goalThreadViewOf(
+    shell({ status: "failed", itemCount: 3 }),
+    projection(
+      "failed",
+      [["user", "T3-OVERSEER/1"]],
+      [
+        { type: "user_message", nativeItemRef: null },
+        { type: "command_execution", nativeItemRef: null },
+        { type: "error", nativeItemRef: null },
+      ],
+    ),
+  );
+  expect(view.madeProgress).toBe(false);
+});
+
+it("counts a provider's own tool call as progress", () => {
+  const view = goalThreadViewOf(
+    shell({ status: "failed", itemCount: 2 }),
+    projection(
+      "failed",
+      [["user", "Go"]],
+      [
+        { type: "user_message", nativeItemRef: null },
+        { type: "command_execution", nativeItemRef: { id: "call-1" } },
+      ],
+    ),
+  );
+  expect(view.madeProgress).toBe(true);
 });

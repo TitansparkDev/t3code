@@ -33,6 +33,7 @@ const GoalMcpEditableFields = {
   standardRules: Schema.optional(settings.standardRules),
   stopAfterProblems: Schema.optional(settings.stopAfterProblems),
   overseer: Schema.optional(settings.overseer),
+  overseerAgents: settings.overseerAgents,
   queueMode: Schema.optional(settings.queueMode),
   planPath: Schema.optional(settings.planPath),
   checkoutPolicy: Schema.optional(settings.checkoutPolicy),

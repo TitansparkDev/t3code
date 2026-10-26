@@ -62,6 +62,19 @@ describe("goal setup", () => {
     expect(goalSetupToSettings(form)).toEqual(settings);
   });
 
+  it("sends the overseer models, and an empty list so an edit can clear them", () => {
+    const gemini = {
+      instanceId: ProviderInstanceId.make("antigravity_agy_2"),
+      model: "gemini-3.8-flash",
+      options: [{ id: "effort", value: "high" }],
+    };
+    const settings = goalSetupToSettings({ ...ready, overseerAgents: [gemini] })!;
+    expect(settings.overseerAgents).toEqual([gemini]);
+    const form = goalToSetup({ ...settings, id: "g", status: "running", chats: [] } as never);
+    expect(goalSetupToSettings(form)).toEqual(settings);
+    expect(goalSetupToSettings(ready)?.overseerAgents).toEqual([]);
+  });
+
   it("allows running until complete", () => {
     expect(goalSetupToSettings({ ...ready, maxChats: null })?.maxChats).toBeNull();
   });

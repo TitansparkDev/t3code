@@ -140,7 +140,12 @@ const makeFlow = (
   options: {
     readonly extraFiles?: Record<string, string>;
     readonly spacingMillis?: number;
-    readonly queueFaults?: { claims?: boolean; release?: boolean; locked?: boolean };
+    readonly queueFaults?: {
+      claims?: boolean;
+      release?: boolean;
+      locked?: boolean;
+      submitLocked?: boolean;
+    };
     /** How many workspace binds fail before the engine accepts one. */
     readonly bindFailures?: number;
   } = {},
@@ -209,7 +214,8 @@ const makeFlow = (
             name,
             typeof operation === "function"
               ? (...args: Array<unknown>) =>
-                  options.queueFaults?.locked
+                  options.queueFaults?.locked ||
+                  (name === "submit" && options.queueFaults?.submitLocked)
                     ? Effect.fail(
                         new AgentQueueError({ operation: name, message: "database is locked" }),
                       )
@@ -2452,6 +2458,35 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
         expect(goal.detail).toContain("database is locked");
         faults.locked = false;
       }).pipe(Effect.scoped),
+  );
+
+  it.effect("a submission that meets a locked queue database is sent again, not failed", () =>
+    Effect.gen(function* () {
+      const faults = { submitLocked: false };
+      const flow = yield* makeFlow(planWith([{ id: "T1" }]), { queueFaults: faults });
+      const service = yield* flow.startServer;
+      yield* Effect.forkScoped(service.loop);
+      yield* Effect.yieldNow;
+      yield* service.create(settingsFor());
+      yield* flow.waitFor("thread.create", 1);
+      faults.submitLocked = true;
+      yield* flow.work("T1");
+      yield* flow.eventually(
+        flow.goalOf(service),
+        (g) => (g.queueErrors ?? 0) >= 1,
+        "the submission to meet the locked database",
+      );
+      const held = (yield* flow.goalOf(service)).chats[0]!;
+      expect(held.status).not.toBe("failed");
+      expect(held.taskOutcome).toBeUndefined();
+      faults.submitLocked = false;
+      yield* tickOnce;
+      yield* flow.eventually(
+        flow.goalOf(service),
+        (g) => g.status === "complete",
+        "the goal to complete once the queue answers",
+      );
+    }).pipe(Effect.scoped),
   );
 
   it.effect(

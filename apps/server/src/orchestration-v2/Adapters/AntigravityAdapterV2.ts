@@ -172,6 +172,7 @@ export function makeAntigravityAcpAdapterFlavor(
         runtime,
         model:
           modelSelection.model === ANTIGRAVITY_DEFAULT_MODEL ? undefined : modelSelection.model,
+        options: modelSelection.options,
         defaultModel,
         mapError: (cause) => cause,
       });

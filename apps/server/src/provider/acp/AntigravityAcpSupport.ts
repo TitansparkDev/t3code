@@ -3,6 +3,7 @@ import {
   type AntigravityAuthMethod,
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
+  type ProviderOptionSelection,
   type ProviderSendTurnInput,
   type RuntimeMode,
 } from "@t3tools/contracts";
@@ -100,15 +101,40 @@ function antigravityModelOptions(
   return model.options.flatMap((entry) => ("value" in entry ? [entry] : entry.options));
 }
 
+const EFFORT_SUFFIX = /-(?:low|medium|high)$/;
+
+/**
+ * The catalog publishes one model with an effort option (Gemini 3.8 Flash), but the account only
+ * offers one model ID per effort (`gemini-3.8-flash-high`). Sending the bare ID is refused.
+ */
+function effortModel(
+  model: string,
+  effort: string | undefined,
+  offered: (model: string) => boolean,
+): string {
+  if (effort !== undefined) {
+    const variant = `${model.replace(EFFORT_SUFFIX, "")}-${effort}`;
+    if (offered(variant)) return variant;
+  }
+  if (offered(model)) return model;
+  return ["high", "medium", "low"].map((level) => `${model}-${level}`).find(offered) ?? model;
+}
+
 function resolveAntigravityModel(input: {
   readonly configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption>;
   readonly model: string | null | undefined;
+  readonly options?: ReadonlyArray<ProviderOptionSelection> | undefined;
   readonly defaultModel?: string | undefined;
 }): string | undefined {
   const modelConfig = input.configOptions.find((option) => option.id === "model");
   const current = modelConfig?.type === "select" ? modelConfig.currentValue : undefined;
-  if (input.model && input.model !== ANTIGRAVITY_DEFAULT_MODEL) return input.model;
   const options = antigravityModelOptions(input.configOptions);
+  if (input.model && input.model !== ANTIGRAVITY_DEFAULT_MODEL) {
+    const effort = input.options?.find((option) => option.id === "effort")?.value;
+    return effortModel(input.model, typeof effort === "string" ? effort : undefined, (model) =>
+      options.some((option) => option.value === model),
+    );
+  }
   return input.defaultModel && options.some((option) => option.value === input.defaultModel)
     ? input.defaultModel
     : current;
@@ -122,6 +148,7 @@ export const applyAntigravityAcpModelSelection = Effect.fn("applyAntigravityAcpM
       "getConfigOptions" | "setModel"
     >;
     readonly model: string | null | undefined;
+    readonly options?: ReadonlyArray<ProviderOptionSelection> | undefined;
     readonly defaultModel?: string | undefined;
     readonly mapError: (cause: EffectAcpErrors.AcpError) => E;
   }): Effect.fn.Return<string | undefined, E> {
@@ -131,6 +158,7 @@ export const applyAntigravityAcpModelSelection = Effect.fn("applyAntigravityAcpM
     const resolved = resolveAntigravityModel({
       configOptions,
       model: input.model,
+      options: input.options,
       defaultModel: input.defaultModel,
     });
     const explicit = Boolean(input.model) && input.model !== ANTIGRAVITY_DEFAULT_MODEL;

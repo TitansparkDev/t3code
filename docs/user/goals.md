@@ -72,8 +72,11 @@ thread list; the Goals page shows how each one ended.
   writes the worker exact instructions in the same chat, or retries, unblocks or gives up
   the task. It hands an escalation to you only when a person must act, such as a missing
   login or a product decision. One overseer chat handles all of a goal's open escalations
-  at once. It runs on Chat Agents (ChatGPT) when that provider is ready, otherwise on one of
-  the goal's own models. A chat gets at most three rounds before it is handed to you.
+  at once. To choose what it runs on, add overseer models under **Other settings**. They
+  take turns, so several accounts of one provider share the work, and one that is out of
+  usage or failing is skipped. With none chosen it runs on Chat Agents (ChatGPT) when that
+  provider is ready. Otherwise, or when no overseer model is free, it runs on one of the
+  goal's own models. A chat gets at most three rounds before it is handed to you.
   Escalations appear on the Goals page, where you can tell a worker to retry, give up its
   task, cancel an escalation, or use **Ask overseer** on a chat or the whole goal. Turn the
   overseer off under **Other settings**.

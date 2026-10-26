@@ -142,7 +142,7 @@ const failed =
 
 export function goalThreadViewOf(
   shell: OrchestrationV2ThreadShell,
-  projection: Pick<OrchestrationV2ThreadProjection, "messages" | "runs">,
+  projection: Pick<OrchestrationV2ThreadProjection, "messages" | "runs" | "turnItems">,
 ): GoalThreadView {
   const messages = projection.messages
     .filter((message) => !message.streaming || message.role === "assistant")
@@ -158,7 +158,12 @@ export function goalThreadViewOf(
   const interrupted = latestRun?.status === "interrupted" || latestRun?.status === "cancelled";
   return {
     messages,
-    madeProgress: messages.some((message) => message.role === "assistant") || shell.itemCount > 1,
+    // Only the provider's own output counts. The server adds the prompt, workspace preparation and
+    // a provider's start-up error, so a desktop app that never loaded still looks like it did work
+    // when items are merely counted, and an overseer that never ran spends its rounds.
+    madeProgress:
+      messages.some((message) => message.role === "assistant") ||
+      projection.turnItems.some((item) => item.nativeItemRef !== null),
     session: {
       status: ended && !running ? "error" : running ? "running" : "ready",
       activeTurnId: shell.activeRunId,

@@ -1056,6 +1056,58 @@ it.layer(NodeServices.layer)("GoalService", (it) => {
     }),
   );
 
+  it.effect("overseer models take turns and one that is out of usage is skipped", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const gemini = (instanceId: string) => ({
+        instanceId: ProviderInstanceId.make(instanceId),
+        model: "gemini-3.8-flash",
+      });
+      yield* Ref.set(harness.providers, [
+        providerSnapshot("codex"),
+        providerSnapshot("agy2"),
+        providerSnapshot("agy3", {
+          usageLimits: {
+            checkedAt: "2026-10-04T12:00:00.000Z",
+            windows: [
+              {
+                id: "weekly",
+                kind: "weekly",
+                label: "Weekly",
+                usedPercent: 100,
+                resetsAt: "2099-01-01T00:00:00.000Z",
+              },
+            ],
+          },
+        }),
+        providerSnapshot("agy4"),
+      ]);
+      yield* Ref.set(harness.threadState, { reply: "boom", turnState: "error" });
+      yield* Effect.gen(function* () {
+        const service = yield* GoalService.GoalService;
+        yield* Effect.forkScoped(service.loop);
+        yield* Effect.yieldNow;
+        yield* service.create(
+          settings({
+            concurrency: 1,
+            stopAfterProblems: 1,
+            overseer: true,
+            overseerAgents: [gemini("agy2"), gemini("agy3"), gemini("agy4")],
+          }),
+        );
+        const [worker] = yield* harness.waitFor("thread.create", 1);
+        yield* harness.runAndFinish(threadIdOf(worker));
+        const [, firstOverseer] = yield* harness.waitFor("thread.create", 2);
+        expect(firstOverseer).toMatchObject({ modelSelection: gemini("agy2") });
+        // The first overseer leaves the escalation open; the next turn goes to the next account,
+        // and agy3 is out of usage.
+        yield* harness.runAndFinish(threadIdOf(firstOverseer));
+        const [, , secondOverseer] = yield* harness.waitFor("thread.create", 3);
+        expect(secondOverseer).toMatchObject({ modelSelection: gemini("agy4") });
+      }).pipe(Effect.provide(harness.layer), Effect.scoped);
+    }),
+  );
+
   it.effect("stopping a goal leaves working chats alone and still records them", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness;

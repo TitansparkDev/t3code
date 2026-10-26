@@ -118,6 +118,49 @@ describe("applyAntigravityAcpModelSelection", () => {
       }),
   );
 
+  it.effect("maps a model and its effort to the account's matching effort model", () =>
+    Effect.gen(function* () {
+      const flash = {
+        ...modelConfig,
+        currentValue: "gemini-3.8-flash-low",
+        options: ["low", "medium", "high"].map((effort) => ({
+          value: `gemini-3.8-flash-${effort}`,
+          name: `Gemini 3.8 Flash (${effort})`,
+        })),
+      } satisfies EffectAcpSchema.SessionConfigOption;
+
+      const { runtime, selections } = makeModelRuntime([flash]);
+      const model = yield* applyAntigravityAcpModelSelection({
+        runtime,
+        model: "gemini-3.8-flash",
+        options: [{ id: "effort", value: "high" }],
+        mapError: (cause) => cause,
+      });
+      expect(model).toBe("gemini-3.8-flash-high");
+      expect(selections).toEqual(["gemini-3.8-flash-high"]);
+
+      // An explicit effort outranks the effort in a saved model ID.
+      const { runtime: saved, selections: savedSelections } = makeModelRuntime([flash]);
+      const switched = yield* applyAntigravityAcpModelSelection({
+        runtime: saved,
+        model: "gemini-3.8-flash-high",
+        options: [{ id: "effort", value: "medium" }],
+        mapError: (cause) => cause,
+      });
+      expect(switched).toBe("gemini-3.8-flash-medium");
+      expect(savedSelections).toEqual(["gemini-3.8-flash-medium"]);
+
+      const { runtime: bare, selections: bareSelections } = makeModelRuntime([flash]);
+      const unspecified = yield* applyAntigravityAcpModelSelection({
+        runtime: bare,
+        model: "gemini-3.8-flash",
+        mapError: (cause) => cause,
+      });
+      expect(unspecified).toBe("gemini-3.8-flash-high");
+      expect(bareSelections).toEqual(["gemini-3.8-flash-high"]);
+    }),
+  );
+
   it.effect("accepts exact model IDs from grouped native options", () =>
     Effect.gen(function* () {
       const { runtime, selections } = makeModelRuntime([
