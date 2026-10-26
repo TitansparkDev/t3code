@@ -44,7 +44,7 @@ two different AVDs run together (8.5 GB); a 2 GB-heap Gradle build needs about 3
 admitted by memory and load (`hostCapacity.admitWorker`), not by a fixed count.
 
 **Memory ceilings are soft first, and demands are learned.** An agent's systemd scope is throttled and reclaimed at 8 GiB (`MemoryHigh`)
-and killed only at 14 GiB (`MemoryMax`); it used to die at a flat 8 GiB with the host mostly idle (three Android builds on 2026-10-26).
+and killed only at 14 GiB (`MemoryMax`; this host also sets both in `~/.config/systemd/user/t3code-{claude,codex}-.scope.d/memory.conf`, which override what an older server passes); it used to die at a flat 8 GiB with the host mostly idle (three Android builds on 2026-10-26).
 Every command's peak is sampled from its process tree and from what its cgroup grew by, because Gradle and Metro workers leave the
 process group, and kept per resource set (`resource_peaks`; each run fades older peaks by a fifth) so admission uses what the work
 needs, not the static estimate. A command the kernel killed for memory is queued again with a higher demand (twice for `agentq run`,
