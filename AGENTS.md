@@ -207,6 +207,12 @@ Architecture and its constraints: `docs/internals/overview.md`. Glossary: `docs/
 
 ## Recent request log
 
+- 2026-10-27 — v0.1.11: goal overseers. A queue stall opened a new overseer about every minute without end:
+  finished overseer chats counted as goal progress, so the three-stall cap never tripped, and a stall with no
+  worker gave the overseer no task list, so `unblock` changed nothing. Stalls now end the goal after three, the
+  packet carries the queue briefing, and `t3_escalation_resolve` takes `taskIds` to unblock or retry held tasks.
+  With no overseer models chosen, overseers rotate over Antigravity accounts after the first (Gemini 3.8 Flash
+  High), skipping accounts out of usage, then Chat Agents. `t3_goal_read` no longer fails on a restarted goal.
 - 2026-10-26 — v0.1.10: goal-worker audit and upstream merge (299 commits). Every overseer had run on
   Chat Agents and died on the locked desktop keyring while each failure spent an escalation round
   (thread items were counted as progress); goals now take rotating overseer models with usage checks

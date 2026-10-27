@@ -237,6 +237,9 @@ export function stuckSinceProgress(goal: Goal): number {
   ).length;
 }
 
+/** The model every default overseer runs on; the account's catalog still decides if it is offered. */
+const OVERSEER_GEMINI_MODEL = "gemini-3.8-flash-high";
+
 /** How long a login hold lasts when nothing ends it: starting the goal again clears it first. */
 const LOGIN_HOLD_MS = 365 * 24 * 60 * 60 * 1000;
 
@@ -2188,8 +2191,10 @@ export const make = Effect.gen(function* () {
 
   /**
    * Who should oversee. The goal's overseer models take turns, starting after the last one used,
-   * so one account's usage is not spent alone; without any, Chat Agents runs it when ready (it is
-   * not tied to the goal's own usage). Otherwise the goal's first agent that can start a chat now.
+   * so one account's usage is not spent alone. With none chosen, the overseers are Gemini 3.8 Flash
+   * (High) on the Antigravity accounts after the first (the first stays for the person's own use),
+   * then Chat Agents. Each is skipped while out of usage, paused or signed out. Otherwise the goal's
+   * first agent that can start a chat now.
    */
   const overseerAgent = Effect.fn("GoalService.overseerAgent")(function* (goal: Goal) {
     const now = yield* nowMillis;
@@ -2208,17 +2213,30 @@ export const make = Effect.gen(function* () {
       );
     const chosen = goal.overseerAgents ?? [];
     const runs = goal.chats.filter((chat) => chat.overseer).length;
-    const candidates =
-      chosen.length > 0
-        ? chosen.map((_, step) => chosen[(runs + step) % chosen.length]!)
-        : providers.flatMap((provider) => {
-            const model = provider.models[0]?.slug;
-            // Chat Agents is a local ACP command now, so it is known by its instance id.
-            return (provider.driver === "chatAgents" || provider.instanceId === "chatAgents") &&
-              model
-              ? [{ instanceId: provider.instanceId, model }]
-              : [];
-          });
+    const turns = <T>(list: ReadonlyArray<T>) =>
+      list.map((_, step) => list[(runs + step) % list.length]!);
+    const geminiModel = (provider: ServerProvider) =>
+      provider.models.length === 0 ||
+      provider.models.some((model) => model.slug === OVERSEER_GEMINI_MODEL)
+        ? OVERSEER_GEMINI_MODEL
+        : provider.models[0]!.slug;
+    const accounts = providers
+      .filter((provider) => provider.driver === "antigravity")
+      .toSorted((left, right) => left.instanceId.localeCompare(right.instanceId));
+    const gemini = turns(
+      (accounts.length > 1
+        ? accounts.filter((provider) => provider.instanceId !== "antigravity")
+        : accounts
+      ).flatMap((provider) => [{ instanceId: provider.instanceId, model: geminiModel(provider) }]),
+    );
+    // Chat Agents is a local ACP command now, so it is known by its instance id.
+    const chatAgents = providers.flatMap((provider) => {
+      const model = provider.models[0]?.slug;
+      return (provider.driver === "chatAgents" || provider.instanceId === "chatAgents") && model
+        ? [{ instanceId: provider.instanceId, model }]
+        : [];
+    });
+    const candidates = chosen.length > 0 ? turns(chosen) : [...gemini, ...chatAgents];
     const modelSelection = candidates.find(free);
     if (modelSelection) return { agentIndex: 0, modelSelection } as const;
     const unavailable = yield* unavailableAgents(goal);
