@@ -237,6 +237,28 @@ describe("resource broker queue", () => {
     expect(broker.get(compiler.id)!.state).toBe("granted");
   });
 
+  it("admits a combined request whose declared demand exceeds what the machine can ever free", () => {
+    // 25430 MB total, 1000 reserve: android + heavy_build declare 8000 + 8192, more than half the machine.
+    const { broker } = makeBroker({
+      free: { mb: 15_000 },
+      config: () => ({
+        ...CONFIG,
+        resources: {
+          ...CONFIG.resources,
+          android: { capacity: 2, memoryMb: 8_000 },
+          heavy_build: { capacity: 2, memoryMb: 8_192 },
+        },
+      }),
+    });
+    const gate = broker.enqueue({
+      resources: [{ name: "android" }, { name: "heavy_build" }],
+      pid: process.pid,
+      label: "gate",
+    });
+    broker.pump();
+    expect(broker.get(gate.id)!.state).toBe("granted");
+  });
+
   it("lets a small request backfill but stops everything behind a ticket that has waited too long", () => {
     const { broker, clock, free } = makeBroker({ free: { mb: 4_500 } });
     const big = broker.enqueue({

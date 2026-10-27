@@ -462,6 +462,12 @@ export const RAMP_MS = 90_000;
 const KEEP_FINISHED_MS = 24 * 3600_000;
 export const DEFAULT_WAIT_MS = 3 * 3600_000;
 const MAX_JOB_ATTEMPTS = 3;
+/**
+ * A single request is admitted on at most this share of the machine's usable memory. Declared demands
+ * add up per resource (an emulator plus a Gradle build is 13.7 GB), and one that exceeds what the other
+ * agents leave free would wait forever and, once aged, block every ticket behind it.
+ */
+const MAX_ADMISSION_SHARE = 0.5;
 /** A measured peak above this is treated as a runaway and not trusted as the next demand. */
 const MAX_OBSERVED_PEAK_MB = 16_384;
 
@@ -962,7 +968,10 @@ export class ResourceBroker {
           }
           slotsFor[item.name] = free.slice(0, item.units);
         }
-        const memoryMb = this.memoryOf(needs, config);
+        const memoryMb = Math.min(
+          this.memoryOf(needs, config),
+          Math.floor((host.totalMb - config.reserveMb) * MAX_ADMISSION_SHARE),
+        );
         const pressure = (host.memoryPressure ?? 0) >= 10 || host.swapPressure === true;
         const memoryFits = memoryMb === 0 || (!pressure && freeMb >= memoryMb);
         if (fits && memoryFits) {
