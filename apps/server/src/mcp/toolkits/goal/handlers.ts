@@ -103,7 +103,9 @@ const digest = (chat: GoalChat): GoalChatDigest => ({
   ...present("overseer", chat.overseer),
 });
 
-const detail = (goal: Goal): GoalDetail => ({ ...goal, chats: goal.chats.map(digest) });
+// A restarted goal keeps keys set to undefined (`detail`, `completedAt`); MCP results must be JSON.
+const detail = (goal: Goal): GoalDetail =>
+  JSON.parse(JSON.stringify({ ...goal, chats: goal.chats.map(digest) }));
 
 /** The settings a goal was saved with, without its run state. */
 const settingsOf = (goal: Goal): GoalSettings =>

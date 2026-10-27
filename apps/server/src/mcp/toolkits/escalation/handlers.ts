@@ -42,6 +42,7 @@ export const layer = McpToolAccess.toLayer(EscalationToolkit, {
             note: input.note,
             ...(input.guidance !== undefined ? { guidance: input.guidance } : {}),
             ...(input.taskId !== undefined ? { taskId: input.taskId } : {}),
+            ...(input.taskIds !== undefined ? { taskIds: input.taskIds } : {}),
           },
           "overseer",
         )

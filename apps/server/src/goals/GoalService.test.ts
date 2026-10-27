@@ -1185,6 +1185,29 @@ it.layer(NodeServices.layer)("GoalService", (it) => {
   );
 });
 
+it("a finished overseer is not progress, so repeated stalls reach the stuck cap", () => {
+  const chat = (overseer: boolean, minute: number) => ({
+    status: "completed",
+    overseer,
+    startedAt: `2026-10-27T01:0${minute}:00.000Z`,
+    completedAt: `2026-10-27T01:0${minute}:30.000Z`,
+  });
+  const stuck = (minute: number) => ({
+    kind: "stuck",
+    createdAt: `2026-10-27T01:0${minute}:00.000Z`,
+  });
+  const goal = (chats: Array<ReturnType<typeof chat>>) =>
+    ({
+      createdAt: "2026-10-27T01:00:00.000Z",
+      chats,
+      escalations: [stuck(1), stuck(3), stuck(5)],
+    }) as never;
+  expect(GoalService.stuckSinceProgress(goal([chat(true, 2), chat(true, 4), chat(true, 6)]))).toBe(
+    3,
+  );
+  expect(GoalService.stuckSinceProgress(goal([chat(false, 4)]))).toBe(1);
+});
+
 it("picks the model furthest below its own count, and nothing once lanes or the cap are used", () => {
   const chat = (status: string, agentIndex: number) => ({
     status,

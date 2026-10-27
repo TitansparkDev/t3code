@@ -38,7 +38,7 @@ const EscalationListTool = Tool.make("t3_escalation_list", {
 const EscalationReadTool = Tool.make("t3_escalation_read", {
   ...shared,
   description:
-    "Read one escalation as a packet: the goal's instructions, the worker chat (task, branch, worktree, attention note), its last replies, the queue briefing for its task, earlier escalations for that worker, and the goal's guidance. Investigate with t3_repo_* and t3_thread_read, then act with t3_escalation_reply or t3_escalation_resolve.",
+    "Read one escalation as a packet: the goal's instructions, the worker chat (task, branch, worktree, attention note), its last replies, the queue briefing for its task (or, for a whole-goal stall, the blocked and failed tasks), earlier escalations for that worker, and the goal's guidance. Investigate with t3_repo_* and t3_thread_read, then act with t3_escalation_reply or t3_escalation_resolve.",
   parameters: Schema.Struct({ id: Schema.String }),
   success: GoalEscalationPacket,
 })
@@ -59,13 +59,14 @@ const EscalationReplyTool = Tool.make("t3_escalation_reply", {
 const EscalationResolveTool = Tool.make("t3_escalation_resolve", {
   ...shared,
   description:
-    "Resolve an escalation without a reply. retry or unblock continues the worker (or re-queues its task, given taskId); give-up hands the worker's work back as a failure; needs-person asks the person to act and says exactly what they must do in note. guidance replaces the note given to workers that start next.",
+    "Resolve an escalation without a reply. retry or unblock continues the worker (or re-queues its task, given taskId); for a whole-goal stall, pass taskIds to unblock the blocked tasks (or retry the failed ones) named in the queue briefing; give-up hands the worker's work back as a failure; needs-person asks the person to act and says exactly what they must do in note. guidance replaces the note given to workers that start next.",
   parameters: Schema.Struct({
     id: Schema.String,
     action: GoalEscalationResolveAction,
     note: Schema.String.check(Schema.isMaxLength(4000)),
     guidance: Schema.optional(Schema.String.check(Schema.isMaxLength(4000))),
     taskId: Schema.optional(Schema.String),
+    taskIds: Schema.optional(Schema.Array(Schema.String)),
   }),
   success: Schema.Struct({ id: Schema.String }),
 }).annotate(Tool.Destructive, false);

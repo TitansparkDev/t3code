@@ -183,6 +183,7 @@ export class GoalService extends Context.Service<
         readonly note: string;
         readonly guidance?: string | undefined;
         readonly taskId?: string | undefined;
+        readonly taskIds?: ReadonlyArray<string> | undefined;
       },
       by: EscalationActor,
     ) => Effect.Effect<void, GoalEscalationError>;
@@ -224,11 +225,11 @@ const isOpenEscalation = (escalation: GoalEscalation) =>
 type EscalationActor = "overseer" | "person";
 
 /** Whole-goal escalations raised since the goal last finished a chat, or was started. */
-function stuckSinceProgress(goal: Goal): number {
+export function stuckSinceProgress(goal: Goal): number {
   const progressAt = Math.max(
     Date.parse(goal.restartedAt ?? goal.createdAt),
     ...goal.chats
-      .filter((chat) => chat.status === "completed")
+      .filter((chat) => chat.status === "completed" && !chat.overseer)
       .map((chat) => Date.parse(chat.completedAt ?? chat.startedAt)),
   );
   return (goal.escalations ?? []).filter(
@@ -247,7 +248,7 @@ function overseerPrompt(goal: Goal, count: number): string {
   return [
     "T3-OVERSEER/1",
     `You are the overseer for T3 Code goal "${goal.name}" (goalId ${goal.id}). ${count} escalation(s) are open.`,
-    `Use the T3 tools: call t3_escalation_list with goalId "${goal.id}", then t3_escalation_read for each. Investigate with t3_repo_read_file / t3_repo_search / t3_repo_git (use the projectId and worktreePath in the packet) and t3_thread_read. Then act on every escalation with exactly one of: t3_escalation_reply (send the stuck worker precise instructions in its own conversation, preferred), or t3_escalation_resolve with action retry | unblock | give-up | needs-person. Use needs-person only when a human must act (missing credential, irreversible product decision); say exactly what they must do. Never edit, merge, clean or take over another worker's branch or worktree. Finish with a one-paragraph summary.`,
+    `Use the T3 tools: call t3_escalation_list with goalId "${goal.id}", then t3_escalation_read for each. Investigate with t3_repo_read_file / t3_repo_search / t3_repo_git (use the projectId and worktreePath in the packet) and t3_thread_read. Then act on every escalation with exactly one of: t3_escalation_reply (send the stuck worker precise instructions in its own conversation, preferred), or t3_escalation_resolve with action retry | unblock | give-up | needs-person. A whole-goal stall has no worker: its packet's queueBriefing lists the blocked and failed tasks, so read why each is held and resolve with unblock or retry and taskIds naming the ones that should run (a task held for a stale or already-settled reason, never an unmet real prerequisite). Use needs-person only when a human must act (missing credential, irreversible product decision); say exactly what they must do. Never edit, merge, clean or take over another worker's branch or worktree. Finish with a one-paragraph summary.`,
   ].join("\n");
 }
 
@@ -2652,7 +2653,7 @@ export const make = Effect.gen(function* () {
       .slice(-3)
       .map((message) => message.text.slice(-3000));
     let queueBriefing: string | undefined;
-    if (goal.agentQueue && chat?.taskId !== undefined) {
+    if (goal.agentQueue && (chat?.taskId !== undefined || !chat)) {
       queueBriefing = yield* queue.briefing(goal.agentQueue, escalation.reason).pipe(
         Effect.map((text) => text.slice(0, 8000)),
         Effect.orElseSucceed(() => undefined),
@@ -2728,6 +2729,7 @@ export const make = Effect.gen(function* () {
       readonly note: string;
       readonly guidance?: string | undefined;
       readonly taskId?: string | undefined;
+      readonly taskIds?: ReadonlyArray<string> | undefined;
     },
     by: EscalationActor,
   ) {
@@ -2740,6 +2742,7 @@ export const make = Effect.gen(function* () {
     }
     if (input.action === "retry" || input.action === "unblock") {
       const taskId = input.taskId ?? escalation.taskId ?? chat?.taskId;
+      const wholeGoalStall = chat === undefined;
       if (held && chat) {
         // The same conversation carries on with the note as its instructions.
         yield* updateChat(goal.id, chat.threadId, { escalationId: undefined });
@@ -2748,13 +2751,40 @@ export const make = Effect.gen(function* () {
           yield* updateChat(goal.id, chat.threadId, { escalationId: id });
           return yield* new GoalEscalationError({ reason: "not-sent" });
         }
-      } else if (goal.agentQueue && taskId !== undefined) {
+      } else if (
+        goal.agentQueue &&
+        (taskId !== undefined || input.taskIds !== undefined || wholeGoalStall)
+      ) {
         const binding = goal.agentQueue;
-        const change =
-          input.action === "retry"
-            ? queue.retryTask(binding, taskId)
-            : queue.unblockTask(binding, taskId);
-        yield* change.pipe(Effect.catch(logQueueError("goals.escalation-task-failed")));
+        // A stall of the whole goal names no task: the held ones are the ones to release.
+        const targets =
+          input.taskIds ??
+          (taskId !== undefined
+            ? [taskId]
+            : yield* queue.status(binding).pipe(
+                Effect.map((status) =>
+                  status.problems
+                    .filter((p) => p.status === (input.action === "retry" ? "failed" : "blocked"))
+                    .map((p) => p.taskId),
+                ),
+                Effect.orElseSucceed(() => [] as ReadonlyArray<string>),
+              ));
+        yield* Effect.forEach(targets, (target) =>
+          (input.action === "retry"
+            ? queue.retryTask(binding, target)
+            : queue.unblockTask(binding, target)
+          ).pipe(
+            Effect.tap((result) =>
+              result.success
+                ? Effect.void
+                : Effect.logWarning("goals.escalation-task-refused", {
+                    taskId: target,
+                    message: result.message,
+                  }),
+            ),
+            Effect.catch(logQueueError("goals.escalation-task-failed")),
+          ),
+        );
       } else if (chat && chat.status !== "running") {
         yield* continueChat(goal, chat, input.note || "Try again.");
       }

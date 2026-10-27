@@ -1993,6 +1993,33 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
   );
 
   it.effect(
+    "an overseer that resolves a whole-goal escalation with unblock releases the tasks the queue holds",
+    () =>
+      Effect.gen(function* () {
+        const flow = yield* makeFlow(planWith([{ id: "T1" }]));
+        const service = yield* flow.startServer;
+        yield* Effect.forkScoped(service.loop);
+        yield* Effect.yieldNow;
+        yield* service.create(settingsFor());
+        yield* flow.waitFor("thread.create", 1);
+        const held = openQueueDatabase({ gitCommonDir: flow.repo.gitCommonDir });
+        held
+          .prepare("UPDATE tasks SET status = 'blocked', failure_class = NULL WHERE id = 'T1'")
+          .run();
+        held.close();
+        const goal = yield* flow.goalOf(service);
+        const escalation = yield* service.openEscalation(goal.id, undefined, "Nothing can start.");
+
+        yield* service.resolveEscalation(
+          escalation.id,
+          { action: "unblock", note: "T1 was held for a settled reason." },
+          "overseer",
+        );
+        expect((yield* flow.taskRow("T1")).status).toBe("pending");
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
     "a worker that explains a problem and ends with a bare NEEDS ATTENTION keeps its explanation on the parked task",
     () =>
       Effect.gen(function* () {

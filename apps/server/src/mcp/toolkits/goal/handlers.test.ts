@@ -101,6 +101,25 @@ it.effect("lists goals for a read-only client", () =>
   }),
 );
 
+it.effect("reads a restarted goal whose cleared fields are still present as undefined", () =>
+  Effect.gen(function* () {
+    const { dependencies, stored } = clientLayer("read-only");
+    stored.push({
+      ...draftGoal("goal-restarted"),
+      detail: undefined,
+      completedAt: undefined,
+    } as never);
+    const toolkit = yield* handled(dependencies);
+    const result = lastResult(
+      yield* toolkit
+        .handle("t3_goal_read", { goalId: GoalId.make("goal-restarted") })
+        .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies)),
+    );
+    expect(result).toMatchObject({ id: "goal-restarted" });
+    expect(Object.values(result as object)).not.toContain(undefined);
+  }),
+);
+
 it.effect("refuses to create a goal for a read-only client", () =>
   Effect.gen(function* () {
     const { dependencies, created } = clientLayer("read-only");
