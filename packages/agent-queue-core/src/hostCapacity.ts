@@ -94,11 +94,8 @@ export function readHost(): HostSnapshot {
       const now = Date.now();
       const counters = { in: pages("pswpin"), out: pages("pswpout"), at: now };
       const previous = previousSwapCounters;
-      previousSwapCounters = counters;
-      swapPressure =
-        previous !== undefined &&
-        (counters.in > previous.in || counters.out > previous.out) &&
-        now - previous.at <= 30_000;
+      if (previous === undefined || now - previous.at >= 1_000) previousSwapCounters = counters;
+      swapPressure = previous !== undefined && swapIsThrashing(previous, counters);
     } catch {
       // Cgroups, PSI and vmstat are not available on every Linux host/container.
     }
@@ -164,7 +161,19 @@ export function cgroupOomKills(): number | undefined {
   return Number(/^oom_kill (\d+)/m.exec(events)?.[1] ?? 0);
 }
 
-let previousSwapCounters: { in: number; out: number; at: number } | undefined;
+type SwapCounters = { in: number; out: number; at: number };
+
+/** Below this rate (about 5 MB/s) swap traffic is idle pages moving, not the machine starving. */
+export const SWAP_THRASH_PAGES_PER_SECOND = 1_280;
+
+export function swapIsThrashing(previous: SwapCounters, current: SwapCounters): boolean {
+  const seconds = (current.at - previous.at) / 1000;
+  if (seconds < 1 || seconds > 30) return false;
+  const pages = current.in - previous.in + (current.out - previous.out);
+  return pages / seconds >= SWAP_THRASH_PAGES_PER_SECOND;
+}
+
+let previousSwapCounters: SwapCounters | undefined;
 
 /** Parse cgroup-v2 byte limits; `max`, missing controllers and invalid values are unbounded. */
 export function parseCgroupMemoryValue(value: string): number | undefined {

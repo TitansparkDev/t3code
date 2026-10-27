@@ -6,6 +6,7 @@ import {
   sharedBudgetLevels,
   parseCgroupMemoryValue,
   admitWorker,
+  swapIsThrashing,
   type HostSnapshot,
 } from "../src/hostCapacity.ts";
 
@@ -97,6 +98,13 @@ describe("effective cgroup memory", () => {
     expect(admitWorker({ snapshot: { ...host, memoryPressure: 12 }, running: 2 }).ok).toBe(false);
     expect(admitWorker({ snapshot: { ...host, swapPressure: true }, running: 2 }).ok).toBe(false);
     expect(admitWorker({ snapshot: host, running: 2 }).ok).toBe(true);
+  });
+
+  it("treats a trickle of swap I/O as idle pages and a sustained rate as thrashing", () => {
+    const base = { in: 1_000, out: 1_000, at: 0 };
+    expect(swapIsThrashing(base, { in: 1_040, out: 1_010, at: 10_000 })).toBe(false);
+    expect(swapIsThrashing(base, { in: 30_000, out: 1_000, at: 10_000 })).toBe(true);
+    expect(swapIsThrashing(base, { in: 90_000, out: 1_000, at: 60_000 })).toBe(false);
   });
 
   it("waits while the disk is below its reserve, whatever is filling it", () => {
