@@ -207,6 +207,11 @@ Architecture and its constraints: `docs/internals/overview.md`. Glossary: `docs/
 
 ## Recent request log
 
+- 2026-10-27 — v0.1.12: goal gate stall. A combined Android gate (emulator + Gradle, 13.7 GB declared)
+  waited 17 minutes because broker admission counted declared memory and 3 GB parked in swap always
+  tripped "active swap I/O"; one request is now admitted on at most half of the usable memory, and swap
+  counts as pressure only at a sustained rate. Host: VM raised 26 to 30 GiB, memory reserve 6 to 4 GiB,
+  `heavy_build` 4.5 GB (type-checks still declare 8 GiB each), Ubuntu-AI on Unraid set to autostart.
 - 2026-10-27 — v0.1.11: goal overseers. A queue stall opened a new overseer about every minute without end:
   finished overseer chats counted as goal progress, so the three-stall cap never tripped, and a stall with no
   worker gave the overseer no task list, so `unblock` changed nothing. Stalls now end the goal after three, the
