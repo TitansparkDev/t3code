@@ -1265,7 +1265,7 @@ export const make = Effect.gen(function* () {
       (left, right) =>
         Date.parse(left.since) - Date.parse(right.since) || left.taskId.localeCompare(right.taskId),
     );
-    const phaseReason =
+    const phaseReason: NonNullable<NonNullable<Goal["queueProgress"]>["activity"]>["reason"] =
       goal.status === "complete"
         ? "complete"
         : !resourceProgress.inspectionAvailable && ownedRunningChats.length > 0
@@ -3453,7 +3453,7 @@ export const make = Effect.gen(function* () {
     if (!watch.seenRunning && session.status !== "error") return;
     // The turn was seen running after the last resume and has now ended: it is that turn's end.
     yield* finishChat(watch.goalId, event.threadId, undefined, { vouched: true });
-  }).pipe(lock.withPermits(1));
+  }, lock.withPermits(1));
 
   /** Chats that paused on background commands are finished once those end and the model is idle. */
   const finishDeferred = Effect.gen(function* () {

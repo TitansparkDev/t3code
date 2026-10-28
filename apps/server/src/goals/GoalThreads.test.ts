@@ -116,7 +116,7 @@ it.effect("reuses the command and message ids for a replayed resource delivery",
         }),
       ),
     );
-    const threads = yield* GoalThreads.GoalThreads.pipe(
+    const threads = yield* GoalThreads.pipe(
       Effect.provide(goalThreadsLayer.pipe(Layer.provide(dependencies))),
     );
     const input = {
