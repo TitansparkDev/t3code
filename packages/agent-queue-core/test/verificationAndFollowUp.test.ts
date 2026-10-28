@@ -7,9 +7,11 @@ import { openQueueDatabase } from "../src/db.ts";
 import { attributeFailure } from "../src/baseline.ts";
 import { importPlanFile } from "../src/planImport.ts";
 import { addFollowUpTask } from "../src/overseerRepairs.ts";
+import { reviveHeldTasks } from "../src/failures.ts";
 import { parsePlanMarkdown } from "../src/planGraph.ts";
 import { runVerification } from "../src/verifier.ts";
 import { runSpec } from "../src/verificationSpec.ts";
+import { processIsLive } from "../src/resourceBroker.ts";
 import { teardownWorktree } from "../src/worktreeManager.ts";
 import { createTestGitRepo, createTestWorktree, execCommand } from "./harness/gitHarness.ts";
 
@@ -93,8 +95,7 @@ describe("runVerification", () => {
       expect(result).toMatchObject({ passed: false, outcome: "timed-out", exitCode: 124 });
       expect(result.stderrSnippet).toContain("not a pass");
       const pid = Number((await NodeFSP.readFile(pidFile, "utf8")).trim());
-      await new Promise((resolve) => setTimeout(resolve, 200));
-      expect(() => process.kill(pid, 0)).toThrow();
+      expect(processIsLive(pid)).toBe(false);
     } finally {
       await repo.cleanup();
     }
@@ -204,7 +205,7 @@ describe("follow-up tasks", () => {
     try {
       await NodeFSP.writeFile(
         NodePath.join(repo.rootDir, "PLAN.md"),
-        "# P\n\n- [ ] **RP1 — Thing.**\n  - Depends on: none.\n  - Scope: src/.\n",
+        "# P\n\n- [ ] **RP1 — Thing.**\n  - Depends on: none.\n  - Scope: src/.\n- [ ] **RP2 — Another.**\n  - Depends on: none.\n  - Scope: src/.\n- [ ] **RP3 — Waiting.**\n  - Depends on: RP1, RP2.\n  - Scope: src/.\n",
       );
       await execCommand("git", ["add", "PLAN.md"], repo.rootDir);
       await execCommand("git", ["commit", "-m", "plan"], repo.rootDir);
@@ -214,13 +215,20 @@ describe("follow-up tasks", () => {
         planId: imported.planId,
         parentTaskId: "RP1",
         kind: "decision" as const,
+        blocking: true,
         title: "Needs a person after RP1",
         note: "Deploying needs an owner decision.",
+        failureClass: "prerequisite" as const,
+        fingerprint: "before",
       };
       const first = addFollowUpTask(db, input);
       const again = addFollowUpTask(db, input);
       expect(first).toEqual({ taskId: "RP1-FU1", created: true });
       expect(again).toEqual({ taskId: "RP1-FU1", created: false });
+      expect(addFollowUpTask(db, { ...input, parentTaskId: "RP2" })).toEqual({
+        taskId: first.taskId,
+        created: false,
+      });
       const rows = db
         .prepare("SELECT id, status, scope_patterns FROM tasks ORDER BY id")
         .all() as Array<{
@@ -231,8 +239,28 @@ describe("follow-up tasks", () => {
       expect(rows.map((row) => [row.id, row.status])).toEqual([
         ["RP1", "pending"],
         ["RP1-FU1", "blocked"],
+        ["RP2", "pending"],
+        ["RP3", "pending"],
       ]);
       expect(rows[1]!.scope_patterns).toBe(rows[0]!.scope_patterns);
+      const waiting = db.prepare("SELECT dependencies FROM tasks WHERE id = 'RP3'").get() as {
+        dependencies: string;
+      };
+      expect(JSON.parse(waiting.dependencies)).toContain(first.taskId);
+
+      const external = addFollowUpTask(db, {
+        ...input,
+        note: "Production still needs an operator approval.",
+        failureClass: "external",
+      });
+      expect(reviveHeldTasks(db, imported.planId, () => "after")).toContain(external.taskId);
+      const decisions = db
+        .prepare("SELECT id, status FROM tasks WHERE id LIKE 'RP1-FU%' ORDER BY id")
+        .all() as Array<{ id: string; status: string }>;
+      expect(decisions).toEqual([
+        { id: first.taskId, status: "completed" },
+        { id: external.taskId, status: "pending" },
+      ]);
       db.close();
     } finally {
       await repo.cleanup();
@@ -252,12 +280,26 @@ describe("baseline-repair follow-ups", () => {
       await execCommand("git", ["commit", "-m", "plan"], repo.rootDir);
       const imported = importPlanFile(repo.rootDir, "PLAN.md");
       const db = openQueueDatabase({ gitCommonDir: repo.gitCommonDir });
+      const producer = {
+        id: "assemble",
+        run: "gradle assembleDebug",
+        cwd: ".",
+        timeoutSeconds: 60,
+        requires: [],
+        expectExitCode: 0,
+        produces: ["app/build/outputs/apk/debug/app.apk"],
+        reuseInputs: ["app/src"],
+      };
       const red = {
+        id: "connected",
         run: "gradle connected",
         cwd: ".",
         timeoutSeconds: 60,
         requires: [],
         expectExitCode: 0,
+        dependsOn: ["assemble"],
+        consumes: ["app/build/outputs/apk/debug/app.apk"],
+        reuseInputs: ["app/src/androidTest"],
       };
       const input = {
         planId: imported.planId,
@@ -265,8 +307,18 @@ describe("baseline-repair follow-ups", () => {
         blocking: true,
         title: "Fix a check that already failed",
         note: "It fails on the integration branch.",
-        checks: [red],
-        dedupeKey: "baseline-check:abc",
+        checks: [producer, red],
+        repairEvidence: {
+          failedCheckId: red.id,
+          producerDependencyIds: ["assemble"],
+          inputFingerprint: "a".repeat(64),
+          diagnostics: {
+            failureKind: "exit-code",
+            failureReason: "The check exited unsuccessfully.",
+            diagnosticExcerpt: "x".repeat(3000),
+            diagnosticLogPath: "/private/agentqueue/verify.log",
+          },
+        },
       };
       const first = addFollowUpTask(db, { ...input, parentTaskId: "RP1" });
       const second = addFollowUpTask(db, { ...input, parentTaskId: "RP2" });
@@ -279,7 +331,35 @@ describe("baseline-repair follow-ups", () => {
       const spec = db
         .prepare("SELECT verification_spec FROM tasks WHERE id = ?")
         .get(first.taskId) as { verification_spec: string };
-      expect(JSON.parse(spec.verification_spec).checks).toEqual([red]);
+      expect(JSON.parse(spec.verification_spec).checks).toEqual([producer, red]);
+      const created = db
+        .prepare(
+          "SELECT payload_json FROM task_events WHERE task_id = ? AND event_type = 'task_followup_created'",
+        )
+        .get(first.taskId) as { payload_json: string };
+      expect(JSON.parse(created.payload_json)).toMatchObject({
+        dedupeKey: `repair-input:${input.repairEvidence.inputFingerprint}`,
+        repairEvidence: {
+          failedCheckId: red.id,
+          producerDependencyIds: red.dependsOn,
+          inputFingerprint: input.repairEvidence.inputFingerprint,
+          diagnostics: {
+            failureKind: "exit-code",
+            failureReason: "The check exited unsuccessfully.",
+            diagnosticExcerpt: "x".repeat(2000),
+            diagnosticLogPath: "/private/agentqueue/verify.log",
+          },
+        },
+      });
+      const changedInputs = addFollowUpTask(db, {
+        ...input,
+        parentTaskId: "RP2",
+        repairEvidence: {
+          ...input.repairEvidence,
+          inputFingerprint: "b".repeat(64),
+        },
+      });
+      expect(changedInputs).toEqual({ taskId: "RP2-FU1", created: true });
       db.close();
     } finally {
       await repo.cleanup();
