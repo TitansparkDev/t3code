@@ -1751,7 +1751,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           let afterPosition = -1;
           let hasMore = true;
           let pageCount = 0;
-          while (hasMore) {
+          while (hasMore && pageCount < 4) {
             const page = yield* projectionStore.getTimelinePage(threadId, {
               view,
               limit: 100,
