@@ -36,6 +36,12 @@ import { advertisedJsonSchema } from "../../apps/server/src/mcp/advertisedJsonSc
 import { EnvironmentId, ORCHESTRATOR_MCP_RUNNING_TASK_NEXT, ThreadId } from "@t3tools/contracts";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
+import {
+  queueResumePrompt,
+  queueWorkerPrompt,
+  type QueueResumeReason,
+  type QueueTaskAssignment,
+} from "../../packages/contracts/src/goals.ts";
 import { buildCodexAdditionalContext } from "../../apps/server/src/provider/CodexDeveloperInstructions.ts";
 import { AttachmentToolkit } from "../../apps/server/src/mcp/toolkits/attachment/tools.ts";
 import { DeviceToolkit } from "../../apps/server/src/mcp/toolkits/device/tools.ts";
@@ -63,6 +69,7 @@ const MODELS = {
   "claude-opus-5-5": "Opus 5.5",
   "gpt-6.1-sol": "GPT-6.1 Sol",
   "gpt-6-astra": "GPT-6 Astra",
+  "gpt-6-luna": "GPT-6 Luna",
 } as const;
 type Model = keyof typeof MODELS;
 /** GPT models replay a Codex capture through CLIProxyAPI, the rest a Claude Code capture. */
@@ -107,6 +114,33 @@ const PriorToolCall = Schema.Struct({
   tool: Schema.String,
   input: Schema.Unknown,
   result: Schema.Unknown,
+});
+
+const GoalPrompt = Schema.Struct({
+  kind: Schema.Literals(["replacement-worker", "resource-results", "follow-up"]),
+  goal: Schema.Struct({
+    name: Schema.String,
+    prompt: Schema.String,
+    concurrency: Schema.Number,
+    guidance: Schema.optional(Schema.String),
+  }),
+  task: Schema.StructWithRest(
+    Schema.Struct({
+      taskId: Schema.String,
+      title: Schema.String,
+      description: Schema.NullOr(Schema.String),
+      verificationCommand: Schema.NullOr(Schema.String),
+      worktreePath: Schema.String,
+      branch: Schema.String,
+      baseBranch: Schema.String,
+      planPath: Schema.String,
+      retryCount: Schema.Number,
+      lastFailure: Schema.NullOr(Schema.String),
+      repair: Schema.NullOr(Schema.String),
+    }),
+    Rest,
+  ),
+  results: Schema.optional(Schema.Array(Schema.String)),
 });
 
 /**
@@ -192,6 +226,8 @@ export const McpToolUseCase = Schema.Struct({
     world: Schema.optional(McpToolUseWorld),
     /** Canned tool results by bare name, T3 or native. `"default"` uses the runner's result. */
     mocks: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+    /** An actual goal instruction generated from the contracts source for this case. */
+    goalPrompt: Schema.optional(GoalPrompt),
     /** Regexes on one part of a shell command. A match wins over the shell simulator. */
     shellMocks: Schema.optional(
       Schema.Array(Schema.Struct({ match: Schema.String, output: Schema.String })),
@@ -742,7 +778,24 @@ export const buildMessages = (sample: Sample) => {
       ? testCase.prompt
       : projectComposerContextForProvider({ text: testCase.prompt, ...testCase.promptContext });
   const childPrompt = () => taskPrompt({ task: prompt, role: delegateRole });
-  push("user", text(role === "delegated-child" ? childPrompt() : prompt));
+  const goalPrompt = testCase.setup.goalPrompt;
+  const goalInstruction = goalPrompt
+    ? goalPrompt.kind === "replacement-worker"
+      ? queueWorkerPrompt(goalPrompt.goal, goalPrompt.task as QueueTaskAssignment)
+      : queueResumePrompt(
+          goalPrompt.task as QueueTaskAssignment,
+          goalPrompt.kind === "resource-results"
+            ? ({
+                kind: "resource-results",
+                results: goalPrompt.results ?? [],
+              } satisfies QueueResumeReason)
+            : ({ kind: "follow-up" } satisfies QueueResumeReason),
+        )
+    : undefined;
+  const userPrompt = [goalInstruction, role === "delegated-child" ? childPrompt() : prompt]
+    .filter(Boolean)
+    .join("\n\n");
+  push("user", text(userPrompt));
   return messages;
 };
 

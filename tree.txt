@@ -27243,6 +27243,7 @@ docs/user/welcome-wizard.md
 evals/.gitignore
 evals/README.md
 evals/mcp-tool-use/README.md
+evals/mcp-tool-use/cases/goals.ndjson
 evals/mcp-tool-use/cases/orchestration.ndjson
 evals/mcp-tool-use/cases/pull-requests.ndjson
 evals/mcp-tool-use/cases/visual-preview.ndjson

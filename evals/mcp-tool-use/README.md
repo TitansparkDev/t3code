@@ -10,10 +10,12 @@ The model sees what it sees in T3 Code. A trimmed capture of a real harness turn
 cd evals
 pnpm mcp-tool-use --case review-round-uses-thread-send --samples 1 --out runs/check
 pnpm mcp-tool-use --model claude-opus-5-5 --out runs/opus
+pnpm mcp-tool-use --model gpt-6-luna --case replacement-worker-uses-current-handoff --samples 3 --concurrency 1 --out runs/goal-handoff
 ```
 
 - `ANTHROPIC_API_KEY` in the repo root `.env` pays for Claude models and the Haiku shell simulator.
 - Codex models (`gpt-*` in `MODELS` in `run.ts`) go through a CLIProxyAPI server, set up as the `vibeproxy` model provider in `~/.codex/config.toml`. Keep the proxy under about 12 samples in flight across all runs.
+- Goal prompt cases use the goal prompt builders from `packages/contracts/src/goals.ts`; choose a case with `--case` to run a bounded goal eval.
 - Flags: `--case <ids>`, `--cases <file.ndjson>`, `--samples <n>` (default 2, and a 3rd when the first 2 disagree), `--concurrency <n>` (samples in flight, default 8), `--max-steps <n>`, `--effort <level>`, `--dry-run` (prints request bodies, no model calls), and `--context` (prints the size of T3's text and schemas, no key needed).
 - `--baseline <results.jsonl> --stop-on-regression` stops as soon as a case that passed every baseline sample fails. Use it to test one copy change against a baseline run.
 - Cost: a full Sonnet run is about $9, and a full Opus run about $17. Codex models through the proxy cost only the shell simulator.
