@@ -334,10 +334,12 @@ export function validateVerificationSpec(spec: VerificationSpec): VerificationSp
     return wildcard < 0 ? path : path.slice(0, wildcard).replace(/[^/]*$/, "");
   };
   const overlaps = (left: string, right: string) => {
-    if (left === right) return true;
     const a = staticPrefix(left);
     const b = staticPrefix(right);
-    return a === "" || b === "" || a.startsWith(b) || b.startsWith(a);
+    if (a === "" || b === "") return true;
+    const isSameOrNestedPath = (parent: string, child: string) =>
+      child === parent || child.startsWith(`${parent.replace(/\/+$/, "")}/`);
+    return isSameOrNestedPath(a, b) || isSameOrNestedPath(b, a);
   };
   for (let i = 0; i < producers.length; i++) {
     for (let j = i + 1; j < producers.length; j++) {
@@ -346,6 +348,38 @@ export function validateVerificationSpec(spec: VerificationSpec): VerificationSp
       if (left.check !== right.check && overlaps(left.path, right.path)) {
         reject(left.check, `produced path "${left.path}" overlaps another producer`);
         reject(right.check, `produced path "${right.path}" overlaps another producer`);
+      }
+    }
+  }
+
+  const dependsOnProducer = (consumer: VerificationCheck, producerId: string): boolean => {
+    const visited = new Set<string>();
+    const reaches = (id: string): boolean => {
+      if (id === producerId) return true;
+      if (visited.has(id)) return false;
+      visited.add(id);
+      return (byId.get(id) ?? []).some((check) => (check.dependsOn ?? []).some(reaches));
+    };
+    return (consumer.dependsOn ?? []).some(reaches);
+  };
+  for (const consumer of checks) {
+    for (const consumedPath of consumer.consumes ?? []) {
+      const safeConsumedPath = safeRepositoryPath(consumedPath);
+      if (safeConsumedPath === null) continue;
+      for (const producer of producers) {
+        if (!overlaps(producer.path, safeConsumedPath)) continue;
+        if (!producer.check.id) {
+          reject(
+            producer.check,
+            `produced path "${producer.path}" is consumed by another check but has no id`,
+          );
+          reject(consumer, `consumed path "${safeConsumedPath}" has a producer without an id`);
+        } else if (!dependsOnProducer(consumer, producer.check.id)) {
+          reject(
+            consumer,
+            `consumed path "${safeConsumedPath}" requires after: ${producer.check.id}`,
+          );
+        }
       }
     }
   }
