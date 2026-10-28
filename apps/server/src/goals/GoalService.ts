@@ -1227,11 +1227,12 @@ export const make = Effect.gen(function* () {
         chat.waitingForLimit !== true,
     );
     const parkedTaskIds = new Set(
-      [
-        ...resourceProgress.activeChecks,
-        ...resourceProgress.activeJobs,
-        ...resourceProgress.resourceWaits,
-      ].map((ticket) => ticket.taskId),
+      resourceProgress.parkedTaskIds ??
+        [
+          ...resourceProgress.activeChecks,
+          ...resourceProgress.activeJobs,
+          ...resourceProgress.resourceWaits,
+        ].map((ticket) => ticket.taskId),
     );
     const liveOwnedTaskIds: string[] = [];
     for (const chat of ownedRunningChats) {
