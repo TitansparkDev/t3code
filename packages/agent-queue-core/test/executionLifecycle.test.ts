@@ -628,7 +628,17 @@ describe("landed is not checked: auditing", () => {
             "INSERT INTO landing_queue (task_id, source_branch, target_branch, status, commit_hash, queued_at) VALUES (?, 'agent/test', 'main', 'landed', ?, ?)",
           )
           .run(taskId, commit, queuedAt);
+      const completion = () =>
+        verifyPlanCompletion(r.db, {
+          repoRoot: r.repo.rootDir,
+          gitCommonDir: r.repo.gitCommonDir,
+          baseBranch: "main",
+          integrationBranch: r.goal,
+          planId: r.planId,
+          runFinalCheck: false,
+        });
       recordLanding("A", originalCommit);
+      expect((await completion()).unchecked).toContain("A");
 
       const initial = await auditUnverifiedTasks(r.db, {
         repoRoot: r.repo.rootDir,
@@ -672,15 +682,6 @@ describe("landed is not checked: auditing", () => {
       await execCommand("git", ["checkout", "main"], r.repo.rootDir);
       await execCommand("git", ["merge", "--ff-only", r.goal], r.repo.rootDir);
       await execCommand("git", ["checkout", r.goal], r.repo.rootDir);
-      const completion = () =>
-        verifyPlanCompletion(r.db, {
-          repoRoot: r.repo.rootDir,
-          gitCommonDir: r.repo.gitCommonDir,
-          baseBranch: "main",
-          integrationBranch: r.goal,
-          planId: r.planId,
-          runFinalCheck: false,
-        });
       expect((await completion()).unchecked).toContain("A");
       expect((await completion()).complete).toBe(false);
 
