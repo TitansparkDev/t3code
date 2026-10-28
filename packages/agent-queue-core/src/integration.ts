@@ -918,9 +918,10 @@ export async function submitCandidate(
   ) {
     const failedResult = receipt.checks.find((entry) => !entry.passed);
     const failedCheck = failedResult
-      ? remaining.find(
+      ? (remaining.find((check) => check.id && check.id === failedResult.checkId) ??
+        remaining.find(
           (check) => check.run === failedResult.run && (check.cwd ?? ".") === failedResult.cwd,
-        )
+        ))
       : undefined;
     if (!failedResult || !failedCheck) break;
     // The machine cannot run this check at all: that is neither this commit's fault nor a defect
@@ -966,7 +967,35 @@ export async function submitCandidate(
       failing: origin.failing.slice(0, 20),
       verification: failedCheck,
     });
-    remaining = remaining.filter((check) => check !== failedCheck);
+    const byId = new Map(
+      spec.checks.filter((check) => check.id).map((check) => [check.id!, check]),
+    );
+    const reaches = (id: string, target: string, seen = new Set<string>()): boolean => {
+      if (id === target) return true;
+      if (seen.has(id)) return false;
+      seen.add(id);
+      return (byId.get(id)?.dependsOn ?? []).some((dependency) =>
+        reaches(dependency, target, seen),
+      );
+    };
+    const withheld = spec.checks.filter(
+      (check) => check.id && failedCheck.id && reaches(check.id, failedCheck.id),
+    );
+    for (const consumer of withheld) {
+      if (
+        consumer !== failedCheck &&
+        !baselineFailures.some((entry) => entry.verification === consumer)
+      ) {
+        baselineFailures.push({
+          check: consumer.id ?? consumer.run,
+          cwd: consumer.cwd ?? ".",
+          reason: "Blocked by a failed producer; not rerun during baseline narrowing.",
+          failing: [],
+          verification: consumer,
+        });
+      }
+    }
+    remaining = remaining.filter((check) => check !== failedCheck && !withheld.includes(check));
     receipt =
       remaining.length === 0
         ? {
@@ -1064,7 +1093,42 @@ export async function submitCandidate(
         title: `Fix a check that already failed: ${entry.check}`.slice(0, 120),
         // The repair is judged by the check it repairs, not by the parent's whole gate, and one
         // open repair per check serves every task that meets the same red check.
-        checks: [entry.verification],
+        checks: entry.verification.id
+          ? (() => {
+              const closure = new Set<string>([entry.verification.id!]);
+              let changed = true;
+              while (changed) {
+                changed = false;
+                for (const check of spec.checks)
+                  if (
+                    check.id &&
+                    (check.dependsOn ?? []).some((id) => closure.has(id)) &&
+                    !closure.has(check.id)
+                  ) {
+                    closure.add(check.id);
+                    changed = true;
+                  }
+              }
+              return spec.checks.filter((check) => check.id && closure.has(check.id));
+            })()
+          : [entry.verification],
+        repairEvidence: {
+          failedCheckId: entry.verification.id,
+          inputFingerprint: receipt.checks.find((check) => check.checkId === entry.verification.id)
+            ?.inputFingerprint,
+          producerDependencyIds: entry.verification.dependsOn,
+          diagnostics: (() => {
+            const check = receipt.checks.find((item) => item.checkId === entry.verification.id);
+            return check
+              ? {
+                  failureKind: check.failureKind,
+                  failureReason: check.failureReason,
+                  diagnosticExcerpt: check.diagnosticExcerpt,
+                  diagnosticLogPath: check.diagnosticLogPath,
+                }
+              : undefined;
+          })(),
+        },
         dedupeKey: `baseline-check:${checkKey(entry.verification)}`,
         note: `While ${input.taskId} was checked, \`${entry.check}\` (in ${entry.cwd}) failed, and it fails the same way on the integration branch without ${input.taskId}'s changes. ${entry.reason}${entry.failing.length > 0 ? `\nFailing: ${entry.failing.join("; ")}` : ""}\nFix the cause so the check passes. Do not weaken, skip or delete the check.`,
       });
