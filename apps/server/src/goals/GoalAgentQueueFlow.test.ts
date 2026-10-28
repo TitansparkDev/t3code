@@ -572,12 +572,15 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
     "reports model work, check execution, resource waits, and bounded progress freshness",
     () =>
       Effect.gen(function* () {
-        const flow = yield* makeFlow(planWith([{ id: "T1" }]));
+        const taskIds = Array.from({ length: 7 }, (_, index) => `T${index + 1}`);
+        const flow = yield* makeFlow(planWith(taskIds.map((id) => ({ id }))));
         const service = yield* flow.startServer;
-        const [goal] = yield* service.create(settingsFor());
-        yield* flow.waitFor("thread.create", 1);
+        const [goal] = yield* service.create(
+          settingsFor({ concurrency: taskIds.length, maxChats: taskIds.length }),
+        );
+        yield* flow.waitFor("thread.create", taskIds.length);
         const implementing = yield* flow.goalOf(service);
-        expect(implementing.queueProgress?.running).toBe(1);
+        expect(implementing.queueProgress?.running).toBe(taskIds.length);
         expect(implementing.queueProgress?.activity?.reason).toBe("implementing");
 
         const broker = openBroker({
@@ -621,8 +624,8 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
 
         yield* service.addAgents(goal!.id, 0);
         const checking = yield* flow.goalOf(service);
-        expect(checking.queueProgress?.running).toBe(0);
-        expect(checking.queueProgress?.phase).not.toBe("implementing");
+        expect(checking.queueProgress?.running).toBe(taskIds.length - 1);
+        expect(checking.queueProgress?.phase).toBe("implementing");
         expect(checking.queueProgress?.activity).toMatchObject({
           reason: "verifying",
           activeChecks: [
@@ -643,8 +646,8 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
         yield* service.addAgents(goal!.id, 0);
         const waiting = yield* flow.goalOf(service);
         const progress = waiting.queueProgress;
-        expect(progress?.running).toBe(0);
-        expect(progress?.phase).not.toBe("implementing");
+        expect(progress?.running).toBe(taskIds.length - 1);
+        expect(progress?.phase).toBe("implementing");
         expect(progress?.activity).toMatchObject({
           reason: "waiting-resource",
           inspectionAvailable: true,
@@ -674,6 +677,31 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
         const refreshed = yield* flow.goalOf(service);
         expect(refreshed.queueProgress?.checkedAt).not.toBe(checkedAt);
         expect(refreshed.queueProgress?.activity?.reason).toBe("waiting-resource");
+
+        for (const taskId of taskIds.slice(1)) {
+          const parkedCheck = broker.enqueue({
+            resources: [{ name: "goal-progress-resource" }],
+            ownerRef: taskId,
+            repo: flow.repo.gitCommonDir,
+            checkId: `verify-${taskId}`,
+            pid: process.pid,
+          });
+          ownedTicketIds.push(parkedCheck.id);
+          expect(parkedCheck.state).toBe("waiting");
+        }
+        yield* service.addAgents(goal!.id, 0);
+        const bounded = yield* flow.goalOf(service);
+        expect(bounded.queueProgress?.running).toBe(0);
+        expect(bounded.queueProgress?.activity).toMatchObject({
+          reason: "waiting-resource",
+          activeChecks: expect.arrayContaining([
+            { taskId: "T1", ticketId: check.id, state: "running" },
+          ]),
+          omittedChecks: 2,
+          omittedResourceWaits: 2,
+        });
+        expect(bounded.queueProgress?.activity?.activeChecks).toHaveLength(5);
+        expect(bounded.queueProgress?.activity?.resourceWaits).toHaveLength(5);
       }).pipe(Effect.scoped),
   );
 

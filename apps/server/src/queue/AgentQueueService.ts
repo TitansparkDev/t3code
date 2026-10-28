@@ -134,6 +134,7 @@ export interface QueueResourceProgressCheck extends QueueResourceProgressTicket 
 
 export interface QueueResourceProgress {
   readonly inspectionAvailable: boolean;
+  readonly parkedTaskIds?: ReadonlyArray<string>;
   readonly activeChecks: ReadonlyArray<QueueResourceProgressCheck>;
   readonly activeJobs: ReadonlyArray<QueueResourceProgressTicket>;
   readonly resourceWaits: ReadonlyArray<QueueResourceProgressTicket>;
@@ -156,6 +157,7 @@ function inspectQueueResources(
       const activeChecks: QueueResourceProgressCheck[] = [];
       const activeJobs: QueueResourceProgressTicket[] = [];
       const resourceWaits: QueueResourceProgressTicket[] = [];
+      const parkedTaskIds = new Set<string>();
       for (const task of tasks) {
         const tickets = broker.forOwner(task.taskId, binding.gitCommonDir);
         const accounting = broker.accountingFor(binding.gitCommonDir, task.taskId);
@@ -173,6 +175,7 @@ function inspectQueueResources(
               ? ticket.state
               : undefined;
           if (state === undefined) continue;
+          parkedTaskIds.add(task.taskId);
           const attempt = attempts.get(ticket.id);
           const progress: QueueResourceProgressTicket = {
             taskId: task.taskId,
@@ -204,6 +207,7 @@ function inspectQueueResources(
         [...items].sort(order).slice(0, MAX_PROGRESS_TICKETS);
       return {
         inspectionAvailable: true,
+        parkedTaskIds: [...parkedTaskIds],
         activeChecks: bounded(activeChecks),
         activeJobs: bounded(activeJobs),
         resourceWaits: bounded(resourceWaits),
@@ -217,6 +221,7 @@ function inspectQueueResources(
   } catch {
     return {
       inspectionAvailable: false,
+      parkedTaskIds: [],
       activeChecks: [],
       activeJobs: [],
       resourceWaits: [],
