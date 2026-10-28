@@ -101,6 +101,9 @@ describe("declared checks", () => {
       ["id: first, after: second", "id: second, after: first"],
       ["id: first, produces: ../outside.apk"],
       ["id: first, produces: C:\\outside.apk"],
+      ["id: build, produces: dist/app.apk", "id: tests, consumes: dist/app.apk"],
+      ["produces: dist/app.apk", "id: tests, consumes: dist/app.apk"],
+      ["id: first, produces: dist", "id: second, produces: dist/app.apk"],
       ["id: first, produces: dist/**/*.apk", "id: second, produces: dist/app.apk"],
     ];
     for (const options of invalid) {
@@ -110,6 +113,20 @@ describe("declared checks", () => {
       expect(parsed.verification?.checks).toEqual([]);
       expect(parsed.verification?.rejected.length).toBeGreaterThan(0);
     }
+  });
+
+  it("allows transitive producer dependencies, external inputs and sibling artifact names", () => {
+    const parsed = task(
+      [
+        "  - Checks:",
+        "    - `true` (id: build, produces: dist/app.apk)",
+        "    - `true` (id: metadata, produces: dist/app.apk.meta)",
+        "    - `true` (id: prepare, after: build|metadata)",
+        "    - `true` (id: tests, after: prepare, consumes: dist/app.apk|dist/app.apk.meta|fixtures/cases.zip)",
+      ].join("\n"),
+    );
+    expect(parsed.verification?.source).toBe("declared");
+    expect(parsed.verification?.checks).toHaveLength(4);
   });
 
   it("refuses checks that could touch live services, outside paths or secrets, and says why", () => {
@@ -245,11 +262,13 @@ describe("running checks", () => {
     const repo = await createTestGitRepo("aq-spec-artifacts-");
     try {
       const consumer = NodePath.join(repo.rootDir, "consumer-ran");
+      const artifact = NodePath.join(repo.rootDir, "app.apk");
+      await NodeFSP.writeFile(artifact, "stale artifact from an earlier build");
       const result = await runSpec(
         "T1",
         repo.rootDir,
         spec([
-          check("true", {
+          check('node -e "process.exit(1)"', {
             id: "build",
             produces: ["app.apk"],
           }),
@@ -263,11 +282,12 @@ describe("running checks", () => {
       );
       expect(result.state).toBe("failed");
       expect(result.checks).toHaveLength(3);
-      expect(result.checks[0]).toMatchObject({ passed: false, failureKind: "missing-output" });
+      expect(result.checks[0]).toMatchObject({ passed: false, failureKind: "exit-code" });
       expect(result.checks[1]).toMatchObject({ passed: false, failureKind: "blocked" });
       expect(result.checks[1]?.stderrTail).toContain("build");
       expect(result.checks[2]).toMatchObject({ passed: true });
       expect(NodeFS.existsSync(consumer)).toBe(false);
+      expect(await NodeFSP.readFile(artifact, "utf8")).toBe("stale artifact from an earlier build");
     } finally {
       await repo.cleanup();
     }
