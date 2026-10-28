@@ -169,14 +169,20 @@ function replayPolicy(policy: ReplayPolicy): ReplayMetrics {
 async function withReplayResourceHome<A>(run: () => Promise<A>): Promise<A> {
   const root = await tmpDir("aq-replay-home-");
   const config = NodePath.join(root, "resources.json");
+  const bin = NodePath.join(root, "bin");
+  const compiler = NodePath.join(bin, "tsc");
+  NodeFS.mkdirSync(bin, { recursive: true });
+  NodeFS.writeFileSync(compiler, "#!/bin/sh\ntest -f src/shared.txt\n", { mode: 0o755 });
   NodeFS.writeFileSync(
     config,
     JSON.stringify({ reserveMb: 0, resources: { heavy_build: { capacity: 1, memoryMb: 0 } } }),
   );
   const previousHome = process.env.AGENTQUEUE_RESOURCE_HOME;
   const previousConfig = process.env.AGENTQUEUE_RESOURCE_CONFIG;
+  const previousPath = process.env.PATH;
   process.env.AGENTQUEUE_RESOURCE_HOME = root;
   process.env.AGENTQUEUE_RESOURCE_CONFIG = config;
+  process.env.PATH = [bin, previousPath].filter(Boolean).join(NodePath.delimiter);
   try {
     return await run();
   } finally {
@@ -184,6 +190,8 @@ async function withReplayResourceHome<A>(run: () => Promise<A>): Promise<A> {
     else process.env.AGENTQUEUE_RESOURCE_HOME = previousHome;
     if (previousConfig === undefined) delete process.env.AGENTQUEUE_RESOURCE_CONFIG;
     else process.env.AGENTQUEUE_RESOURCE_CONFIG = previousConfig;
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
     NodeFS.rmSync(root, { recursive: true, force: true });
   }
 }
@@ -209,7 +217,7 @@ describe("Phase 8: Full System Stress & Chaos Harness (AQ-058, Gate G8)", () => 
         contract: {
           branchPrefixes: ["agent/"],
           supportingPaths: ["docs/evidence/"],
-          resources: [{ name: "heavy_build", limit: 1, scope: [], commands: ["node -e"] }],
+          resources: [{ name: "heavy_build", limit: 1, scope: [], commands: ["tsc --noEmit"] }],
         },
         files: { "src/shared.txt": "same input\n" },
       });
@@ -219,7 +227,7 @@ describe("Phase 8: Full System Stress & Chaos Harness (AQ-058, Gate G8)", () => 
           checks: [
             {
               id: "replay-check",
-              run: `node -e "process.stdout.write('passed')"`,
+              run: "tsc --noEmit",
               cwd: ".",
               timeoutSeconds: 30,
               requires: ["heavy_build"],
