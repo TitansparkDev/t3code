@@ -316,7 +316,7 @@ describe("running under the broker", () => {
     expect(processIsLive(grandchild)).toBe(false);
     expect(broker.status().resources.find((r) => r.name === "heavy_build")!.active).toBe(0);
     broker.close();
-  }, 20_000);
+  });
 
   it("reports the resident memory its process tree reached", async () => {
     const home = newHome();
@@ -332,7 +332,7 @@ describe("running under the broker", () => {
     if (ran.kind !== "ran") return;
     if (NodeFS.existsSync("/proc/self/status")) expect(ran.result.peakRssKb).toBeGreaterThan(0);
     broker.close();
-  }, 20_000);
+  });
 
   it("withdraws a request whose work is already done before it is granted", async () => {
     const home = newHome();

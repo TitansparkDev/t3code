@@ -1,17 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off preferSchemaOverJson:off
 /**
- * From "the worker is done" to "the work is on the base branch".
- *
- * A worker's finished work becomes a *candidate*: the task keeps status `verifying`
- * and an `integration_state` of `pending` (waiting to merge), `conflict` (a repair
- * worker must resolve it), `repairing` (one is on it) or `repair_needed` (automatic
- * repair ran out of attempts). A candidate is never mistaken for unfinished work and
- * its commits are never discarded.
- *
- * Integration happens in a dedicated staging worktree, so the shared checkout is only
- * touched for the final fast-forward, and only when that cannot overwrite anything it
- * has uncommitted. Nothing in the shared checkout is ever reset, stashed or cleaned.
- *
+ * Integrates finished worker candidates through a staging worktree.
+ * The shared checkout is only fast-forwarded when it has no uncommitted changes;
+ * it is never reset, stashed or cleaned.
  * @module integration
  */
 import type * as NodeSqlite from "node:sqlite";
@@ -154,40 +145,6 @@ function currentBranchHead(repoRoot: string, baseBranch: string): string {
   const result = git(repoRoot, ["rev-parse", `refs/heads/${baseBranch}`]);
   if (result.code !== 0) throw new Error(`Base branch ${baseBranch} does not exist.`);
   return result.stdout;
-}
-
-function checkedOutAt(repoRoot: string, branch: string): string | null {
-  const listing = git(repoRoot, ["worktree", "list", "--porcelain"]).stdout;
-  let path: string | null = null;
-  for (const line of listing.split("\n")) {
-    if (line.startsWith("worktree ")) path = line.slice("worktree ".length);
-    else if (line === `branch refs/heads/${branch}` && path) return path;
-  }
-  return null;
-}
-
-/** Paths with uncommitted changes (modified, staged, deleted or untracked). */
-function dirtyPaths(cwd: string): string[] {
-  // Not trimmed: the first status column may be a space.
-  let out = "";
-  try {
-    out = NodeChildProcess.execFileSync(
-      "git",
-      ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
-      { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
-    );
-  } catch {
-    out = "";
-  }
-  const paths: string[] = [];
-  const entries = out.split("\0").filter(Boolean);
-  for (let index = 0; index < entries.length; index++) {
-    const entry = entries[index]!;
-    paths.push(entry.slice(3));
-    // A rename lists the old path as a second entry.
-    if (entry[0] === "R" || entry[0] === "C") index++;
-  }
-  return paths;
 }
 
 const stagingPath = (repoRoot: string) =>
@@ -964,10 +921,9 @@ export async function submitCandidate(
       reason: origin.reason.slice(0, 300),
     });
     if (origin.origin !== "baseline") {
-      receipt = {
-        ...receipt,
+      Object.assign(receipt, {
         summary: `${receipt.summary}${baselineFailures.length > 0 ? ` (Already failing before this task and set aside: ${baselineFailures.map((entry) => entry.check).join("; ")}.)` : ""}`,
-      };
+      });
       break;
     }
     baselineFailures.push({
@@ -999,7 +955,7 @@ export async function submitCandidate(
             blockedResults.set(resultKey(result), result);
     }
     remaining = remaining.filter((check) => check !== failedCheck && !withheld.includes(check));
-    const narrowedReceipt =
+    const narrowedReceipt: SpecResult =
       remaining.length === 0
         ? {
             ...receipt,
@@ -1122,14 +1078,26 @@ export async function submitCandidate(
             })()
           : [entry.verification],
         repairEvidence: {
-          failedCheckId: entry.verification.id,
-          inputFingerprint: entry.result.inputFingerprint,
-          producerDependencyIds: entry.verification.dependsOn,
+          ...(entry.verification.id !== undefined ? { failedCheckId: entry.verification.id } : {}),
+          ...(entry.result.inputFingerprint !== undefined
+            ? { inputFingerprint: entry.result.inputFingerprint }
+            : {}),
+          ...(entry.verification.dependsOn !== undefined
+            ? { producerDependencyIds: entry.verification.dependsOn }
+            : {}),
           diagnostics: {
-            failureKind: entry.result.failureKind,
-            failureReason: entry.result.failureReason,
-            diagnosticExcerpt: entry.result.diagnosticExcerpt,
-            diagnosticLogPath: entry.result.diagnosticLogPath,
+            ...(entry.result.failureKind !== undefined
+              ? { failureKind: entry.result.failureKind }
+              : {}),
+            ...(entry.result.failureReason !== undefined
+              ? { failureReason: entry.result.failureReason }
+              : {}),
+            ...(entry.result.diagnosticExcerpt !== undefined
+              ? { diagnosticExcerpt: entry.result.diagnosticExcerpt }
+              : {}),
+            ...(entry.result.diagnosticLogPath !== undefined
+              ? { diagnosticLogPath: entry.result.diagnosticLogPath }
+              : {}),
           },
         },
         dedupeKey: `baseline-check:${checkKey(entry.verification)}`,

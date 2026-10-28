@@ -395,7 +395,7 @@ describe("publication", () => {
       const file = NodePath.join(t.repo.rootDir, "shared.txt");
       await NodeFSP.writeFile(file, dirty);
       await NodeFSP.writeFile(NodePath.join(t.repo.rootDir, "untouched.txt"), "keep\n");
-      const old = new Date(Date.now() - 3 * 3600_000);
+      const old = new Date("2000-01-01T00:00:00.000Z");
       NodeFS.utimesSync(file, old, old);
       const outcome = await t.publish({ reconcileAbandoned: true, idleMinutes: 30 });
       expect(outcome.kind).toBe("published");
