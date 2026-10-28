@@ -11,6 +11,7 @@ import * as Context from "effect/Context";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as NodeChildProcess from "node:child_process";
 import {
   adoptCandidate,
   admitWorker,
@@ -148,6 +149,19 @@ export interface TaskInfo {
   readonly maxRetries: number;
 }
 
+export interface ReplacementQueueContext {
+  readonly integrationHead: string | null;
+  readonly latestFailure: string | null;
+  readonly earlierFailure: string | null;
+  readonly siblingRepairs: ReadonlyArray<{
+    readonly taskId: string;
+    readonly title: string;
+    readonly status: string;
+    readonly landedCommit: string | null;
+    readonly failure: string | null;
+  }>;
+}
+
 const fail = (operation: string, cause: unknown) =>
   new AgentQueueError({
     operation,
@@ -208,6 +222,11 @@ export class AgentQueueService extends Context.Service<
       binding: QueueBinding,
       taskId: string,
     ) => Effect.Effect<TaskInfo | null, AgentQueueError>;
+    /** Bounded persisted facts for handing an existing task to a replacement worker. */
+    readonly replacementContext: (
+      binding: QueueBinding,
+      taskId: string,
+    ) => Effect.Effect<ReplacementQueueContext, AgentQueueError>;
     /** Give a claim back. `pending` re-queues it without penalty, `retry` re-queues it and spends one retry, `failed` ends it, `blocked` parks it. */
     readonly release: (
       binding: QueueBinding,
@@ -634,6 +653,77 @@ const make = AgentQueueService.of({
               maxRetries: row.max_retries,
             }
           : null;
+      }),
+    ),
+
+  replacementContext: (binding, taskId) =>
+    run("replacementContext", () =>
+      withDb(binding, (db) => {
+        const headResult = NodeChildProcess.spawnSync(
+          "git",
+          ["rev-parse", "--verify", "--quiet", `refs/heads/${goalBranchOf(binding)}^{commit}`],
+          { cwd: binding.repoRoot, encoding: "utf8" },
+        );
+        const integrationHead =
+          headResult.status === 0 && /^[\da-f]{40,64}$/iu.test(headResult.stdout.trim())
+            ? headResult.stdout.trim()
+            : null;
+        const failures = db
+          .prepare("SELECT message FROM task_failures WHERE task_id = ? ORDER BY id DESC LIMIT 2")
+          .all(taskId) as Array<{ message: string }>;
+        const current = db
+          .prepare("SELECT failure_reason FROM tasks WHERE id = ? AND plan_id = ?")
+          .get(taskId, binding.planId) as { failure_reason: string | null } | undefined;
+        const root = taskId.replace(/(?:-FU\d+)+$/u, "");
+        const rows = db
+          .prepare(
+            "SELECT id, title, status, failure_reason, created_at FROM tasks WHERE plan_id = ?",
+          )
+          .all(binding.planId) as Array<{
+          id: string;
+          title: string;
+          status: string;
+          failure_reason: string | null;
+          created_at: string;
+        }>;
+        const siblingRepairs = rows
+          .filter((row) => row.id !== taskId && row.id.startsWith(`${root}-FU`))
+          .sort((left, right) => left.created_at.localeCompare(right.created_at))
+          .slice(-8)
+          .map((row) => {
+            const landing = db
+              .prepare(
+                "SELECT commit_hash FROM landing_queue WHERE task_id = ? AND status = 'landed' ORDER BY id DESC LIMIT 1",
+              )
+              .get(row.id) as { commit_hash: string | null } | undefined;
+            const event = db
+              .prepare(
+                "SELECT payload_json FROM task_events WHERE task_id = ? AND event_type = 'task_landed' ORDER BY id DESC LIMIT 1",
+              )
+              .get(row.id) as { payload_json: string } | undefined;
+            let eventCommit: string | null = null;
+            if (event) {
+              try {
+                const payload = JSON.parse(event.payload_json) as { landedCommit?: unknown };
+                if (typeof payload.landedCommit === "string") eventCommit = payload.landedCommit;
+              } catch {
+                // Malformed historical event data is unknown, not a handoff fact.
+              }
+            }
+            return {
+              taskId: row.id.slice(0, 120),
+              title: row.title.slice(0, 160),
+              status: row.status.slice(0, 40),
+              landedCommit: (landing?.commit_hash ?? eventCommit)?.slice(0, 64) ?? null,
+              failure: row.failure_reason?.slice(0, 500) ?? null,
+            };
+          });
+        return {
+          integrationHead,
+          latestFailure: (failures[0]?.message ?? current?.failure_reason)?.slice(0, 500) ?? null,
+          earlierFailure: failures[1]?.message.slice(0, 500) ?? null,
+          siblingRepairs,
+        } satisfies ReplacementQueueContext;
       }),
     ),
 

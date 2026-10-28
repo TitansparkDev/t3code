@@ -1,7 +1,16 @@
 import { expect, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 
-import { goalThreadViewOf } from "./GoalThreads.ts";
+import { ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import * as Crypto from "effect/Crypto";
+
+import * as OrchestratorV2 from "../orchestration-v2/Orchestrator.ts";
+import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
+import * as ThreadLaunch from "../orchestration-v2/ThreadLaunchService.ts";
+import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
+import * as GoalThreads from "./GoalThreads.ts";
 
 const at = DateTime.makeUnsafe("2026-10-18T12:00:00.000Z");
 
@@ -22,11 +31,11 @@ const shell = (overrides: Record<string, unknown> = {}) =>
 
 const projection = (
   runStatus: string,
-  messages: ReadonlyArray<[string, string]> = [],
+  messages: ReadonlyArray<[string, string, string?]> = [],
   turnItems: ReadonlyArray<{ type: string; nativeItemRef: unknown }> = [],
 ) =>
   ({
-    messages: messages.map(([role, text]) => ({ role, text, streaming: false })),
+    messages: messages.map(([role, text, id]) => ({ role, text, id, streaming: false })),
     turnItems,
     runs: [
       {
@@ -63,6 +72,72 @@ it("reads an active run as a busy session with a running turn", () => {
   expect(view.latestTurn?.state).toBe("running");
   expect(view.madeProgress).toBe(false);
 });
+
+it("preserves message ids so a replayed resource delivery can be recognized", () => {
+  const view = goalThreadViewOf(
+    shell(),
+    projection("completed", [["user", "stored result", "resource-results:thread-1:job-1"]]),
+  );
+  expect(view.messages[0]).toEqual({
+    id: "resource-results:thread-1:job-1",
+    role: "user",
+    text: "stored result",
+  });
+});
+
+it.effect("reuses the command and message ids for a replayed resource delivery", () =>
+  Effect.gen(function* () {
+    const sent: Array<{ readonly commandId: string; readonly messageId: string }> = [];
+    const dependencies = Layer.mergeAll(
+      Layer.succeed(OrchestratorV2.OrchestratorV2, OrchestratorV2.OrchestratorV2.of({} as never)),
+      Layer.succeed(
+        ThreadLaunch.ThreadLaunchService,
+        ThreadLaunch.ThreadLaunchService.of({} as never),
+      ),
+      Layer.succeed(
+        ThreadManagement.ThreadManagementService,
+        ThreadManagement.ThreadManagementService.of({
+          sendToThread: (input) =>
+            Effect.sync(() => {
+              sent.push({ commandId: input.commandId, messageId: input.messageId });
+            }).pipe(Effect.as(undefined as never)),
+        } as never),
+      ),
+      Layer.succeed(ProjectStore.ProjectStoreV2, ProjectStore.ProjectStoreV2.of({} as never)),
+      Layer.succeed(
+        Crypto.Crypto,
+        Crypto.make({
+          randomBytes: (size) => new Uint8Array(size),
+          digest: (_algorithm, data) => Effect.succeed(data),
+        }),
+      ),
+    );
+    const threads = yield* GoalThreads.GoalThreads.pipe(
+      Effect.provide(GoalThreads.layer.pipe(Layer.provide(dependencies))),
+    );
+    const input = {
+      threadId: ThreadId.make("thread-resource-results"),
+      projectId: ProjectId.make("project-resource-results"),
+      text: "Stored resource result",
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6" },
+      idempotencyKey: "resource-results:thread-resource-results:job-1",
+    };
+
+    yield* threads.send(input);
+    yield* threads.send(input);
+
+    expect(sent).toEqual([
+      {
+        commandId: `goal-send:${input.idempotencyKey}`,
+        messageId: input.idempotencyKey,
+      },
+      {
+        commandId: `goal-send:${input.idempotencyKey}`,
+        messageId: input.idempotencyKey,
+      },
+    ]);
+  }),
+);
 
 it("carries a usage limit's class and reset time, and background work", () => {
   const view = goalThreadViewOf(

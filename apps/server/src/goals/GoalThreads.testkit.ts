@@ -32,6 +32,7 @@ export type OrchestrationCommand =
       readonly message: { readonly role: "user"; readonly text: string; readonly attachments: [] };
       readonly modelSelection: ModelSelection;
       readonly runtimeMode?: string;
+      readonly idempotencyKey?: string;
     }
   | {
       readonly type: "thread.workspace.bind";
@@ -54,7 +55,11 @@ export interface OrchestrationThread {
     readonly requestedAt?: string;
     readonly completedAt?: string | null;
   } | null;
-  readonly messages: ReadonlyArray<{ readonly role: string; readonly text: string }>;
+  readonly messages: ReadonlyArray<{
+    readonly id?: string;
+    readonly role: string;
+    readonly text: string;
+  }>;
   readonly activities: ReadonlyArray<unknown>;
   readonly checkpoints?: ReadonlyArray<{ readonly turnId: string; readonly status: string }>;
   readonly session: {
@@ -90,14 +95,23 @@ export const layerFromLegacyHarness = (harness: {
 }) => {
   /** The newest session each thread's events reported; the detail's own session is the fallback. */
   const sessions = new Map<string, NonNullable<OrchestrationThread["session"]>>();
+  const sentKeys = new Set<string>();
+  const sentMessages = new Map<
+    string,
+    Array<{ readonly id: string; readonly role: "user"; readonly text: string }>
+  >();
   const viewOf = (threadId: ThreadId, thread: OrchestrationThread): GoalThreadView => {
     const session = sessions.get(threadId) ?? thread.session;
     const turnId = thread.latestTurn?.turnId;
     return {
-      messages: thread.messages.map((message) => ({
-        role: message.role as "user" | "assistant" | "system",
-        text: message.text,
-      })),
+      messages: [
+        ...thread.messages.map((message) => ({
+          ...(message.id !== undefined ? { id: message.id } : {}),
+          role: message.role as "user" | "assistant" | "system",
+          text: message.text,
+        })),
+        ...(sentMessages.get(threadId) ?? []),
+      ],
       madeProgress:
         thread.messages.some((message) => message.role === "assistant") ||
         thread.activities.length > 0,
@@ -151,15 +165,33 @@ export const layerFromLegacyHarness = (harness: {
             runtimeMode: input.runtimeMode,
           });
         }),
-      send: (input) =>
-        harness
+      send: (input) => {
+        if (input.idempotencyKey !== undefined && sentKeys.has(input.idempotencyKey)) {
+          return Effect.void;
+        }
+        return harness
           .dispatch({
             type: "thread.turn.start",
             threadId: input.threadId,
             message: { role: "user", text: input.text, attachments: [] },
             modelSelection: input.modelSelection,
+            ...(input.idempotencyKey !== undefined ? { idempotencyKey: input.idempotencyKey } : {}),
           })
-          .pipe(Effect.asVoid),
+          .pipe(
+            Effect.tap(() =>
+              input.idempotencyKey === undefined
+                ? Effect.void
+                : Effect.sync(() => {
+                    sentKeys.add(input.idempotencyKey!);
+                    sentMessages.set(input.threadId, [
+                      ...(sentMessages.get(input.threadId) ?? []),
+                      { id: input.idempotencyKey!, role: "user", text: input.text },
+                    ]);
+                  }),
+            ),
+          )
+          .pipe(Effect.asVoid);
+      },
       bindWorkspace: (input) =>
         Effect.gen(function* () {
           if (harness.failBind?.())

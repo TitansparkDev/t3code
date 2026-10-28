@@ -33,6 +33,7 @@ import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.t
 /** How a worker thread is doing, in the terms the goal runner decides with. */
 export interface GoalThreadView {
   readonly messages: ReadonlyArray<{
+    readonly id?: string;
     readonly role: "user" | "assistant" | "system";
     readonly text: string;
   }>;
@@ -82,6 +83,8 @@ export interface GoalThreadSend {
   readonly projectId: ProjectId;
   readonly text: string;
   readonly modelSelection: ModelSelection;
+  /** Reuses the command and message receipts when a durable result delivery is replayed. */
+  readonly idempotencyKey?: string;
 }
 
 export interface GoalThreadBindWorkspace {
@@ -147,7 +150,11 @@ export function goalThreadViewOf(
 ): GoalThreadView {
   const messages = projection.messages
     .filter((message) => !message.streaming || message.role === "assistant")
-    .map((message) => ({ role: message.role, text: message.text }));
+    .map((message) => ({
+      ...(message.id !== undefined ? { id: message.id } : {}),
+      role: message.role,
+      text: message.text,
+    }));
   const latestRun = projection.runs.findLast((run) => run.id === shell.latestRunId);
   const running =
     shell.activeRunId !== null ||
@@ -229,7 +236,7 @@ const make = Effect.gen(function* () {
         .pipe(Effect.asVoid, failed("launch")),
     send: Effect.fn("GoalThreads.send")(
       function* (input) {
-        const key = yield* uuid;
+        const key = input.idempotencyKey ?? (yield* uuid);
         yield* management.sendToThread({
           projectId: input.projectId,
           commandId: CommandId.make(`goal-send:${key}`),

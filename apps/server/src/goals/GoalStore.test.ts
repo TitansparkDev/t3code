@@ -1,6 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
-import { ProjectId, ProviderInstanceId } from "@t3tools/contracts";
+import { ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import { GoalId, type Goal } from "@t3tools/contracts/goals";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -31,7 +31,7 @@ const goal = (id: string): Goal =>
   }) as unknown as Goal;
 
 const layer = GoalStore.layer.pipe(
-  Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3code-goal-store-test-" })),
+  Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3code-goal-store-test-" })),
   Layer.provideMerge(NodeServices.layer),
 );
 
@@ -77,5 +77,50 @@ it.effect("keeps later writes working after a refused one", () =>
       detail: "Waiting for a provider.",
     }));
     expect(updated?.detail).toBe("Waiting for a provider.");
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("reopens pending resource receipts and still decodes legacy chats", () =>
+  Effect.gen(function* () {
+    const store = yield* GoalStore.GoalStore;
+    const legacy = {
+      threadId: ThreadId.make("thread-legacy"),
+      agentIndex: 0,
+      status: "running" as const,
+      startedAt: "2026-10-22T00:00:00.000Z",
+      resumes: 8,
+    };
+    const pending = {
+      ...legacy,
+      threadId: ThreadId.make("thread-pending"),
+      status: "completed" as const,
+      taskOutcome: "waiting" as const,
+      resourceDelivery: {
+        idempotencyKey: "resource-results:thread-pending:job-1",
+        jobIds: ["job-1"],
+        text: "stored result",
+      },
+    };
+    yield* store.add({ ...goal("goal-store-receipt"), chats: [legacy, pending] } as Goal);
+
+    const config = yield* ServerConfig.ServerConfig;
+    const restartedContext = yield* Layer.build(
+      GoalStore.layer.pipe(
+        Layer.provide(Layer.succeed(ServerConfig.ServerConfig, config)),
+        Layer.provideMerge(NodeServices.layer),
+      ),
+    );
+    const restarted = yield* GoalStore.GoalStore.pipe(Effect.provideContext(restartedContext));
+    const [reopened] = yield* restarted.list;
+
+    expect(reopened?.chats[0]).toMatchObject({ resumes: 8 });
+    expect(reopened?.chats[0]?.resourceResumes).toBeUndefined();
+    expect(reopened?.chats[1]).toMatchObject({
+      resourceDelivery: {
+        idempotencyKey: "resource-results:thread-pending:job-1",
+        jobIds: ["job-1"],
+        text: "stored result",
+      },
+    });
   }).pipe(Effect.provide(layer)),
 );
