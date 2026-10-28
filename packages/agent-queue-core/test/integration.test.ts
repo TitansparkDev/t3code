@@ -550,6 +550,99 @@ const installDependency = (dir: string) =>
   NodeFSP.mkdir(NodePath.join(dir, "node_modules", "external-dep"), { recursive: true });
 
 describe("verification dependencies", () => {
+  it("repairs one baseline failure with its prerequisite closure and original evidence", async () => {
+    const t = await setup();
+    try {
+      const task = await t.reserve("w-a1");
+      const checks = [
+        {
+          id: "producer",
+          run: 'node -e "process.exit(0)"',
+          cwd: ".",
+          timeoutSeconds: 30,
+          requires: [],
+          expectExitCode: 0,
+        },
+        {
+          id: "middle",
+          run: 'node -e "console.log(\\\"src/legacy.test.ts FAILED\\\"); process.exit(1)"',
+          cwd: ".",
+          timeoutSeconds: 30,
+          requires: [],
+          expectExitCode: 0,
+          dependsOn: ["producer"],
+          reuseInputs: ["src"],
+        },
+        {
+          id: "consumer",
+          run: 'node -e "process.exit(0)"',
+          cwd: ".",
+          timeoutSeconds: 30,
+          requires: [],
+          expectExitCode: 0,
+          dependsOn: ["middle"],
+        },
+        {
+          id: "independent",
+          run: 'node -e "process.exit(0)"',
+          cwd: ".",
+          timeoutSeconds: 30,
+          requires: [],
+          expectExitCode: 0,
+        },
+      ];
+      t.db
+        .prepare("UPDATE tasks SET verification_spec = ? WHERE id = ?")
+        .run(
+          JSON.stringify({ source: "declared", checks, exemptReason: null, rejected: [] }),
+          task.taskId,
+        );
+      const submitted = await t.submit(task);
+      expect(submitted.kind).toBe("submitted");
+      const followUps = t.db
+        .prepare("SELECT id, verification_spec FROM tasks WHERE id LIKE 'A1-FU%'")
+        .all() as Array<{ id: string; verification_spec: string }>;
+      expect(followUps).toHaveLength(1);
+      const repair = followUps[0]!;
+      const repairSpec = JSON.parse(repair.verification_spec) as {
+        checks: Array<{ id: string }>;
+      };
+      expect(repairSpec.checks.map((check) => check.id)).toEqual(["producer", "middle"]);
+      const event = t.db
+        .prepare(
+          "SELECT payload_json FROM task_events WHERE task_id = ? AND event_type = 'task_followup_created'",
+        )
+        .get(repair.id) as { payload_json: string };
+      expect(JSON.parse(event.payload_json)).toMatchObject({
+        repairEvidence: {
+          failedCheckId: "middle",
+          producerDependencyIds: ["producer"],
+          inputFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+          diagnostics: {
+            failureKind: "exit-code",
+            diagnosticExcerpt: expect.stringContaining("src/legacy.test.ts FAILED"),
+          },
+        },
+      });
+      const receipt = t.db.prepare("SELECT receipt_json FROM tasks WHERE id = 'A1'").get() as {
+        receipt_json: string;
+      };
+      const savedReceipt = JSON.parse(receipt.receipt_json) as {
+        checks: Array<{ checkId?: string; passed: boolean }>;
+      };
+      expect(savedReceipt.checks.map((check) => check.checkId)).toEqual([
+        "producer",
+        "middle",
+        "consumer",
+        "independent",
+      ]);
+      expect(savedReceipt.checks.find((check) => check.checkId === "consumer")?.passed).toBe(false);
+    } finally {
+      t.db.close();
+      await t.repo.cleanup();
+    }
+  });
+
   it("stops a candidate whose dependencies are not installed before any check, with no repair", async () => {
     const t = await setup();
     try {
