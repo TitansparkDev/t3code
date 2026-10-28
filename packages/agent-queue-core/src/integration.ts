@@ -909,6 +909,7 @@ export async function submitCandidate(
       integrationBranch: input.baseBranch,
       candidateWorktree: input.worktreePath,
       check: failedCheck,
+      checks: spec.checks,
       failed: failedResult,
       scope: verdict.allowed,
       changed,

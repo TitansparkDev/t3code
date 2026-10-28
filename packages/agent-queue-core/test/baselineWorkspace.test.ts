@@ -96,6 +96,50 @@ it.each([false, true])(
   },
 );
 
+it("invalidates baseline evidence when a check's prerequisites change", async () => {
+  const repo = await createTestGitRepo("aq-baseline-prerequisites-");
+  const db = openQueueDatabase({ gitCommonDir: repo.gitCommonDir });
+  try {
+    const commit = await execCommand("git", ["rev-parse", "HEAD"], repo.rootDir);
+    const check = {
+      id: "middle",
+      run: 'node -e "process.exit(1)"',
+      cwd: ".",
+      timeoutSeconds: 30,
+      requires: [],
+      expectExitCode: 0,
+      dependsOn: ["producer"],
+    };
+    const input = {
+      planId: null,
+      taskId: "baseline-prerequisites",
+      repoRoot: repo.rootDir,
+      commit: commit.stdout.trim(),
+      check,
+      dependencySource: repo.rootDir,
+    };
+    const passingPrerequisite = {
+      id: "producer",
+      run: 'node -e "process.exit(0)"',
+      cwd: ".",
+      timeoutSeconds: 30,
+      requires: [],
+      expectExitCode: 0,
+    };
+    expect(
+      await baselineResult(db, { ...input, checks: [passingPrerequisite, check] }),
+    ).toMatchObject({ state: "failed", cached: false });
+
+    const failingPrerequisite = { ...passingPrerequisite, run: 'node -e "process.exit(1)"' };
+    expect(
+      await baselineResult(db, { ...input, checks: [failingPrerequisite, check] }),
+    ).toMatchObject({ state: "unknown", cached: false });
+  } finally {
+    db.close();
+    await repo.cleanup();
+  }
+});
+
 it("prepares a candidate despite missing dependencies in a vendored workspace", async () => {
   const repo = await createTestGitRepo("aq-baseline-vendored-workspace-");
   let probeRoot: string | undefined;

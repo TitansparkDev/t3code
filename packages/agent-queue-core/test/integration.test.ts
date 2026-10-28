@@ -37,10 +37,11 @@ const PLAN = `# Plan
 const SHARED = "line1\nline2\nline3\nline4\nline5\n";
 const FAST: PublishPolicy = { reconcileAbandoned: true, idleMinutes: 0 };
 
-async function setup() {
+async function setup(beforeCommit?: (rootDir: string) => Promise<void>) {
   const repo = await createTestGitRepo("aq-integration-");
   await NodeFSP.writeFile(NodePath.join(repo.rootDir, "PLAN.md"), PLAN);
   await NodeFSP.writeFile(NodePath.join(repo.rootDir, "shared.txt"), SHARED);
+  await beforeCommit?.(repo.rootDir);
   await execCommand("git", ["add", "."], repo.rootDir);
   await execCommand("git", ["commit", "-m", "plan"], repo.rootDir);
   const { planId } = importPlanFile(repo.rootDir, "PLAN.md");
@@ -551,10 +552,30 @@ const installDependency = (dir: string) =>
 
 describe("verification dependencies", () => {
   it("repairs one baseline failure with its prerequisite closure and original evidence", async () => {
-    const t = await setup();
+    const t = await setup(async (rootDir) => {
+      await NodeFSP.mkdir(NodePath.join(rootDir, "src"), { recursive: true });
+      await NodeFSP.writeFile(NodePath.join(rootDir, "src/legacy.test.ts"), "baseline fixture\n");
+    });
     try {
       const task = await t.reserve("w-a1");
+      t.db
+        .prepare("UPDATE tasks SET scope_patterns = ? WHERE id = ?")
+        .run(JSON.stringify(["candidate.txt"]), task.taskId);
       await t.commitFile(task.worktreePath, "candidate.txt", "scoped candidate change\n");
+      const compilerDir = NodePath.join(t.repo.rootDir, "fixture-bin");
+      await NodeFSP.mkdir(compilerDir, { recursive: true });
+      const compiler = NodePath.join(compilerDir, "tsc");
+      await NodeFSP.writeFile(
+        compiler,
+        "#!/bin/sh\nprintf '%s\\n' 'src/legacy.test.ts FAILED'\nexit 1\n",
+      );
+      await NodeFSP.chmod(compiler, 0o755);
+      const localContract = NodePath.join(t.repo.gitCommonDir, "agentqueue", "contract.json");
+      await NodeFSP.mkdir(NodePath.dirname(localContract), { recursive: true });
+      await NodeFSP.writeFile(
+        localContract,
+        JSON.stringify({ env: { PATH: `${compilerDir}:${process.env.PATH ?? ""}` } }),
+      );
       const checks = [
         {
           id: "producer",
@@ -566,13 +587,15 @@ describe("verification dependencies", () => {
         },
         {
           id: "middle",
-          run: 'node -e "console.log(\\\"src/legacy.test.ts FAILED\\\"); process.exit(1)"',
+          run: "tsc",
           cwd: ".",
           timeoutSeconds: 30,
-          requires: [],
+          requires: ["heavy_build"],
           expectExitCode: 0,
           dependsOn: ["producer"],
           reuseInputs: ["src"],
+          reuseEnv: [],
+          produces: [],
         },
         {
           id: "consumer",

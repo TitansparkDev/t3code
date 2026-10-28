@@ -246,7 +246,41 @@ export function prepareVerificationDependencies(input: {
     : null;
 }
 
-const BASELINE_PREPARATION_SIGNATURE = "workspace-dependencies-v2";
+const BASELINE_PREPARATION_SIGNATURE = "workspace-dependencies-v3";
+
+function baselineChecks(
+  check: VerificationCheck,
+  checks: ReadonlyArray<VerificationCheck>,
+): VerificationCheck[] {
+  const byId = new Map(checks.filter((entry) => entry.id).map((entry) => [entry.id!, entry]));
+  const ordered: VerificationCheck[] = [];
+  const seen = new Set<string>();
+  const visiting = new Set<string>();
+  const visit = (entry: VerificationCheck) => {
+    for (const dependency of entry.dependsOn ?? []) {
+      const prerequisite = byId.get(dependency);
+      if (prerequisite && !seen.has(dependency) && !visiting.has(dependency)) {
+        visiting.add(dependency);
+        visit(prerequisite);
+        visiting.delete(dependency);
+        seen.add(dependency);
+        ordered.push(prerequisite);
+      }
+    }
+  };
+  visit(check);
+  ordered.push(check);
+  return ordered;
+}
+
+function baselineCheckKey(check: VerificationCheck, checks: ReadonlyArray<VerificationCheck>) {
+  const probe = baselineChecks(check, checks);
+  if (probe.length === 1) return checkKey(check);
+  return NodeCrypto.createHash("sha1")
+    .update(`${checkKey(check)}\n${JSON.stringify(probe.slice(0, -1))}`)
+    .digest("hex")
+    .slice(0, 20);
+}
 
 /**
  * Runs `check` on the untouched integration tip. The tip is checked out in a private worktree whose
@@ -262,6 +296,7 @@ async function runAtBaseline(
     readonly tip: string;
     readonly candidateWorktree: string;
     readonly check: VerificationCheck;
+    readonly checks: ReadonlyArray<VerificationCheck>;
     readonly env?: Record<string, string>;
     readonly extraRequires?: ReadonlyArray<string>;
   },
@@ -293,7 +328,7 @@ async function runAtBaseline(
       result = await runSpec(
         input.taskId,
         path,
-        { source: "declared", checks: [input.check], exemptReason: null, rejected: [] },
+        { source: "declared", checks: input.checks, exemptReason: null, rejected: [] },
         undefined,
         {
           ...(input.env ? { env: input.env } : {}),
@@ -308,10 +343,19 @@ async function runAtBaseline(
       }
       throw error;
     }
-    const ran = result.checks[0];
+    const ran = input.check.id
+      ? result.checks.find((entry) => entry.checkId === input.check.id)
+      : result.checks.find(
+          (entry) =>
+            entry.run === input.check.run && (entry.cwd ?? ".") === (input.check.cwd ?? "."),
+        );
     if (!ran) return { state: "unknown", stdout: "", stderr: result.summary, exitCode: 1 };
     return {
-      state: ran.passed ? "passed" : ran.outcome === "timed-out" ? "unknown" : "failed",
+      state: ran.passed
+        ? "passed"
+        : ran.outcome === "timed-out" || ran.failureKind === "blocked"
+          ? "unknown"
+          : "failed",
       stdout: ran.stdoutTail,
       stderr: ran.stderrTail,
       exitCode: ran.exitCode,
@@ -333,6 +377,7 @@ export async function baselineResult(
     readonly repoRoot: string;
     readonly commit: string;
     readonly check: VerificationCheck;
+    readonly checks?: ReadonlyArray<VerificationCheck>;
     /** A worktree whose installed dependencies (node_modules, .venv) the baseline checkout may link. */
     readonly dependencySource: string;
     readonly env?: Record<string, string>;
@@ -346,7 +391,8 @@ export async function baselineResult(
   failing: string[];
   cached: boolean;
 }> {
-  const key = checkKey(input.check);
+  const checks = baselineChecks(input.check, input.checks ?? [input.check]);
+  const key = baselineCheckKey(input.check, input.checks ?? [input.check]);
   const cached = db
     .prepare(
       "SELECT state, summary, failing_json, signature FROM check_baselines WHERE check_key = ? AND ref_commit = ?",
@@ -377,6 +423,7 @@ export async function baselineResult(
     tip: input.commit,
     candidateWorktree: input.dependencySource,
     check: input.check,
+    checks,
     ...(input.env ? { env: input.env } : {}),
     ...(input.extraRequires ? { extraRequires: input.extraRequires } : {}),
   });
@@ -407,6 +454,7 @@ export async function attributeFailure(
     readonly integrationBranch: string;
     readonly candidateWorktree: string;
     readonly check: VerificationCheck;
+    readonly checks?: ReadonlyArray<VerificationCheck>;
     readonly failed: CheckResult;
     /** What the task owns and what its commits changed: failures there are the task's own. */
     readonly scope: ReadonlyArray<string>;
@@ -465,6 +513,7 @@ export async function attributeFailure(
     repoRoot: input.repoRoot,
     commit: tip,
     check: input.check,
+    ...(input.checks ? { checks: input.checks } : {}),
     dependencySource: input.candidateWorktree,
     ...(input.env ? { env: input.env } : {}),
     ...(input.extraRequires ? { extraRequires: input.extraRequires } : {}),
@@ -529,7 +578,8 @@ export async function probePlanBaseline(
   for (const task of input.tasks) {
     for (const check of task.verification?.checks ?? []) {
       if (input.only === "broad" && !isBroadCheck(check.run)) continue;
-      const key = checkKey(check);
+      const checks = task.verification?.checks ?? [];
+      const key = baselineCheckKey(check, checks);
       let result = seen.get(key);
       if (!result) {
         result = await baselineResult(db, {
@@ -538,6 +588,7 @@ export async function probePlanBaseline(
           repoRoot: input.repoRoot,
           commit,
           check,
+          checks,
           dependencySource: input.repoRoot,
           ...(input.env ? { env: input.env } : {}),
         });
