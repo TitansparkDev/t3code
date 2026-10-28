@@ -133,7 +133,7 @@ function artifactPreflightFindings(input: {
           `SELECT id, status, dependencies, verification_spec, verification_command
              FROM tasks WHERE plan_id = ?`,
         )
-        .all(current.plan_id) as PreflightTaskRow[])
+        .all(current.plan_id) as unknown as PreflightTaskRow[])
     : [];
   const byId = new Map(rows.map((row) => [row.id, row] as const));
   const ancestorCache = new Map<string, Set<string>>();

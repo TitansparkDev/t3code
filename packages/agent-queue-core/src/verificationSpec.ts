@@ -438,7 +438,7 @@ export function parseCheckOptions(text: string): {
   let timeoutSeconds = DEFAULT_CHECK_TIMEOUT_SECONDS;
   let requires: string[] = [];
   let expectExitCode = 0;
-  const metadata: Partial<
+  let metadata: Partial<
     Pick<VerificationCheck, "id" | "dependsOn" | "produces" | "consumes" | "reuseInputs" | "junit">
   > = {};
   const problems: string[] = [];
@@ -467,14 +467,14 @@ export function parseCheckOptions(text: string): {
       if (code) expectExitCode = Number(code[1]);
     } else if (key === "id") {
       if (!CHECK_ID.test(value)) problems.push(`invalid check id "${value}"`);
-      else metadata.id = value;
+      else metadata = { ...metadata, id: value };
     } else if (key === "after") {
       const ids = value
         .split("|")
         .map((item) => item.trim())
         .filter(Boolean);
       if (ids.some((id) => !CHECK_ID.test(id))) problems.push("after contains an invalid check id");
-      else metadata.dependsOn = ids;
+      else metadata = { ...metadata, dependsOn: ids };
     } else if (["produces", "consumes", "reuse-inputs"].includes(key)) {
       const rawPaths = value.split("|").map((item) => item.trim());
       const paths = rawPaths
@@ -482,11 +482,11 @@ export function parseCheckOptions(text: string): {
         .filter((item): item is string => item !== null);
       if (paths.length !== rawPaths.length || paths.length === 0)
         problems.push(`${key} contains an unsafe repository path`);
-      else if (key === "produces") metadata.produces = paths;
-      else if (key === "consumes") metadata.consumes = paths;
-      else metadata.reuseInputs = paths;
+      else if (key === "produces") metadata = { ...metadata, produces: paths };
+      else if (key === "consumes") metadata = { ...metadata, consumes: paths };
+      else metadata = { ...metadata, reuseInputs: paths };
     } else if (["junit", "min-tests", "max-skipped"].includes(key)) {
-      const current = metadata.junit ?? { reports: [], minTests: 0, maxSkipped: 0 };
+      const current = { ...(metadata.junit ?? { reports: [], minTests: 0, maxSkipped: 0 }) };
       if (key === "junit") {
         const rawReports = value.split("|").map((item) => item.trim());
         const reports = rawReports
@@ -502,7 +502,7 @@ export function parseCheckOptions(text: string): {
         else if (key === "min-tests") current.minTests = n;
         else current.maxSkipped = n;
       }
-      metadata.junit = current;
+      metadata = { ...metadata, junit: current };
     }
   }
   return { cwd, timeoutSeconds, requires, expectExitCode, metadata, problems };
