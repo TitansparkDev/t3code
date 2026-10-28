@@ -908,7 +908,16 @@ export async function submitCandidate(
     reason: string;
     failing: ReadonlyArray<string>;
     verification: VerificationCheck;
+    result: (typeof receipt.checks)[number];
   }> = [];
+  const blockedResults = new Map<string, (typeof receipt.checks)[number]>();
+  const observedResults = new Map<string, (typeof receipt.checks)[number]>();
+  const resultKey = (result: (typeof receipt.checks)[number]) =>
+    result.checkId ?? `${result.run}\0${result.cwd}`;
+  const rememberResults = (results: ReadonlyArray<(typeof receipt.checks)[number]>) => {
+    for (const result of results) observedResults.set(resultKey(result), result);
+  };
+  rememberResults(receipt.checks);
   let remaining = [...spec.checks];
   while (
     receipt.state === "failed" &&
@@ -918,9 +927,11 @@ export async function submitCandidate(
   ) {
     const failedResult = receipt.checks.find((entry) => !entry.passed);
     const failedCheck = failedResult
-      ? remaining.find(
-          (check) => check.run === failedResult.run && (check.cwd ?? ".") === failedResult.cwd,
-        )
+      ? failedResult.checkId
+        ? remaining.find((check) => check.id === failedResult.checkId)
+        : remaining.find(
+            (check) => check.run === failedResult.run && (check.cwd ?? ".") === failedResult.cwd,
+          )
       : undefined;
     if (!failedResult || !failedCheck) break;
     // The machine cannot run this check at all: that is neither this commit's fault nor a defect
@@ -965,9 +976,30 @@ export async function submitCandidate(
       reason: origin.reason,
       failing: origin.failing.slice(0, 20),
       verification: failedCheck,
+      result: failedResult,
     });
-    remaining = remaining.filter((check) => check !== failedCheck);
-    receipt =
+    const byId = new Map(
+      spec.checks.filter((check) => check.id).map((check) => [check.id!, check]),
+    );
+    const reaches = (id: string, target: string, seen = new Set<string>()): boolean => {
+      if (id === target) return true;
+      if (seen.has(id)) return false;
+      seen.add(id);
+      return (byId.get(id)?.dependsOn ?? []).some((dependency) =>
+        reaches(dependency, target, seen),
+      );
+    };
+    const withheld = spec.checks.filter(
+      (check) => check.id && failedCheck.id && reaches(check.id, failedCheck.id),
+    );
+    for (const consumer of withheld) {
+      if (consumer !== failedCheck)
+        for (const result of receipt.checks)
+          if (consumer.id && result.checkId === consumer.id)
+            blockedResults.set(resultKey(result), result);
+    }
+    remaining = remaining.filter((check) => check !== failedCheck && !withheld.includes(check));
+    const narrowedReceipt =
       remaining.length === 0
         ? {
             ...receipt,
@@ -976,6 +1008,8 @@ export async function submitCandidate(
             summary: "Every check already fails on the integration branch.",
           }
         : await guarded({ ...spec, checks: remaining });
+    rememberResults(narrowedReceipt.checks);
+    receipt = narrowedReceipt;
     if (resourceProblem) break;
   }
   if (resourceProblem) {
@@ -993,6 +1027,11 @@ export async function submitCandidate(
       state: "baseline-failed",
       summary: `${receipt.checks.length} check(s) passed; ${baselineFailures.length} already failed before this task and are tracked on their own: ${baselineFailures.map((entry) => entry.check).join("; ")}.`,
     };
+  }
+  if (observedResults.size > 0 || blockedResults.size > 0) {
+    const results = new Map(observedResults);
+    for (const [key, result] of blockedResults) results.set(key, result);
+    receipt = { ...receipt, checks: [...results.values()] };
   }
   if (receipt.state === "failed" || receipt.state === "timed-out") {
     // The exact result stays on record: every check that ran, how it ended, and the output's tail.
@@ -1064,7 +1103,35 @@ export async function submitCandidate(
         title: `Fix a check that already failed: ${entry.check}`.slice(0, 120),
         // The repair is judged by the check it repairs, not by the parent's whole gate, and one
         // open repair per check serves every task that meets the same red check.
-        checks: [entry.verification],
+        checks: entry.verification.id
+          ? (() => {
+              const closure = new Set<string>([entry.verification.id!]);
+              let changed = true;
+              while (changed) {
+                changed = false;
+                for (const check of spec.checks)
+                  if (check.id && closure.has(check.id)) {
+                    for (const dependency of check.dependsOn ?? [])
+                      if (!closure.has(dependency)) {
+                        closure.add(dependency);
+                        changed = true;
+                      }
+                  }
+              }
+              return spec.checks.filter((check) => check.id && closure.has(check.id));
+            })()
+          : [entry.verification],
+        repairEvidence: {
+          failedCheckId: entry.verification.id,
+          inputFingerprint: entry.result.inputFingerprint,
+          producerDependencyIds: entry.verification.dependsOn,
+          diagnostics: {
+            failureKind: entry.result.failureKind,
+            failureReason: entry.result.failureReason,
+            diagnosticExcerpt: entry.result.diagnosticExcerpt,
+            diagnosticLogPath: entry.result.diagnosticLogPath,
+          },
+        },
         dedupeKey: `baseline-check:${checkKey(entry.verification)}`,
         note: `While ${input.taskId} was checked, \`${entry.check}\` (in ${entry.cwd}) failed, and it fails the same way on the integration branch without ${input.taskId}'s changes. ${entry.reason}${entry.failing.length > 0 ? `\nFailing: ${entry.failing.join("; ")}` : ""}\nFix the cause so the check passes. Do not weaken, skip or delete the check.`,
       });
