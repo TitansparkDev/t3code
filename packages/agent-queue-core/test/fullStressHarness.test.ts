@@ -26,7 +26,7 @@ const REPLAY_COSTS = {
 };
 
 interface RecoveryTrace {
-  readonly recoveryChecks: number;
+  readonly recoveryCheckExecutions: number;
   readonly recoveryLandings: number;
   readonly failedChecks: number;
   readonly blockedConsumers: number;
@@ -39,8 +39,8 @@ interface RecoveryTrace {
   readonly recoveryCost: number;
 }
 
-interface ReplayMetrics extends Omit<RecoveryTrace, "recoveryCost"> {
-  readonly executedChecks: number;
+interface ReplayMetrics {
+  readonly submissionCheckExecutions: number;
   readonly modelDecisionTurns: number;
   readonly waits: number;
   readonly serializedLandings: number;
@@ -77,7 +77,7 @@ function replayPolicy(policy: ReplayPolicy, recovery: RecoveryTrace): ReplayMetr
   }> = [];
   const completedChecks = new Set<string>();
   let now = 0;
-  let executedChecks = 0;
+  let submissionCheckExecutions = 0;
   let modelDecisionTurns = 0;
   let waits = 0;
   let serializedLandings = 0;
@@ -100,7 +100,7 @@ function replayPolicy(policy: ReplayPolicy, recovery: RecoveryTrace): ReplayMetr
       state.started = true;
       modelDecisionTurns++;
     }
-    if (stage === "check") executedChecks++;
+    if (stage === "check") submissionCheckExecutions++;
     running.push({ taskId, stage, ...(checkKey ? { checkKey } : {}), endsAt: now + duration });
   };
 
@@ -184,14 +184,12 @@ function replayPolicy(policy: ReplayPolicy, recovery: RecoveryTrace): ReplayMetr
       } else state.stage = "done";
     }
   }
-  const { recoveryCost, ...recoveryMetrics } = recovery;
   return {
-    executedChecks: executedChecks + recovery.recoveryChecks,
+    submissionCheckExecutions: submissionCheckExecutions + recovery.recoveryCheckExecutions,
     modelDecisionTurns: modelDecisionTurns + recovery.reasoningEscalations,
     waits: waits + recovery.providerLosses,
     serializedLandings,
-    ...recoveryMetrics,
-    criticalPath: now + recoveryCost,
+    criticalPath: now + recovery.recoveryCost,
   };
 }
 
@@ -380,6 +378,7 @@ describe("Phase 8: Full System Stress & Chaos Harness (AQ-058, Gate G8)", () => 
         await r.commitFile(reservedD.task.worktreePath, "src/disable-build", "no artifact\n");
         await r.commitFile(reservedD.task.worktreePath, "src/disable-tests", "empty report\n");
         const failed = await r.submit(reservedD.task);
+        const falseAccepts = Number(failed.kind === "submitted");
         expect(failed.kind).toBe("verification-failed");
         if (failed.kind !== "verification-failed" || !failed.receipt) return;
         expect(failed.receipt.state).toBe("failed");
@@ -461,25 +460,26 @@ describe("Phase 8: Full System Stress & Chaos Harness (AQ-058, Gate G8)", () => 
         // observations. Server-side tail counts come from GoalAgentQueueFlow's 20-delivery restart
         // and failed-verification recovery tests, plus GoalService's provider-usage recovery test.
         // Those product flows are not re-run here; their virtual cost is common to all policies.
-        const recoveryChecks =
-          failed.receipt.checks.length +
-          repaired.receipt.checks.length +
-          consumerPassed.receipt.checks.length;
+        const recoveryCheckExecutions = [
+          ...failed.receipt.checks,
+          ...repaired.receipt.checks,
+          ...consumerPassed.receipt.checks,
+        ].filter((check) => check.failureKind !== "blocked" && check.reused !== true).length;
         const recoveryLandings =
           Number(landedD.kind === "landed") + Number(landedE.kind === "landed");
         const recovery: RecoveryTrace = {
-          recoveryChecks,
+          recoveryCheckExecutions,
           recoveryLandings,
-          failedChecks: failedChecks.length,
+          failedChecks: failedChecks.filter((check) => check.failureKind !== "blocked").length,
           blockedConsumers: failedChecks.filter((check) => check.failureKind === "blocked").length,
           sharedRepairs: firstRepair.created && !sharedRepair.created ? 1 : 0,
           routineDeliveries: 20,
           reasoningEscalations: 1,
           providerLosses: 1,
           restarts: 1,
-          falseAccepts: failed.receipt.checks.filter((check) => check.passed).length,
+          falseAccepts,
           recoveryCost:
-            recoveryChecks * REPLAY_COSTS.check +
+            recoveryCheckExecutions * REPLAY_COSTS.check +
             recoveryLandings * REPLAY_COSTS.integrate +
             20 * REPLAY_COSTS.delivery +
             REPLAY_COSTS.model +
@@ -487,9 +487,9 @@ describe("Phase 8: Full System Stress & Chaos Harness (AQ-058, Gate G8)", () => 
             REPLAY_COSTS.restart,
         };
         expect(recovery).toMatchObject({
-          recoveryChecks: 7,
+          recoveryCheckExecutions: 6,
           recoveryLandings: 2,
-          failedChecks: 3,
+          failedChecks: 2,
           blockedConsumers: 1,
           sharedRepairs: 1,
           routineDeliveries: 20,
@@ -498,8 +498,8 @@ describe("Phase 8: Full System Stress & Chaos Harness (AQ-058, Gate G8)", () => 
           restarts: 1,
           falseAccepts: 0,
         });
-        const executedChecks = baseExecutedChecks + recovery.recoveryChecks;
-        expect(executedChecks).toBe(9);
+        const submissionCheckExecutions = baseExecutedChecks + recovery.recoveryCheckExecutions;
+        expect(submissionCheckExecutions).toBe(8);
 
         const comparisons = {
           sequential: replayPolicy("sequential", recovery),
@@ -509,75 +509,35 @@ describe("Phase 8: Full System Stress & Chaos Harness (AQ-058, Gate G8)", () => 
         };
         expect(comparisons).toEqual({
           sequential: {
-            executedChecks: 10,
+            submissionCheckExecutions: 9,
             modelDecisionTurns: 4,
             waits: 1,
             serializedLandings: 0,
-            recoveryChecks: 7,
-            recoveryLandings: 2,
-            failedChecks: 3,
-            blockedConsumers: 1,
-            sharedRepairs: 1,
-            routineDeliveries: 20,
-            reasoningEscalations: 1,
-            providerLosses: 1,
-            restarts: 1,
-            falseAccepts: 0,
-            criticalPath: 95,
+            criticalPath: 90,
           },
           unqueuedParallel: {
-            executedChecks: 10,
+            submissionCheckExecutions: 9,
             modelDecisionTurns: 4,
             waits: 2,
             serializedLandings: 0,
-            recoveryChecks: 7,
-            recoveryLandings: 2,
-            failedChecks: 3,
-            blockedConsumers: 1,
-            sharedRepairs: 1,
-            routineDeliveries: 20,
-            reasoningEscalations: 1,
-            providerLosses: 1,
-            restarts: 1,
-            falseAccepts: 0,
-            criticalPath: 90,
+            criticalPath: 85,
           },
           queued: {
-            executedChecks: 9,
+            submissionCheckExecutions: 8,
             modelDecisionTurns: 4,
             waits: 3,
             serializedLandings: 1,
-            recoveryChecks: 7,
-            recoveryLandings: 2,
-            failedChecks: 3,
-            blockedConsumers: 1,
-            sharedRepairs: 1,
-            routineDeliveries: 20,
-            reasoningEscalations: 1,
-            providerLosses: 1,
-            restarts: 1,
-            falseAccepts: 0,
-            criticalPath: 86,
+            criticalPath: 81,
           },
           wellManagedParallel: {
-            executedChecks: 9,
+            submissionCheckExecutions: 8,
             modelDecisionTurns: 4,
             waits: 3,
             serializedLandings: 1,
-            recoveryChecks: 7,
-            recoveryLandings: 2,
-            failedChecks: 3,
-            blockedConsumers: 1,
-            sharedRepairs: 1,
-            routineDeliveries: 20,
-            reasoningEscalations: 1,
-            providerLosses: 1,
-            restarts: 1,
-            falseAccepts: 0,
-            criticalPath: 86,
+            criticalPath: 81,
           },
         });
-        expect(executedChecks).toBe(comparisons.queued.executedChecks);
+        expect(submissionCheckExecutions).toBe(comparisons.queued.submissionCheckExecutions);
         expect(comparisons.queued.criticalPath).toBeLessThan(
           comparisons.unqueuedParallel.criticalPath,
         );
