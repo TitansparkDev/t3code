@@ -93,7 +93,8 @@ function parseCgroupCounter(text: string, key: string): number | undefined {
 }
 
 // systemd's default 90 s stop timeout would outlast our leftover-agent wait.
-const STOP_TIMEOUT_OPTION = "--property=TimeoutStopSec=10s";
+// Delegation lets rootless containers (Podman, kind) manage their own cgroups.
+const SCOPE_OPTIONS = ["--property=TimeoutStopSec=10s", "--property=Delegate=yes"];
 const STOPPING_POLL_INTERVAL = "100 millis";
 const STOPPING_POLL_ATTEMPTS = 20;
 const CLEAR_FAILED_INTERVAL = "1 second";
@@ -188,8 +189,8 @@ export const make = Effect.gen(function* () {
           "true",
         ]).pipe(Effect.map((result) => result._tag === "Some" && result.value.code === 0));
       // Scopes take OOMPolicy from systemd 253; older managers still get scopes.
-      const supportsOomPolicy = yield* probe([STOP_TIMEOUT_OPTION, "--property=OOMPolicy=stop"]);
-      if (!supportsOomPolicy && !(yield* probe([STOP_TIMEOUT_OPTION]))) {
+      const supportsOomPolicy = yield* probe([...SCOPE_OPTIONS, "--property=OOMPolicy=stop"]);
+      if (!supportsOomPolicy && !(yield* probe(SCOPE_OPTIONS))) {
         // Without scopes the memory ceilings are gone, so this stays a warning.
         yield* Effect.logWarning("Agent memory limits are reduced: no systemd user manager");
         return undefined;
@@ -387,7 +388,7 @@ export const make = Effect.gen(function* () {
         // Without an owning thread nothing reads the result, so let systemd
         // unload the unit even when it fails.
         options: [
-          STOP_TIMEOUT_OPTION,
+          ...SCOPE_OPTIONS,
           ...(scope.supportsOomPolicy
             ? [`--property=OOMPolicy=${continuing ? "continue" : "stop"}`]
             : []),

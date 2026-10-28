@@ -3,9 +3,9 @@ import { describe, expect, it } from "vite-plus/test";
 import { mobileApplicationActiveWakeup, mobileNativeWakeup } from "./app-state-wakeups";
 
 describe("mobileApplicationActiveWakeup", () => {
-  it("probes just before ten seconds and reconnects at ten seconds", () => {
+  it("probes just before ten seconds and marks long backgrounds at ten seconds", () => {
     expect(mobileApplicationActiveWakeup(0, 9_999)).toBe("application-active-probe");
-    expect(mobileApplicationActiveWakeup(0, 10_000)).toBe("application-active-reconnect");
+    expect(mobileApplicationActiveWakeup(0, 10_000)).toBe("application-active-long");
   });
 });
 

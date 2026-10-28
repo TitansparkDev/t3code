@@ -17,7 +17,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
-import * as TestClock from "effect/testing/TestClock";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import {
   processIsLive,
@@ -160,9 +160,14 @@ const seedLostStart = Effect.fn(function* (worktreePath: string) {
   ]);
   const claim = yield* outbox.claimNext({
     workerId: "runtime-before-reconstruction",
-    leaseDurationMs: 1_000,
   });
   assert.equal(Option.getOrThrow(claim).id, "effect:reliability:lost-start");
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    UPDATE orchestration_v2_effect_outbox
+    SET lease_expires_at = '1970-01-01T00:00:00.000Z'
+    WHERE effect_id = 'effect:reliability:lost-start'
+  `;
   return { threadId, runId, messageId };
 });
 
@@ -241,8 +246,6 @@ it.effect("recovers one lost start from SQLite without losing the queued message
     const seeded = yield* Effect.scoped(
       seedLostStart(worktreePath).pipe(Effect.provide(runtimeLayer(dbPath))),
     );
-    yield* TestClock.adjust("2 seconds");
-
     yield* Effect.scoped(
       Effect.gen(function* () {
         const recovery = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService;
@@ -264,9 +267,7 @@ it.effect("recovers one lost start from SQLite without losing the queued message
           "failed",
         );
         assert.equal(
-          Option.getOrThrow(
-            yield* outbox.claimNext({ workerId: "reconstructed", leaseDurationMs: 1_000 }),
-          ).request.type,
+          Option.getOrThrow(yield* outbox.claimNext({ workerId: "reconstructed" })).request.type,
           "terminal.cleanup",
         );
         assert.deepEqual(yield* recovery.recoverOrphanedClaims, {
@@ -276,5 +277,5 @@ it.effect("recovers one lost start from SQLite without losing the queued message
         });
       }).pipe(Effect.provide(runtimeLayer(dbPath))),
     );
-  }).pipe(Effect.orDie, Effect.provide(Layer.mergeAll(NodeServices.layer, TestClock.layer()))),
+  }).pipe(Effect.orDie, Effect.provide(NodeServices.layer)),
 );

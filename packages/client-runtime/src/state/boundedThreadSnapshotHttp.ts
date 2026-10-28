@@ -22,6 +22,7 @@ import {
 } from "./threadOpenPerformance.ts";
 
 const DEFAULT_BOUNDED_THREAD_SNAPSHOT_TIMEOUT_MS = 6_000;
+const DEFAULT_FULL_THREAD_SNAPSHOT_TIMEOUT_MS = 20_000;
 
 const markStage = <A, E, R>(
   effect: Effect.Effect<A, E, R>,
@@ -67,6 +68,32 @@ export const fetchEnvironmentBoundedThreadSnapshot = Effect.fn(
     })),
     (effect) => markStage(effect, key, "snapshot-decode"),
   );
+});
+
+const fetchEnvironmentThreadSnapshot = Effect.fn(
+  "clientRuntime.state.fetchEnvironmentThreadSnapshot",
+)(function* (input: {
+  readonly prepared: PreparedConnection;
+  readonly threadId: ThreadId;
+  readonly signer: Option.Option<ManagedRelay.ManagedRelayDpopSigner["Service"]>;
+  readonly remoteAuthorization?: Option.Option<
+    RemoteEnvironmentAuthorization.RemoteEnvironmentAuthorization["Service"]
+  >;
+  readonly timeoutMs?: number;
+}) {
+  const endpoint = { params: { threadId: input.threadId } };
+  return yield* executeAuthenticatedEnvironmentHttpRequest({
+    ...input,
+    group: "orchestration",
+    method: "GET",
+    url: (urls) => urls.threadSnapshot(endpoint),
+    timeoutMs: input.timeoutMs ?? DEFAULT_FULL_THREAD_SNAPSHOT_TIMEOUT_MS,
+    request: ({ client, headers }) =>
+      client.threadSnapshot({
+        ...endpoint,
+        headers: withOrchestrationProtocolHeader(headers),
+      }),
+  });
 });
 
 type InFlightThreadLoad = {
@@ -143,7 +170,7 @@ export const layer: Layer.Layer<
       prepared: PreparedConnection,
       threadId: ThreadId,
     ) {
-      const loadFullFallback = ThreadSnapshotLoader.fetchEnvironmentThreadSnapshot({
+      const loadFullFallback = fetchEnvironmentThreadSnapshot({
         prepared,
         threadId,
         signer,

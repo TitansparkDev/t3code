@@ -8,6 +8,7 @@ export type ConnectionWakeup =
   | "application-active-probe"
   | "application-active-reconnect"
   | "native-wake"
+  | "application-active-long"
   | "credentials-changed"
   | "network-changed";
 
@@ -15,7 +16,8 @@ function isApplicationActiveWakeup(reason: ConnectionWakeup): boolean {
   return (
     reason === "application-active" ||
     reason === "application-active-probe" ||
-    reason === "application-active-reconnect"
+    reason === "application-active-reconnect" ||
+    reason === "application-active-long"
   );
 }
 
@@ -25,11 +27,11 @@ export function resetsRetryBackoff(reason: ConnectionWakeup): boolean {
   );
 }
 
-// A long resume replaces the session, and the new session subscribes on its own.
 export function shouldResubscribeAfterWakeup(reason: ConnectionWakeup): boolean {
   return (
     reason === "application-active" ||
     reason === "application-active-probe" ||
+    reason === "application-active-long" ||
     reason === "native-wake"
   );
 }

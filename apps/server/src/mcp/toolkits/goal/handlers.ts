@@ -15,7 +15,7 @@ import * as Effect from "effect/Effect";
 import * as Struct from "effect/Struct";
 import * as GoalService from "../../../goals/GoalService.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
-import { resolveRuntimeMode } from "../../OrchestratorMcpService.ts";
+import { resolveRuntimeMode } from "../../delegatedTaskModes.ts";
 import { readCaller } from "../../threadAccess.ts";
 import { GoalToolkit } from "./tools.ts";
 
