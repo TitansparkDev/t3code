@@ -10,6 +10,7 @@
  *
  * @module verificationSpec
  */
+import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import { XMLParser, XMLValidator } from "fast-xml-parser";
@@ -963,6 +964,12 @@ export async function runSpec(
   let state: SpecResult["state"] = "passed";
   let commit = "unknown";
   const root = NodePath.resolve(worktreePath);
+  const gitContext = NodeChildProcess.spawnSync(
+    "git",
+    ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    { cwd: root, encoding: "utf8", timeout: 5_000 },
+  );
+  const repo = gitContext.status === 0 ? gitContext.stdout.trim() : undefined;
   let realRoot = root;
   try {
     realRoot = NodeFS.realpathSync(root);
@@ -1103,7 +1110,14 @@ export async function runSpec(
           ...(diagnosticExcerpt ? { diagnosticExcerpt } : {}),
         };
       },
-      { label: `check of ${taskId}: ${check.run.slice(0, 80)}`, ownerRef: taskId },
+      {
+        label: `check of ${taskId}: ${check.run.slice(0, 80)}`,
+        ownerRef: taskId,
+        ...(repo ? { repo } : {}),
+        ...(check.id ? { checkId: check.id } : {}),
+        outcomeOf: (attempt) =>
+          attempt.outcome === "timed-out" ? "timed-out" : attempt.passed ? "ok" : "failed",
+      },
     );
     const result = attempt.result;
     commit = result.commitHash;
