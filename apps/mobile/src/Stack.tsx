@@ -537,11 +537,11 @@ function RootStackLayout(props: {
 }) {
   const pathname = rootPathnameFromState(props.state);
   const workspaceLocation = workspaceLocationFromState(props.state);
-  // oxlint-disable-next-line t3code/react-effect-budget -- Navigation changes synchronize the external banner expansion session store.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Navigation changes synchronize the external banner expansion session store.
   useEffect(() => {
     usageBannerExpansionStore.syncNavigation(props.state);
   }, [props.state]);
-  // oxlint-disable-next-line t3code/react-effect-budget -- One root native AppState subscription owns banner expansion and the shared foreground clock.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- One root native AppState subscription owns banner expansion and the shared foreground clock.
   useEffect(() => {
     const syncForegroundState = (state: string | null | undefined) => {
       const foreground = state === "active";
@@ -569,27 +569,6 @@ function RootStackLayout(props: {
   const routeDraftId = Array.isArray(draftParams?.draftId)
     ? draftParams.draftId[0]
     : draftParams?.draftId;
-  useAgentNotificationNavigation(workspaceLocation.pathname);
-  useConnectOnboardingNavigation();
-  useAppShortcuts(props.state);
-  // oxlint-disable-next-line t3code/react-effect-budget -- Incoming native shares are external presentation state synchronized with navigation.
-  useEffect(() => {
-    const transition = transitionIncomingSharePresentation(sharePresentationRef.current, {
-      isShareSheetPresented: isDraftThreadRoute(props.state.routes[props.state.index]),
-      pendingShareId: pendingShare?.id ?? null,
-    });
-    sharePresentationRef.current = transition.state;
-    if (!transition.shareIdToPresent) {
-      return;
-    }
-    navigation.dispatch(
-      selectWorkspaceDetail({
-        name: "Thread",
-        params: { draft: { incomingShareId: transition.shareIdToPresent } },
-      }),
-    );
-  }, [navigation, pendingShare, props.state]);
-
   return (
     <NewTaskFlowProvider
       active={draftRouteOnTop}
