@@ -424,6 +424,22 @@ export async function attributeFailure(
     readonly extraRequires?: ReadonlyArray<string>;
   },
 ): Promise<OriginVerdict> {
+  if (
+    input.failed.failureKind &&
+    input.failed.failureKind !== "exit-code" &&
+    input.failed.failureKind !== "timed-out"
+  ) {
+    return {
+      origin: input.failed.failureKind === "blocked" ? "unknown" : "introduced",
+      reason:
+        input.failed.failureReason ??
+        (input.failed.failureKind === "blocked"
+          ? "A prerequisite prevented this check from running."
+          : "Declared verification evidence is missing or invalid; it cannot be classified as a baseline command failure."),
+      failing: input.failed.failureReason ? [input.failed.failureReason] : [],
+      baselineCommit: null,
+    };
+  }
   // A check that names no failing item (a file test, a bare exit code) cannot be told apart from
   // "the task has not done its work yet", which is exactly what it is for: never set aside.
   const mine = failingNames(`${input.failed.stdoutTail}\n${input.failed.stderrTail}`);

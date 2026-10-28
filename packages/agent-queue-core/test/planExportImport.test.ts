@@ -12,6 +12,49 @@ import {
 import { createTestGitRepo } from "./harness/gitHarness.ts";
 
 describe("Phase 6: Planning Formats, Skills, Rules & Import (AQ-042 - AQ-050, Gate G6)", () => {
+  it("roundtrips structured check metadata through Markdown export and import", () => {
+    const plan: PlanTaskDefinition = {
+      id: "QE04",
+      title: "Build and inspect APK",
+      dependencies: [],
+      verificationCommand: "./gradlew assembleDebug && ./gradlew connectedDebugAndroidTest",
+      verification: {
+        source: "declared",
+        checks: [
+          {
+            run: "./gradlew assembleDebug",
+            cwd: ".",
+            timeoutSeconds: 1800,
+            requires: [],
+            expectExitCode: 0,
+            id: "build",
+            produces: ["app/build/outputs/**/*.apk"],
+          },
+          {
+            run: "./gradlew connectedDebugAndroidTest",
+            cwd: ".",
+            timeoutSeconds: 1800,
+            requires: ["android"],
+            expectExitCode: 0,
+            id: "instrumentation",
+            dependsOn: ["build"],
+            consumes: ["app/build/outputs/app.apk"],
+            junit: {
+              reports: ["app/build/reports/**/*.xml"],
+              minTests: 12,
+              maxSkipped: 0,
+            },
+          },
+        ],
+        exemptReason: null,
+        rejected: [],
+      },
+    };
+    const markdown = exportPlanMarkdown({ title: "Evidence", tasks: [plan] });
+    const imported = parsePlanMarkdown(markdown).tasks[0]!;
+    expect(imported.verification?.checks).toEqual(plan.verification?.checks);
+  });
+
   it("creates and verifies a 10-task executable plan graph with dependencies and scopes (AQ-043)", () => {
     const tasks: PlanTaskDefinition[] = [
       {

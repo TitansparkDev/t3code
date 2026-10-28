@@ -57,6 +57,61 @@ describe("declared checks", () => {
     expect(parsed.scopePatterns).toEqual(["server/"]);
   });
 
+  it("parses opt-in check dependencies, artifacts, reuse inputs and JUnit requirements", () => {
+    const parsed = task(
+      [
+        "  - Checks:",
+        "    - `./gradlew assembleDebug` (id: build, produces: app/build/**/*.apk)",
+        "    - `./gradlew connectedDebugAndroidTest` (id: instrumentation, after: build, consumes: app/build/outputs/app.apk, reuse-inputs: app/src/**|app/build.gradle, junit: app/build/reports/**/*.xml, min-tests: 12, max-skipped: 0)",
+      ].join("\n"),
+    );
+    expect(parsed.verification?.checks).toEqual([
+      {
+        run: "./gradlew assembleDebug",
+        cwd: ".",
+        timeoutSeconds: 1800,
+        requires: [],
+        expectExitCode: 0,
+        id: "build",
+        produces: ["app/build/**/*.apk"],
+      },
+      {
+        run: "./gradlew connectedDebugAndroidTest",
+        cwd: ".",
+        timeoutSeconds: 1800,
+        requires: [],
+        expectExitCode: 0,
+        id: "instrumentation",
+        dependsOn: ["build"],
+        consumes: ["app/build/outputs/app.apk"],
+        reuseInputs: ["app/src/**", "app/build.gradle"],
+        junit: {
+          reports: ["app/build/reports/**/*.xml"],
+          minTests: 12,
+          maxSkipped: 0,
+        },
+      },
+    ]);
+  });
+
+  it("rejects invalid check graphs and unsafe or ambiguous artifact paths", () => {
+    const invalid = [
+      ["id: same", "id: same"],
+      ["id: first, after: missing"],
+      ["id: first, after: second", "id: second, after: first"],
+      ["id: first, produces: ../outside.apk"],
+      ["id: first, produces: C:\\outside.apk"],
+      ["id: first, produces: dist/**/*.apk", "id: second, produces: dist/app.apk"],
+    ];
+    for (const options of invalid) {
+      const checks = options.map((option, index) => `    - \`true\` (${option})`);
+      const parsed = task(["  - Checks:", ...checks].join("\n"));
+      expect(parsed.verification?.source).toBe("none");
+      expect(parsed.verification?.checks).toEqual([]);
+      expect(parsed.verification?.rejected.length).toBeGreaterThan(0);
+    }
+  });
+
   it("refuses checks that could touch live services, outside paths or secrets, and says why", () => {
     const parsed = task(
       [
@@ -172,12 +227,196 @@ describe("running checks", () => {
 
   it("fails a check whose directory is missing or escapes the worktree", async () => {
     const repo = await createTestGitRepo("aq-spec-");
+    const outside = `${repo.rootDir}-outside`;
     try {
-      for (const cwd of ["missing", "../escape"]) {
+      await NodeFSP.mkdir(outside);
+      await NodeFSP.symlink(outside, NodePath.join(repo.rootDir, "external"));
+      for (const cwd of ["missing", "../escape", "external"]) {
         const result = await runSpec("T1", repo.rootDir, spec([check("true", { cwd })]));
         expect(result.state).toBe("failed");
       }
     } finally {
+      await NodeFSP.rm(outside, { recursive: true, force: true });
+      await repo.cleanup();
+    }
+  });
+
+  it("blocks dependent checks after a failed producer while running independent checks", async () => {
+    const repo = await createTestGitRepo("aq-spec-artifacts-");
+    try {
+      const consumer = NodePath.join(repo.rootDir, "consumer-ran");
+      const result = await runSpec(
+        "T1",
+        repo.rootDir,
+        spec([
+          check("true", {
+            id: "build",
+            produces: ["app.apk"],
+          }),
+          check(`node -e "require('node:fs').writeFileSync('${consumer}', 'ran')"`, {
+            id: "instrumentation",
+            dependsOn: ["build"],
+            consumes: ["app.apk"],
+          }),
+          check("true", { id: "lint" }),
+        ]),
+      );
+      expect(result.state).toBe("failed");
+      expect(result.checks).toHaveLength(3);
+      expect(result.checks[0]).toMatchObject({ passed: false, failureKind: "missing-output" });
+      expect(result.checks[1]).toMatchObject({ passed: false, failureKind: "blocked" });
+      expect(result.checks[1]?.stderrTail).toContain("build");
+      expect(result.checks[2]).toMatchObject({ passed: true });
+      expect(NodeFS.existsSync(consumer)).toBe(false);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it("requires fresh, valid JUnit reports even when the command exits zero", async () => {
+    const repo = await createTestGitRepo("aq-spec-junit-");
+    try {
+      const runWithReport = async (
+        xml: string,
+        junit: NonNullable<VerificationSpec["checks"][number]["junit"]>,
+      ) => {
+        const encoded = Buffer.from(xml).toString("base64");
+        return runSpec(
+          "T1",
+          repo.rootDir,
+          spec([
+            check(
+              `node -e 'require("node:fs").writeFileSync("reports/run.xml", Buffer.from("${encoded}", "base64"))'`,
+              {
+                id: "tests",
+                junit,
+              },
+            ),
+          ]),
+        );
+      };
+      await NodeFSP.mkdir(NodePath.join(repo.rootDir, "reports"));
+      const requirement = { reports: ["reports/**/*.xml"], minTests: 1, maxSkipped: 0 };
+      const passed = await runWithReport(
+        '<testsuites><testsuite><testcase name="ok" /></testsuite></testsuites>',
+        requirement,
+      );
+      expect(passed.state).toBe("passed");
+
+      for (const fixture of [
+        { xml: "<testsuite>", reason: "malformed" },
+        { xml: '<testsuite tests="0"></testsuite>', reason: "0 executed" },
+        {
+          xml: '<testsuite><testcase name="installDebug"><failure message="INSTALL_FAILED: instrumentation launch failed" /></testcase></testsuite>',
+          reason: "INSTALL_FAILED",
+        },
+        {
+          xml: '<testsuite><testcase name="skip"><skipped /></testcase></testsuite>',
+          reason: "skipped",
+        },
+        {
+          xml: '<!DOCTYPE testsuite SYSTEM "https://example.invalid/report.dtd"><testsuite><testcase /></testsuite>',
+          reason: "DTD",
+        },
+      ]) {
+        const failed = await runWithReport(fixture.xml, requirement);
+        expect(failed.state).toBe("failed");
+        expect(failed.checks[0]?.passed).toBe(false);
+        expect(failed.checks[0]?.failureReason).toContain(fixture.reason);
+      }
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it("rejects an unchanged stale JUnit report", async () => {
+    const repo = await createTestGitRepo("aq-spec-stale-junit-");
+    try {
+      await NodeFSP.writeFile(
+        NodePath.join(repo.rootDir, "reports.xml"),
+        '<testsuite><testcase name="old" /></testsuite>',
+      );
+      NodeFS.utimesSync(NodePath.join(repo.rootDir, "reports.xml"), new Date(0), new Date(0));
+      const result = await runSpec(
+        "T1",
+        repo.rootDir,
+        spec([
+          check("true", {
+            id: "tests",
+            junit: { reports: ["reports.xml"], minTests: 1, maxSkipped: 0 },
+          }),
+        ]),
+      );
+      expect(result.state).toBe("failed");
+      expect(result.checks[0]?.stderrTail).toContain("stale");
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it("fails when a required JUnit report is missing", async () => {
+    const repo = await createTestGitRepo("aq-spec-missing-junit-");
+    try {
+      const result = await runSpec(
+        "T1",
+        repo.rootDir,
+        spec([
+          check("true", {
+            id: "tests",
+            junit: { reports: ["reports/**/*.xml"], minTests: 0, maxSkipped: 0 },
+          }),
+        ]),
+      );
+      expect(result.state).toBe("failed");
+      expect(result.checks[0]).toMatchObject({ passed: false, failureKind: "junit-missing" });
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it("rejects artifact and JUnit paths that resolve through symlinks outside the repository", async () => {
+    const repo = await createTestGitRepo("aq-spec-symlink-evidence-");
+    const outside = `${repo.rootDir}-outside`;
+    try {
+      await NodeFSP.mkdir(outside);
+      await NodeFSP.writeFile(
+        NodePath.join(outside, "report.xml"),
+        "<testsuite><testcase /></testsuite>",
+      );
+      await NodeFSP.symlink(
+        NodePath.join(outside, "report.xml"),
+        NodePath.join(repo.rootDir, "external.xml"),
+      );
+      await NodeFSP.symlink(
+        NodePath.join(outside, "report.xml"),
+        NodePath.join(repo.rootDir, "external.apk"),
+      );
+
+      const artifact = await runSpec(
+        "T1",
+        repo.rootDir,
+        spec([check("true", { id: "build", produces: ["external.apk"] })]),
+      );
+      const report = await runSpec(
+        "T1",
+        repo.rootDir,
+        spec([
+          check("true", {
+            id: "tests",
+            junit: { reports: ["external.xml"], minTests: 1, maxSkipped: 0 },
+          }),
+        ]),
+      );
+      const input = await runSpec(
+        "T1",
+        repo.rootDir,
+        spec([check("true", { id: "consumer", consumes: ["external.apk"] })]),
+      );
+      expect(artifact.checks[0]).toMatchObject({ passed: false, failureKind: "missing-output" });
+      expect(input.checks[0]).toMatchObject({ passed: false, failureKind: "missing-input" });
+      expect(report.checks[0]).toMatchObject({ passed: false, failureKind: "junit-malformed" });
+    } finally {
+      await NodeFSP.rm(outside, { recursive: true, force: true });
       await repo.cleanup();
     }
   });
@@ -217,6 +456,41 @@ describe("plan import and completion", () => {
     await execCommand("git", ["commit", "-m", "plan"], repo.rootDir);
     return repo;
   };
+
+  it("stores structured check evidence metadata when importing a plan", async () => {
+    const repo = await seed(
+      [
+        "# P",
+        "",
+        "- [ ] **RP1 — Build and inspect.**",
+        "  - Depends on: none.",
+        "  - Checks:",
+        "    - `true` (id: build, produces: artifacts/app.apk)",
+        "    - `true` (id: instrumentation, after: build, consumes: artifacts/app.apk, junit: reports/run.xml, min-tests: 1, max-skipped: 0)",
+      ].join("\n"),
+    );
+    try {
+      const imported = importPlanFile(repo.rootDir, "PLAN.md");
+      const db = openQueueDatabase({ gitCommonDir: repo.gitCommonDir });
+      const row = db.prepare("SELECT verification_spec FROM tasks WHERE id = 'RP1'").get() as {
+        verification_spec: string;
+      };
+      db.close();
+      const stored = JSON.parse(row.verification_spec) as VerificationSpec;
+      expect(imported.total).toBe(1);
+      expect(stored.checks).toMatchObject([
+        { id: "build", produces: ["artifacts/app.apk"] },
+        {
+          id: "instrumentation",
+          dependsOn: ["build"],
+          consumes: ["artifacts/app.apk"],
+          junit: { reports: ["reports/run.xml"], minTests: 1, maxSkipped: 0 },
+        },
+      ]);
+    } finally {
+      await repo.cleanup();
+    }
+  });
 
   it("places a derived check in the project directory the task's scope names", async () => {
     const repo = await seed(

@@ -17,6 +17,9 @@
     "test": "vp test run --config ../../vite.config.ts --dir .",
     "test:real-agent": "node --experimental-strip-types test/realAgent/realAgentGoal.mts"
   },
+  "dependencies": {
+    "fast-xml-parser": "5.11.2"
+  },
   "devDependencies": {
     "@types/node": "catalog:",
     "typescript": "catalog:",
