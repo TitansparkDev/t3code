@@ -1128,7 +1128,7 @@ This is an extension of the current mobile UI, using the existing foreground/mut
   - Needs LB02's banner components, SP02's cache-first routing, SP03's disk cache interfaces, SP04's foreground subscriptions and SP06's feed insets, because it checks their combined TypeScript surface, including `.ios` and Android route/header variants. Only this package's typecheck. Never hide an error with `any` or `@ts-ignore`.
   - Acceptance: mobile types pass for the integrated source and the shared exports it consumes.
 
-- [ ] **SG04 — Check integrated shared client-runtime types.**
+- [x] **SG04 — Check integrated shared client-runtime types.**
   - Depends on: SP02, SP03, SP04, SP05, SP06.
   - Scope: packages/client-runtime/tsconfig.json, packages/client-runtime/src/state/threads-sync.test.ts
   - Checks:
