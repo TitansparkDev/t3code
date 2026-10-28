@@ -22382,6 +22382,7 @@ apps/mobile/assets/file-icons/pierre_webpack.png
 apps/mobile/assets/file-icons/pierre_yml.png
 apps/mobile/assets/file-icons/pierre_zig.png
 apps/mobile/assets/file-icons/pierre_zip.png
+apps/mobile/assets/icons/chevron-down.xml
 apps/mobile/assets/icons/compose.xml
 apps/mobile/assets/icons/delete.xml
 apps/mobile/assets/icons/file-diff.png
@@ -22735,6 +22736,9 @@ apps/mobile/src/components/ui/SheetHeader.types.ts
 apps/mobile/src/components/ui/SliderRow.android.tsx
 apps/mobile/src/components/ui/SliderRow.tsx
 apps/mobile/src/components/ui/SliderRow.types.ts
+apps/mobile/src/components/ui/SplitButton.android.tsx
+apps/mobile/src/components/ui/SplitButton.tsx
+apps/mobile/src/components/ui/SplitButton.types.ts
 apps/mobile/src/components/ui/ThemedSwitch.tsx
 apps/mobile/src/components/ui/Toast.tsx
 apps/mobile/src/components/ui/Toolbar.android.tsx
@@ -23278,6 +23282,7 @@ apps/mobile/src/features/threads/QuestionAttachments.tsx
 apps/mobile/src/features/threads/SecretRequestCard.tsx
 apps/mobile/src/features/threads/SubagentRow.tsx
 apps/mobile/src/features/threads/SubagentStatusDot.tsx
+apps/mobile/src/features/threads/SubagentStopButton.tsx
 apps/mobile/src/features/threads/ThreadAgentsSheet.tsx
 apps/mobile/src/features/threads/ThreadArrangementSheet.tsx
 apps/mobile/src/features/threads/ThreadBackgroundWorkSheet.tsx
@@ -23302,6 +23307,7 @@ apps/mobile/src/features/threads/ThreadSettingsRows.android.tsx
 apps/mobile/src/features/threads/ThreadSettingsRows.shared.tsx
 apps/mobile/src/features/threads/ThreadSettingsRows.tsx
 apps/mobile/src/features/threads/ThreadSettingsSheet.tsx
+apps/mobile/src/features/threads/ThreadWorkflowGroup.tsx
 apps/mobile/src/features/threads/UsageLimitRecoveryCard.test.tsx
 apps/mobile/src/features/threads/UsageLimitRecoveryCard.tsx
 apps/mobile/src/features/threads/checkout-new-task-branch.test.ts
@@ -23383,6 +23389,7 @@ apps/mobile/src/features/threads/thread-title-regeneration-menu.ts
 apps/mobile/src/features/threads/thread-title-rename.ts
 apps/mobile/src/features/threads/thread-work-log.tsx
 apps/mobile/src/features/threads/thread-workflow-opening.tsx
+apps/mobile/src/features/threads/threadAgentsPresentation.test.ts
 apps/mobile/src/features/threads/threadAgentsPresentation.ts
 apps/mobile/src/features/threads/threadContentPresentation.test.ts
 apps/mobile/src/features/threads/threadContentPresentation.ts
@@ -24085,6 +24092,8 @@ apps/server/src/device/ExpoApi.test.ts
 apps/server/src/device/ExpoApi.ts
 apps/server/src/device/LocalDeviceHost.test.ts
 apps/server/src/device/LocalDeviceHost.ts
+apps/server/src/device/SimlockDeviceHost.test.ts
+apps/server/src/device/SimlockDeviceHost.ts
 apps/server/src/device/SshDeviceHost.test.ts
 apps/server/src/device/SshDeviceHost.ts
 apps/server/src/device/deviceToolMaintenance.test.ts
@@ -24802,6 +24811,8 @@ apps/server/src/orchestration-v2/threadHistoryPaging.ts
 apps/server/src/orchestration-v2/toolOutputImageBytes.test.ts
 apps/server/src/orchestration-v2/toolOutputImageBytes.ts
 apps/server/src/orchestration-v2/unknownField.ts
+apps/server/src/orchestration-v2/workflowAgentAnswers.test.ts
+apps/server/src/orchestration-v2/workflowAgentAnswers.ts
 apps/server/src/orchestration-v2/workflowAgentTranscript.test.ts
 apps/server/src/orchestration-v2/workflowAgentTranscript.ts
 apps/server/src/orchestration-v2/workflowFileRead.ts
@@ -25479,6 +25490,7 @@ apps/web/src/components/CommandPaletteResults.tsx
 apps/web/src/components/CommandPaletteThemeItems.tsx
 apps/web/src/components/CommandPaletteThreadItems.tsx
 apps/web/src/components/ComposerContextLabel.tsx
+apps/web/src/components/ComposerContextPermissions.tsx
 apps/web/src/components/ComposerPromptEditorTiptap.citationDraft.browser.test.tsx
 apps/web/src/components/ComposerPromptEditorTiptap.input.browser.test.tsx
 apps/web/src/components/ComposerPromptEditorTiptap.tsx
@@ -25610,6 +25622,7 @@ apps/web/src/components/chat/ComposerPendingApprovalActions.tsx
 apps/web/src/components/chat/ComposerPendingTerminalContexts.tsx
 apps/web/src/components/chat/ComposerPendingUserInputPanel.navigation.browser.test.tsx
 apps/web/src/components/chat/ComposerPendingUserInputPanel.tsx
+apps/web/src/components/chat/ComposerPermissionsSection.browser.test.tsx
 apps/web/src/components/chat/ComposerPlanFollowUpBanner.tsx
 apps/web/src/components/chat/ComposerPrimaryActions.tsx
 apps/web/src/components/chat/ComposerPromptLengthValidation.tsx
@@ -25626,6 +25639,8 @@ apps/web/src/components/chat/DiffStatLabel.tsx
 apps/web/src/components/chat/DraftHeroHeadline.tsx
 apps/web/src/components/chat/DraftHeroProjectHeading.tsx
 apps/web/src/components/chat/DraftProjectName.tsx
+apps/web/src/components/chat/EffortGlyph.test.ts
+apps/web/src/components/chat/EffortGlyph.tsx
 apps/web/src/components/chat/ExpandedImageDialog.browser.test.tsx
 apps/web/src/components/chat/ExpandedImageDialog.tsx
 apps/web/src/components/chat/ExpandedImagePreview.test.ts
@@ -25760,6 +25775,8 @@ apps/web/src/components/chat/composerAttachmentReferences.ts
 apps/web/src/components/chat/composerCommandKey.ts
 apps/web/src/components/chat/composerContextUndo.test.ts
 apps/web/src/components/chat/composerContextUndo.ts
+apps/web/src/components/chat/composerControlsOwnership.test.ts
+apps/web/src/components/chat/composerControlsOwnership.ts
 apps/web/src/components/chat/composerEventScope.ts
 apps/web/src/components/chat/composerFocusRedirect.ts
 apps/web/src/components/chat/composerMentionDrag.test.ts
@@ -25770,7 +25787,6 @@ apps/web/src/components/chat/composerPromptHistory.test.ts
 apps/web/src/components/chat/composerPromptHistory.ts
 apps/web/src/components/chat/composerProviderState.test.tsx
 apps/web/src/components/chat/composerProviderState.tsx
-apps/web/src/components/chat/composerScrollGesture.ts
 apps/web/src/components/chat/composerSend.logic.test.ts
 apps/web/src/components/chat/composerSend.logic.ts
 apps/web/src/components/chat/composerShortcuts.ts
@@ -25845,7 +25861,6 @@ apps/web/src/components/chat/useChatShortcuts.ts
 apps/web/src/components/chat/useChatTerminalActions.ts
 apps/web/src/components/chat/useComposerAttachmentIntake.ts
 apps/web/src/components/chat/useComposerContextImport.ts
-apps/web/src/components/chat/useComposerFocusState.ts
 apps/web/src/components/chat/useComposerImageGroups.ts
 apps/web/src/components/chat/useComposerMenuItems.ts
 apps/web/src/components/chat/useComposerMenuState.ts
@@ -25902,11 +25917,13 @@ apps/web/src/components/clerk/authRedirect.ts
 apps/web/src/components/clerk/clerkAppearance.test.ts
 apps/web/src/components/clerk/clerkAppearance.ts
 apps/web/src/components/clerk/electronPasskeys.test.ts
+apps/web/src/components/clerk/useT3ChatLink.ts
 apps/web/src/components/clerk/useT3ConnectAuthPrompt.tsx
 apps/web/src/components/cloud/CloudEnvironmentConnectList.tsx
 apps/web/src/components/cloud/ConnectCliAuthSurface.tsx
 apps/web/src/components/cloud/ConnectOnboardingDialog.tsx
 apps/web/src/components/cloud/RelayClientInstallDialog.tsx
+apps/web/src/components/cloud/TunnelUsage.tsx
 apps/web/src/components/cloud/cloudEnvironmentConnectionPresentation.ts
 apps/web/src/components/composerCodeBlockHighlight.test.ts
 apps/web/src/components/composerCodeBlockHighlight.ts
@@ -26300,9 +26317,9 @@ apps/web/src/components/settings/ConnectionsSettings.tsx
 apps/web/src/components/settings/CustomModelEditor.tsx
 apps/web/src/components/settings/DatabaseStorageNotice.tsx
 apps/web/src/components/settings/DeviceHostEditor.tsx
-apps/web/src/components/settings/DeviceHostsSettings.tsx
+apps/web/src/components/settings/DeviceSourcesSettings.tsx
 apps/web/src/components/settings/DiagnosticsSettings.tsx
-apps/web/src/components/settings/EasDeviceHostsSettings.tsx
+apps/web/src/components/settings/EasDeviceHostEditor.tsx
 apps/web/src/components/settings/EnvironmentIconPicker.test.ts
 apps/web/src/components/settings/EnvironmentIconPicker.tsx
 apps/web/src/components/settings/EnvironmentRoutesList.tsx
@@ -26377,6 +26394,7 @@ apps/web/src/components/settings/SettingsScopeContext.tsx
 apps/web/src/components/settings/SettingsScopeNotice.tsx
 apps/web/src/components/settings/SettingsScopeSentence.tsx
 apps/web/src/components/settings/SettingsSidebarNav.tsx
+apps/web/src/components/settings/SimlockDeviceHostEditor.tsx
 apps/web/src/components/settings/SnapShotSettings.logic.test.ts
 apps/web/src/components/settings/SnapShotSettings.logic.ts
 apps/web/src/components/settings/SnapShotSettings.tsx
@@ -26447,6 +26465,8 @@ apps/web/src/components/settings/settingsScopeNavigation.test.ts
 apps/web/src/components/settings/settingsScopeNavigation.ts
 apps/web/src/components/settings/settingsSearch.test.ts
 apps/web/src/components/settings/settingsSearch.ts
+apps/web/src/components/settings/simlockDeviceHostsSettings.logic.test.ts
+apps/web/src/components/settings/simlockDeviceHostsSettings.logic.ts
 apps/web/src/components/settings/themeEditorStore.ts
 apps/web/src/components/settings/themeInspector.ts
 apps/web/src/components/settings/useAvailableSettingsSearchItems.ts
@@ -27243,9 +27263,14 @@ docs/user/welcome-wizard.md
 evals/.gitignore
 evals/README.md
 evals/mcp-tool-use/README.md
+evals/mcp-tool-use/agent-device-help.txt
+evals/mcp-tool-use/cases/device-manager.ndjson
 evals/mcp-tool-use/cases/orchestration.ndjson
 evals/mcp-tool-use/cases/pull-requests.ndjson
 evals/mcp-tool-use/cases/visual-preview.ndjson
+evals/mcp-tool-use/device-grading.ts
+evals/mcp-tool-use/devices.test.ts
+evals/mcp-tool-use/devices.ts
 evals/mcp-tool-use/run.test.ts
 evals/mcp-tool-use/run.ts
 evals/mcp-tool-use/templates/claude.json.gz
@@ -28304,6 +28329,7 @@ packages/provider-core/src/server/mcpToolPresentation.ts
 packages/provider-core/src/server/nativeProtocolLogging.ts
 packages/provider-core/src/server/notification.test.ts
 packages/provider-core/src/server/notification.ts
+packages/provider-core/src/server/orchestrationInstructions.test.ts
 packages/provider-core/src/server/orchestrationInstructions.ts
 packages/provider-core/src/server/pathExpansion.ts
 packages/provider-core/src/server/processGroup.test.ts
@@ -29077,6 +29103,14 @@ scripts/update-release-package-versions.ts
 scripts/verify-windows-desktop-artifact.ts
 t3.json
 third-party-licenses.config.json
+third-party-licenses/spdx/v3.28.0/Apache-2.0.json
+third-party-licenses/spdx/v3.28.0/BSD-2-Clause.json
+third-party-licenses/spdx/v3.28.0/BSD-3-Clause.json
+third-party-licenses/spdx/v3.28.0/CC0-1.0.json
+third-party-licenses/spdx/v3.28.0/ISC.json
+third-party-licenses/spdx/v3.28.0/MIT.json
+third-party-licenses/spdx/v3.28.0/OFL-1.1.json
+third-party-licenses/spdx/v3.28.0/Unlicense.json
 tree.txt
 tsconfig.base.json
 vite.config.ts
