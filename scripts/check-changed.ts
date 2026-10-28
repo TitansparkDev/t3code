@@ -236,20 +236,9 @@ const steps = [
     name: `graphql (${dir})`,
     args: ["run", "--filter", `./${dir}`, "generate", "--check"],
   })),
-  affected.some((name) => name !== "t3") && {
-    name: `typecheck (${affected.filter((name) => name !== "t3").length} packages)`,
-    args: [
-      "run",
-      "--cache",
-      "--concurrency-limit",
-      "1",
-      ...filters(affected.filter((name) => name !== "t3")),
-      "typecheck",
-    ],
-  },
-  affected.includes("t3") && {
-    name: "typecheck (server)",
-    args: ["run", "--cache", "--filter", "./apps/server", "typecheck:resource"],
+  affected.length > 0 && {
+    name: `typecheck (${affected.length} packages)`,
+    args: ["run", "--cache", "--concurrency-limit", "1", ...filters(affected), "typecheck"],
   },
   // From the repo root, the root vite.config.ts hands each file to its package's config.
   tests.size > 0 && {
