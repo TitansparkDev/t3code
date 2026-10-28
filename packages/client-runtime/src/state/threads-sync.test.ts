@@ -2246,12 +2246,7 @@ describe("EnvironmentThreads", () => {
       expect(yield* Ref.get(harness.retryCount)).toBe(0);
 
       yield* harness.replaceSession;
-      for (let attempt = 0; attempt < 100; attempt += 1) {
-        if ((yield* SubscriptionRef.get(harness.subscriptionCount)) >= 2) {
-          break;
-        }
-        yield* Effect.yieldNow;
-      }
+      expect(yield* Queue.take(harness.subscriptionEvents)).toBe(2);
       yield* Queue.offer(
         harness.inputs,
         snapshot({
@@ -2386,10 +2381,7 @@ describe("EnvironmentThreads", () => {
       ]);
 
       yield* harness.replaceSession;
-      for (let attempt = 0; attempt < 100; attempt += 1) {
-        if ((yield* SubscriptionRef.get(harness.subscriptionCount)) >= 2) break;
-        yield* Effect.yieldNow;
-      }
+      expect(yield* Queue.take(harness.subscriptionEvents)).toBe(2);
       expect(yield* SubscriptionRef.get(harness.subscriptionCount)).toBe(2);
       expect(yield* Ref.get(harness.lastSubscribeAfterSequence)).toBe(CACHED_SNAPSHOT_SEQUENCE + 4);
     }),
