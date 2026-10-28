@@ -12,13 +12,317 @@ import { execCommand } from "./harness/gitHarness.ts";
 import { generateOverseerBriefing } from "../src/overseerRepairs.ts";
 import { validatePlanDag, getReadyTasks, type PlanTaskDefinition } from "../src/planGraph.ts";
 import { createTestGitRepo } from "./harness/gitHarness.ts";
+import { makeRepo, plan, tmpDir } from "./harness/contractHarness.ts";
+import type { VerificationSpec } from "../src/verificationSpec.ts";
+
+type ReplayPolicy = "sequential" | "unqueued" | "queued" | "coordinated";
+
+interface ReplayMetrics {
+  readonly executedChecks: number;
+  readonly modelDecisionTurns: number;
+  readonly waits: number;
+  readonly serializedLandings: number;
+  readonly criticalPath: number;
+}
+
+/** A tiny virtual-cost replay; the lifecycle below supplies the real check counts. */
+function replayPolicy(policy: ReplayPolicy): ReplayMetrics {
+  const tasks = [
+    { id: "A", dependencies: [] as string[], checkKey: "shared-input" },
+    { id: "B", dependencies: [] as string[], checkKey: "shared-input" },
+    { id: "C", dependencies: ["A", "B"], checkKey: "changed-input" },
+  ];
+  const deduplicates = policy === "queued" || policy === "coordinated";
+  const workerLimit = policy === "sequential" ? 1 : 2;
+  const resourceLimit = 1;
+  const landingLimit = 1;
+  const costs = { model: 4, check: 5, integrate: 1 };
+  const states = new Map(
+    tasks.map((task) => [
+      task.id,
+      {
+        task,
+        stage: "model" as "model" | "check" | "integrate" | "done",
+        started: false,
+        waiting: false,
+      },
+    ]),
+  );
+  const running: Array<{
+    taskId: string;
+    stage: "model" | "check" | "integrate";
+    checkKey?: string;
+    endsAt: number;
+  }> = [];
+  const completedChecks = new Set<string>();
+  let now = 0;
+  let executedChecks = 0;
+  let modelDecisionTurns = 0;
+  let waits = 0;
+  let serializedLandings = 0;
+  const activeTaskIds = () =>
+    new Set(
+      [...states.values()]
+        .filter((state) => state.started && state.stage !== "done")
+        .map((state) => state.task.id),
+    );
+
+  const start = (
+    taskId: string,
+    stage: "model" | "check" | "integrate",
+    duration: number,
+    checkKey?: string,
+  ) => {
+    const state = states.get(taskId)!;
+    state.stage = stage;
+    if (stage === "model") {
+      state.started = true;
+      modelDecisionTurns++;
+    }
+    if (stage === "check") executedChecks++;
+    running.push({ taskId, stage, ...(checkKey ? { checkKey } : {}), endsAt: now + duration });
+  };
+
+  while ([...states.values()].some((state) => state.stage !== "done")) {
+    let started = false;
+    for (const state of states.values()) {
+      const { task } = state;
+      if (
+        state.stage === "model" &&
+        task.dependencies.every((id) => states.get(id)?.stage === "done")
+      ) {
+        const active = activeTaskIds();
+        if (!active.has(task.id) && active.size < workerLimit) {
+          start(task.id, "model", costs.model);
+          started = true;
+        }
+      }
+    }
+
+    for (const state of states.values()) {
+      if (
+        state.stage !== "check" ||
+        running.some((operation) => operation.taskId === state.task.id)
+      )
+        continue;
+      const active = activeTaskIds();
+      if (!active.has(state.task.id) && active.size >= workerLimit) continue;
+      const key = state.task.checkKey;
+      if (deduplicates && completedChecks.has(key)) {
+        state.stage = "integrate";
+        state.waiting = false;
+        started = true;
+        continue;
+      }
+      if ([...running].filter((operation) => operation.stage === "check").length >= resourceLimit) {
+        if (!state.waiting) {
+          state.waiting = true;
+          waits++;
+        }
+        continue;
+      }
+      state.waiting = false;
+      start(state.task.id, "check", costs.check, key);
+      started = true;
+    }
+
+    for (const state of states.values()) {
+      if (
+        state.stage !== "integrate" ||
+        running.some((operation) => operation.taskId === state.task.id)
+      )
+        continue;
+      const active = activeTaskIds();
+      if (!active.has(state.task.id) && active.size >= workerLimit) continue;
+      if (running.filter((operation) => operation.stage === "integrate").length >= landingLimit) {
+        if (!state.waiting) {
+          state.waiting = true;
+          waits++;
+          serializedLandings++;
+        }
+        continue;
+      }
+      state.waiting = false;
+      start(state.task.id, "integrate", costs.integrate);
+      started = true;
+    }
+
+    if (running.length === 0) {
+      if (started) continue;
+      throw new Error("virtual replay has no runnable operation");
+    }
+    const nextTime = Math.min(...running.map((operation) => operation.endsAt));
+    now = nextTime;
+    for (const operation of [...running].filter((item) => item.endsAt === now)) {
+      running.splice(running.indexOf(operation), 1);
+      const state = states.get(operation.taskId)!;
+      if (operation.stage === "model") state.stage = "check";
+      else if (operation.stage === "check") {
+        completedChecks.add(operation.checkKey!);
+        state.stage = "integrate";
+      } else state.stage = "done";
+    }
+  }
+  return { executedChecks, modelDecisionTurns, waits, serializedLandings, criticalPath: now };
+}
+
+async function withReplayResourceHome<A>(run: () => Promise<A>): Promise<A> {
+  const root = await tmpDir("aq-replay-home-");
+  const config = NodePath.join(root, "resources.json");
+  NodeFS.writeFileSync(
+    config,
+    JSON.stringify({ reserveMb: 0, resources: { heavy_build: { capacity: 1, memoryMb: 0 } } }),
+  );
+  const previousHome = process.env.AGENTQUEUE_RESOURCE_HOME;
+  const previousConfig = process.env.AGENTQUEUE_RESOURCE_CONFIG;
+  process.env.AGENTQUEUE_RESOURCE_HOME = root;
+  process.env.AGENTQUEUE_RESOURCE_CONFIG = config;
+  try {
+    return await run();
+  } finally {
+    if (previousHome === undefined) delete process.env.AGENTQUEUE_RESOURCE_HOME;
+    else process.env.AGENTQUEUE_RESOURCE_HOME = previousHome;
+    if (previousConfig === undefined) delete process.env.AGENTQUEUE_RESOURCE_CONFIG;
+    else process.env.AGENTQUEUE_RESOURCE_CONFIG = previousConfig;
+    NodeFS.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+function checkedReceipt(
+  outcome: Awaited<ReturnType<Awaited<ReturnType<typeof makeRepo>>["submit"]>>,
+) {
+  if (outcome.kind !== "submitted") throw new Error(`expected submitted, got ${outcome.kind}`);
+  const result = outcome.receipt.checks[0];
+  if (!result) throw new Error("expected one check result");
+  return result;
+}
 
 describe("Phase 8: Full System Stress & Chaos Harness (AQ-058, Gate G8)", () => {
+  it("replays duplicate checks through submit and integration, then invalidates after a source edit", async () => {
+    await withReplayResourceHome(async () => {
+      const r = await makeRepo({
+        plan: plan([
+          { id: "A", scope: "docs/evidence/A/" },
+          { id: "B", scope: "docs/evidence/B/" },
+          { id: "C", deps: ["A", "B"], scope: "src/" },
+        ]),
+        contract: {
+          branchPrefixes: ["agent/"],
+          supportingPaths: ["docs/evidence/"],
+          resources: [{ name: "heavy_build", limit: 1, scope: [], commands: ["node -e"] }],
+        },
+        files: { "src/shared.txt": "same input\n" },
+      });
+      try {
+        const spec: VerificationSpec = {
+          source: "declared",
+          checks: [
+            {
+              id: "replay-check",
+              run: `node -e "process.stdout.write('passed')"`,
+              cwd: ".",
+              timeoutSeconds: 30,
+              requires: ["heavy_build"],
+              expectExitCode: 0,
+              produces: [],
+              reuseInputs: ["src/shared.txt"],
+              reuseEnv: [],
+            },
+          ],
+          exemptReason: null,
+          rejected: [],
+        };
+        for (const taskId of ["A", "B", "C"]) {
+          r.db
+            .prepare(
+              "UPDATE tasks SET verification_spec = ?, verification_command = NULL WHERE id = ?",
+            )
+            .run(JSON.stringify(spec), taskId);
+        }
+
+        const reservedA = await r.reserve("replay-A");
+        const reservedB = await r.reserve("replay-B");
+        expect([reservedA.kind, reservedB.kind]).toEqual(["reserved", "reserved"]);
+        if (reservedA.kind !== "reserved" || reservedB.kind !== "reserved") return;
+        await r.commitFile(
+          reservedA.task.worktreePath,
+          "docs/evidence/A/result.md",
+          "A evidence\n",
+        );
+        await r.commitFile(
+          reservedB.task.worktreePath,
+          "docs/evidence/B/result.md",
+          "B evidence\n",
+        );
+        const aCheck = checkedReceipt(await r.submit(reservedA.task));
+        const bCheck = checkedReceipt(await r.submit(reservedB.task));
+        expect(aCheck.reused).not.toBe(true);
+        expect(bCheck.reused).toBe(true);
+        expect((await r.integrate("A")).kind).toBe("landed");
+        expect((await r.integrate("B")).kind).toBe("landed");
+
+        const reservedC = await r.reserve("replay-C");
+        expect(reservedC.kind).toBe("reserved");
+        if (reservedC.kind !== "reserved") return;
+        await r.commitFile(reservedC.task.worktreePath, "src/shared.txt", "changed input\n");
+        const cCheck = checkedReceipt(await r.submit(reservedC.task));
+        expect(cCheck.reused).not.toBe(true);
+        expect((await r.integrate("C")).kind).toBe("landed");
+
+        const comparisons = {
+          sequential: replayPolicy("sequential"),
+          unqueuedParallel: replayPolicy("unqueued"),
+          queued: replayPolicy("queued"),
+          coordinatedUnqueued: replayPolicy("coordinated"),
+        };
+        expect(comparisons).toEqual({
+          sequential: {
+            executedChecks: 3,
+            modelDecisionTurns: 3,
+            waits: 0,
+            serializedLandings: 0,
+            criticalPath: 30,
+          },
+          unqueuedParallel: {
+            executedChecks: 3,
+            modelDecisionTurns: 3,
+            waits: 1,
+            serializedLandings: 0,
+            criticalPath: 25,
+          },
+          queued: {
+            executedChecks: 2,
+            modelDecisionTurns: 3,
+            waits: 2,
+            serializedLandings: 1,
+            criticalPath: 21,
+          },
+          coordinatedUnqueued: {
+            executedChecks: 2,
+            modelDecisionTurns: 3,
+            waits: 2,
+            serializedLandings: 1,
+            criticalPath: 21,
+          },
+        });
+        expect([aCheck, bCheck, cCheck].filter((check) => check.reused !== true)).toHaveLength(
+          comparisons.queued.executedChecks,
+        );
+        expect(comparisons.queued.criticalPath).toBeLessThan(
+          comparisons.unqueuedParallel.criticalPath,
+        );
+        expect(comparisons.queued).toEqual(comparisons.coordinatedUnqueued);
+      } finally {
+        await r.repo.cleanup();
+      }
+    });
+  });
+
   it("executes a 30-task DAG with concurrent claims, worker death recovery, and serialized landing", async () => {
     const repo = await createTestGitRepo("full-stress-harness-");
     try {
       const db = openQueueDatabase({ gitCommonDir: repo.gitCommonDir });
-      const now = new Date().toISOString();
+      const now = "2026-10-28T00:00:00.000Z";
 
       // Build 30-task DAG (5 tiers of 6 tasks each)
       const tasks: PlanTaskDefinition[] = [];
@@ -156,7 +460,6 @@ describe("Phase 8: Full System Stress & Chaos Harness (AQ-058, Gate G8)", () => 
           });
           expect(landing.success).toBe(true);
 
-          // Release claim
           releaseClaim(db, { ownerToken, finalStatus: "completed" });
 
           // Teardown worktree
@@ -198,7 +501,7 @@ describe("Phase 8: Full System Stress & Chaos Harness (AQ-058, Gate G8)", () => 
     const repo = await createTestGitRepo("soak-load-harness-");
     try {
       const db = openQueueDatabase({ gitCommonDir: repo.gitCommonDir });
-      const now = new Date().toISOString();
+      const now = "2026-10-28T00:00:00.000Z";
 
       // Build 60-task DAG (10 tiers of 6 tasks each) with non-conflicting scopes
       const tasks: PlanTaskDefinition[] = [];
@@ -299,7 +602,6 @@ describe("Phase 8: Full System Stress & Chaos Harness (AQ-058, Gate G8)", () => 
           });
           expect(landing.success).toBe(true);
 
-          // Release claim
           releaseClaim(db, { ownerToken, finalStatus: "completed" });
 
           // Teardown worktree
