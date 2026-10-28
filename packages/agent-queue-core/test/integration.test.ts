@@ -554,6 +554,7 @@ describe("verification dependencies", () => {
     const t = await setup();
     try {
       const task = await t.reserve("w-a1");
+      await t.commitFile(task.worktreePath, "candidate.txt", "scoped candidate change\n");
       const checks = [
         {
           id: "producer",

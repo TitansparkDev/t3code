@@ -40,7 +40,7 @@ const CONFIG: ResourceConfig = {
 
 const ANDROID_CONFIG: ResourceConfig = {
   reserveMb: 1000,
-  resources: { android: { capacity: 1 } },
+  resources: { android: { capacity: 1, memoryMb: 0 } },
 };
 
 function makeBroker(home: string, free = 20_000, config = CONFIG) {
