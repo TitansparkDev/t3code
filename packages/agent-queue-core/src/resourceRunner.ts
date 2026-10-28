@@ -904,7 +904,7 @@ async function holdLocks(files: ReadonlyArray<string>, waitSeconds: number): Pro
   return release;
 }
 
-export interface WithBrokerOptions {
+export interface WithBrokerOptions<A = unknown> {
   readonly label?: string;
   readonly ownerRef?: string;
   readonly repo?: string;
@@ -912,6 +912,8 @@ export interface WithBrokerOptions {
   readonly waitMs?: number;
   readonly broker?: ResourceBroker;
   readonly brokerOptions?: BrokerOptions;
+  /** Classify a returned result when completion does not imply success. */
+  readonly outcomeOf?: (result: A) => TicketOutcome;
 }
 
 /**
@@ -922,7 +924,7 @@ export interface WithBrokerOptions {
 export async function withBrokerResources<A>(
   names: ReadonlyArray<string>,
   body: (env: Record<string, string>) => Promise<A>,
-  options: WithBrokerOptions = {},
+  options: WithBrokerOptions<A> = {},
 ): Promise<A> {
   const unique = [...new Set(names.map(normalizeResource))];
   if (unique.length === 0) return body({});
@@ -957,7 +959,22 @@ export async function withBrokerResources<A>(
     beat = setInterval(() => broker.heartbeat(ticket.id), 10_000);
     const grantedEnv = ticketEnv(granted);
     await ensureEmulator(grantedEnv, { repo: granted.repo ?? null });
-    return await body(grantedEnv);
+    const result = await body(grantedEnv);
+    const outcome = options.outcomeOf?.(result) ?? "ok";
+    broker.finish(ticket.id, { outcome });
+    return result;
+  } catch (error) {
+    const final = broker.get(ticket.id);
+    if (
+      final &&
+      (final.state === "waiting" || final.state === "granted" || final.state === "running")
+    ) {
+      broker.finish(ticket.id, {
+        outcome: error instanceof ResourceWaitError ? error.outcome : "failed",
+        note: error instanceof Error ? error.message.slice(0, 500) : "Resource callback failed",
+      });
+    }
+    throw error;
   } finally {
     if (beat) clearInterval(beat);
     release();
@@ -966,7 +983,7 @@ export async function withBrokerResources<A>(
       final &&
       (final.state === "waiting" || final.state === "granted" || final.state === "running")
     ) {
-      broker.finish(ticket.id, { outcome: "ok" });
+      broker.finish(ticket.id, { outcome: "failed" });
     }
     broker.pump();
     if (owned) broker.close();

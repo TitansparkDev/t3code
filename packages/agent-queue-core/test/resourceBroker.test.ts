@@ -560,6 +560,30 @@ describe("running under the broker", () => {
     expect(peak).toBe(1);
   });
 
+  it("records callback failures and returned verification outcomes while releasing resources", async () => {
+    const home = newHome();
+    const { broker } = makeBroker({ home });
+    await expect(
+      withBrokerResources(
+        ["db"],
+        async () => {
+          throw new Error("check failed");
+        },
+        { broker, ownerRef: "throwing" },
+      ),
+    ).rejects.toThrow("check failed");
+    expect(broker.forOwner("throwing")[0]?.outcome).toBe("failed");
+    const result = await withBrokerResources(["db"], async () => ({ ok: false }), {
+      broker,
+      ownerRef: "returned",
+      outcomeOf: (value) => (value.ok ? "ok" : "failed"),
+    });
+    expect(result.ok).toBe(false);
+    expect(broker.forOwner("returned")[0]?.outcome).toBe("failed");
+    const next = await withBrokerResources(["db"], async () => "released", { broker });
+    expect(next).toBe("released");
+  });
+
   it("limits real parallel processes to the capacity under heavy contention", async () => {
     const home = newHome();
     // A tiny script: each process records how many holders it saw inside its critical section.
