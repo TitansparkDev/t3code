@@ -1,21 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off preferSchemaOverJson:off
 /**
- * Is this plan something small coding agents can finish on their own, in this repository, on this
- * machine? A plan that cannot be finished wastes every worker that meets its wall, so each of these
- * is found before a Goal starts, from the plan and from the repository itself:
- *
- *  - work only a person, a device or elapsed time can do (owner checks, soak runs, store reviews);
- *  - live or production changes outside the one final release task;
- *  - decisions left to the worker (TBD, "if possible", "choose between");
- *  - a scope that leaves out files the task cannot work without (the Room database a sync change
- *    depends on, a protected file, a path that does not exist);
- *  - checks that cannot run here (missing tool, no GPU), that are too broad for the task, or that
- *    already fail on the branch the workers start from;
- *  - dependencies nothing requires, overlapping scopes, and instructions that contradict each other.
- *
- * Findings are `error` (the plan cannot run as written) or `warning` (probably wrong, say why if not).
- * Nothing here changes the plan or the repository.
- *
+ * Checks whether planned work can run from the repository's committed state.
  * @module planLint
  */
 import * as NodeChildProcess from "node:child_process";
@@ -217,6 +202,78 @@ const CONTRADICTIONS: ReadonlyArray<{
 const LAYER_TEXT =
   /\b(sync\w*|persist\w*|durab\w*|outbox|offline|mirror|process death|record(s|ed|ing)? (the )?(stage|state|outcome|result)|track(s|ed|ing)? (every|each|the)|restart)\b/i;
 
+function checkMetadataDeclared(
+  check: NonNullable<PlanTaskDefinition["verification"]>["checks"][number],
+) {
+  return (
+    check.id !== undefined ||
+    check.dependsOn !== undefined ||
+    check.produces !== undefined ||
+    check.consumes !== undefined ||
+    check.reuseInputs !== undefined ||
+    check.junit !== undefined
+  );
+}
+
+function artifactPatternsOverlap(left: string, right: string): boolean {
+  if (pathMatches(left, right) || pathMatches(right, left)) return true;
+  const prefix = (value: string) => {
+    const wildcard = value.search(/[?*]/);
+    return wildcard < 0 ? value : value.slice(0, value.lastIndexOf("/", wildcard) + 1);
+  };
+  const a = prefix(left);
+  const b = prefix(right);
+  return a === "" || b === "" || a === b || a.startsWith(b) || b.startsWith(a);
+}
+
+function combinedGateCommand(command: string): boolean {
+  const segments = command.split(/&&|\|/).map((segment) => segment.trim());
+  const gradleTasks = segments.flatMap((segment) => {
+    const gradle = /(?:^|\s)(?:\.\/)?gradlew(?:\.bat)?\s+(.+)$/i.exec(segment);
+    if (!gradle) return [];
+    return gradle[1]!
+      .split(/\s+--/)[0]!
+      .split(/\s+/)
+      .map((word) => word.replace(/^:[\w.-]+:/, ""))
+      .filter((word) =>
+        /^(?:check|build|test(?:[A-Z][\w]*)?|connected\w*Test|\w*AndroidTest|lint\w*|assemble\w*)$/i.test(
+          word,
+        ),
+      );
+  });
+  const independent = segments.filter((segment) =>
+    /(?:^|\s)(?:vp|pnpm|npm|yarn|bun)\s+(?:test\s+run|run\s+(?:test|typecheck|lint|check|build))\b/i.test(
+      segment,
+    ),
+  );
+  return gradleTasks.length > 1 || independent.length > 1;
+}
+
+function missingGradleProject(
+  repoRoot: string,
+  ref: string,
+  check: NonNullable<PlanTaskDefinition["verification"]>["checks"][number],
+): string | null {
+  const gradle = /(?:^|\s)(?:\.\/)?gradlew(?:\.bat)?\s+(:[\w.-]+(?::[\w.-]+)+)/i.exec(check.run);
+  const target = gradle?.[1];
+  if (!target) return null;
+  const taskName = target.slice(target.lastIndexOf(":") + 1);
+  if (!/^(?:check|build|test|connected\w*Test|\w*AndroidTest|lint\w*|assemble\w*)$/i.test(taskName))
+    return null;
+  const project = target.slice(0, target.lastIndexOf(":"));
+  const prefix = check.cwd && check.cwd !== "." ? `${check.cwd}/` : "";
+  const settings = ["settings.gradle.kts", "settings.gradle"]
+    .map((name) => git(repoRoot, ["show", `${ref}:${prefix}${name}`]))
+    .find(Boolean);
+  if (!settings) return null;
+  const blocks = [...settings.matchAll(/\binclude\s*(?:\(([\s\S]*?)\)|([^\n;]+))/g)].map(
+    (match) => [...(match[1] ?? match[2] ?? "").matchAll(/["'](:[\w.-]+(?::[\w.-]+)*)["']/g)],
+  );
+  if (blocks.length === 0 || blocks.some((block) => block.length === 0)) return null;
+  const included = new Set(blocks.flatMap((block) => block.map((part) => part[1]!)));
+  return included.has(project) ? null : project;
+}
+
 interface PersistenceLayer {
   readonly kind: "room" | "alembic";
   readonly root: string;
@@ -232,6 +289,50 @@ export function lintPlan(input: PlanLintInput): PlanFinding[] {
   const indexSet = new Set(index);
   const config = loadResourceConfig();
   const ids = new Set([...tasks.map((task) => task.id), ...(input.doneTaskIds ?? [])]);
+  const tasksById = new Map(tasks.map((task) => [task.id, task] as const));
+  const ancestorCache = new Map<string, Set<string>>();
+  const taskAncestors = (id: string, visiting = new Set<string>()): Set<string> => {
+    const cached = ancestorCache.get(id);
+    if (cached) return cached;
+    if (visiting.has(id)) return new Set();
+    const nextVisiting = new Set(visiting).add(id);
+    const found = new Set<string>();
+    for (const dependency of tasksById.get(id)?.dependencies ?? []) {
+      found.add(dependency);
+      for (const upstream of taskAncestors(dependency, nextVisiting)) found.add(upstream);
+    }
+    ancestorCache.set(id, found);
+    return found;
+  };
+  const checkProducers = tasks.flatMap((task) =>
+    (task.verification?.checks ?? []).flatMap((check) =>
+      (check.produces ?? []).map((path) => ({ taskId: task.id, check, path })),
+    ),
+  );
+  const checksById = (task: PlanTaskDefinition) =>
+    new Map(
+      (task.verification?.checks ?? []).flatMap((check) =>
+        check.id ? [[check.id, check] as const] : [],
+      ),
+    );
+  const checkDependsOn = (
+    task: PlanTaskDefinition,
+    consumerId: string | undefined,
+    producerId: string | undefined,
+  ): boolean => {
+    if (!consumerId || !producerId) return false;
+    const byId = checksById(task);
+    const seen = new Set<string>();
+    const visit = (id: string): boolean => {
+      if (seen.has(id)) return false;
+      seen.add(id);
+      for (const dependency of byId.get(id)?.dependsOn ?? []) {
+        if (dependency === producerId || visit(dependency)) return true;
+      }
+      return false;
+    };
+    return visit(consumerId);
+  };
 
   // The final release task: the only one allowed to publish or touch live systems.
   const releaseTasks = tasks.filter((task) => RELEASE_WORDS.test(task.title));
@@ -398,6 +499,26 @@ export function lintPlan(input: PlanLintInput): PlanFinding[] {
         });
       }
     }
+    if (
+      scope.length > 0 &&
+      (/\b(repair|follow[- ]?up|fix[- ]?up)\b/i.test(task.title) ||
+        /(?:^|-)FU\d+(?:-|$)/i.test(task.id)) &&
+      scope.every(
+        (pattern) =>
+          matchesAny(pattern, contract.protectedPaths) ||
+          contract.protectedPaths.some((protectedPath) =>
+            scopesIntersect([pattern], [protectedPath]),
+          ),
+      )
+    ) {
+      add({
+        level: "error",
+        code: "repair-scope-protected",
+        taskId: task.id,
+        message: `${task.id} is a repair whose entire scope is protected by the repository contract, so no worker can make the requested fix.`,
+        fix: "Move the repair outside the protected paths or have repository setup make the change before the plan starts.",
+      });
+    }
     if (scope.length === 0 && !release) {
       add({
         level: "warning",
@@ -471,7 +592,7 @@ export function lintPlan(input: PlanLintInput): PlanFinding[] {
         code: "no-verification",
         taskId: task.id,
         message: `${task.id} has no executable check and no stated exemption.`,
-        fix: "Add a Checks: list (command, cwd, timeout) or `Verify: none — <reason>`.",
+        fix: "Add a Checks: list (command, cwd, timeout) or `Verify: none (<reason>)`.",
       });
     }
     for (const rejected of task.verification?.rejected ?? []) {
@@ -484,6 +605,7 @@ export function lintPlan(input: PlanLintInput): PlanFinding[] {
       });
     }
     for (const check of checks) {
+      const structured = checkMetadataDeclared(check);
       const head = check.run.trim().split(/\s+/)[0] ?? "";
       if (
         head &&
@@ -532,6 +654,108 @@ export function lintPlan(input: PlanLintInput): PlanFinding[] {
           message: `${task.id}'s check \`${check.run}\` runs a whole suite; every unrelated failure in the repository would block this task.`,
           fix: "Run the files the task touches (name them); keep whole-suite runs for the final integration task.",
         });
+      }
+      if (!release && combinedGateCommand(check.run)) {
+        add({
+          level: "warning",
+          code: "combined-gate",
+          taskId: task.id,
+          message: `${task.id}'s check \`${check.run}\` combines multiple gate targets, so an unrelated failure can block the task and its result cannot be attributed to one boundary.`,
+          fix: "Give independently meaningful checks separate declarations and keep the combined broad gate for final verification.",
+        });
+      }
+
+      const missingProject = missingGradleProject(repoRoot, ref, check);
+      if (missingProject) {
+        add({
+          level: structured ? "error" : "warning",
+          code: "check-gradle-project-missing",
+          taskId: task.id,
+          message: `${task.id}'s Gradle check targets ${missingProject}, which is not included by the settings file in ${check.cwd ?? "."}.`,
+          fix: "Use the actual module path from settings.gradle(.kts) and confirm the task exists in that module.",
+        });
+      }
+
+      if (/\bconnected\w*AndroidTest\b/i.test(check.run)) {
+        const selected =
+          /(?:--tests(?:=|\s)|android\.testInstrumentationRunnerArguments\.class\s*=)/i.test(
+            check.run,
+          );
+        if (!selected && !release) {
+          add({
+            level: structured ? "error" : "warning",
+            code: "check-selection-missing",
+            taskId: task.id,
+            message: `${task.id}'s connected instrumentation check does not select a test class or method.`,
+            fix: "Name the focused instrumentation test with --tests or android.testInstrumentationRunnerArguments.class; keep the full matrix for final verification.",
+          });
+        }
+        if (!check.junit || check.junit.minTests < 1) {
+          add({
+            level: structured ? "error" : "warning",
+            code: "check-report-missing",
+            taskId: task.id,
+            message: `${task.id}'s connected instrumentation check does not require a JUnit report with at least one executed test.`,
+            fix: "Declare the JUnit report path and set min-tests to a positive count so an exit-zero instrumentation failure cannot look successful.",
+          });
+        }
+      }
+
+      for (const consumed of check.consumes ?? []) {
+        const present = index.some((file) => pathMatches(file, consumed));
+        const candidates = checkProducers.filter(
+          (producer) =>
+            !(producer.taskId === task.id && producer.check === check) &&
+            artifactPatternsOverlap(producer.path, consumed),
+        );
+        if (candidates.length > 1) {
+          add({
+            level: "error",
+            code: "artifact-producer-ambiguous",
+            taskId: task.id,
+            message: `${task.id}'s check consumes ${consumed}, which is declared by multiple producers (${candidates
+              .map(
+                (producer) =>
+                  `${producer.taskId}${producer.check.id ? `/${producer.check.id}` : ""}`,
+              )
+              .slice(0, 5)
+              .join(", ")}).`,
+            fix: "Declare one producer for this artifact or narrow the producer output paths until they no longer overlap.",
+          });
+          continue;
+        }
+        const producer = candidates[0];
+        if (!producer) {
+          if (!present) {
+            add({
+              level: "error",
+              code: "artifact-producer-missing",
+              taskId: task.id,
+              message: `${task.id}'s check consumes ${consumed}, which is absent from the base and has no declared producer.`,
+              fix: "Add a predecessor check that declares this output, or provision the input before the plan starts.",
+            });
+          }
+          continue;
+        }
+        if (producer.taskId === task.id) {
+          if (!checkDependsOn(task, check.id, producer.check.id)) {
+            add({
+              level: "error",
+              code: "artifact-check-dependency-missing",
+              taskId: task.id,
+              message: `${task.id}'s check consumes ${consumed}, produced by another check in the same task, but does not depend on that check.`,
+              fix: "Give both checks stable ids and add the producer id to the consumer's after metadata.",
+            });
+          }
+        } else if (!taskAncestors(task.id).has(producer.taskId)) {
+          add({
+            level: "error",
+            code: "artifact-task-dependency-missing",
+            taskId: task.id,
+            message: `${task.id}'s check consumes ${consumed}, produced by ${producer.taskId}, but the task graph does not order ${task.id} after that producer.`,
+            fix: `Add ${producer.taskId} to ${task.id}'s task dependencies so the output exists before this check runs.`,
+          });
+        }
       }
       for (const file of check.run.match(
         /(?:^|\s)((?:[\w.-]+\/)+[\w.-]+\.(?:py|ts|tsx|js|mjs|kt|java|rs|go|sh))(?=\s|$|::)/g,

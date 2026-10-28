@@ -185,4 +185,112 @@ describe("plan lint finds what stops small agents before any of them starts", ()
       await repo.cleanup();
     }
   });
+
+  it("checks structured artifact order, Gradle targets, focused reports, combined gates, and repair scopes", async () => {
+    const repo = await createTestGitRepo("aq-lint-readiness-");
+    try {
+      const task = (
+        id: string,
+        title: string,
+        dependency: string,
+        scope: string,
+        command: string,
+      ) => {
+        const optionsStart = command.indexOf(" (cwd:");
+        const run = optionsStart < 0 ? command : command.slice(0, optionsStart);
+        const options = optionsStart < 0 ? "" : ` ${command.slice(optionsStart + 1)}`;
+        return [
+          `- [ ] **${id} — ${title}**`,
+          `  - Depends on: ${dependency}.`,
+          `  - Scope: ${scope}`,
+          "  - Checks:",
+          `    - \`${run}\`${options}`,
+          "  - Update the focused test evidence.",
+          "",
+        ];
+      };
+      const plan = [
+        "# Readiness plan",
+        "",
+        ...task(
+          "BUILD",
+          "Build the instrumentation APK",
+          "none",
+          "android/app/",
+          "./gradlew :app:assembleDebug (cwd: android, timeout: 5m, id: apk, produces: android/app/build/outputs/apk/debug/app-debug.apk)",
+        ),
+        ...task(
+          "TEST",
+          "Run focused instrumentation coverage",
+          "BUILD",
+          "android/app/src/androidTest/",
+          "./gradlew :app:connectedDebugAndroidTest --tests com.example.Smoke (cwd: android, timeout: 5m, id: smoke, consumes: android/app/build/outputs/apk/debug/app-debug.apk, junit: android/app/build/reports/android/TEST-*.xml, min-tests: 1, max-skipped: 0)",
+        ),
+        ...task(
+          "ORPHAN",
+          "Check an unprovisioned golden",
+          "none",
+          "android/app/src/test/",
+          "./gradlew :app:testDebugUnitTest (cwd: android, timeout: 5m, id: orphan, consumes: android/testdata/reviewed-golden.png)",
+        ),
+        ...task(
+          "WRONG",
+          "Run an absent module target",
+          "none",
+          "android/app/src/androidTest/",
+          "./gradlew :missing:connectedDebugAndroidTest --tests com.example.Smoke (cwd: android, timeout: 5m, id: wrong-target, junit: android/app/build/reports/android/TEST.xml, min-tests: 1)",
+        ),
+        ...task(
+          "COMBINED",
+          "Keep two gates separate",
+          "none",
+          "android/app/",
+          "./gradlew :app:lintDebug :app:testDebugUnitTest (cwd: android, timeout: 5m, id: combined)",
+        ),
+        ...task(
+          "REPAIR",
+          "Repair the protected verification file",
+          "none",
+          ".bridge/verify.json",
+          'node -e "process.exit(0)" (cwd: ., timeout: 5m)',
+        ),
+      ].join("\n");
+      const files: Record<string, string> = {
+        "android/settings.gradle": 'include ":app"\n',
+        "android/app/src/androidTest/java/com/example/Smoke.kt": "class Smoke\n",
+        "android/app/src/test/java/com/example/Unit.kt": "class Unit\n",
+        "android/app/build.gradle": "plugins { }\n",
+        ".bridge/verify.json": "{}\n",
+        ".agentqueue/contract.json": JSON.stringify({ protectedPaths: [".bridge/"] }),
+        "PLAN.md": plan,
+      };
+      for (const [path, content] of Object.entries(files)) {
+        await NodeFSP.mkdir(NodePath.dirname(NodePath.join(repo.rootDir, path)), {
+          recursive: true,
+        });
+        await NodeFSP.writeFile(NodePath.join(repo.rootDir, path), content);
+      }
+      await execCommand("git", ["add", "-A"], repo.rootDir);
+      await execCommand("git", ["commit", "-m", "readiness fixture"], repo.rootDir);
+      const findings = lintPlanFile(repo.rootDir, "PLAN.md").findings;
+      const has = (code: string, id: string) =>
+        findings.some((finding) => finding.code === code && finding.taskId === id);
+
+      expect(has("artifact-task-dependency-missing", "TEST")).toBe(false);
+      expect(has("artifact-producer-missing", "TEST")).toBe(false);
+      expect(has("artifact-producer-missing", "ORPHAN")).toBe(true);
+      expect(has("check-gradle-project-missing", "WRONG")).toBe(true);
+      expect(has("combined-gate", "COMBINED")).toBe(true);
+      expect(has("repair-scope-protected", "REPAIR")).toBe(true);
+      expect(
+        findings.some(
+          (finding) =>
+            finding.taskId === "TEST" &&
+            ["check-selection-missing", "check-report-missing"].includes(finding.code),
+        ),
+      ).toBe(false);
+    } finally {
+      await repo.cleanup();
+    }
+  });
 });

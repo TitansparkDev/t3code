@@ -27672,6 +27672,7 @@ packages/agent-queue-core/test/planExportImport.test.ts
 packages/agent-queue-core/test/planGraph.test.ts
 packages/agent-queue-core/test/planImportReservation.test.ts
 packages/agent-queue-core/test/planLint.test.ts
+packages/agent-queue-core/test/preflight.test.ts
 packages/agent-queue-core/test/queueInspector.test.ts
 packages/agent-queue-core/test/realAgent/realAgentGoal.mts
 packages/agent-queue-core/test/repoManager.test.ts

@@ -1,13 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off preferSchemaOverJson:off
 /**
- * "Can this assignment be carried out?" answered before a worker exists.
- *
- * A worker spends minutes to hours before it meets a rejected branch name, a missing tool, a
- * dependency that is not actually in its base, or a scope guard it can never satisfy. Every
- * such fact can be established up front, by the same commands the repository itself uses, so
- * a task is dispatched only when it is executable, or is held (without a worker, without a
- * retry) with the exact reason and what has to change.
- *
+ * Checks whether an assignment is ready before dispatching a worker.
  * @module preflight
  */
 import type * as NodeSqlite from "node:sqlite";
@@ -19,6 +12,7 @@ import {
   capabilityAvailable,
   expandCommand,
   prefixesInUse,
+  pathMatches,
   runShell,
   toolAvailable,
   type GuardSpec,
@@ -38,6 +32,7 @@ export interface PreflightFinding {
     | "tool-missing"
     | "tool-optional"
     | "capability-unavailable"
+    | "artifact-prerequisite"
     | "baseline-missing"
     | "scope-unclear"
     | "contract-invalid"
@@ -69,6 +64,206 @@ function gitOut(cwd: string, args: ReadonlyArray<string>) {
     stdout: (result.stdout ?? "").trim(),
     stderr: (result.stderr ?? "").trim(),
   };
+}
+
+interface PreflightTaskRow {
+  readonly id: string;
+  readonly status: string;
+  readonly dependencies: string;
+  readonly verification_spec: string | null;
+  readonly verification_command: string | null;
+}
+
+interface ArtifactProducer {
+  readonly taskId: string;
+  readonly checkId: string | undefined;
+  readonly path: string;
+}
+
+function pathWithin(root: string, candidate: string): boolean {
+  const relative = NodePath.relative(root, candidate);
+  return relative === "" || (!relative.startsWith(`..${NodePath.sep}`) && relative !== "..");
+}
+
+function artifactExists(root: string, pattern: string): boolean {
+  let candidates: string[];
+  try {
+    candidates = /[*?]/.test(pattern)
+      ? NodeFS.globSync(pattern, { cwd: root, maxDepth: 12 })
+      : NodeFS.existsSync(NodePath.resolve(root, pattern))
+        ? [pattern]
+        : [];
+    const realRoot = NodeFS.realpathSync(root);
+    return candidates.some((candidate) => {
+      const resolved = NodePath.resolve(root, candidate);
+      if (!pathWithin(root, resolved)) return false;
+      try {
+        return pathWithin(realRoot, NodeFS.realpathSync(resolved));
+      } catch {
+        return false;
+      }
+    });
+  } catch {
+    return false;
+  }
+}
+
+function parseDependencies(value: string): string[] {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function artifactPatternsOverlap(left: string, right: string): boolean {
+  if (pathMatches(left, right) || pathMatches(right, left)) return true;
+  const prefix = (pattern: string) => {
+    const wildcard = pattern.search(/[?*]/);
+    return wildcard < 0 ? pattern : pattern.slice(0, pattern.lastIndexOf("/", wildcard) + 1);
+  };
+  const a = prefix(left);
+  const b = prefix(right);
+  return a === "" || b === "" || a === b || a.startsWith(b) || b.startsWith(a);
+}
+
+function artifactPreflightFindings(input: {
+  readonly db: NodeSqlite.DatabaseSync;
+  readonly repoRoot: string;
+  readonly taskId: string;
+  readonly dependencies: ReadonlyArray<string>;
+  readonly spec: VerificationSpec;
+}): PreflightFinding[] {
+  const current = input.db.prepare("SELECT plan_id FROM tasks WHERE id = ?").get(input.taskId) as
+    | { plan_id: string | null }
+    | undefined;
+  const rows = current?.plan_id
+    ? (input.db
+        .prepare(
+          `SELECT id, status, dependencies, verification_spec, verification_command
+             FROM tasks WHERE plan_id = ?`,
+        )
+        .all(current.plan_id) as PreflightTaskRow[])
+    : [];
+  const byId = new Map(rows.map((row) => [row.id, row] as const));
+  const ancestorCache = new Map<string, Set<string>>();
+  const ancestors = (id: string, active = new Set<string>()): Set<string> => {
+    const cached = ancestorCache.get(id);
+    if (cached) return cached;
+    if (active.has(id)) return new Set();
+    const next = new Set(active).add(id);
+    const result = new Set<string>();
+    for (const dependency of parseDependencies(byId.get(id)?.dependencies ?? "[]")) {
+      result.add(dependency);
+      for (const ancestor of ancestors(dependency, next)) result.add(ancestor);
+    }
+    ancestorCache.set(id, result);
+    return result;
+  };
+  const taskDependencies = new Set([...input.dependencies, ...ancestors(input.taskId)]);
+  const specs = new Map<string, VerificationSpec>(
+    rows.map(
+      (row) => [row.id, parseStoredSpec(row.verification_spec, row.verification_command)] as const,
+    ),
+  );
+  specs.set(input.taskId, input.spec);
+  const producerRows = rows.some((row) => row.id === input.taskId)
+    ? rows
+    : [
+        ...rows,
+        {
+          id: input.taskId,
+          status: "",
+          dependencies: "[]",
+          verification_spec: null,
+          verification_command: null,
+        },
+      ];
+  const producers: ArtifactProducer[] = producerRows.flatMap((row) =>
+    (specs.get(row.id)?.checks ?? []).flatMap((check) =>
+      (check.produces ?? []).map((path) => ({ taskId: row.id, checkId: check.id, path })),
+    ),
+  );
+  const checkMap = new Map(
+    input.spec.checks.flatMap((check) => (check.id ? [[check.id, check] as const] : [])),
+  );
+  const checkDependsOn = (consumerId: string | undefined, producerId: string | undefined) => {
+    if (!consumerId || !producerId) return false;
+    const seen = new Set<string>();
+    const visit = (id: string): boolean => {
+      if (seen.has(id)) return false;
+      seen.add(id);
+      for (const dependency of checkMap.get(id)?.dependsOn ?? []) {
+        if (dependency === producerId || visit(dependency)) return true;
+      }
+      return false;
+    };
+    return visit(consumerId);
+  };
+  const findings: PreflightFinding[] = [];
+  for (const check of input.spec.checks) {
+    for (const consumed of check.consumes ?? []) {
+      const present = artifactExists(input.repoRoot, consumed);
+      const candidates = producers.filter(
+        (producer) =>
+          !(
+            producer.taskId === input.taskId &&
+            producer.checkId !== undefined &&
+            producer.checkId === check.id
+          ) && artifactPatternsOverlap(producer.path, consumed),
+      );
+      if (candidates.length > 1) {
+        findings.push({
+          level: "error",
+          failureClass: "prerequisite",
+          code: "artifact-prerequisite",
+          message: `Check ${check.id ?? "(unnamed)"} consumes ${consumed}, which has multiple declared producers.`,
+        });
+        continue;
+      }
+      const producer = candidates[0];
+      if (!producer) {
+        if (!present) {
+          findings.push({
+            level: "error",
+            failureClass: "prerequisite",
+            code: "artifact-prerequisite",
+            message: `Check ${check.id ?? "(unnamed)"} consumes ${consumed}, which is missing and has no declared producer.`,
+          });
+        }
+        continue;
+      }
+      if (producer.taskId === input.taskId) {
+        if (!checkDependsOn(check.id, producer.checkId)) {
+          findings.push({
+            level: "error",
+            failureClass: "prerequisite",
+            code: "artifact-prerequisite",
+            message: `Check ${check.id ?? "(unnamed)"} consumes ${consumed}, but does not depend on its producer check.`,
+          });
+        }
+        continue;
+      }
+      if (!taskDependencies.has(producer.taskId)) {
+        findings.push({
+          level: "error",
+          failureClass: "prerequisite",
+          code: "artifact-prerequisite",
+          message: `Check ${check.id ?? "(unnamed)"} consumes ${consumed} from ${producer.taskId}, which is not a task dependency.`,
+        });
+        continue;
+      }
+      if (byId.get(producer.taskId)?.status !== "completed" || present) continue;
+      findings.push({
+        level: "error",
+        failureClass: "prerequisite",
+        code: "artifact-prerequisite",
+        message: `Check ${check.id ?? "(unnamed)"} expects ${consumed} from completed producer ${producer.taskId}, but it is missing from the task baseline.`,
+      });
+    }
+  }
+  return findings;
 }
 
 const profileFile = (gitCommonDir: string) =>
@@ -342,6 +537,20 @@ export function preflightAssignment(input: TaskPreflightInput): PreflightResult 
     return { ok: false, findings, repairs, branch, guards: [], optionalToolsMissing: [] };
   }
 
+  const spec = parseStoredSpec(input.task.verification_spec, input.task.verification_command);
+  findings.push(
+    ...artifactPreflightFindings({
+      db: input.db,
+      repoRoot: input.worktreePath,
+      taskId: input.task.id,
+      dependencies: input.task.dependencies,
+      spec,
+    }),
+  );
+  if (findings.some((finding) => finding.level === "error")) {
+    return { ok: false, findings, repairs, branch, guards: [], optionalToolsMissing: [] };
+  }
+
   // 2. The repository's own start guards accept the branch; if not, find a prefix they accept.
   const vars = (name: string): GuardVariables => ({
     taskId: input.task.id,
@@ -389,7 +598,6 @@ export function preflightAssignment(input: TaskPreflightInput): PreflightResult 
 
   // 3. Tools the task's checks need exist (or the repository allows installing them).
   const optionalToolsMissing: string[] = [];
-  const spec = parseStoredSpec(input.task.verification_spec, input.task.verification_command);
   const declared = new Map<string, ToolSpec>(
     input.loaded.contract.tools.map((tool) => [tool.name, tool]),
   );
