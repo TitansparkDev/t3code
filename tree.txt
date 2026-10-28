@@ -27265,6 +27265,7 @@ evals/README.md
 evals/mcp-tool-use/README.md
 evals/mcp-tool-use/agent-device-help.txt
 evals/mcp-tool-use/cases/device-manager.ndjson
+evals/mcp-tool-use/cases/goals.ndjson
 evals/mcp-tool-use/cases/orchestration.ndjson
 evals/mcp-tool-use/cases/pull-requests.ndjson
 evals/mcp-tool-use/cases/visual-preview.ndjson

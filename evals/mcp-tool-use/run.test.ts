@@ -277,6 +277,41 @@ it("rebuilds the template from this checkout and sends a child T3's task prompt"
   assert.notEqual(prompt?.text, childCase.prompt);
 });
 
+it("includes the source-generated goal continuation in the model's message", () => {
+  const base = buildBase(template, { model: "claude-sonnet-5-5", keepUserInstructions: false });
+  const testCase: McpToolUseCase = {
+    ...childCase,
+    setup: {
+      role: "top",
+      goalPrompt: {
+        kind: "resource-results",
+        goal: { name: "Goal", prompt: "Finish the repair", concurrency: 1 },
+        task: {
+          taskId: "task-17",
+          title: "Repair the gate",
+          description: null,
+          verificationCommand: null,
+          worktreePath: "/home/user/app/.agentqueue/task-17",
+          branch: "agentqueue/task-17",
+          baseBranch: "goal/plan",
+          planPath: "PLAN.md",
+          retryCount: 1,
+          lastFailure: null,
+          repair: null,
+        },
+        results: ["Command result: expected JSON output"],
+      },
+    },
+    prompt: "Recap the handoff.",
+  };
+  const message = buildMessages(makeSample(testCase, base))
+    .flatMap((entry) => entry.content)
+    .at(-1)?.text;
+  assert.include(message, "task-17");
+  assert.include(message, "Command result: expected JSON output");
+  assert.include(message, testCase.prompt);
+});
+
 it("lists link tools only while a case turns the beta on, and sends chips as T3 projects them", () => {
   const off = buildBase(template, { model: "claude-sonnet-5-5", keepUserInstructions: false });
   const on = buildBase(template, {
