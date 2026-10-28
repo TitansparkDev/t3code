@@ -1120,7 +1120,7 @@ This is an extension of the current mobile UI, using the existing foreground/mut
   - This is a non-device proxy, not visual or native accessibility sign-off (see Limits).
   - Acceptance: ordering, five-cell no-scroll geometry, percentage/countdown pairing, AGY horizontal expansion, account correctness, stale/unknown handling and background request counts all pass together with thread navigation.
 
-- [ ] **SG03 — Check integrated mobile package types.**
+- [x] **SG03 — Check integrated mobile package types.**
   - Depends on: LB02, SP02, SP03, SP04, SP06.
   - Scope: apps/mobile/tsconfig.json, apps/mobile/src/features/usage/usage-banner-model.test.ts, apps/mobile/src/features/usage/UsageLimitBanner.test.tsx
   - Checks:
