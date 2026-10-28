@@ -64,6 +64,7 @@ import {
   makeClaudeQueryOptions,
 } from "../../apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import { proxyConfig } from "../shared/proxy.ts";
+import { runNativeCodexTurn, type NativeCodexTool } from "../shared/native-codex.ts";
 import { changeRequestsCreatedBy } from "../../apps/server/src/orchestration-v2/PullRequestSyncReactor.ts";
 import { DeviceExpect, gradeDevice } from "./device-grading.ts";
 import {
@@ -130,6 +131,8 @@ export type SampleRun = {
   readonly linked?: ReadonlyArray<string>;
   /** The `agent-device` commands T3's device_open returned, prior turns included. */
   readonly launchers?: ReadonlyArray<string>;
+  /** Built-in Codex tools are observed as failed attempts and invalidate native-transport runs. */
+  readonly unsupportedNativeTools?: ReadonlyArray<string>;
 };
 
 const Rest = [Schema.Record(Schema.String, Schema.Unknown)] as const;
@@ -1258,6 +1261,9 @@ type Config = {
   readonly effort: string;
   readonly maxSteps: number;
   readonly shellModel: PricedModel;
+  readonly transport: "responses" | "codex-app-server";
+  readonly codexHome?: string;
+  readonly signal?: AbortSignal;
 };
 
 /**
@@ -1279,13 +1285,34 @@ const simulate = Effect.fn("evaluateMcpToolUse.simulate")(function* (
   let output = typeof command === "string" ? cannedOutput(sample, command) : undefined;
   if (output === undefined) {
     const body = shellRequest(sample, call, config.shellModel);
-    const response = yield* callModel(
-      config.apiKey,
-      body,
-      config.apiKey ? undefined : config.proxy,
-    );
-    addUsage(sample.shellUsage, response.usage);
-    output = shellOutput(response.content);
+    if (config.transport === "codex-app-server") {
+      const response = yield* Effect.tryPromise(() =>
+        runNativeCodexTurn({
+          model: config.model,
+          effort: config.effort,
+          codexHome: config.codexHome,
+          developerInstructions: SHELL_PROMPT,
+          input: JSON.stringify(body),
+          signal: config.signal,
+          tools: [],
+          maxToolCalls: 0,
+          onToolCall: async () => {
+            throw new Error("Shell simulator does not expose tools.");
+          },
+        }),
+      );
+      const decoded = decodeShellReply(response.text);
+      output =
+        Option.getOrElse(decoded, () => undefined)?.output ?? shellOutput([text(response.text)]);
+    } else {
+      const response = yield* callModel(
+        config.apiKey,
+        body,
+        config.apiKey ? undefined : config.proxy,
+      );
+      addUsage(sample.shellUsage, response.usage);
+      output = shellOutput(response.content);
+    }
   }
   if (call.tool === "Bash" && output === "") output = "(Bash completed with no output)";
   const entry = { ...call, output };
@@ -1439,6 +1466,8 @@ export const gradeSample = (expect: McpToolUseCase["expect"], run: SampleRun) =>
   for (const p of expect.textMustNot ?? []) add(`textMustNot /${p}/`, !test(p, run.text));
   const isLinked = (url: string) => (run.linked ?? []).some((at) => matches(url, at));
   for (const url of expect.linked ?? []) add(`linked ${url}`, isLinked(url));
+  if (run.unsupportedNativeTools?.length)
+    add(`native tools disabled ${run.unsupportedNativeTools.join(", ")}`, false);
   checks.push(...gradeDevice(expect.device, run));
   return checks;
 };
@@ -1793,6 +1822,165 @@ const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
   };
 }, Effect.scoped);
 
+/** Runs a complete real Codex turn through app-server's dynamic-tool callback. */
+const nativeCodexRequest = (base: Base, body: ReturnType<typeof codexRequest>) => {
+  const nativeInput = Array.isArray(body.input) ? body.input : [];
+  const developer = [valueText(body.instructions)];
+  const user: Array<string> = [];
+  for (const value of nativeInput) {
+    if (!isRecord(value)) continue;
+    if (value.type === "message" && Array.isArray(value.content)) {
+      const content = value.content
+        .filter(isRecord)
+        .map((part) => valueText(part.text))
+        .filter(Boolean)
+        .join("\n");
+      if (!content) continue;
+      if (value.role === "user") user.push(content);
+      else developer.push(content);
+    } else if (value.type === "additional_tools") {
+      developer.push(JSON.stringify(value));
+    } else {
+      user.push(`[${value.type ?? "conversation item"}] ${JSON.stringify(value)}`);
+    }
+  }
+  const tools: Array<NativeCodexTool> = base.t3.map((tool) => ({
+    name: tool.name.replace("mcp__t3-code__", "mcp__t3_code__"),
+    description: valueText(tool.description),
+    inputSchema: tool.input_schema,
+  }));
+  tools.push({
+    name: "exec",
+    description: valueText(base.nativeTools.find((tool) => tool.name === "exec")?.description),
+    inputSchema: {
+      type: "object",
+      properties: { code: { type: "string", description: "Code cell source" } },
+      required: ["code"],
+      additionalProperties: false,
+    },
+  });
+  return {
+    baseInstructions: valueText(body.instructions),
+    developerInstructions: developer.filter(Boolean).join("\n\n"),
+    input: user.join("\n\n"),
+    tools,
+  };
+};
+
+const runNativeSample = Effect.fn("evaluateMcpToolUse.runNativeSample")(function* (
+  testCase: McpToolUseCase,
+  config: Config,
+  base: Base,
+  spent: { readonly usage: Usage; readonly shellUsage: Usage },
+) {
+  const sample = { ...makeSample(testCase, base), shellUsage: spent.shellUsage };
+  yield* withDevices(sample);
+  const runPromise = Effect.runPromiseWith(yield* Effect.context<HttpClient.HttpClient>());
+  const messages = buildMessages(sample);
+  const body = codexRequest(base, codexMessages(messages));
+  const native = nativeCodexRequest(base, body);
+  const { tools } = native;
+  const calls: Array<Call> = [];
+  let step = 0;
+  const maxSimulatedCalls = config.maxSteps * 8;
+  const answer = async (
+    name: string,
+    input: unknown,
+    record: boolean,
+    signal?: AbortSignal,
+  ): Promise<unknown> => {
+    if (step >= maxSimulatedCalls)
+      throw new Error("Native evaluator exceeded its tool-call limit.");
+    const normalized = normalizeToolInput(name, input);
+    const id = `native-${calls.length + 1}`;
+    const call = { type: "tool_use" as const, id, name, input: normalized };
+    const own: Call = { step: step++, tool: normalizeToolName(name), input: normalized };
+    if (record) calls.push(own);
+    const result = await runPromise(
+      answerToolCall(sample, { ...config, ...(signal ? { signal } : {}) }, call),
+    );
+    if (record) {
+      own.failed = result.is_error === true;
+      own.output = valueText(result.content);
+    }
+    const output = valueText(result.content);
+    if (isT3Name(name))
+      return {
+        content: [text(output)],
+        ...(!result.is_error
+          ? { structuredContent: Option.getOrElse(decodeJson(output), () => output) }
+          : { isError: true }),
+      };
+    return normalizeToolName(name) === "Bash"
+      ? { output, exit_code: /^Exit code [1-9]/.test(output) ? 1 : 0, wall_time_seconds: 0 }
+      : output;
+  };
+  const answerNativeTool = async (name: string, input: unknown, signal: AbortSignal) => {
+    if (step >= maxSimulatedCalls)
+      throw new Error("Native evaluator exceeded its tool-call limit.");
+    const normalized = normalizeToolInput(name, input);
+    const call: typeof ToolUse.Type = {
+      type: "tool_use",
+      id: `native-${calls.length + 1}`,
+      name,
+      input: normalized,
+    };
+    const own: Call = { step: step++, tool: normalizeToolName(name), input: normalized };
+    calls.push(own);
+    const result = await runPromise(answerToolCall(sample, { ...config, signal }, call));
+    own.failed = result.is_error === true;
+    own.output = valueText(result.content);
+    return valueText(result.content);
+  };
+  const turn = yield* Effect.tryPromise(() =>
+    runNativeCodexTurn({
+      model: config.model,
+      effort: config.effort,
+      codexHome: config.codexHome,
+      maxToolCalls: config.maxSteps * 8,
+      baseInstructions: native.baseInstructions,
+      developerInstructions: native.developerInstructions,
+      input: native.input,
+      tools,
+      onToolCall: async (name, args, signal) => {
+        if (name === "exec") {
+          const code = isRecord(args) ? valueText(args.code) : valueText(args);
+          return executeCodex(
+            code,
+            codexCatalog(base),
+            (innerName, innerArgs) => answer(innerName, innerArgs, true, signal),
+            sample.codeStore,
+          );
+        }
+        return answerNativeTool(name, args, signal);
+      },
+    }),
+  );
+  const textValue = turn.text;
+  for (const blocked of turn.calls.filter((call) =>
+    turn.unsupportedNativeTools.includes(call.name),
+  ))
+    calls.push({
+      step: step++,
+      tool: normalizeToolName(blocked.name),
+      input: blocked.arguments,
+      failed: true,
+      output: blocked.output,
+    });
+  return {
+    calls,
+    text: textValue,
+    stopReason: turn.status === "completed" ? "end_turn" : turn.status,
+    finalText: turn.finalText,
+    linked: [...sample.linked],
+    ...(sample.devices ? { launchers: [...sample.devices.launchers] } : {}),
+    usage: spent.usage,
+    shellUsage: sample.shellUsage,
+    transcript: [...turn.calls],
+    unsupportedNativeTools: turn.unsupportedNativeTools,
+  };
+}, Effect.scoped);
+
 type ResultRow = Pick<McpToolUseCase, "id" | "kind" | "pattern"> & {
   readonly role: string;
   readonly pass: boolean;
@@ -1825,7 +2013,12 @@ const spend = (usages: ReadonlyArray<Usage>, model: PricedModel | undefined) => 
 /** Markdown report. With a baseline, each case shows its earlier pass rate and the change. */
 export const summarize = (
   rows: Array<ResultRow>,
-  options: { readonly header: string; readonly shellModel: PricedModel; readonly model: Model },
+  options: {
+    readonly header: string;
+    readonly shellModel: PricedModel;
+    readonly model: Model;
+    readonly transport?: "responses" | "codex-app-server";
+  },
   before?: Map<string, number>,
 ) => {
   const codex = isCodex(options.model);
@@ -1859,7 +2052,7 @@ export const summarize = (
     rows.filter((row) => row.error !== undefined),
     (row) => row.id,
   );
-  const errorNote = `- Errored: ${errors.map(([id, failed]) => `${id} ×${failed.length}`).join(", ")}. These samples did not finish, even after retries, so pass rates leave them out; tokens they spent are counted.`;
+  const errorNote = `- Errored: ${errors.map(([id, failed]) => `${id} ×${failed.length}`).join(", ")}. These samples did not finish, even after retries, so pass rates leave them out; token totals include any usage reported before failure.`;
   const nativeNote =
     "- native-subagent cases are approximate: the harness gives subagents their own system prompt, which this runner does not rebuild. T3's append is left out and its SubagentStart hook context added after the task.";
   const identityNote = `- The captured Claude Code identity line is replaced with "${NEUTRAL_IDENTITY}"`;
@@ -1869,14 +2062,28 @@ export const summarize = (
     `- ${options.header}`,
     `- Pass: ${percent(passRate(rows))} of ${finished} samples.`,
     ...(errors.length > 0 ? [errorNote] : []),
-    codex
-      ? "- Cost: not applicable (subscription through proxy)."
-      : `- Estimated cost $${cost.toFixed(2)}, $${(cost / rows.length).toFixed(3)} per sample.`,
-    `- Agent tokens: ${agent.tokens}${codex ? "." : ` ($${agent.cost.toFixed(2)}).`}`,
-    `- Shell simulator (${options.shellModel}) tokens: ${shell.tokens} (API-price estimate $${shell.cost.toFixed(2)}).`,
+    options.transport === "codex-app-server"
+      ? "- Cost: unknown; Codex account billing is external to this report."
+      : codex
+        ? "- Cost: not applicable (subscription through proxy)."
+        : `- Estimated cost $${cost.toFixed(2)}, $${(cost / rows.length).toFixed(3)} per sample.`,
+    options.transport === "codex-app-server"
+      ? "- Agent and shell simulator token totals are unavailable from this app-server transport. The selected Codex subscription model handles both."
+      : `- Agent tokens: ${agent.tokens}${codex ? "." : ` ($${agent.cost.toFixed(2)}).`}`,
+    ...(options.transport === "codex-app-server"
+      ? []
+      : [
+          `- Shell simulator (${options.shellModel}) tokens: ${shell.tokens} (API-price estimate $${shell.cost.toFixed(2)}).`,
+        ]),
     ...(codex
       ? [
-          "- Code-mode tools use case mocks and a simulated machine. Native subagent prompts and asynchronous notifications are approximate.",
+          ...(options.transport === "codex-app-server"
+            ? [
+                "- Native transport disables `web_search`, runs with empty environments and only the supplied dynamic tool catalog, maps captured `instructions` to `baseInstructions`, concatenates captured system/developer messages into `developerInstructions`, and serializes other input items as text; those items do not keep their original protocol roles. One app-server turn handles the tool loop, capped at 8 × `--max-steps` dynamic and simulated tool calls. The shell simulator uses a second turn on the same Codex model. App-server token usage is unavailable.",
+              ]
+            : [
+                "- Code-mode tools use case mocks and a simulated machine. Native subagent prompts and asynchronous notifications are approximate.",
+              ]),
         ]
       : [identityNote]),
     ...(rows.some((row) => row.role === "native-subagent") ? [nativeNote] : []),
@@ -1904,6 +2111,8 @@ const Flags = Schema.Struct({
   "max-steps": Schema.optional(PositiveInt),
   effort: Schema.optional(Schema.Literals(EFFORTS)),
   "shell-model": Schema.Literals(Object.keys(PRICES) as Array<PricedModel>),
+  transport: Schema.Literals(["responses", "codex-app-server"]),
+  "codex-home": Schema.optional(Schema.String),
   "user-instructions": Schema.Literals(["keep", "drop"]),
   "dry-run": Schema.Boolean,
   "stop-on-regression": Schema.Boolean,
@@ -1938,11 +2147,13 @@ const main = Effect.gen(function* () {
       // Unset: 2 samples per case, and a 3rd when those 2 disagree.
       samples: string,
       // Samples in flight at once, across all cases.
-      concurrency: { ...string, default: "8" },
+      concurrency: string,
       // Unset: 6 for Claude, 10 for Codex, whose code-mode cells take more steps.
       "max-steps": string,
       effort: string,
       "shell-model": { ...string, default: "claude-haiku-5-5" },
+      transport: { ...string, default: "responses" },
+      "codex-home": string,
       // T3's text must work for every user, so the captured CLAUDE.md is dropped by default.
       "user-instructions": { ...string, default: "drop" },
       "dry-run": { type: "boolean", default: false },
@@ -1952,7 +2163,13 @@ const main = Effect.gen(function* () {
       context: { type: "boolean", default: false },
     },
   });
-  const flags = yield* decodeFlags({ template: "", ...values });
+  const flags = yield* decodeFlags({
+    template: "",
+    concurrency: values.concurrency ?? (values.transport === "codex-app-server" ? "1" : "8"),
+    ...values,
+  });
+  if (flags.transport === "codex-app-server" && !isCodex(flags.model))
+    return yield* Effect.die(new Error("--transport codex-app-server requires a gpt-* model."));
   if (flags.context) {
     process.stdout.write(`${t3ContextReport(flags.model)}\n`);
     return;
@@ -2053,7 +2270,18 @@ const main = Effect.gen(function* () {
       yield* Effect.scoped(withDevices(sample));
       const messages = buildMessages(sample);
       const body = sample.base.codex
-        ? codexRequest(sample.base, codexMessages(messages))
+        ? flags.transport === "codex-app-server"
+          ? {
+              transport: flags.transport,
+              model: flags.model,
+              effort,
+              ...nativeCodexRequest(
+                sample.base,
+                codexRequest(sample.base, codexMessages(messages)),
+              ),
+              environments: [],
+            }
+          : codexRequest(sample.base, codexMessages(messages))
         : requestBody(sample, effort, messages);
       process.stdout.write(`${yield* encodeJson(body)}\n`);
     }
@@ -2069,10 +2297,12 @@ const main = Effect.gen(function* () {
   const config: Config = {
     apiKey,
     model: flags.model,
-    ...(codex ? { proxy: proxyConfig() } : {}),
+    ...(codex && flags.transport === "responses" ? { proxy: proxyConfig() } : {}),
     effort,
     maxSteps: flags["max-steps"] ?? (codex ? 10 : 6),
     shellModel: flags["shell-model"],
+    transport: flags.transport,
+    ...(flags["codex-home"] ? { codexHome: flags["codex-home"] } : {}),
   };
   const previous =
     flags.baseline === undefined ? [] : yield* readNdjson(flags.baseline, decodeBaselineRow);
@@ -2097,7 +2327,11 @@ const main = Effect.gen(function* () {
     const privateValues = [config.apiKey, ...Object.values(config.proxy?.headers ?? {})]
       .flatMap((value) => [value, value.replace(/^Bearer /i, "")])
       .filter(Boolean);
-    return runSample(testCase, config, baseFor(testCase), usage).pipe(
+    const sample =
+      config.transport === "codex-app-server"
+        ? runNativeSample(testCase, config, baseFor(testCase), usage)
+        : runSample(testCase, config, baseFor(testCase), usage);
+    return sample.pipe(
       inFlight.withPermits(1),
       Effect.matchCause({
         // Not graded: a sample that errors is left out of pass rates, with its tokens so far.
@@ -2154,7 +2388,7 @@ const main = Effect.gen(function* () {
     { concurrency: flags.concurrency, discard: true },
   ).pipe(Effect.ignore);
   const samples = flags.samples === undefined ? "2-3 (adaptive)" : flags.samples;
-  const header = `Commit \`${commit}\`, ${flags.model} at ${effort} effort, user instructions ${flags["user-instructions"]}, ${samples} samples per case, template \`${path.basename(templatePath)}\``;
+  const header = `Commit \`${commit}\`, ${flags.model} at ${effort} effort via ${flags.transport}, user instructions ${flags["user-instructions"]}, ${samples} samples per case, template \`${path.basename(templatePath)}\``;
   const finished = new Set(rows.map((row) => row.id)).size;
   const stopped =
     regressions.length === 0
@@ -2168,6 +2402,7 @@ const main = Effect.gen(function* () {
       header: [header, t3ContextReport(flags.model), ...stopped].join("\n"),
       shellModel: config.shellModel,
       model: config.model,
+      transport: config.transport,
     },
     flags.baseline === undefined ? undefined : baseline,
   );

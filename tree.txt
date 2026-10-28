@@ -27282,6 +27282,8 @@ evals/mcp-tool-use/templates/claude.json.gz
 evals/mcp-tool-use/templates/codex.json.gz
 evals/mcp-tool-use/trim-capture.ts
 evals/package.json
+evals/shared/native-codex.test.ts
+evals/shared/native-codex.ts
 evals/shared/proxy.ts
 evals/test-signal/README.md
 evals/test-signal/cases.ts

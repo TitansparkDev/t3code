@@ -1842,6 +1842,16 @@ it("leaves errored samples out of pass rates and lists them in the summary", () 
   assert.include(summary, "| B | - of 0, 1 errored | new | |");
   // Errored samples' tokens still count: 3 rows of 10 input tokens each.
   assert.include(summary, "input 30");
+
+  const nativeSummary = summarize([row("A", true)], {
+    header: "native run",
+    shellModel: "claude-haiku-5-5",
+    model: "gpt-6-luna",
+    transport: "codex-app-server",
+  });
+  assert.include(nativeSummary, "Cost: unknown; Codex account billing is external to this report.");
+  assert.include(nativeSummary, "Agent and shell simulator token totals are unavailable");
+  assert.notInclude(nativeSummary, "Estimated cost $0.00");
 });
 
 it.each(["couldn't", "couldn’t", "can’t"])(
