@@ -16,6 +16,14 @@ import { makeRepo, plan, tmpDir } from "./harness/contractHarness.ts";
 import type { VerificationSpec } from "../src/verificationSpec.ts";
 
 type ReplayPolicy = "sequential" | "unqueued" | "queued" | "wellManagedParallel";
+const REPLAY_COSTS = {
+  model: 4,
+  check: 5,
+  integrate: 1,
+  delivery: 1,
+  providerWait: 3,
+  restart: 1,
+};
 
 interface RecoveryTrace {
   readonly recoveryChecks: number;
@@ -50,7 +58,6 @@ function replayPolicy(policy: ReplayPolicy, recovery: RecoveryTrace): ReplayMetr
   const workerLimit = policy === "sequential" ? 1 : 2;
   const resourceLimit = 1;
   const landingLimit = 1;
-  const costs = { model: 4, check: 5, integrate: 1 };
   const states = new Map(
     tasks.map((task) => [
       task.id,
@@ -107,7 +114,7 @@ function replayPolicy(policy: ReplayPolicy, recovery: RecoveryTrace): ReplayMetr
       ) {
         const active = activeTaskIds();
         if (!active.has(task.id) && active.size < workerLimit) {
-          start(task.id, "model", costs.model);
+          start(task.id, "model", REPLAY_COSTS.model);
           started = true;
         }
       }
@@ -136,7 +143,7 @@ function replayPolicy(policy: ReplayPolicy, recovery: RecoveryTrace): ReplayMetr
         continue;
       }
       state.waiting = false;
-      start(state.task.id, "check", costs.check, key);
+      start(state.task.id, "check", REPLAY_COSTS.check, key);
       started = true;
     }
 
@@ -157,7 +164,7 @@ function replayPolicy(policy: ReplayPolicy, recovery: RecoveryTrace): ReplayMetr
         continue;
       }
       state.waiting = false;
-      start(state.task.id, "integrate", costs.integrate);
+      start(state.task.id, "integrate", REPLAY_COSTS.integrate);
       started = true;
     }
 
@@ -375,6 +382,7 @@ describe("Phase 8: Full System Stress & Chaos Harness (AQ-058, Gate G8)", () => 
         const failed = await r.submit(reservedD.task);
         expect(failed.kind).toBe("verification-failed");
         if (failed.kind !== "verification-failed" || !failed.receipt) return;
+        expect(failed.receipt.state).toBe("failed");
         const failedChecks = failed.receipt.checks.filter((check) => !check.passed);
         expect(failedChecks.map((check) => check.failureKind)).toEqual([
           "missing-output",
@@ -407,7 +415,8 @@ describe("Phase 8: Full System Stress & Chaos Harness (AQ-058, Gate G8)", () => 
         expect(repaired.kind).toBe("submitted");
         if (repaired.kind !== "submitted") return;
         expect(repaired.receipt.checks.every((check) => check.passed)).toBe(true);
-        expect((await r.integrate("D")).kind).toBe("landed");
+        const landedD = await r.integrate("D");
+        expect(landedD.kind).toBe("landed");
         expect(r.task("D")).toMatchObject({ status: "completed" });
         expect(r.task("E")).toMatchObject({ status: "pending", dependencies: '["D"]' });
 
@@ -424,7 +433,8 @@ describe("Phase 8: Full System Stress & Chaos Harness (AQ-058, Gate G8)", () => 
           passed: true,
           checkId: "consumer",
         });
-        expect((await r.integrate("E")).kind).toBe("landed");
+        const landedE = await r.integrate("E");
+        expect(landedE.kind).toBe("landed");
 
         const repairInput = {
           planId: r.planId,
@@ -440,7 +450,7 @@ describe("Phase 8: Full System Stress & Chaos Harness (AQ-058, Gate G8)", () => 
               failureReason: producerResult?.failureReason,
             },
           },
-          dedupeKey: `baseline-check:${producerResult?.checkId}:${producerResult?.run}:${producerResult?.cwd}`,
+          dedupeKey: `baseline-check:${producerResult?.checkId}:${producerResult?.failureKind}:${producerResult?.failureReason}`,
         };
         const firstRepair = addFollowUpTask(r.db, { ...repairInput, parentTaskId: "A" });
         const sharedRepair = addFollowUpTask(r.db, { ...repairInput, parentTaskId: "B" });
@@ -448,15 +458,18 @@ describe("Phase 8: Full System Stress & Chaos Harness (AQ-058, Gate G8)", () => 
         expect(sharedRepair).toEqual({ taskId: firstRepair.taskId, created: false });
 
         // The queue receipts above provide failure, dependency-block, no-false-pass and repair
-        // observations. Remaining tail facts come from the named server lifecycle fixtures, which
-        // exercise delivery/restart, reasoning recovery, and provider restoration without replaying
-        // those product flows here; their virtual cost is common to all comparison policies.
+        // observations. Server-side tail counts come from GoalAgentQueueFlow's 20-delivery restart
+        // and failed-verification recovery tests, plus GoalService's provider-usage recovery test.
+        // Those product flows are not re-run here; their virtual cost is common to all policies.
+        const recoveryChecks =
+          failed.receipt.checks.length +
+          repaired.receipt.checks.length +
+          consumerPassed.receipt.checks.length;
+        const recoveryLandings =
+          Number(landedD.kind === "landed") + Number(landedE.kind === "landed");
         const recovery: RecoveryTrace = {
-          recoveryChecks:
-            failed.receipt.checks.length +
-            repaired.receipt.checks.length +
-            consumerPassed.receipt.checks.length,
-          recoveryLandings: 2,
+          recoveryChecks,
+          recoveryLandings,
           failedChecks: failedChecks.length,
           blockedConsumers: failedChecks.filter((check) => check.failureKind === "blocked").length,
           sharedRepairs: firstRepair.created && !sharedRepair.created ? 1 : 0,
@@ -466,14 +479,12 @@ describe("Phase 8: Full System Stress & Chaos Harness (AQ-058, Gate G8)", () => 
           restarts: 1,
           falseAccepts: failed.receipt.checks.filter((check) => check.passed).length,
           recoveryCost:
-            (failed.receipt.checks.length +
-              repaired.receipt.checks.length +
-              consumerPassed.receipt.checks.length) *
-              5 +
-            2 +
-            20 +
-            4 +
-            3,
+            recoveryChecks * REPLAY_COSTS.check +
+            recoveryLandings * REPLAY_COSTS.integrate +
+            20 * REPLAY_COSTS.delivery +
+            REPLAY_COSTS.model +
+            REPLAY_COSTS.providerWait +
+            REPLAY_COSTS.restart,
         };
         expect(recovery).toMatchObject({
           recoveryChecks: 7,
@@ -512,7 +523,7 @@ describe("Phase 8: Full System Stress & Chaos Harness (AQ-058, Gate G8)", () => 
             providerLosses: 1,
             restarts: 1,
             falseAccepts: 0,
-            criticalPath: 94,
+            criticalPath: 95,
           },
           unqueuedParallel: {
             executedChecks: 10,
@@ -529,7 +540,7 @@ describe("Phase 8: Full System Stress & Chaos Harness (AQ-058, Gate G8)", () => 
             providerLosses: 1,
             restarts: 1,
             falseAccepts: 0,
-            criticalPath: 89,
+            criticalPath: 90,
           },
           queued: {
             executedChecks: 9,
@@ -546,7 +557,7 @@ describe("Phase 8: Full System Stress & Chaos Harness (AQ-058, Gate G8)", () => 
             providerLosses: 1,
             restarts: 1,
             falseAccepts: 0,
-            criticalPath: 85,
+            criticalPath: 86,
           },
           wellManagedParallel: {
             executedChecks: 9,
@@ -563,7 +574,7 @@ describe("Phase 8: Full System Stress & Chaos Harness (AQ-058, Gate G8)", () => 
             providerLosses: 1,
             restarts: 1,
             falseAccepts: 0,
-            criticalPath: 85,
+            criticalPath: 86,
           },
         });
         expect(executedChecks).toBe(comparisons.queued.executedChecks);
