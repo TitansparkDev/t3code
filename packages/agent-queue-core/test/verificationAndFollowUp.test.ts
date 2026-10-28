@@ -307,6 +307,7 @@ describe("baseline-repair follow-ups", () => {
         blocking: true,
         title: "Fix a check that already failed",
         note: "It fails on the integration branch.",
+        fingerprint: null,
         checks: [producer, red],
         repairEvidence: {
           failedCheckId: red.id,
@@ -339,6 +340,7 @@ describe("baseline-repair follow-ups", () => {
         .get(first.taskId) as { payload_json: string };
       expect(JSON.parse(created.payload_json)).toMatchObject({
         dedupeKey: `repair-input:${input.repairEvidence.inputFingerprint}`,
+        fingerprint: null,
         repairEvidence: {
           failedCheckId: red.id,
           producerDependencyIds: red.dependsOn,
