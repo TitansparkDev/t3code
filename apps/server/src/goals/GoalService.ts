@@ -3179,7 +3179,7 @@ export const make = Effect.gen(function* () {
     }
 
     const remaining = yield* queue.resourceJobs(binding, chat.taskId).pipe(
-      Effect.map(Option.some),
+      Effect.asSome,
       Effect.catch((error) =>
         logQueueError("goals.resource-job-reconcile-failed")(error).pipe(Effect.as(Option.none())),
       ),
@@ -3234,9 +3234,8 @@ export const make = Effect.gen(function* () {
     }
     // A held worker waits for its escalation; its conversation is decided only once it is resolved.
     if (
-      chat.escalationId !== undefined &&
       before.escalations?.some(
-        (escalation) => escalation.id === chat.escalationId && isOpenEscalation(escalation),
+        (escalation) => escalation.threadId === threadId && isOpenEscalation(escalation),
       )
     )
       return;

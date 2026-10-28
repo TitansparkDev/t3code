@@ -2690,7 +2690,10 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
 
   it.effect("a replacement sees current queue evidence and settled sibling repairs", () =>
     Effect.gen(function* () {
-      const resourceJobs = yield* Ref.make({ open: ["job-handoff-1"], finished: [] });
+      const resourceJobs = yield* Ref.make<{
+        readonly open: ReadonlyArray<string>;
+        readonly finished: ReadonlyArray<{ readonly id: string; readonly summary: string }>;
+      }>({ open: ["job-handoff-1"], finished: [] });
       const flow = yield* makeFlow(
         planWith([
           {

@@ -10,7 +10,7 @@ import * as OrchestratorV2 from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as ThreadLaunch from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
-import * as GoalThreads from "./GoalThreads.ts";
+import { GoalThreads, goalThreadViewOf, layer as goalThreadsLayer } from "./GoalThreads.ts";
 
 const at = DateTime.makeUnsafe("2026-10-18T12:00:00.000Z");
 
@@ -97,7 +97,11 @@ it.effect("reuses the command and message ids for a replayed resource delivery",
       Layer.succeed(
         ThreadManagement.ThreadManagementService,
         ThreadManagement.ThreadManagementService.of({
-          sendToThread: (input) =>
+          sendToThread: (
+            input: Parameters<
+              ThreadManagement.ThreadManagementService["Service"]["sendToThread"]
+            >[0],
+          ) =>
             Effect.sync(() => {
               sent.push({ commandId: input.commandId, messageId: input.messageId });
             }).pipe(Effect.as(undefined as never)),
@@ -113,7 +117,7 @@ it.effect("reuses the command and message ids for a replayed resource delivery",
       ),
     );
     const threads = yield* GoalThreads.GoalThreads.pipe(
-      Effect.provide(GoalThreads.layer.pipe(Layer.provide(dependencies))),
+      Effect.provide(goalThreadsLayer.pipe(Layer.provide(dependencies))),
     );
     const input = {
       threadId: ThreadId.make("thread-resource-results"),

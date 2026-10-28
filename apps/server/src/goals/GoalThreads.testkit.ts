@@ -189,8 +189,8 @@ export const layerFromLegacyHarness = (harness: {
                     ]);
                   }),
             ),
-          )
-          .pipe(Effect.asVoid);
+            Effect.asVoid,
+          );
       },
       bindWorkspace: (input) =>
         Effect.gen(function* () {

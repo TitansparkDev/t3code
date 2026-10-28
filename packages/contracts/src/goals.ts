@@ -755,7 +755,7 @@ function contractLines(task: QueueTaskAssignment): string[] {
   }
   if ((task.allowedPaths?.length ?? 0) > 0) {
     lines.push(
-      `Your task's own paths: ${task.allowedPaths!.join(", ")}. Other files the task really needs (a model, a migration, a generated schema, a test) are fine to change: the server approves them by itself. It refuses protected files, pauses your task if another running task holds a file you need (and resumes you when it is free), and wants a reason for sensitive ones (credentials, CI, live data): write \`SCOPE-REQUEST: <path>: <why the task needs it>\` and pass it to finalize as \`--request "SCOPE-REQUEST: <path>: <why>"\` before you finish, not only in your final message. Do not edit a file just to satisfy a guard.`,
+      `Your task's own paths: ${task.allowedPaths!.join(", ")}. Other files the task really needs (a model, a migration, a generated schema, a test) are fine to change: the server approves them by itself. It refuses protected files, pauses your task if another running task holds a file you need (and resumes you when it is free), and wants a reason for sensitive ones (credentials, CI, live data): write \`SCOPE-REQUEST: <path> -- <why the task needs it>\` and pass it to finalize as \`--request "SCOPE-REQUEST: <path> -- <why>"\` before you finish, not only in your final message. Do not edit a file just to satisfy a guard.`,
     );
   }
   if ((task.generatedPaths?.length ?? 0) > 0) {
