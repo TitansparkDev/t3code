@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vite-plus/test";
+import * as Schema from "effect/Schema";
 
 import {
+  GoalQueueProgress,
   goalInstructions,
   goalPrompt,
   problemStreak,
@@ -94,7 +96,7 @@ describe("queue worker prompt", () => {
   it("explains finalize exit code 3 and passes scope requests to finalize", () => {
     const prompt = queueWorkerPrompt(goal, task);
     expect(prompt).toContain("Exit code 3 means not finished");
-    expect(prompt).toContain('--request "SCOPE-REQUEST: <path> — <why>"');
+    expect(prompt).toContain('--request "SCOPE-REQUEST: <path>: <why>"');
   });
 
   it("forbids the other claim systems and names agentq run as the only shared-tool path", () => {
@@ -231,5 +233,56 @@ describe("overseer note", () => {
       guidance: "Run install first.",
     });
     expect(prompt).toContain("Run install first.");
+  });
+});
+
+describe("goal queue progress", () => {
+  const decode = Schema.decodeUnknownSync(GoalQueueProgress);
+  const legacy = {
+    total: 3,
+    completed: 1,
+    ready: 1,
+    waiting: 0,
+    running: 1,
+    awaitingIntegration: 0,
+    needsRepair: 0,
+    failed: 0,
+    phase: "implementing",
+    checkedAt: "2026-10-28T00:00:00.000Z",
+  };
+
+  it("accepts legacy progress and additive resource evidence with a nullable legacy check id", () => {
+    expect(decode(legacy).activity).toBeUndefined();
+    const current = decode({
+      ...legacy,
+      activity: {
+        reason: "verifying",
+        inspectionAvailable: true,
+        activeChecks: [
+          {
+            taskId: "T1",
+            ticketId: "ticket-1",
+            state: "running",
+            resources: ["heavy_build"],
+            enqueuedAt: "2026-10-28T00:00:00.000Z",
+          },
+        ],
+        activeJobs: [],
+        resourceWaits: [],
+        omittedChecks: 0,
+        omittedJobs: 0,
+        omittedResourceWaits: 0,
+        completedParentTasks: 1,
+        completedRepairTasks: 0,
+        remainingDependencyTaskIds: ["T2"],
+        omittedDependencyCount: 0,
+      },
+    });
+    expect(current.activity?.activeChecks[0]).toMatchObject({
+      taskId: "T1",
+      ticketId: "ticket-1",
+      state: "running",
+    });
+    expect(current.activity?.activeChecks[0]).not.toHaveProperty("checkId");
   });
 });

@@ -1,11 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off preferSchemaOverJson:off globalConsole:off
-/**
- * AgentQueue goals, end to end through the real GoalService: goals are created the way the
- * setup pages create them, tasks come from a real plan in a real git repository, workers
- * are simulated by committing in the worktree the server gave them, and the queue,
- * integration and completion are the real ones. Only the orchestration engine (threads and
- * providers) is replaced by a recorder.
- */
+/** Real GoalService, plan and queue; orchestration commands are recorded in a test harness. */
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
@@ -575,6 +569,115 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
   );
 
   it.effect(
+    "reports model work, check execution, resource waits, and bounded progress freshness",
+    () =>
+      Effect.gen(function* () {
+        const flow = yield* makeFlow(planWith([{ id: "T1" }]));
+        const service = yield* flow.startServer;
+        const [goal] = yield* service.create(settingsFor());
+        yield* flow.waitFor("thread.create", 1);
+        const implementing = yield* flow.goalOf(service);
+        expect(implementing.queueProgress?.running).toBe(1);
+        expect(implementing.queueProgress?.activity?.reason).toBe("implementing");
+
+        const broker = openBroker({
+          host: () => ({
+            totalMb: 25_430,
+            availableMb: 20_000,
+            budgetAvailableMb: 20_000,
+            swapUsedMb: 0,
+            swapTotalMb: 8_000,
+            cpus: 16,
+            load1: 1,
+            memoryPressure: 0,
+            swapPressure: false,
+            diskFreeMb: 100_000,
+          }),
+          config: () => ({
+            reserveMb: 0,
+            diskReserveMb: 0,
+            resources: { "goal-progress-resource": { capacity: 1, memoryMb: 0 } },
+          }),
+        });
+        const ownedTicketIds: string[] = [];
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            for (const ticketId of ownedTicketIds) broker.cancel(ticketId);
+            broker.close();
+          }),
+        );
+        const check = broker.enqueue({
+          resources: [{ name: "goal-progress-resource" }],
+          ownerRef: "T1",
+          repo: flow.repo.gitCommonDir,
+          checkId: "verify-T1",
+          pid: process.pid,
+        });
+        ownedTicketIds.push(check.id);
+        expect(check.state).toBe("waiting");
+        expect(broker.pump().map((ticket) => ticket.id)).toContain(check.id);
+        broker.markRunning(check.id, null);
+        expect(broker.get(check.id)?.state).toBe("running");
+
+        yield* service.addAgents(goal!.id, 0);
+        const checking = yield* flow.goalOf(service);
+        expect(checking.queueProgress?.running).toBe(0);
+        expect(checking.queueProgress?.phase).not.toBe("implementing");
+        expect(checking.queueProgress?.activity).toMatchObject({
+          reason: "verifying",
+          activeChecks: [
+            { taskId: "T1", ticketId: check.id, checkId: "verify-T1", state: "running" },
+          ],
+        });
+
+        const job = broker.enqueue({
+          resources: [{ name: "goal-progress-resource" }],
+          ownerRef: "T1",
+          repo: flow.repo.gitCommonDir,
+          job: { command: "true", cwd: flow.repo.rootDir },
+        });
+        ownedTicketIds.push(job.id);
+        expect(job.kind).toBe("job");
+        expect(job.state).toBe("waiting");
+
+        yield* service.addAgents(goal!.id, 0);
+        const waiting = yield* flow.goalOf(service);
+        const progress = waiting.queueProgress;
+        expect(progress?.running).toBe(0);
+        expect(progress?.phase).not.toBe("implementing");
+        expect(progress?.activity).toMatchObject({
+          reason: "waiting-resource",
+          inspectionAvailable: true,
+          activeChecks: [
+            { taskId: "T1", ticketId: check.id, checkId: "verify-T1", state: "running" },
+          ],
+          activeJobs: [{ taskId: "T1", ticketId: job.id, state: "waiting" }],
+          omittedChecks: 0,
+          omittedResourceWaits: 0,
+        });
+        expect(progress?.activity?.resourceWaits).toEqual([
+          {
+            taskId: "T1",
+            ticketId: job.id,
+            resources: ["goal-progress-resource"],
+            enqueuedAt: expect.any(String),
+          },
+        ]);
+        expect(progress?.activity?.oldestWait).toMatchObject({
+          taskId: "T1",
+          reason: "resource",
+        });
+
+        const checkedAt = progress?.checkedAt;
+        yield* TestClock.adjust(Duration.seconds(31));
+        yield* service.addAgents(goal!.id, 0);
+        const refreshed = yield* flow.goalOf(service);
+        expect(refreshed.queueProgress?.checkedAt).not.toBe(checkedAt);
+        expect(refreshed.queueProgress?.activity?.reason).toBe("waiting-resource");
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
     "settles each worker, merges its work, unlocks dependants, and finishes only when the whole plan is merged",
     () =>
       Effect.gen(function* () {
@@ -727,6 +830,8 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
         );
         expect(waiting.status).toBe("running");
         expect(waiting.chats.filter((chat) => chat.status === "running")).toHaveLength(0);
+        expect(waiting.queueProgress?.running).toBe(0);
+        expect(waiting.queueProgress?.activity?.reason).toBe("waiting-publication");
         expect(waiting.queueProgress?.note).toContain("shared.txt");
         expect(yield* Effect.promise(() => NodeFSP.readFile(shared, "utf8"))).toBe(edited);
         const mainBefore = yield* Effect.promise(() =>

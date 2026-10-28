@@ -1,17 +1,4 @@
-/**
- * Goals — work an environment keeps doing on its own until nothing is left.
- *
- * A person sets one up from the new-chat flow with the Goal switch on: what
- * the goal is, how many agents run at once, which providers, models and effort
- * levels to use and how many of each, and when to stop. The server keeps that
- * many chats working, starts the next chat as each one finishes, and stops
- * when an agent replies GOAL COMPLETE, the cap is reached, or the person
- * stops it. Every chat is an ordinary thread.
- *
- * Fork-local, in its own file so it does not conflict with upstream edits.
- *
- * @module goals
- */
+/** @module goals */
 import * as Schema from "effect/Schema";
 
 import { IsoDateTime, ProjectId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
@@ -267,6 +254,78 @@ export const GoalQueueProgress = Schema.Struct({
       taskIds: Schema.Array(Schema.String),
     }),
   ),
+  /** Exact work or wait behind the compatibility phase, from persisted queue and resource facts. */
+  activity: Schema.optional(
+    Schema.Struct({
+      reason: Schema.Literals([
+        "implementing",
+        "verifying",
+        "running-resource-job",
+        "waiting-resource",
+        "waiting-results",
+        "waiting-dependencies",
+        "waiting-integration",
+        "waiting-publication",
+        "blocked",
+        "complete",
+        "idle",
+        "unknown",
+      ]),
+      inspectionAvailable: Schema.Boolean,
+      oldestWait: Schema.optional(
+        Schema.Struct({
+          taskId: Schema.String,
+          since: IsoDateTime,
+          reason: Schema.Literals([
+            "dependencies",
+            "blocked",
+            "integration",
+            "resource",
+            "results",
+          ]),
+        }),
+      ),
+      activeChecks: Schema.Array(
+        Schema.Struct({
+          taskId: Schema.String,
+          ticketId: Schema.String,
+          checkId: Schema.optional(Schema.String),
+          state: Schema.Literals(["waiting", "granted", "running"]),
+          resources: Schema.Array(Schema.String),
+          enqueuedAt: IsoDateTime,
+          startedAt: Schema.optional(IsoDateTime),
+          finishedAt: Schema.optional(IsoDateTime),
+        }),
+      ),
+      activeJobs: Schema.Array(
+        Schema.Struct({
+          taskId: Schema.String,
+          ticketId: Schema.String,
+          state: Schema.Literals(["waiting", "granted", "running", "finished-unreported"]),
+          resources: Schema.Array(Schema.String),
+          enqueuedAt: IsoDateTime,
+          startedAt: Schema.optional(IsoDateTime),
+          finishedAt: Schema.optional(IsoDateTime),
+        }),
+      ),
+      resourceWaits: Schema.Array(
+        Schema.Struct({
+          taskId: Schema.String,
+          ticketId: Schema.String,
+          checkId: Schema.optional(Schema.String),
+          resources: Schema.Array(Schema.String),
+          enqueuedAt: IsoDateTime,
+        }),
+      ),
+      omittedChecks: Schema.Number,
+      omittedJobs: Schema.Number,
+      omittedResourceWaits: Schema.Number,
+      completedParentTasks: Schema.Number,
+      completedRepairTasks: Schema.Number,
+      remainingDependencyTaskIds: Schema.Array(Schema.String),
+      omittedDependencyCount: Schema.Number,
+    }),
+  ),
   checkedAt: IsoDateTime,
 });
 export type GoalQueueProgress = typeof GoalQueueProgress.Type;
@@ -461,13 +520,11 @@ export function goalTitle(goal: Pick<Goal, "name">): string {
 
 const GOAL_COMPLETE_LINE = new RegExp(`^\\s*${GOAL_COMPLETE_MARKER}\\s*$`, "mu");
 /**
- * A marker counts only as a line of its own: it starts the line (after markdown such as `**`,
- * `#` or `- `) and is followed by nothing, or by a `:`, ` -`, ` —` or ` –` introducing a reason.
- * Narration that starts with the marker ("NEEDS ATTENTION I'll inspect…") and prose that
- * mentions it ("No NEEDS ATTENTION is needed") do not escalate.
+ * A marker must start its own line and may be followed by a reason separator.
+ * Narration or a mention inside prose does not count.
  */
 const MARKER_LINE_START = "^[ \\t]*(?:(?:#{1,6}|[-*+>]|\\*\\*|__)[ \\t]*)*";
-const MARKER_LINE_TAIL = "(?:\\*\\*)?(?:[ \\t]*$|(?::|[ \\t]+[-–—])(?=[ \\t]*\\S))";
+const MARKER_LINE_TAIL = "(?:\\*\\*)?(?:[ \\t]*$|(?::|[ \\t]+[-–\\u2014])(?=[ \\t]*\\S))";
 const GOAL_NEEDS_ATTENTION_LINE = new RegExp(
   `${MARKER_LINE_START}${GOAL_NEEDS_ATTENTION_MARKER}${MARKER_LINE_TAIL}`,
   "mu",
@@ -520,13 +577,7 @@ function isProblemChat(chat: Pick<GoalChat, "status" | "blockedWork">): boolean 
   return chat.status === "failed" || chat.status === "attention" || chat.blockedWork === true;
 }
 
-/**
- * How many of the most recently finished chats in a row did not finish their
- * work (failed, need the person, or found only blocked work). Chats that were
- * stopped by a usage limit or by the person are skipped: they are not evidence
- * either way. A goal that keeps
- * hitting this is not going to get anywhere, so it stops instead of spending usage.
- */
+/** Count consecutive unsuccessful finished chats, skipping stopped chats. */
 export function problemStreak(chats: ReadonlyArray<GoalChat>): number {
   const finished = chats
     .filter(
@@ -590,9 +641,9 @@ export function goalPrompt(
     "Finish one piece of work, then stop. A fresh chat takes the next piece.",
     "Do not spend time exploring: if you cannot quickly find unfinished work you can start, do not build, test, or read the whole repository to look harder. End right away with the matching line below.",
     "End your last message with exactly one of these on a line by itself, when it applies:",
-    `${GOAL_COMPLETE_MARKER} — there is no unfinished work left at all.`,
-    `${GOAL_BLOCKED_MARKER} — unfinished work remains, but no plan chunk is currently eligible; briefly state why.`,
-    `${GOAL_NEEDS_ATTENTION_MARKER} — you hit a problem you cannot fix (for example it cannot be merged even after one rebase), or something only a person can do (a login, a decision, a missing secret). Explain it; that chat is kept open for the person to read.`,
+    `${GOAL_COMPLETE_MARKER}: there is no unfinished work left at all.`,
+    `${GOAL_BLOCKED_MARKER}: unfinished work remains, but no plan chunk is currently eligible; briefly state why.`,
+    `${GOAL_NEEDS_ATTENTION_MARKER}: you hit a problem you cannot fix (for example it cannot be merged even after one rebase), or something only a person can do (a login, a decision, a missing secret). Explain it; that chat is kept open for the person to read.`,
   ].join("\n");
 }
 
@@ -609,11 +660,6 @@ export function goalSettingsProblem(
     return "The most chats to run must be at least as many as run at once, or choose until complete.";
   }
   return undefined;
-}
-
-/** Whether a goal's workers are assigned tasks from AgentQueue. Fixed when the goal starts. */
-function goalUsesAgentQueue(goal: Pick<Goal, "agentQueue">): boolean {
-  return goal.agentQueue !== undefined;
 }
 
 /** What a queue-bound goal asks for, read from the settings (old records say nothing). */
@@ -709,7 +755,7 @@ function contractLines(task: QueueTaskAssignment): string[] {
   }
   if ((task.allowedPaths?.length ?? 0) > 0) {
     lines.push(
-      `Your task's own paths: ${task.allowedPaths!.join(", ")}. Other files the task really needs (a model, a migration, a generated schema, a test) are fine to change: the server approves them by itself. It refuses protected files, pauses your task if another running task holds a file you need (and resumes you when it is free), and wants a reason for sensitive ones (credentials, CI, live data): write \`SCOPE-REQUEST: <path> — <why the task needs it>\` and pass it to finalize as \`--request "SCOPE-REQUEST: <path> — <why>"\` before you finish, not only in your final message. Do not edit a file just to satisfy a guard.`,
+      `Your task's own paths: ${task.allowedPaths!.join(", ")}. Other files the task really needs (a model, a migration, a generated schema, a test) are fine to change: the server approves them by itself. It refuses protected files, pauses your task if another running task holds a file you need (and resumes you when it is free), and wants a reason for sensitive ones (credentials, CI, live data): write \`SCOPE-REQUEST: <path>: <why the task needs it>\` and pass it to finalize as \`--request "SCOPE-REQUEST: <path>: <why>"\` before you finish, not only in your final message. Do not edit a file just to satisfy a guard.`,
     );
   }
   if ((task.generatedPaths?.length ?? 0) > 0) {
