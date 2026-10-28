@@ -1,21 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off preferSchemaOverJson:off
 /**
- * Is this plan something small coding agents can finish on their own, in this repository, on this
- * machine? A plan that cannot be finished wastes every worker that meets its wall, so each of these
- * is found before a Goal starts, from the plan and from the repository itself:
- *
- *  - work only a person, a device or elapsed time can do (owner checks, soak runs, store reviews);
- *  - live or production changes outside the one final release task;
- *  - decisions left to the worker (TBD, "if possible", "choose between");
- *  - a scope that leaves out files the task cannot work without (the Room database a sync change
- *    depends on, a protected file, a path that does not exist);
- *  - checks that cannot run here (missing tool, no GPU), that are too broad for the task, or that
- *    already fail on the branch the workers start from;
- *  - dependencies nothing requires, overlapping scopes, and instructions that contradict each other.
- *
- * Findings are `error` (the plan cannot run as written) or `warning` (probably wrong, say why if not).
- * Nothing here changes the plan or the repository.
- *
+ * Checks whether planned work can run from the repository's committed state.
  * @module planLint
  */
 import * as NodeChildProcess from "node:child_process";
@@ -607,7 +592,7 @@ export function lintPlan(input: PlanLintInput): PlanFinding[] {
         code: "no-verification",
         taskId: task.id,
         message: `${task.id} has no executable check and no stated exemption.`,
-        fix: "Add a Checks: list (command, cwd, timeout) or `Verify: none — <reason>`.",
+        fix: "Add a Checks: list (command, cwd, timeout) or `Verify: none (<reason>)`.",
       });
     }
     for (const rejected of task.verification?.rejected ?? []) {

@@ -1,13 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off preferSchemaOverJson:off
 /**
- * "Can this assignment be carried out?" answered before a worker exists.
- *
- * A worker spends minutes to hours before it meets a rejected branch name, a missing tool, a
- * dependency that is not actually in its base, or a scope guard it can never satisfy. Every
- * such fact can be established up front, by the same commands the repository itself uses, so
- * a task is dispatched only when it is executable, or is held (without a worker, without a
- * retry) with the exact reason and what has to change.
- *
+ * Checks whether an assignment is ready before dispatching a worker.
  * @module preflight
  */
 import type * as NodeSqlite from "node:sqlite";

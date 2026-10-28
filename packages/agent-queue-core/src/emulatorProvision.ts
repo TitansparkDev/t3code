@@ -1,9 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off preferSchemaOverJson:off
 /**
- * A granted `android` slot names an emulator serial (`emulator-5554`), but nothing used to start
- * it: `connectedAndroidTest` then failed with "Connected device 'emulator-5554' not found", a
- * failure no worker can repair. A command holding the slot now finds the emulator booted first.
- *
+ * Provisions and validates an emulator for a granted Android resource slot.
  * @module emulatorProvision
  */
 import * as NodeChildProcess from "node:child_process";
