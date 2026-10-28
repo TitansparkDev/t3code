@@ -234,7 +234,7 @@ export async function verifyPlanCompletion(
   }
   if (unchecked.length > 0) {
     return notYet(
-      `${unchecked.length} merged task(s) have no passing executable check or recorded exemption: ${unchecked.slice(0, 8).join(", ")}. Define checks (Checks:) or an exemption (Verify: none \u2014 reason) and audit them.`,
+      `${unchecked.length} merged task(s) have no passing executable check or recorded exemption: ${unchecked.slice(0, 8).join(", ")}. Define checks (Checks:) or an exemption (Verify: none - reason) and audit them.`,
     );
   }
   if (!baseHead || !goalHead) {

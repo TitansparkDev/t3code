@@ -955,7 +955,7 @@ export async function submitCandidate(
             blockedResults.set(resultKey(result), result);
     }
     remaining = remaining.filter((check) => check !== failedCheck && !withheld.includes(check));
-    const narrowedReceipt =
+    const narrowedReceipt: SpecResult =
       remaining.length === 0
         ? {
             ...receipt,
@@ -1078,14 +1078,26 @@ export async function submitCandidate(
             })()
           : [entry.verification],
         repairEvidence: {
-          failedCheckId: entry.verification.id,
-          inputFingerprint: entry.result.inputFingerprint,
-          producerDependencyIds: entry.verification.dependsOn,
+          ...(entry.verification.id !== undefined ? { failedCheckId: entry.verification.id } : {}),
+          ...(entry.result.inputFingerprint !== undefined
+            ? { inputFingerprint: entry.result.inputFingerprint }
+            : {}),
+          ...(entry.verification.dependsOn !== undefined
+            ? { producerDependencyIds: entry.verification.dependsOn }
+            : {}),
           diagnostics: {
-            failureKind: entry.result.failureKind,
-            failureReason: entry.result.failureReason,
-            diagnosticExcerpt: entry.result.diagnosticExcerpt,
-            diagnosticLogPath: entry.result.diagnosticLogPath,
+            ...(entry.result.failureKind !== undefined
+              ? { failureKind: entry.result.failureKind }
+              : {}),
+            ...(entry.result.failureReason !== undefined
+              ? { failureReason: entry.result.failureReason }
+              : {}),
+            ...(entry.result.diagnosticExcerpt !== undefined
+              ? { diagnosticExcerpt: entry.result.diagnosticExcerpt }
+              : {}),
+            ...(entry.result.diagnosticLogPath !== undefined
+              ? { diagnosticLogPath: entry.result.diagnosticLogPath }
+              : {}),
           },
         },
         dedupeKey: `baseline-check:${checkKey(entry.verification)}`,

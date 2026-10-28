@@ -1,14 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off preferSchemaOverJson:off globalConsole:off
 /**
- * `agentq run -- <command>` and `agentq resource ...`: what a worker uses for anything that
- * contends for a shared machine resource (Gradle, an emulator, Docker, a database, a GPU).
- *
- * The worker does not choose which resource or who else is using it. It prefixes the command; the
- * resources are inferred from the command line and the repository's contract, the request waits in
- * the machine-wide fair queue, and the command runs only while it holds them. If the wait would be
- * long, the request becomes a stored job: the command exits immediately telling the worker to end its
- * turn, the server runs the job when the resource is free and sends the result back to the same
- * conversation. A busy resource is never a reason for a worker to give up or ask for help.
+ * `agentq run -- <command>` and `agentq resource ...` queue shared machine resources.
+ * Resources come from the command and repository contract; jobs wait fairly until available.
+ * Long waits become stored jobs that resume the same conversation when resources free up.
  */
 import * as NodePath from "node:path";
 import * as NodeChildProcess from "node:child_process";
