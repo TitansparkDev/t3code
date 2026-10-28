@@ -695,7 +695,7 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
         expect(bounded.queueProgress?.activity).toMatchObject({
           reason: "waiting-resource",
           activeChecks: expect.arrayContaining([
-            { taskId: "T1", ticketId: check.id, state: "running" },
+            expect.objectContaining({ taskId: "T1", ticketId: check.id, state: "running" }),
           ]),
           omittedChecks: 2,
           omittedResourceWaits: 2,
