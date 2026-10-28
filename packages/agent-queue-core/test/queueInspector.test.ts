@@ -143,8 +143,8 @@ describe("AgentQueue Diagnostics & Deadlock Evaluator (AQ-014)", () => {
         kind: "repair",
         parentTaskId: "PARENT",
       });
-      insertTask.run("CYCLE-A", "Cycle A", "pending", '["CYCLE-B"]', stamp("01"), stamp("01"));
-      insertTask.run("CYCLE-B", "Cycle B", "pending", '["CYCLE-A"]', stamp("01"), stamp("01"));
+      insertTask.run("CYCLE-A", "Cycle A", "pending", '["CYCLE-B"]', stamp("01"), stamp("04"));
+      insertTask.run("CYCLE-B", "Cycle B", "pending", '["CYCLE-A"]', stamp("01"), stamp("04"));
       for (let index = 0; index < 22; index += 1) {
         const id = `D${String(index).padStart(2, "0")}`;
         const dependencies = index === 0 ? [] : [`D${String(index - 1).padStart(2, "0")}`];

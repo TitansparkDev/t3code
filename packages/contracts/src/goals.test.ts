@@ -96,7 +96,7 @@ describe("queue worker prompt", () => {
   it("explains finalize exit code 3 and passes scope requests to finalize", () => {
     const prompt = queueWorkerPrompt(goal, task);
     expect(prompt).toContain("Exit code 3 means not finished");
-    expect(prompt).toContain('--request "SCOPE-REQUEST: <path>: <why>"');
+    expect(prompt).toContain('--request "SCOPE-REQUEST: <path> -- <why>"');
   });
 
   it("forbids the other claim systems and names agentq run as the only shared-tool path", () => {
