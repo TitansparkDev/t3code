@@ -82,12 +82,24 @@ describe("memory kills", () => {
       argv: ["true"],
       cwd: home,
       stdio: "pipe",
+      ownerRef: "TASK-1",
+      repo: "/repo/one/.git",
+      checkId: "memory-test",
       probes,
       onMemoryRetry: (attempt) => retries.push(attempt),
     });
     expect(retries).toEqual([1, 2]);
     expect(ran.kind).toBe("ran");
     if (ran.kind === "ran") expect(ran.result.oomKilled).toBe(true);
+    const attempts = broker.forOwner("TASK-1", "/repo/one/.git");
+    expect(attempts).toHaveLength(3);
+    expect(attempts.map((ticket) => ticket.checkId)).toEqual([
+      "memory-test",
+      "memory-test",
+      "memory-test",
+    ]);
+    expect(attempts.map((ticket) => ticket.reportedAt !== null)).toEqual([false, false, true]);
+    expect(new Set(attempts.map((ticket) => ticket.id)).size).toBe(3);
     broker.close();
   });
 });

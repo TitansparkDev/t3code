@@ -254,6 +254,8 @@ export interface ResourceRequest {
   readonly label?: string;
   /** The task or thread this work belongs to, so its owner can be told the result. */
   readonly ownerRef?: string;
+  /** Bounded opaque id of the check this ticket attempts. */
+  readonly checkId?: string;
   /** The repository (git common dir) the work belongs to; a runner only runs its own repository's jobs. */
   readonly repo?: string;
   /** Hints for resources the machine does not configure (a repository's own exclusive resource). */
@@ -285,11 +287,13 @@ export interface Ticket {
   readonly slots: Readonly<Record<string, ReadonlyArray<number>>>;
   readonly label: string;
   readonly ownerRef: string | null;
+  readonly checkId: string | null;
   readonly repo: string | null;
   readonly pid: number | null;
   readonly pgid: number | null;
   readonly enqueuedAt: number;
   readonly grantedAt: number | null;
+  readonly startedAt: number | null;
   readonly heartbeatAt: number | null;
   readonly finishedAt: number | null;
   readonly waitDeadline: number | null;
@@ -305,8 +309,50 @@ export interface Ticket {
   } | null;
   readonly logPath: string | null;
   readonly tail: string | null;
-  /** Set once the job's owner was told about the result. */
+  /** Set once the ticket's result was returned or delivered to its owner. */
   readonly reportedAt: number | null;
+}
+
+export interface TicketAccounting {
+  readonly taskId: string | null;
+  readonly checkId: string | null;
+  /** The ticket id correlates this retained record; `retryCount` counts runner recoveries. */
+  readonly attemptId: string;
+  readonly retryCount: number;
+  readonly repo: string | null;
+  readonly outcome: TicketOutcome | null;
+  readonly enqueuedAt: number;
+  readonly resourceWaitMs: number | null;
+  /** Null when a retry replaced boundaries that this retained ticket cannot preserve. */
+  readonly executionMs: number | null;
+  readonly resultDeliveryMs: number | null;
+  readonly grantedAt: number | null;
+  readonly startedAt: number | null;
+  readonly finishedAt: number | null;
+  readonly reportedAt: number | null;
+}
+
+export interface ResourcePhaseSummary {
+  readonly started: number;
+  readonly completed: number;
+  readonly pending: number;
+  /** Ended or completed phases missing a boundary, including legacy and retried tickets. */
+  readonly unknown: number;
+  /** Null means no persisted phase has both boundaries. */
+  readonly durationMs: number | null;
+}
+
+export interface ResourceAccounting {
+  readonly repo: string;
+  readonly taskId: string;
+  /** Number of matching ticket rows still retained by the broker. */
+  readonly ticketCount: number;
+  readonly truncated: boolean;
+  readonly resourceWait: ResourcePhaseSummary;
+  readonly execution: ResourcePhaseSummary;
+  readonly resultDelivery: ResourcePhaseSummary;
+  readonly outcomes: Partial<Record<TicketOutcome, number>>;
+  readonly attempts: ReadonlyArray<TicketAccounting>;
 }
 
 interface TicketRow {
@@ -318,12 +364,14 @@ interface TicketRow {
   slots_json: string;
   label: string;
   owner_ref: string | null;
+  check_id: string | null;
   repo: string | null;
   pid: number | null;
   pid_start: number | null;
   pgid: number | null;
   enqueued_at: number;
   granted_at: number | null;
+  started_at: number | null;
   heartbeat_at: number | null;
   finished_at: number | null;
   wait_deadline: number | null;
@@ -355,11 +403,13 @@ const toTicket = (row: TicketRow): Ticket => ({
   slots: parse(row.slots_json, {}),
   label: row.label,
   ownerRef: row.owner_ref,
+  checkId: row.check_id,
   repo: row.repo,
   pid: row.pid,
   pgid: row.pgid,
   enqueuedAt: row.enqueued_at,
   grantedAt: row.granted_at,
+  startedAt: row.started_at,
   heartbeatAt: row.heartbeat_at,
   finishedAt: row.finished_at,
   waitDeadline: row.wait_deadline,
@@ -372,6 +422,32 @@ const toTicket = (row: TicketRow): Ticket => ({
   logPath: row.log_path,
   tail: row.tail,
   reportedAt: row.reported_at,
+});
+
+const duration = (start: number | null, end: number | null): number | null =>
+  start !== null && end !== null && end >= start ? end - start : null;
+
+const ticketAccounting = (ticket: Ticket): TicketAccounting => ({
+  taskId: ticket.ownerRef,
+  checkId: ticket.checkId,
+  attemptId: ticket.id,
+  retryCount: ticket.attempts,
+  repo: ticket.repo,
+  outcome: ticket.outcome,
+  enqueuedAt: ticket.enqueuedAt,
+  resourceWaitMs:
+    ticket.attempts === 0
+      ? duration(ticket.enqueuedAt, ticket.grantedAt ?? ticket.finishedAt)
+      : null,
+  executionMs:
+    ticket.attempts === 0 && ticket.outcome !== "interrupted"
+      ? duration(ticket.startedAt, ticket.finishedAt)
+      : null,
+  resultDeliveryMs: duration(ticket.finishedAt, ticket.reportedAt),
+  grantedAt: ticket.grantedAt,
+  startedAt: ticket.startedAt,
+  finishedAt: ticket.finishedAt,
+  reportedAt: ticket.reportedAt,
 });
 
 export function processStartTicks(pid: number): number | null {
@@ -414,12 +490,14 @@ CREATE TABLE IF NOT EXISTS tickets (
   slots_json TEXT NOT NULL DEFAULT '{}',
   label TEXT NOT NULL DEFAULT '',
   owner_ref TEXT,
+  check_id TEXT,
   repo TEXT,
   pid INTEGER,
   pid_start INTEGER,
   pgid INTEGER,
   enqueued_at INTEGER NOT NULL,
   granted_at INTEGER,
+  started_at INTEGER,
   heartbeat_at INTEGER,
   finished_at INTEGER,
   wait_deadline INTEGER,
@@ -521,6 +599,22 @@ export class ResourceBroker {
         db.exec("PRAGMA journal_mode = WAL;");
         db.exec("PRAGMA synchronous = NORMAL;");
         db.exec(SCHEMA);
+        const ensureColumn = (name: string, type: "INTEGER" | "TEXT") => {
+          const columns = db!.prepare("PRAGMA table_info(tickets)").all() as Array<{
+            name: string;
+          }>;
+          if (columns.some((column) => column.name === name)) return;
+          try {
+            db!.exec(`ALTER TABLE tickets ADD COLUMN ${name} ${type}`);
+          } catch (error) {
+            const racedColumns = db!.prepare("PRAGMA table_info(tickets)").all() as Array<{
+              name: string;
+            }>;
+            if (!racedColumns.some((column) => column.name === name)) throw error;
+          }
+        };
+        ensureColumn("check_id", "TEXT");
+        ensureColumn("started_at", "INTEGER");
         break;
       } catch (error) {
         try {
@@ -584,6 +678,14 @@ export class ResourceBroker {
   }
 
   enqueue(request: ResourceRequest): Ticket {
+    if (
+      request.checkId !== undefined &&
+      (request.checkId.length > 128 ||
+        /[\r\n\u2028\u2029]/.test(request.checkId) ||
+        !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(request.checkId))
+    ) {
+      throw new TypeError("checkId must be a bounded opaque identifier.");
+    }
     const needs = new Map<string, { units: number; memoryMb: number }>();
     for (const item of request.resources) {
       const name = normalizeResource(item.name);
@@ -620,9 +722,9 @@ export class ResourceBroker {
       );
       this.db
         .prepare(
-          `INSERT INTO tickets (id, kind, state, resources_json, label, owner_ref, repo, pid, pid_start,
+          `INSERT INTO tickets (id, kind, state, resources_json, label, owner_ref, check_id, repo, pid, pid_start,
              enqueued_at, wait_deadline, run_ms, job_json, outcome, note, finished_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           id,
@@ -631,6 +733,7 @@ export class ResourceBroker {
           JSON.stringify(resources),
           request.label ?? "",
           request.ownerRef ?? null,
+          request.checkId ?? null,
           request.repo ?? null,
           pid,
           pid ? processStartTicks(pid) : null,
@@ -658,10 +761,72 @@ export class ResourceBroker {
     return (
       this.db
         .prepare(
-          `SELECT * FROM tickets WHERE owner_ref = ? ${repo ? "AND repo = ?" : ""} ORDER BY seq`,
+          `SELECT * FROM tickets WHERE owner_ref = ? ${repo === undefined ? "" : "AND repo IS ?"} ORDER BY seq`,
         )
-        .all(...(repo ? [ownerRef, repo] : [ownerRef])) as unknown as TicketRow[]
+        .all(...(repo === undefined ? [ownerRef] : [ownerRef, repo])) as unknown as TicketRow[]
     ).map(toTicket);
+  }
+
+  /** Summarize persisted phases for one exact repository/task identity. */
+  accountingFor(repo: string, ownerRef: string): ResourceAccounting {
+    const tickets = (
+      this.db
+        .prepare("SELECT * FROM tickets WHERE repo = ? AND owner_ref = ? ORDER BY seq")
+        .all(repo, ownerRef) as unknown as TicketRow[]
+    ).map(toTicket);
+    const traces = tickets.map(ticketAccounting);
+    const attempts = traces.slice(-100);
+    const totalMs = (values: ReadonlyArray<number | null>) => {
+      const known = values.filter((value): value is number => value !== null);
+      return known.length === 0 ? null : known.reduce((total, value) => total + value, 0);
+    };
+    const phase = (
+      durationOf: (trace: TicketAccounting) => number | null,
+      started: (trace: TicketAccounting) => boolean,
+      ended: (trace: TicketAccounting) => boolean,
+    ): ResourcePhaseSummary => {
+      const durations = traces.map(durationOf);
+      const startedCount = traces.filter(started).length;
+      const completed = durations.filter((durationMs) => durationMs !== null).length;
+      const unknown = traces.filter(
+        (trace, index) => ended(trace) && started(trace) && durations[index] === null,
+      ).length;
+      return {
+        started: startedCount,
+        completed,
+        pending: startedCount - completed - unknown,
+        unknown,
+        durationMs: totalMs(durations),
+      };
+    };
+    const outcomes: Partial<Record<TicketOutcome, number>> = {};
+    for (const ticket of tickets) {
+      if (ticket.outcome) outcomes[ticket.outcome] = (outcomes[ticket.outcome] ?? 0) + 1;
+    }
+    return {
+      repo,
+      taskId: ownerRef,
+      ticketCount: tickets.length,
+      truncated: attempts.length < traces.length,
+      resourceWait: phase(
+        (trace) => trace.resourceWaitMs,
+        () => true,
+        (trace) => trace.grantedAt !== null || trace.finishedAt !== null,
+      ),
+      execution: phase(
+        (trace) => trace.executionMs,
+        (trace) =>
+          trace.startedAt !== null || (trace.grantedAt !== null && trace.finishedAt !== null),
+        (trace) => trace.finishedAt !== null,
+      ),
+      resultDelivery: phase(
+        (trace) => trace.resultDeliveryMs,
+        (trace) => trace.finishedAt !== null,
+        (trace) => trace.reportedAt !== null,
+      ),
+      outcomes,
+      attempts,
+    };
   }
 
   /** Stored jobs that finished and whose owner has not been told yet. */
@@ -670,14 +835,19 @@ export class ResourceBroker {
       this.db
         .prepare(
           `SELECT * FROM tickets WHERE kind = 'job' AND state IN ('done','cancelled','expired')
-             AND reported_at IS NULL ${repo ? "AND repo = ?" : ""} ORDER BY seq`,
+             AND reported_at IS NULL ${repo === undefined ? "" : "AND repo IS ?"} ORDER BY seq`,
         )
-        .all(...(repo ? [repo] : [])) as unknown as TicketRow[]
+        .all(...(repo === undefined ? [] : [repo])) as unknown as TicketRow[]
     ).map(toTicket);
   }
 
-  markReported(id: string): void {
-    this.db.prepare("UPDATE tickets SET reported_at = ? WHERE id = ?").run(this.now(), id);
+  markReported(id: string, repo?: string | null): void {
+    this.db
+      .prepare(
+        `UPDATE tickets SET reported_at = COALESCE(reported_at, ?)
+         WHERE id = ? AND state IN ('done','cancelled','expired') ${repo === undefined ? "" : "AND repo IS ?"}`,
+      )
+      .run(this.now(), id, ...(repo === undefined ? [] : [repo]));
   }
 
   /** Waiting-or-running stored jobs of an owner, i.e. work the owner is still waiting for. */
@@ -718,11 +888,13 @@ export class ResourceBroker {
 
   /** The holder is running its command now (records the process group to tear down if it hangs). */
   markRunning(id: string, pgid: number | null): void {
+    const now = this.now();
     this.db
       .prepare(
-        "UPDATE tickets SET state = 'running', pgid = ?, heartbeat_at = ? WHERE id = ? AND state = 'granted'",
+        `UPDATE tickets SET state = 'running', pgid = ?, heartbeat_at = ?,
+           started_at = COALESCE(started_at, ?) WHERE id = ? AND state = 'granted'`,
       )
-      .run(pgid, this.now(), id);
+      .run(pgid, now, now, id);
   }
 
   finish(
@@ -832,7 +1004,7 @@ export class ResourceBroker {
           if (attempts >= MAX_JOB_ATTEMPTS) {
             this.db
               .prepare(
-                `UPDATE tickets SET state = 'done', outcome = 'interrupted', attempts = ?, note = ?, finished_at = ?, pid = NULL WHERE id = ?`,
+                `UPDATE tickets SET state = 'done', outcome = 'interrupted', attempts = ?, note = ?, finished_at = ?, started_at = NULL, pid = NULL WHERE id = ?`,
               )
               .run(
                 attempts,
@@ -844,7 +1016,7 @@ export class ResourceBroker {
             this.db
               .prepare(
                 `UPDATE tickets SET state = 'waiting', attempts = ?, pid = NULL, pid_start = NULL, pgid = NULL,
-                   slots_json = '{}', granted_at = NULL, heartbeat_at = NULL, note = ? WHERE id = ?`,
+                   slots_json = '{}', granted_at = NULL, started_at = NULL, heartbeat_at = NULL, note = ? WHERE id = ?`,
               )
               .run(attempts, "Its runner disappeared; waiting again.", row.id);
           }
@@ -853,7 +1025,7 @@ export class ResourceBroker {
           else if (!alive && row.pgid !== null) killList.push(row.pgid);
           this.db
             .prepare(
-              `UPDATE tickets SET state = 'expired', outcome = 'interrupted', note = ?, finished_at = ? WHERE id = ?`,
+              `UPDATE tickets SET state = 'expired', outcome = 'interrupted', note = ?, finished_at = ?, started_at = NULL WHERE id = ?`,
             )
             .run(
               alive
@@ -1069,7 +1241,7 @@ export class ResourceBroker {
     const result = this.db
       .prepare(
         `UPDATE tickets SET state = 'waiting', attempts = ?, pid = NULL, pid_start = NULL, pgid = NULL,
-           slots_json = '{}', granted_at = NULL, heartbeat_at = NULL, note = ?
+           slots_json = '{}', granted_at = NULL, started_at = NULL, heartbeat_at = NULL, note = ?
          WHERE id = ? AND state IN ('granted','running')`,
       )
       .run(row.attempts + 1, note, id);

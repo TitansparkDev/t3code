@@ -759,8 +759,20 @@ export async function runUnderBroker(
 ): Promise<RunUnderBrokerResult> {
   for (let attempt = 1; ; attempt++) {
     const outcome = await runUnderBrokerOnce(options);
-    if (outcome.kind !== "ran" || !outcome.result.oomKilled || attempt > MAX_MEMORY_RETRIES)
+    if (outcome.kind !== "ran" || !outcome.result.oomKilled || attempt > MAX_MEMORY_RETRIES) {
+      if (
+        outcome.kind !== "deferred" &&
+        outcome.ticket.id !== process.env.AGENTQUEUE_RESOURCE_TICKET
+      ) {
+        const broker = options.broker ?? openBroker(options.brokerOptions);
+        try {
+          broker.markReported(outcome.ticket.id, outcome.ticket.repo);
+        } finally {
+          if (options.broker === undefined) broker.close();
+        }
+      }
       return outcome;
+    }
     options.onMemoryRetry?.(attempt);
   }
 }
@@ -784,6 +796,7 @@ async function runUnderBrokerOnce(options: RunUnderBrokerOptions): Promise<RunUn
       pid: process.pid,
       ...(options.label ? { label: options.label } : {}),
       ...(options.ownerRef ? { ownerRef: options.ownerRef } : {}),
+      ...(options.checkId !== undefined ? { checkId: options.checkId } : {}),
       ...(options.repo ? { repo: options.repo } : {}),
       ...(options.hints ? { hints: options.hints } : {}),
       ...(options.waitMs !== undefined ? { waitMs: options.waitMs } : {}),
@@ -907,6 +920,7 @@ async function holdLocks(files: ReadonlyArray<string>, waitSeconds: number): Pro
 export interface WithBrokerOptions<A = unknown> {
   readonly label?: string;
   readonly ownerRef?: string;
+  readonly checkId?: string;
   readonly repo?: string;
   readonly hints?: ResourceRequest["hints"];
   readonly waitMs?: number;
@@ -943,6 +957,7 @@ export async function withBrokerResources<A>(
     pid: process.pid,
     label: options.label ?? "server check",
     ...(options.ownerRef ? { ownerRef: options.ownerRef } : {}),
+    ...(options.checkId !== undefined ? { checkId: options.checkId } : {}),
     ...(options.repo ? { repo: options.repo } : {}),
     ...(options.hints ? { hints: options.hints } : {}),
     ...(options.waitMs !== undefined ? { waitMs: options.waitMs } : {}),
@@ -986,6 +1001,8 @@ export async function withBrokerResources<A>(
       broker.finish(ticket.id, { outcome: "failed" });
     }
     broker.pump();
+    const completed = broker.get(ticket.id);
+    if (completed) broker.markReported(completed.id, completed.repo);
     if (owned) broker.close();
   }
 }

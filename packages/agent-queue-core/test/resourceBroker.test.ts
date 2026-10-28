@@ -117,6 +117,97 @@ describe("resource broker queue", () => {
     expect(ticket.note).toMatch(/no gpu/);
   });
 
+  it("accounts persisted phases by repository and task even when task ids match", () => {
+    const { broker, clock } = makeBroker();
+    const alpha = broker.enqueue({
+      resources: [{ name: "db" }],
+      ownerRef: "SAME-TASK",
+      checkId: "unit-tests",
+      repo: "/repo/alpha/.git",
+    });
+    const beta = broker.enqueue({
+      resources: [{ name: "db" }],
+      ownerRef: "SAME-TASK",
+      checkId: "unit-tests",
+      repo: "/repo/beta/.git",
+    });
+    broker.pump();
+    expect(broker.get(alpha.id)?.state).toBe("granted");
+    expect(broker.get(beta.id)?.state).toBe("waiting");
+
+    clock.now += 10;
+    broker.markRunning(alpha.id, null);
+    clock.now += 20;
+    broker.finish(alpha.id, { outcome: "ok" });
+    clock.now += 5;
+    broker.markReported(alpha.id, "/repo/wrong/.git");
+    expect(broker.get(alpha.id)?.reportedAt).toBeNull();
+    broker.markReported(alpha.id, "/repo/alpha/.git");
+    broker.pump();
+    expect(broker.get(beta.id)?.state).toBe("granted");
+    clock.now += 11;
+    broker.finish(beta.id, { outcome: "failed" });
+
+    expect(broker.accountingFor("/repo/alpha/.git", "SAME-TASK")).toMatchObject({
+      ticketCount: 1,
+      resourceWait: { started: 1, completed: 1, pending: 0, durationMs: 0 },
+      execution: { started: 1, completed: 1, pending: 0, durationMs: 20 },
+      resultDelivery: { started: 1, completed: 1, pending: 0, durationMs: 5 },
+      outcomes: { ok: 1 },
+      attempts: [{ taskId: "SAME-TASK", checkId: "unit-tests", attemptId: alpha.id }],
+    });
+    expect(broker.accountingFor("/repo/beta/.git", "SAME-TASK")).toMatchObject({
+      ticketCount: 1,
+      resourceWait: { started: 1, completed: 1, pending: 0, durationMs: 35 },
+      execution: { started: 1, completed: 1, pending: 0, durationMs: 11 },
+      resultDelivery: { started: 1, completed: 0, pending: 1, durationMs: null },
+      outcomes: { failed: 1 },
+      attempts: [{ taskId: "SAME-TASK", checkId: "unit-tests", attemptId: beta.id }],
+    });
+    expect(broker.accountingFor("/repo/other/.git", "SAME-TASK").ticketCount).toBe(0);
+    broker.close();
+  });
+
+  it("adds optional check correlation to an existing broker without losing tickets", () => {
+    const { broker, home } = makeBroker();
+    const ticket = broker.enqueue({
+      resources: [{ name: "db" }],
+      ownerRef: "TASK-1",
+      repo: "/repo/one/.git",
+    });
+    broker.pump();
+    broker.markRunning(ticket.id, null);
+    broker.finish(ticket.id, { outcome: "ok" });
+    broker.markReported(ticket.id, "/repo/one/.git");
+    broker.db.exec("ALTER TABLE tickets DROP COLUMN check_id");
+    broker.db.exec("ALTER TABLE tickets DROP COLUMN started_at");
+    broker.close();
+
+    const reopened = makeBroker({ home }).broker;
+    expect(reopened.get(ticket.id)).toMatchObject({
+      id: ticket.id,
+      ownerRef: "TASK-1",
+      checkId: null,
+      repo: "/repo/one/.git",
+      startedAt: null,
+    });
+    expect(reopened.accountingFor("/repo/one/.git", "TASK-1")).toMatchObject({
+      resourceWait: { started: 1, completed: 1, pending: 0, durationMs: 0 },
+      execution: { started: 1, completed: 0, pending: 0, unknown: 1, durationMs: null },
+      resultDelivery: { started: 1, completed: 1, pending: 0, durationMs: 0 },
+      attempts: [{ checkId: null, attemptId: ticket.id }],
+    });
+    reopened.close();
+  });
+
+  it("rejects check identifiers that exceed the durable metadata bound", () => {
+    const { broker } = makeBroker();
+    expect(() => broker.enqueue({ resources: [], checkId: "x".repeat(129) })).toThrow(
+      "bounded opaque identifier",
+    );
+    broker.close();
+  });
+
   it("holds a request back until the host has memory headroom, counting fresh grants that have not used theirs yet", () => {
     const { broker, clock, free } = makeBroker({ free: { mb: 8_000 } });
     const a = broker.enqueue({
@@ -573,6 +664,7 @@ describe("running under the broker", () => {
       ),
     ).rejects.toThrow("check failed");
     expect(broker.forOwner("throwing")[0]?.outcome).toBe("failed");
+    expect(broker.forOwner("throwing")[0]?.reportedAt).not.toBeNull();
     const result = await withBrokerResources(["db"], async () => ({ ok: false }), {
       broker,
       ownerRef: "returned",
@@ -580,6 +672,7 @@ describe("running under the broker", () => {
     });
     expect(result.ok).toBe(false);
     expect(broker.forOwner("returned")[0]?.outcome).toBe("failed");
+    expect(broker.forOwner("returned")[0]?.reportedAt).not.toBeNull();
     const next = await withBrokerResources(["db"], async () => "released", { broker });
     expect(next).toBe("released");
   });
