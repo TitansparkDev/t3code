@@ -1786,6 +1786,10 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       assert.lengthOf(activityPage.items, 100);
       assert.isTrue(activityPage.items.some((row) => row.item.type === "command_execution"));
       assert.isTrue(activityPage.hasMore);
+      yield* sql`
+        DELETE FROM orchestration_v2_projection_turn_items
+        WHERE thread_id = ${threadId} AND ordinal > 1000
+      `;
 
       const scopeId = CheckpointScopeId.make("scope:bounded-sql-history:root");
       const baselineId = CheckpointId.make("checkpoint:bounded-sql-history:baseline");
