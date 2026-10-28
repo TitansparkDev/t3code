@@ -658,12 +658,13 @@ describe("running under the broker", () => {
       withBrokerResources(
         ["db"],
         async () => {
-          throw new Error("check failed");
+          throw new Error("check failed: token=secret-value");
         },
         { broker, ownerRef: "throwing" },
       ),
     ).rejects.toThrow("check failed");
     expect(broker.forOwner("throwing")[0]?.outcome).toBe("failed");
+    expect(broker.forOwner("throwing")[0]?.note).not.toContain("secret-value");
     expect(broker.forOwner("throwing")[0]?.reportedAt).not.toBeNull();
     const result = await withBrokerResources(["db"], async () => ({ ok: false }), {
       broker,

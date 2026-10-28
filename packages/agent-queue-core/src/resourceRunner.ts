@@ -986,7 +986,10 @@ export async function withBrokerResources<A>(
     ) {
       broker.finish(ticket.id, {
         outcome: error instanceof ResourceWaitError ? error.outcome : "failed",
-        note: error instanceof Error ? error.message.slice(0, 500) : "Resource callback failed",
+        note:
+          error instanceof ResourceWaitError
+            ? `Resource wait ${error.outcome}`
+            : "Resource callback failed",
       });
     }
     throw error;
