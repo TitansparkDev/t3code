@@ -9,15 +9,29 @@ import { provisionWorktree, teardownWorktree } from "../src/worktreeManager.ts";
 import { runVerification } from "../src/verifier.ts";
 import { landCandidate } from "../src/landingQueue.ts";
 import { execCommand } from "./harness/gitHarness.ts";
-import { generateOverseerBriefing } from "../src/overseerRepairs.ts";
+import { addFollowUpTask, generateOverseerBriefing } from "../src/overseerRepairs.ts";
 import { validatePlanDag, getReadyTasks, type PlanTaskDefinition } from "../src/planGraph.ts";
 import { createTestGitRepo } from "./harness/gitHarness.ts";
 import { makeRepo, plan, tmpDir } from "./harness/contractHarness.ts";
 import type { VerificationSpec } from "../src/verificationSpec.ts";
 
-type ReplayPolicy = "sequential" | "unqueued" | "queued" | "coordinated";
+type ReplayPolicy = "sequential" | "unqueued" | "queued" | "wellManagedParallel";
 
-interface ReplayMetrics {
+interface RecoveryTrace {
+  readonly recoveryChecks: number;
+  readonly recoveryLandings: number;
+  readonly failedChecks: number;
+  readonly blockedConsumers: number;
+  readonly sharedRepairs: number;
+  readonly routineDeliveries: number;
+  readonly reasoningEscalations: number;
+  readonly providerLosses: number;
+  readonly restarts: number;
+  readonly falseAccepts: number;
+  readonly recoveryCost: number;
+}
+
+interface ReplayMetrics extends Omit<RecoveryTrace, "recoveryCost"> {
   readonly executedChecks: number;
   readonly modelDecisionTurns: number;
   readonly waits: number;
@@ -25,14 +39,14 @@ interface ReplayMetrics {
   readonly criticalPath: number;
 }
 
-/** A tiny virtual-cost replay; the lifecycle below supplies the real check counts. */
-function replayPolicy(policy: ReplayPolicy): ReplayMetrics {
+/** Schedules A/B/C and appends the observed recovery trace at its shared virtual cost. */
+function replayPolicy(policy: ReplayPolicy, recovery: RecoveryTrace): ReplayMetrics {
   const tasks = [
     { id: "A", dependencies: [] as string[], checkKey: "shared-input" },
     { id: "B", dependencies: [] as string[], checkKey: "shared-input" },
     { id: "C", dependencies: ["A", "B"], checkKey: "changed-input" },
   ];
-  const deduplicates = policy === "queued" || policy === "coordinated";
+  const deduplicates = policy === "queued" || policy === "wellManagedParallel";
   const workerLimit = policy === "sequential" ? 1 : 2;
   const resourceLimit = 1;
   const landingLimit = 1;
@@ -163,7 +177,15 @@ function replayPolicy(policy: ReplayPolicy): ReplayMetrics {
       } else state.stage = "done";
     }
   }
-  return { executedChecks, modelDecisionTurns, waits, serializedLandings, criticalPath: now };
+  const { recoveryCost, ...recoveryMetrics } = recovery;
+  return {
+    executedChecks: executedChecks + recovery.recoveryChecks,
+    modelDecisionTurns: modelDecisionTurns + recovery.reasoningEscalations,
+    waits: waits + recovery.providerLosses,
+    serializedLandings,
+    ...recoveryMetrics,
+    criticalPath: now + recoveryCost,
+  };
 }
 
 async function withReplayResourceHome<A>(run: () => Promise<A>): Promise<A> {
@@ -206,13 +228,15 @@ function checkedReceipt(
 }
 
 describe("Phase 8: Full System Stress & Chaos Harness (AQ-058, Gate G8)", () => {
-  it("replays duplicate checks through submit and integration, then invalidates after a source edit", async () => {
+  it("compares matched check and landing costs against sequential and coordinated baselines", async () => {
     await withReplayResourceHome(async () => {
       const r = await makeRepo({
         plan: plan([
           { id: "A", scope: "docs/evidence/A/" },
           { id: "B", scope: "docs/evidence/B/" },
           { id: "C", deps: ["A", "B"], scope: "src/" },
+          { id: "D", scope: "src/" },
+          { id: "E", deps: ["D"], scope: "src/" },
         ]),
         contract: {
           branchPrefixes: ["agent/"],
@@ -247,6 +271,67 @@ describe("Phase 8: Full System Stress & Chaos Harness (AQ-058, Gate G8)", () => 
             )
             .run(JSON.stringify(spec), taskId);
         }
+        const producer = {
+          id: "producer",
+          run: `node -e 'const fs=require("node:fs");if(!fs.existsSync("src/disable-build"))fs.writeFileSync("src/app.apk","built")'`,
+          cwd: ".",
+          timeoutSeconds: 30,
+          requires: [],
+          expectExitCode: 0,
+          produces: ["src/app.apk"],
+          reuseInputs: ["src/disable-build"],
+        };
+        const instrumentation = {
+          id: "instrumentation",
+          dependsOn: ["producer"],
+          run: "true",
+          cwd: ".",
+          timeoutSeconds: 30,
+          requires: [],
+          expectExitCode: 0,
+          consumes: ["src/app.apk"],
+        };
+        const junit = {
+          id: "junit",
+          run: `node -e 'const fs=require("node:fs");fs.mkdirSync("src/reports",{recursive:true});const xml=fs.existsSync("src/disable-tests")?"<testsuite tests=\\"0\\"></testsuite>":"<testsuite><testcase name=\\"instrumented\\" /></testsuite>";fs.writeFileSync("src/reports/run.xml",xml)'`,
+          cwd: ".",
+          timeoutSeconds: 30,
+          requires: [],
+          expectExitCode: 0,
+          junit: { reports: ["src/reports/run.xml"], minTests: 1, maxSkipped: 0 },
+        };
+        const failureSpec: VerificationSpec = {
+          source: "declared",
+          checks: [producer, instrumentation, junit],
+          exemptReason: null,
+          rejected: [],
+        };
+        const consumerSpec: VerificationSpec = {
+          source: "declared",
+          checks: [
+            {
+              id: "consumer",
+              run: "test -f src/app.apk",
+              cwd: ".",
+              timeoutSeconds: 30,
+              requires: [],
+              expectExitCode: 0,
+              consumes: ["src/app.apk"],
+            },
+          ],
+          exemptReason: null,
+          rejected: [],
+        };
+        r.db
+          .prepare(
+            "UPDATE tasks SET verification_spec = ?, verification_command = NULL WHERE id = 'D'",
+          )
+          .run(JSON.stringify(failureSpec));
+        r.db
+          .prepare(
+            "UPDATE tasks SET verification_spec = ?, verification_command = NULL WHERE id = 'E'",
+          )
+          .run(JSON.stringify(consumerSpec));
 
         const reservedA = await r.reserve("replay-A");
         const reservedB = await r.reserve("replay-B");
@@ -277,49 +362,219 @@ describe("Phase 8: Full System Stress & Chaos Harness (AQ-058, Gate G8)", () => 
         expect(cCheck.reused).not.toBe(true);
         expect((await r.integrate("C")).kind).toBe("landed");
 
+        const baseExecutedChecks = [aCheck, bCheck, cCheck].filter(
+          (check) => check.reused !== true,
+        ).length;
+        expect(baseExecutedChecks).toBe(2);
+
+        const reservedD = await r.reserve("replay-D");
+        expect(reservedD.kind).toBe("reserved");
+        if (reservedD.kind !== "reserved") return;
+        await r.commitFile(reservedD.task.worktreePath, "src/disable-build", "no artifact\n");
+        await r.commitFile(reservedD.task.worktreePath, "src/disable-tests", "empty report\n");
+        const failed = await r.submit(reservedD.task);
+        expect(failed.kind).toBe("verification-failed");
+        if (failed.kind !== "verification-failed" || !failed.receipt) return;
+        const failedChecks = failed.receipt.checks.filter((check) => !check.passed);
+        expect(failedChecks.map((check) => check.failureKind)).toEqual([
+          "missing-output",
+          "blocked",
+          "junit-failed",
+        ]);
+        expect(failed.receipt.checks[1]?.failureReason).toContain("producer");
+        expect(failed.receipt.checks[2]?.exitCode).toBe(0);
+        expect(failed.receipt.checks[2]?.failureReason).toContain("0 executed");
+        expect((await r.reserve("consumer-before-producer-repair")).kind).toBe("none");
+
+        const producerResult = failed.receipt.checks.find((check) => check.checkId === "producer");
+        expect(producerResult?.failureKind).toBe("missing-output");
+        NodeFS.rmSync(NodePath.join(reservedD.task.worktreePath, "src/reports/run.xml"), {
+          force: true,
+        });
+        await execCommand(
+          "git",
+          ["rm", "-q", "src/disable-build", "src/disable-tests"],
+          reservedD.task.worktreePath,
+        );
+        NodeFS.writeFileSync(NodePath.join(reservedD.task.worktreePath, "src/app.apk"), "built\n");
+        await execCommand("git", ["add", "src/app.apk"], reservedD.task.worktreePath);
+        await execCommand(
+          "git",
+          ["commit", "-qm", "repair producer and test report"],
+          reservedD.task.worktreePath,
+        );
+        const repaired = await r.submit(reservedD.task);
+        expect(repaired.kind).toBe("submitted");
+        if (repaired.kind !== "submitted") return;
+        expect(repaired.receipt.checks.every((check) => check.passed)).toBe(true);
+        expect((await r.integrate("D")).kind).toBe("landed");
+        expect(r.task("D")).toMatchObject({ status: "completed" });
+        expect(r.task("E")).toMatchObject({ status: "pending", dependencies: '["D"]' });
+
+        const reservedE = await r.reserve("replay-E");
+        if (reservedE.kind !== "reserved") throw new Error(JSON.stringify(reservedE));
+        expect(reservedE.kind).toBe("reserved");
+        if (reservedE.kind !== "reserved") return;
+        expect(reservedE.task.taskId).toBe("E");
+        await r.commitFile(reservedE.task.worktreePath, "src/consumer.txt", "consumed app\n");
+        const consumerPassed = await r.submit(reservedE.task);
+        expect(consumerPassed.kind).toBe("submitted");
+        if (consumerPassed.kind !== "submitted") return;
+        expect(consumerPassed.receipt.checks[0]).toMatchObject({
+          passed: true,
+          checkId: "consumer",
+        });
+        expect((await r.integrate("E")).kind).toBe("landed");
+
+        const repairInput = {
+          planId: r.planId,
+          kind: "repair" as const,
+          blocking: false,
+          title: "Repair the shared producer failure",
+          note: "The producer failure is shared by both parents.",
+          checks: [producer],
+          repairEvidence: {
+            failedCheckId: "producer",
+            diagnostics: {
+              failureKind: producerResult?.failureKind,
+              failureReason: producerResult?.failureReason,
+            },
+          },
+          dedupeKey: `baseline-check:${producerResult?.checkId}:${producerResult?.run}:${producerResult?.cwd}`,
+        };
+        const firstRepair = addFollowUpTask(r.db, { ...repairInput, parentTaskId: "A" });
+        const sharedRepair = addFollowUpTask(r.db, { ...repairInput, parentTaskId: "B" });
+        expect(firstRepair.created).toBe(true);
+        expect(sharedRepair).toEqual({ taskId: firstRepair.taskId, created: false });
+
+        // The queue receipts above provide failure, dependency-block, no-false-pass and repair
+        // observations. Remaining tail facts come from the named server lifecycle fixtures, which
+        // exercise delivery/restart, reasoning recovery, and provider restoration without replaying
+        // those product flows here; their virtual cost is common to all comparison policies.
+        const recovery: RecoveryTrace = {
+          recoveryChecks:
+            failed.receipt.checks.length +
+            repaired.receipt.checks.length +
+            consumerPassed.receipt.checks.length,
+          recoveryLandings: 2,
+          failedChecks: failedChecks.length,
+          blockedConsumers: failedChecks.filter((check) => check.failureKind === "blocked").length,
+          sharedRepairs: firstRepair.created && !sharedRepair.created ? 1 : 0,
+          routineDeliveries: 20,
+          reasoningEscalations: 1,
+          providerLosses: 1,
+          restarts: 1,
+          falseAccepts: failed.receipt.checks.filter((check) => check.passed).length,
+          recoveryCost:
+            (failed.receipt.checks.length +
+              repaired.receipt.checks.length +
+              consumerPassed.receipt.checks.length) *
+              5 +
+            2 +
+            20 +
+            4 +
+            3,
+        };
+        expect(recovery).toMatchObject({
+          recoveryChecks: 7,
+          recoveryLandings: 2,
+          failedChecks: 3,
+          blockedConsumers: 1,
+          sharedRepairs: 1,
+          routineDeliveries: 20,
+          reasoningEscalations: 1,
+          providerLosses: 1,
+          restarts: 1,
+          falseAccepts: 0,
+        });
+        const executedChecks = baseExecutedChecks + recovery.recoveryChecks;
+        expect(executedChecks).toBe(9);
+
         const comparisons = {
-          sequential: replayPolicy("sequential"),
-          unqueuedParallel: replayPolicy("unqueued"),
-          queued: replayPolicy("queued"),
-          coordinatedUnqueued: replayPolicy("coordinated"),
+          sequential: replayPolicy("sequential", recovery),
+          unqueuedParallel: replayPolicy("unqueued", recovery),
+          queued: replayPolicy("queued", recovery),
+          wellManagedParallel: replayPolicy("wellManagedParallel", recovery),
         };
         expect(comparisons).toEqual({
           sequential: {
-            executedChecks: 3,
-            modelDecisionTurns: 3,
-            waits: 0,
-            serializedLandings: 0,
-            criticalPath: 30,
-          },
-          unqueuedParallel: {
-            executedChecks: 3,
-            modelDecisionTurns: 3,
+            executedChecks: 10,
+            modelDecisionTurns: 4,
             waits: 1,
             serializedLandings: 0,
-            criticalPath: 25,
+            recoveryChecks: 7,
+            recoveryLandings: 2,
+            failedChecks: 3,
+            blockedConsumers: 1,
+            sharedRepairs: 1,
+            routineDeliveries: 20,
+            reasoningEscalations: 1,
+            providerLosses: 1,
+            restarts: 1,
+            falseAccepts: 0,
+            criticalPath: 94,
+          },
+          unqueuedParallel: {
+            executedChecks: 10,
+            modelDecisionTurns: 4,
+            waits: 2,
+            serializedLandings: 0,
+            recoveryChecks: 7,
+            recoveryLandings: 2,
+            failedChecks: 3,
+            blockedConsumers: 1,
+            sharedRepairs: 1,
+            routineDeliveries: 20,
+            reasoningEscalations: 1,
+            providerLosses: 1,
+            restarts: 1,
+            falseAccepts: 0,
+            criticalPath: 89,
           },
           queued: {
-            executedChecks: 2,
-            modelDecisionTurns: 3,
-            waits: 2,
+            executedChecks: 9,
+            modelDecisionTurns: 4,
+            waits: 3,
             serializedLandings: 1,
-            criticalPath: 21,
+            recoveryChecks: 7,
+            recoveryLandings: 2,
+            failedChecks: 3,
+            blockedConsumers: 1,
+            sharedRepairs: 1,
+            routineDeliveries: 20,
+            reasoningEscalations: 1,
+            providerLosses: 1,
+            restarts: 1,
+            falseAccepts: 0,
+            criticalPath: 85,
           },
-          coordinatedUnqueued: {
-            executedChecks: 2,
-            modelDecisionTurns: 3,
-            waits: 2,
+          wellManagedParallel: {
+            executedChecks: 9,
+            modelDecisionTurns: 4,
+            waits: 3,
             serializedLandings: 1,
-            criticalPath: 21,
+            recoveryChecks: 7,
+            recoveryLandings: 2,
+            failedChecks: 3,
+            blockedConsumers: 1,
+            sharedRepairs: 1,
+            routineDeliveries: 20,
+            reasoningEscalations: 1,
+            providerLosses: 1,
+            restarts: 1,
+            falseAccepts: 0,
+            criticalPath: 85,
           },
         });
-        expect([aCheck, bCheck, cCheck].filter((check) => check.reused !== true)).toHaveLength(
-          comparisons.queued.executedChecks,
-        );
+        expect(executedChecks).toBe(comparisons.queued.executedChecks);
         expect(comparisons.queued.criticalPath).toBeLessThan(
           comparisons.unqueuedParallel.criticalPath,
         );
-        expect(comparisons.queued).toEqual(comparisons.coordinatedUnqueued);
+        // The A/B/C schedule is cost-only. The recovery tail combines real receipt facts above
+        // with existing GoalAgentQueueFlow/GoalService assertions for routine deliveries, repair
+        // escalation, provider recovery and restart; those product transitions are not re-run here.
+        // A coordinator with the same policies matches the queue; no queue-only speedup is claimed.
+        expect(comparisons.queued).toEqual(comparisons.wellManagedParallel);
       } finally {
         await r.repo.cleanup();
       }

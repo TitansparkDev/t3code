@@ -69,14 +69,6 @@ const TARGET = new PrimaryConnectionTarget({
 });
 const THREAD_ID = v2ThreadId;
 const CACHED_SNAPSHOT_SEQUENCE = 7;
-const PREPARED: PreparedConnection = {
-  environmentId: TARGET.environmentId,
-  label: TARGET.label,
-  httpBaseUrl: TARGET.httpBaseUrl,
-  socketUrl: TARGET.wsBaseUrl,
-  httpAuthorization: null,
-  target: TARGET,
-};
 const BASE_PROJECTION: OrchestrationV2ThreadProjection = {
   ...v2Projection,
   thread: { ...v2Projection.thread, title: "Cached thread" },
@@ -118,6 +110,8 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
   };
   readonly httpSnapshot?: ThreadSnapshotLoadResult;
   /** The test sends the completion marker itself instead of the fake server sending it first. */
+  readonly httpSnapshotLoad?: Effect.Effect<ThreadSnapshotLoadResult>;
+  readonly target?: PrimaryConnectionTarget;
   readonly completionMarker?: boolean;
   readonly resumeCache?: NonNullable<Parameters<typeof makeEnvironmentThreadState>[1]>;
   readonly loadCached?: ReturnType<Persistence.EnvironmentCacheStore["Service"]["loadThread"]>;
@@ -128,11 +122,21 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
     readonly itemId: TurnItemId;
   }) => Effect.Effect<{ readonly item: OrchestrationV2TurnItem | null }>;
 }) {
+  const target = options?.target ?? TARGET;
+  const preparedConnection: PreparedConnection = {
+    environmentId: target.environmentId,
+    label: target.label,
+    httpBaseUrl: target.httpBaseUrl,
+    socketUrl: target.wsBaseUrl,
+    httpAuthorization: null,
+    target,
+  };
   const inputs = yield* Queue.unbounded<TestThreadInput>();
   const observed = yield* Queue.unbounded<EnvironmentThreadState>();
   const latest = yield* Ref.make<EnvironmentThreadState>(EMPTY_ENVIRONMENT_THREAD_STATE);
   const retryCount = yield* Ref.make(0);
   const subscriptionCount = yield* SubscriptionRef.make(0);
+  const outputSubscriptionCount = yield* Ref.make(0);
   const subscriptionEvents = yield* Queue.unbounded<number>();
   const loaderCalls = yield* Ref.make(0);
   const lastSubscribeAfterSequence = yield* Ref.make<number | undefined>(undefined);
@@ -143,6 +147,7 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
   const savedThreads = yield* Ref.make<ReadonlyArray<OrchestrationV2ThreadDetailSnapshot>>([]);
   const savedWrites = yield* Queue.unbounded<OrchestrationV2ThreadDetailSnapshot>();
   const removedThreads = yield* Ref.make<ReadonlyArray<ThreadId>>([]);
+  const loadedEnvironmentIds = yield* Ref.make<ReadonlyArray<EnvironmentId>>([]);
   const supervisorState = yield* SubscriptionRef.make<SupervisorConnectionState>(
     AVAILABLE_CONNECTION_STATE,
   );
@@ -175,6 +180,12 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
           ),
         ),
       ),
+    [ORCHESTRATION_V2_WS_METHODS.subscribeCommandOutput]: () =>
+      Stream.unwrap(
+        Ref.updateAndGet(outputSubscriptionCount, (count) => count + 1).pipe(
+          Effect.as(Stream.empty),
+        ),
+      ),
     [ORCHESTRATION_V2_WS_METHODS.getTurnItem]: (input: { readonly itemId: TurnItemId }) =>
       options?.getTurnItem?.(input) ?? Effect.die("Unexpected getTurnItem request"),
   } as unknown as WsRpcProtocolClient;
@@ -182,21 +193,22 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
     Option.some(testSession(client)),
   );
   const prepared = yield* SubscriptionRef.make<Option.Option<PreparedConnection>>(
-    Option.some(PREPARED),
+    Option.some(preparedConnection),
   );
+  const unavailableSnapshot = { _tag: "unavailable" } satisfies ThreadSnapshotLoadResult;
   const snapshotLoader = ThreadSnapshotLoader.ThreadSnapshotLoader.of({
     load: (_prepared, threadId) =>
       Ref.update(loaderCalls, (count) => count + 1).pipe(
-        Effect.as(
+        Effect.andThen(
           threadId === THREAD_ID
-            ? (options?.httpSnapshot ??
-                ({ _tag: "unavailable" } satisfies ThreadSnapshotLoadResult))
-            : ({ _tag: "unavailable" } satisfies ThreadSnapshotLoadResult),
+            ? (options?.httpSnapshotLoad ??
+                Effect.succeed(options?.httpSnapshot ?? unavailableSnapshot))
+            : Effect.succeed(unavailableSnapshot),
         ),
       ),
   });
   const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
-    target: TARGET,
+    target,
     state: supervisorState,
     session: supervisorSession,
     prepared,
@@ -207,28 +219,33 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
   const cache = Persistence.EnvironmentCacheStore.of({
     loadShell: () => Effect.succeedNone,
     saveShell: () => Effect.void,
-    loadThread: (_environmentId, threadId) =>
-      options?.loadCached ??
-      Effect.succeed(
-        threadId === THREAD_ID && options?.cachedSnapshot !== undefined
-          ? Option.some(options.cachedSnapshot)
-          : threadId === THREAD_ID && options?.cached !== undefined
-            ? Option.some({
-                snapshotSequence: CACHED_SNAPSHOT_SEQUENCE,
-                projection: options.cached,
-                ...(options.cachedHistory === undefined
-                  ? {}
-                  : {
-                      historyCursor: options.cachedHistory.historyCursor,
-                      hasMoreHistory: options.cachedHistory.hasMoreHistory,
-                      ...(options.cachedHistory.latestLocalTurnOrdinal === undefined
+    loadThread: (environmentId, threadId) =>
+      Ref.update(loadedEnvironmentIds, (current) => [...current, environmentId]).pipe(
+        Effect.andThen(
+          options?.loadCached ??
+            Effect.succeed(
+              threadId === THREAD_ID && options?.cachedSnapshot !== undefined
+                ? Option.some(options.cachedSnapshot)
+                : threadId === THREAD_ID && options?.cached !== undefined
+                  ? Option.some({
+                      snapshotSequence: CACHED_SNAPSHOT_SEQUENCE,
+                      projection: options.cached,
+                      ...(options.cachedHistory === undefined
                         ? {}
                         : {
-                            latestLocalTurnOrdinal: options.cachedHistory.latestLocalTurnOrdinal,
+                            historyCursor: options.cachedHistory.historyCursor,
+                            hasMoreHistory: options.cachedHistory.hasMoreHistory,
+                            ...(options.cachedHistory.latestLocalTurnOrdinal === undefined
+                              ? {}
+                              : {
+                                  latestLocalTurnOrdinal:
+                                    options.cachedHistory.latestLocalTurnOrdinal,
+                                }),
                           }),
-                    }),
-              })
-            : Option.none(),
+                    })
+                  : Option.none(),
+            ),
+        ),
       ),
     saveThread: (environmentId, thread) =>
       Ref.update(savedThreads, (current) => [...current, thread]).pipe(
@@ -288,13 +305,14 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
     loadWork: (anchorId: string) =>
       historyController.loadEarlier(TARGET.environmentId, THREAD_ID, undefined, anchorId),
     loadEarlier: (throughEntryId?: string) =>
-      historyController.loadEarlier(TARGET.environmentId, THREAD_ID, throughEntryId),
-    reconcilePendingWork: historyController.reconcilePendingWork(TARGET.environmentId, THREAD_ID),
+      historyController.loadEarlier(target.environmentId, THREAD_ID, throughEntryId),
+    reconcilePendingWork: historyController.reconcilePendingWork(target.environmentId, THREAD_ID),
     inputs,
     observed,
     latest,
     retryCount,
     subscriptionCount,
+    outputSubscriptionCount,
     subscriptionEvents,
     loaderCalls,
     lastSubscribeAfterSequence,
@@ -306,6 +324,7 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
     savedThreads,
     savedWrites,
     removedThreads,
+    loadedEnvironmentIds,
     wakeups,
     replaceSession: SubscriptionRef.set(supervisorSession, Option.some(testSession(client))),
   };
@@ -782,6 +801,97 @@ describe("EnvironmentThreads", () => {
 
       expect(yield* Ref.get(harness.lastSubscribeAfterSequence)).toBe(CACHED_SNAPSHOT_SEQUENCE);
       expect(yield* Ref.get(harness.loaderCalls)).toBe(0);
+    }),
+  );
+
+  it.effect(
+    "shows cached rows before a required snapshot network load is ready without output subscriptions",
+    () =>
+      Effect.gen(function* () {
+        const networkStarted = yield* Deferred.make<void>();
+        const networkReady = yield* Deferred.make<ThreadSnapshotLoadResult>();
+        const cachedProjection = {
+          ...BASE_PROJECTION,
+          thread: { ...BASE_PROJECTION.thread, title: "Cached before network" },
+        };
+        const harness = yield* makeHarness({
+          cachedSnapshot: {
+            snapshotSequence: CACHED_SNAPSHOT_SEQUENCE,
+            projection: cachedProjection,
+            requiresSnapshot: true,
+          },
+          httpSnapshotLoad: Deferred.succeed(networkStarted, undefined).pipe(
+            Effect.andThen(Deferred.await(networkReady)),
+          ),
+        });
+
+        yield* Deferred.await(networkStarted);
+        const beforeNetwork = yield* SubscriptionRef.get(harness.threadState);
+        expect(Option.getOrThrow(beforeNetwork.data).thread.title).toBe("Cached before network");
+        expect(Option.getOrThrow(beforeNetwork.data).visibleTurnItems).toEqual(
+          cachedProjection.visibleTurnItems,
+        );
+        expect(yield* Deferred.isDone(networkReady)).toBe(false);
+        expect(yield* Ref.get(harness.loaderCalls)).toBe(1);
+        expect(yield* Ref.get(harness.outputSubscriptionCount)).toBe(0);
+
+        yield* Deferred.succeed(networkReady, {
+          _tag: "present",
+          snapshot: {
+            snapshotSequence: CACHED_SNAPSHOT_SEQUENCE + 1,
+            projection: BASE_PROJECTION,
+          },
+        });
+        const live = yield* awaitThreadState(
+          harness.observed,
+          (state) => state.status === "live" && Option.isSome(state.data),
+        );
+        expect(Option.getOrThrow(live.data).thread.title).toBe(BASE_PROJECTION.thread.title);
+        expect(yield* Ref.get(harness.outputSubscriptionCount)).toBe(0);
+      }),
+  );
+
+  it.effect("keeps the same thread id isolated across two cached environment replay paths", () =>
+    Effect.gen(function* () {
+      const secondTarget = new PrimaryConnectionTarget({
+        environmentId: EnvironmentId.make("environment-2"),
+        label: "Second test environment",
+        httpBaseUrl: "https://environment-2.example.test",
+        wsBaseUrl: "wss://environment-2.example.test",
+      });
+      const first = yield* makeHarness({
+        cached: {
+          ...BASE_PROJECTION,
+          thread: { ...BASE_PROJECTION.thread, title: "Environment one cache" },
+        },
+      });
+      const second = yield* makeHarness({
+        target: secondTarget,
+        cached: {
+          ...BASE_PROJECTION,
+          thread: { ...BASE_PROJECTION.thread, title: "Environment two cache" },
+        },
+      });
+
+      yield* Queue.offer(first.inputs, titleUpdated("Environment one live", 8));
+      yield* Queue.offer(second.inputs, titleUpdated("Environment two live", 8));
+      const firstLive = yield* awaitThreadState(
+        first.observed,
+        (state) => Option.getOrNull(state.data)?.thread.title === "Environment one live",
+      );
+      const secondLive = yield* awaitThreadState(
+        second.observed,
+        (state) => Option.getOrNull(state.data)?.thread.title === "Environment two live",
+      );
+
+      expect(Option.getOrThrow(firstLive.data).thread.title).toBe("Environment one live");
+      expect(Option.getOrThrow(secondLive.data).thread.title).toBe("Environment two live");
+      expect(yield* Ref.get(first.loadedEnvironmentIds)).toEqual([TARGET.environmentId]);
+      expect(yield* Ref.get(second.loadedEnvironmentIds)).toEqual([secondTarget.environmentId]);
+      expect(yield* Ref.get(first.lastSubscribeAfterSequence)).toBe(CACHED_SNAPSHOT_SEQUENCE);
+      expect(yield* Ref.get(second.lastSubscribeAfterSequence)).toBe(CACHED_SNAPSHOT_SEQUENCE);
+      expect(yield* Ref.get(first.outputSubscriptionCount)).toBe(0);
+      expect(yield* Ref.get(second.outputSubscriptionCount)).toBe(0);
     }),
   );
 

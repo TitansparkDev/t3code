@@ -139,6 +139,7 @@ import { SettingsProjectOverviewRouteScreen } from "./features/settings/Settings
 import { UsageLimitAccountScreen } from "./features/usage/UsageLimitsPooled";
 import { UsageLimitBanner } from "./features/usage/UsageLimitBanner";
 import { UsageBannerSlotProvider } from "./features/usage/UsageBannerSlot";
+import { usageBannerMinuteClock } from "./features/usage/usage-banner-clock";
 import { usageBannerExpansionStore } from "./features/usage/usage-banner-expansion";
 import { shouldShowWorkspaceUsageBanner } from "./features/usage/usage-banner-routes";
 import { UsageRouteScreen } from "./features/usage/UsageRouteScreen";
@@ -536,14 +537,19 @@ function RootStackLayout(props: {
 }) {
   const pathname = rootPathnameFromState(props.state);
   const workspaceLocation = workspaceLocationFromState(props.state);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Navigation changes synchronize the external banner expansion session store.
   useEffect(() => {
     usageBannerExpansionStore.syncNavigation(props.state);
   }, [props.state]);
+  // oxlint-disable-next-line t3code/react-effect-budget -- One root native AppState subscription owns banner expansion and the shared foreground clock.
   useEffect(() => {
-    const subscription = AppState.addEventListener("change", (state) => {
-      usageBannerExpansionStore.setForeground(state === "active");
-    });
-    if (AppState.currentState !== "active") usageBannerExpansionStore.setForeground(false);
+    const syncForegroundState = (state: string | null | undefined) => {
+      const foreground = state === "active";
+      usageBannerExpansionStore.setForeground(foreground);
+      usageBannerMinuteClock.setForeground(foreground);
+    };
+    const subscription = AppState.addEventListener("change", syncForegroundState);
+    syncForegroundState(AppState.currentState);
     return () => subscription.remove();
   }, []);
   const settingsOpen = settingsOpenIn(
@@ -563,6 +569,26 @@ function RootStackLayout(props: {
   const routeDraftId = Array.isArray(draftParams?.draftId)
     ? draftParams.draftId[0]
     : draftParams?.draftId;
+  useAgentNotificationNavigation(workspaceLocation.pathname);
+  useConnectOnboardingNavigation();
+  useAppShortcuts(props.state);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Incoming native shares are external presentation state synchronized with navigation.
+  useEffect(() => {
+    const transition = transitionIncomingSharePresentation(sharePresentationRef.current, {
+      isShareSheetPresented: isDraftThreadRoute(props.state.routes[props.state.index]),
+      pendingShareId: pendingShare?.id ?? null,
+    });
+    sharePresentationRef.current = transition.state;
+    if (!transition.shareIdToPresent) {
+      return;
+    }
+    navigation.dispatch(
+      selectWorkspaceDetail({
+        name: "Thread",
+        params: { draft: { incomingShareId: transition.shareIdToPresent } },
+      }),
+    );
+  }, [navigation, pendingShare, props.state]);
 
   return (
     <NewTaskFlowProvider
