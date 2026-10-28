@@ -11,49 +11,7 @@ import {
   findUnmergedLegacyBranches,
   type ReservedTask,
 } from "../../../../packages/agent-queue-core/src/index.ts";
-/**
- * Runs goals: keeps up to `concurrency` chats working at once, starts the next
- * as each finishes, and stops when an agent says nothing is left.
- *
- * A goal is set up on the new-chat flow's goal page and created over RPC. Every
- * chat is a new ordinary thread in the goal's project: a `thread.create` plus
- * a `thread.turn.start`, the same commands a person's message produces, so
- * provider routing, history and approvals all behave normally.
- *
- * Rules that keep unattended work from running away:
- *  - A chat that fails, or says NEEDS ATTENTION, does not restart its lane, so a
- *    broken setup cannot loop through the chat budget (or forever, when there
- *    is no cap).
- *  - Chats are never archived: they keep a plain "Goal worker #N" title and stay in
- *    the thread list, and the Goals page records how each one ended.
- *  - When a goal gets stuck (agents keep failing, or every chunk is blocked) an
- *    overseer chat is asked once or twice what to do before the goal gives up. It
- *    reads a briefing and answers CONTINUE (with a note for the next workers and
- *    chunks to hand back to the queue) or STOP. It runs on Chat Agents when that
- *    provider is ready, otherwise on one of the goal's own providers.
- *  - A chat stopped by a provider usage limit is not a failure. With auto
- *    resume on, it is scheduled to continue when the limit resets and the goal
- *    waits for it.
- *  - A goal never starts more chats than its cap, per start.
- *  - Chats start at most one every START_SPACING, so providers get breathing room.
- *  - A goal stops starting chats once `stopAfterProblems` finished chats in a
- *    row failed, needed the person, or found only blocked work, so a plan that
- *    cannot be finished does not spend usage all night.
- *  - A provider that is out of usage (reported by the provider registry, or hit
- *    by one of the goal's own chats) gets no new chats until its limit resets, and
- *    a usage limit is never counted against the goal. When every provider the goal
- *    uses is out, the goal waits and carries on by itself.
- *  - A provider whose chats fail is backed off for a while, so a broken account is
- *    not retried every few seconds.
- *  - A chat the person stopped, or one that hit a usage limit before doing any work,
- *    is not a problem: its lane is freed and the goal goes on.
- *  - Stopping a goal never interrupts chats already working; they finish and
- *    are recorded like any other.
- *  - Standard goals: workers select chunks with plan-work. Queue goals: the server reserves each task first. If a worker finds no eligible chunk,
- *    the goal waits while other workers progress and asks the overseer when idle.
- *
- * @module goals/GoalService
- */
+/** @module goals/GoalService */
 import { OrchestrationDispatchCommandError, ThreadId } from "@t3tools/contracts";
 import type { ServerProvider } from "@t3tools/contracts";
 import {
@@ -133,6 +91,7 @@ const STALL_RECOVERY_MILLIS = 2 * 60_000;
 const STALL_RECOVERY_REPEAT_MILLIS = 60_000;
 /** How long a landed worker's worktree waits for its last checkpoint before it is removed anyway. */
 const CHECKPOINT_WAIT_MILLIS = 30_000;
+const QUEUE_PROGRESS_HEARTBEAT_MILLIS = 30_000;
 const RESOURCE_DELIVERY_BATCH_SIZE = 10;
 const RESOURCE_RESULT_MAX_CHARS = 3_000;
 
@@ -383,16 +342,15 @@ export const make = Effect.gen(function* () {
       thread.session.status === "running");
 
   /** Whether the worker may be treated as finished: no turn, no background command still running. */
-  const workerQuiet = (threadId: ThreadId) =>
-    Effect.gen(function* () {
-      const [thread, background] = [yield* readThread(threadId), yield* backgroundWorkOf(threadId)];
-      return (
-        thread !== undefined &&
-        !sessionBusy(thread) &&
-        (thread.latestTurn?.state !== "running" || thread.session?.status === "error") &&
-        background === null
-      );
-    });
+  const workerQuiet = Effect.fn("GoalService.workerQuiet")(function* (threadId: ThreadId) {
+    const [thread, background] = [yield* readThread(threadId), yield* backgroundWorkOf(threadId)];
+    return (
+      thread !== undefined &&
+      !sessionBusy(thread) &&
+      (thread.latestTurn?.state !== "running" || thread.session?.status === "error") &&
+      background === null
+    );
+  });
 
   const addChat = (goalId: GoalId, chat: GoalChat) =>
     store.update(goalId, (current) => ({
@@ -404,30 +362,34 @@ export const make = Effect.gen(function* () {
       detail: current.status === "running" ? undefined : current.detail,
     }));
 
-  const updateChat = (goalId: GoalId, threadId: ThreadId, change: Partial<GoalChat>) =>
-    Effect.gen(function* () {
-      const updatedAt = yield* nowIso;
-      return yield* store.update(goalId, (goal) => ({
-        ...goal,
-        updatedAt,
-        chats: goal.chats.map((chat) =>
-          chat.threadId === threadId ? { ...chat, ...change } : chat,
-        ),
-      }));
-    });
+  const updateChat = Effect.fn("GoalService.updateChat")(function* (
+    goalId: GoalId,
+    threadId: ThreadId,
+    change: Partial<GoalChat>,
+  ) {
+    const updatedAt = yield* nowIso;
+    return yield* store.update(goalId, (goal) => ({
+      ...goal,
+      updatedAt,
+      chats: goal.chats.map((chat) => (chat.threadId === threadId ? { ...chat, ...change } : chat)),
+    }));
+  });
 
-  const setStatus = (goalId: GoalId, status: Goal["status"], detail?: string) =>
-    Effect.gen(function* () {
-      const now = yield* nowIso;
-      return yield* store.update(goalId, (goal) => ({
-        ...goal,
-        status,
-        updatedAt: now,
-        ...(status === "running"
-          ? { restartedAt: now, completedAt: undefined, detail: undefined }
-          : { completedAt: now, detail: detail ?? undefined }),
-      }));
-    });
+  const setStatus = Effect.fn("GoalService.setStatus")(function* (
+    goalId: GoalId,
+    status: Goal["status"],
+    detail?: string,
+  ) {
+    const now = yield* nowIso;
+    return yield* store.update(goalId, (goal) => ({
+      ...goal,
+      status,
+      updatedAt: now,
+      ...(status === "running"
+        ? { restartedAt: now, completedAt: undefined, detail: undefined }
+        : { completedAt: now, detail: detail ?? undefined }),
+    }));
+  });
 
   const currentGoal = (goalId: GoalId) =>
     Effect.map(store.list, (goals) => goals.find((candidate) => candidate.id === goalId));
@@ -669,84 +631,85 @@ export const make = Effect.gen(function* () {
    * stopped only when the failures have lasted: three in a row AND for a few minutes. A queue that
    * comes back after a blip loses nothing and needs nobody.
    */
-  const queueFailed = (goalId: GoalId, operation: string, error: AgentQueueError) =>
-    Effect.gen(function* () {
-      yield* Effect.logWarning("goals.agentqueue-failed", {
+  const queueFailed = Effect.fn("GoalService.queueFailed")(function* (
+    goalId: GoalId,
+    operation: string,
+    error: AgentQueueError,
+  ) {
+    yield* Effect.logWarning("goals.agentqueue-failed", {
+      goalId,
+      operation,
+      message: error.message,
+    });
+    const now = yield* nowMillis;
+    const since = queueOutageSince.get(goalId) ?? now;
+    queueOutageSince.set(goalId, since);
+    const updated = yield* store.update(goalId, (goal) => ({
+      ...goal,
+      queueErrors: (goal.queueErrors ?? 0) + 1,
+      detail:
+        goal.status === "running"
+          ? (`AgentQueue ${operation} failed: ${error.message}`.slice(0, 500) as never)
+          : goal.detail,
+    }));
+    if (
+      updated?.status === "running" &&
+      // A locked queue database is contention, not an outage: the queue is alive and a later
+      // tick succeeds once the load drops, so waiting is right and failing the goal is not.
+      !isQueueContention(error) &&
+      (updated.queueErrors ?? 0) >= 3 &&
+      now - since >= QUEUE_OUTAGE_MILLIS
+    ) {
+      yield* setStatus(
         goalId,
-        operation,
-        message: error.message,
-      });
-      const now = yield* nowMillis;
-      const since = queueOutageSince.get(goalId) ?? now;
-      queueOutageSince.set(goalId, since);
-      const updated = yield* store.update(goalId, (goal) => ({
-        ...goal,
-        queueErrors: (goal.queueErrors ?? 0) + 1,
-        detail:
-          goal.status === "running"
-            ? (`AgentQueue ${operation} failed: ${error.message}`.slice(0, 500) as never)
-            : goal.detail,
-      }));
-      if (
-        updated?.status === "running" &&
-        // A locked queue database is contention, not an outage: the queue is alive and a later
-        // tick succeeds once the load drops, so waiting is right and failing the goal is not.
-        !isQueueContention(error) &&
-        (updated.queueErrors ?? 0) >= 3 &&
-        now - since >= QUEUE_OUTAGE_MILLIS
-      ) {
-        yield* setStatus(
-          goalId,
-          "failed",
-          `AgentQueue ${operation} kept failing for ${Math.round((now - since) / 60_000)} minutes (${updated?.queueErrors} failures in a row): ${error.message}`.slice(
-            0,
-            1500,
-          ),
-        );
-      }
-    });
-
-  const queueHealthy = (goalId: GoalId) =>
-    Effect.gen(function* () {
-      queueOutageSince.delete(goalId);
-      yield* store.update(goalId, (goal) =>
-        goal.queueErrors === undefined && goal.detail === undefined
-          ? goal
-          : // The failure note belongs to the outage; a goal that is working again does not keep it.
-            {
-              ...goal,
-              queueErrors: undefined,
-              ...(goal.status === "running" && goal.detail?.startsWith("AgentQueue ")
-                ? { detail: undefined }
-                : {}),
-            },
+        "failed",
+        `AgentQueue ${operation} kept failing for ${Math.round((now - since) / 60_000)} minutes (${updated?.queueErrors} failures in a row): ${error.message}`.slice(
+          0,
+          1500,
+        ),
       );
-    });
+    }
+  });
+
+  const queueHealthy = Effect.fn("GoalService.queueHealthy")(function* (goalId: GoalId) {
+    queueOutageSince.delete(goalId);
+    yield* store.update(goalId, (goal) =>
+      goal.queueErrors === undefined && goal.detail === undefined
+        ? goal
+        : // The failure note belongs to the outage; a goal that is working again does not keep it.
+          {
+            ...goal,
+            queueErrors: undefined,
+            ...(goal.status === "running" && goal.detail?.startsWith("AgentQueue ")
+              ? { detail: undefined }
+              : {}),
+          },
+    );
+  });
 
   const logQueueError = (message: string) => (error: AgentQueueError) =>
     Effect.logWarning(message, { operation: error.operation, error: error.message });
 
   /** Undo a reservation whose chat never started: the task goes back untouched. */
-  const returnReservation = (
+  const returnReservation = Effect.fn("GoalService.returnReservation")(function* (
     binding: QueueBinding,
     claimToken: string,
     worktreePath: string,
     branch: string,
     reason: string,
-  ) =>
-    Effect.gen(function* () {
-      const released = yield* queue
-        .release(binding, claimToken, "pending", reason)
-        .pipe(
-          Effect.catch((error) =>
-            logQueueError("goals.agentqueue-release-failed")(error).pipe(Effect.as(false)),
-          ),
-        );
-      if (!released) return;
-      yield* queue
-        .teardown(binding, worktreePath, branch, false)
-        .pipe(Effect.catch(logQueueError("goals.agentqueue-teardown-failed")));
-    });
+  ) {
+    const released = yield* queue
+      .release(binding, claimToken, "pending", reason)
+      .pipe(
+        Effect.catch((error) =>
+          logQueueError("goals.agentqueue-release-failed")(error).pipe(Effect.as(false)),
+        ),
+      );
+    if (!released) return;
+    yield* queue
+      .teardown(binding, worktreePath, branch, false)
+      .pipe(Effect.catch(logQueueError("goals.agentqueue-teardown-failed")));
+  });
 
   /** A lost claim does not prove its earlier writer has stopped using the worktree. */
   const worktreeWritersQuiet = Effect.fn("GoalService.worktreeWritersQuiet")(function* (
@@ -1195,15 +1158,6 @@ export const make = Effect.gen(function* () {
       : yield* startStandardChat(goal, agentIndex);
   });
 
-  // ───────────────────────── AgentQueue lifecycle ─────────────────────────
-  //
-  // Four things are kept apart on purpose:
-  //  - a task's implementation finishing: the worker's work is recorded as a *candidate*;
-  //  - the task being completed: only the queue says so, after the candidate is merged;
-  //  - a worker settling: its thread is settled and its lane freed once its turn ended;
-  //  - the goal completing: only `verifyPlanCompletion` can say so.
-  // Nothing a worker writes decides any of them.
-
   /**
    * A provider that needs a person at its desktop app: signed out, or its keyring locked so the
    * app never loads. Retrying it unattended only repeats the same failure.
@@ -1222,26 +1176,25 @@ export const make = Effect.gen(function* () {
   };
 
   /** Settle a worker's thread with the orchestration engine's own settle command (idempotent id). */
-  const settleThread = (goalId: GoalId, threadId: ThreadId) =>
-    Effect.gen(function* () {
-      const settled = yield* threads.settle(threadId).pipe(
-        Effect.as(true),
-        Effect.catchCause((cause) =>
-          logFailure("goals.settle-failed")(cause).pipe(Effect.as(false)),
-        ),
-      );
-      if (settled) yield* updateChat(goalId, threadId, { settled: true });
-    });
+  const settleThread = Effect.fn("GoalService.settleThread")(function* (
+    goalId: GoalId,
+    threadId: ThreadId,
+  ) {
+    const settled = yield* threads.settle(threadId).pipe(
+      Effect.as(true),
+      Effect.catchCause((cause) => logFailure("goals.settle-failed")(cause).pipe(Effect.as(false))),
+    );
+    if (settled) yield* updateChat(goalId, threadId, { settled: true });
+  });
 
   /** Settle any finished worker thread whose settle did not go through yet (blocked or lost). */
-  const settleFinishedChats = (goal: Goal) =>
-    Effect.gen(function* () {
-      for (const chat of goal.chats) {
-        if (chat.settled || chat.overseer) continue;
-        if (chat.taskOutcome !== "submitted" && chat.taskOutcome !== "integrated") continue;
-        yield* settleThread(goal.id, chat.threadId);
-      }
-    });
+  const settleFinishedChats = Effect.fn("GoalService.settleFinishedChats")(function* (goal: Goal) {
+    for (const chat of goal.chats) {
+      if (chat.settled || chat.overseer) continue;
+      if (chat.taskOutcome !== "submitted" && chat.taskOutcome !== "integrated") continue;
+      yield* settleThread(goal.id, chat.threadId);
+    }
+  });
 
   /** Goals with an integration pass running, so one goal never integrates twice at once. */
   const integrating = new Set<GoalId>();
@@ -1262,8 +1215,90 @@ export const make = Effect.gen(function* () {
     const { snapshot, candidates, ready } = status.value;
     const awaiting = candidates.filter((c) => c.state === "pending" || c.state === "conflict");
     const needsRepair = candidates.filter((c) => c.state === "repair_needed").length;
-    const running = snapshot.counts.claimed + snapshot.counts.running;
     const waiting = Math.max(snapshot.counts.pending - ready, 0);
+    const { resourceProgress, progressFacts } = status.value;
+    const ownedRunningChats = goal.chats.filter(
+      (chat) =>
+        chat.status === "running" &&
+        !chat.overseer &&
+        chat.taskId !== undefined &&
+        chat.claimToken !== undefined &&
+        chat.taskOutcome === undefined &&
+        chat.waitingForLimit !== true,
+    );
+    const parkedTaskIds = new Set(
+      [
+        ...resourceProgress.activeChecks,
+        ...resourceProgress.activeJobs,
+        ...resourceProgress.resourceWaits,
+      ].map((ticket) => ticket.taskId),
+    );
+    const liveOwnedTaskIds: string[] = [];
+    for (const chat of ownedRunningChats) {
+      if (chat.taskId && (yield* chatAlive(chat))) liveOwnedTaskIds.push(chat.taskId);
+    }
+    const running = resourceProgress.inspectionAvailable
+      ? new Set(liveOwnedTaskIds.filter((taskId) => !parkedTaskIds.has(taskId))).size
+      : 0;
+    const waitCandidates: Array<{
+      readonly taskId: string;
+      readonly since: string;
+      readonly reason: "dependencies" | "blocked" | "integration" | "resource" | "results";
+    }> = [];
+    if (progressFacts.oldestWait) waitCandidates.push(progressFacts.oldestWait);
+    for (const ticket of resourceProgress.resourceWaits) {
+      waitCandidates.push({
+        taskId: ticket.taskId,
+        since: DateTime.formatIso(DateTime.makeUnsafe(ticket.enqueuedAt)),
+        reason: "resource",
+      });
+    }
+    for (const job of resourceProgress.activeJobs) {
+      if (job.state !== "finished-unreported" || job.finishedAt === null) continue;
+      waitCandidates.push({
+        taskId: job.taskId,
+        since: DateTime.formatIso(DateTime.makeUnsafe(job.finishedAt)),
+        reason: "results",
+      });
+    }
+    waitCandidates.sort(
+      (left, right) =>
+        Date.parse(left.since) - Date.parse(right.since) || left.taskId.localeCompare(right.taskId),
+    );
+    const phaseReason =
+      goal.status === "complete"
+        ? "complete"
+        : !resourceProgress.inspectionAvailable && ownedRunningChats.length > 0
+          ? "unknown"
+          : resourceProgress.resourceWaits.length > 0
+            ? "waiting-resource"
+            : resourceProgress.activeJobs.some(
+                  (job) => job.state === "running" || job.state === "granted",
+                )
+              ? "running-resource-job"
+              : resourceProgress.activeChecks.length > 0
+                ? "verifying"
+                : resourceProgress.activeJobs.some((job) => job.state === "finished-unreported")
+                  ? "waiting-results"
+                  : running > 0
+                    ? "implementing"
+                    : status.value.publication.state === "pending" ||
+                        status.value.publication.state === "blocked"
+                      ? "waiting-publication"
+                      : awaiting.length > 0
+                        ? "waiting-integration"
+                        : waiting > 0
+                          ? "waiting-dependencies"
+                          : needsRepair > 0 ||
+                              snapshot.counts.failed > 0 ||
+                              snapshot.counts.blocked > 0
+                            ? "blocked"
+                            : snapshot.counts.total > 0 &&
+                                snapshot.counts.completed === snapshot.counts.total
+                              ? "waiting-publication"
+                              : ready > 0
+                                ? "idle"
+                                : "idle";
     const deferred =
       awaiting.find((c) => c.state === "pending" && c.error)?.error ??
       (status.value.publication.state === "pending" || status.value.publication.state === "blocked"
@@ -1310,13 +1345,70 @@ export const make = Effect.gen(function* () {
             },
           }
         : {}),
+      activity: {
+        reason: phaseReason,
+        inspectionAvailable: resourceProgress.inspectionAvailable,
+        ...(waitCandidates[0]
+          ? {
+              oldestWait: {
+                taskId: waitCandidates[0].taskId,
+                since: waitCandidates[0].since,
+                reason: waitCandidates[0].reason,
+              },
+            }
+          : {}),
+        activeChecks: resourceProgress.activeChecks.map((ticket) => ({
+          taskId: ticket.taskId,
+          ticketId: ticket.ticketId,
+          ...(ticket.checkId !== null ? { checkId: ticket.checkId } : {}),
+          state: ticket.state,
+          resources: ticket.resources,
+          enqueuedAt: DateTime.formatIso(DateTime.makeUnsafe(ticket.enqueuedAt)),
+          ...(ticket.startedAt !== null
+            ? { startedAt: DateTime.formatIso(DateTime.makeUnsafe(ticket.startedAt)) }
+            : {}),
+        })),
+        activeJobs: resourceProgress.activeJobs.map((ticket) => ({
+          taskId: ticket.taskId,
+          ticketId: ticket.ticketId,
+          state: ticket.state,
+          resources: ticket.resources,
+          enqueuedAt: DateTime.formatIso(DateTime.makeUnsafe(ticket.enqueuedAt)),
+          ...(ticket.startedAt !== null
+            ? { startedAt: DateTime.formatIso(DateTime.makeUnsafe(ticket.startedAt)) }
+            : {}),
+          ...(ticket.finishedAt !== null
+            ? { finishedAt: DateTime.formatIso(DateTime.makeUnsafe(ticket.finishedAt)) }
+            : {}),
+        })),
+        resourceWaits: resourceProgress.resourceWaits.map((ticket) => ({
+          taskId: ticket.taskId,
+          ticketId: ticket.ticketId,
+          ...(ticket.checkId !== null ? { checkId: ticket.checkId } : {}),
+          resources: ticket.resources,
+          enqueuedAt: DateTime.formatIso(DateTime.makeUnsafe(ticket.enqueuedAt)),
+        })),
+        omittedChecks: resourceProgress.omittedChecks,
+        omittedJobs: resourceProgress.omittedJobs,
+        omittedResourceWaits: resourceProgress.omittedResourceWaits,
+        completedParentTasks: progressFacts.completedParentTasks,
+        completedRepairTasks: progressFacts.completedRepairTasks,
+        remainingDependencyTaskIds: progressFacts.remainingDependencyTaskIds,
+        omittedDependencyCount: progressFacts.omittedDependencyCount,
+      },
     };
     const previous = goal.queueProgress;
-    if (
+    const same =
       previous &&
-      JSON.stringify({ ...previous, checkedAt: "" }) === JSON.stringify({ ...next, checkedAt: "" })
-    ) {
-      return;
+      JSON.stringify({ ...previous, checkedAt: "" }) === JSON.stringify({ ...next, checkedAt: "" });
+    if (same) {
+      const lastCheckedAt = Date.parse(previous.checkedAt);
+      if (
+        Number.isFinite(lastCheckedAt) &&
+        (yield* nowMillis) - lastCheckedAt < QUEUE_PROGRESS_HEARTBEAT_MILLIS
+      ) {
+        return;
+      }
     }
     const checkedAt = yield* nowIso;
     yield* store.update(goal.id, (current) => ({
@@ -1389,14 +1481,16 @@ export const make = Effect.gen(function* () {
   });
 
   /** Landed work whose worktree could not be removed yet (still in use, or a checkpoint pending). */
-  const sweepLandedWorktrees = (goal: Goal) =>
-    Effect.gen(function* () {
+  const sweepLandedWorktrees = Effect.fn("GoalService.sweepLandedWorktrees")(
+    function* (goal: Goal) {
       for (const chat of goal.chats) {
         if (chat.taskOutcome !== "integrated" || chat.worktreeRetired) continue;
         if (!chat.worktreePath || !chat.branch) continue;
         yield* retireWorktree(goal.id, chat.worktreePath, chat.branch);
       }
-    }).pipe(Effect.catchCause(logFailure("goals.worktree-sweep-failed")));
+    },
+    Effect.catchCause(logFailure("goals.worktree-sweep-failed")),
+  );
 
   const runIntegration: (goalId: GoalId) => Effect.Effect<void> = Effect.fn(
     "GoalService.runIntegration",
@@ -1686,7 +1780,7 @@ export const make = Effect.gen(function* () {
               result.kind === "no-changes"
                 ? NO_COMMIT_PROMPT
                 : result.kind === "scope-violation"
-                  ? `The server checked which files your commits change and cannot accept some of them:\n${result.error}\nProtected files cannot be changed: revert them (for example \`git checkout ${binding.integrationBranch ?? binding.baseBranch} -- <path>\` or \`git rm\`) and commit. A sensitive file the task truly needs is accepted with a line \`SCOPE-REQUEST: <path> — <why>\` in your final message. Then finish.`
+                  ? `The server checked which files your commits change and cannot accept some of them:\n${result.error}\nProtected files cannot be changed: revert them (for example \`git checkout ${binding.integrationBranch ?? binding.baseBranch} -- <path>\` or \`git rm\`) and commit. A sensitive file the task truly needs is accepted with a line \`SCOPE-REQUEST: <path>: <why>\` in your final message. Then finish.`
                   : `The server ran the task's check on your commit and it failed:\n${result.error}\nFix it in your worktree, run the check yourself, and commit.`;
             if (
               !held &&
@@ -1906,37 +2000,39 @@ export const make = Effect.gen(function* () {
    * Whether a chat recorded as running is really still working: a model turn is running, its
    * background commands are, or it has only just started or been resumed.
    */
-  const chatAlive = (chat: GoalChat, grace = IDLE_CHAT_GRACE_MILLIS) =>
-    Effect.gen(function* () {
-      const thread = yield* readThread(chat.threadId);
-      if (
-        !thread ||
-        sessionBusy(thread) ||
-        chat.waitingForLimit ||
-        !thread.latestTurn ||
-        !["completed", "interrupted", "error"].includes(thread.latestTurn.state) ||
-        (yield* backgroundWorkOf(chat.threadId)) !== null
-      ) {
-        quietSince.delete(chat.threadId);
-        return true;
-      }
-      const now = yield* nowMillis;
-      const identity = `${thread.latestTurn.turnId}:${chat.resumedAt ?? chat.startedAt}`;
-      const observed = quietSince.get(chat.threadId);
-      if (observed?.identity !== identity) {
-        quietSince.set(chat.threadId, { identity, since: now });
-        return true;
-      }
-      return now - observed.since < grace;
-    });
+  const chatAlive = Effect.fn("GoalService.chatAlive")(function* (
+    chat: GoalChat,
+    grace = IDLE_CHAT_GRACE_MILLIS,
+  ) {
+    const thread = yield* readThread(chat.threadId);
+    if (
+      !thread ||
+      sessionBusy(thread) ||
+      chat.waitingForLimit ||
+      !thread.latestTurn ||
+      !["completed", "interrupted", "error"].includes(thread.latestTurn.state) ||
+      (yield* backgroundWorkOf(chat.threadId)) !== null
+    ) {
+      quietSince.delete(chat.threadId);
+      return true;
+    }
+    const now = yield* nowMillis;
+    const identity = `${thread.latestTurn.turnId}:${chat.resumedAt ?? chat.startedAt}`;
+    const observed = quietSince.get(chat.threadId);
+    if (observed?.identity !== identity) {
+      quietSince.set(chat.threadId, { identity, since: now });
+      return true;
+    }
+    return now - observed.since < grace;
+  });
 
   /**
    * A chat recorded as running whose turn ended and whose session is idle is finished from the
    * thread's own state. Normally the session event does that; this is for the event that never
    * came (or was judged stale), so one lost notification cannot hold a task and its files forever.
    */
-  const sweepIdleChats = (goalId: GoalId, grace = IDLE_CHAT_GRACE_MILLIS) =>
-    Effect.gen(function* () {
+  const sweepIdleChats = Effect.fn("GoalService.sweepIdleChats")(
+    function* (goalId: GoalId, grace = IDLE_CHAT_GRACE_MILLIS) {
       const goal = yield* currentGoal(goalId);
       if (!goal || goal.status !== "running") return;
       for (const chat of goal.chats) {
@@ -1960,7 +2056,9 @@ export const make = Effect.gen(function* () {
           yield* finishChat(goalId, chat.threadId, undefined, { vouched: true });
         }).pipe(lock.withPermits(1));
       }
-    }).pipe(Effect.catchCause(logFailure("goals.idle-sweep-failed")));
+    },
+    Effect.catchCause(logFailure("goals.idle-sweep-failed")),
+  );
 
   /**
    * Ready tasks have sat unstartable while agents have room. Find what holds them and put right
@@ -1968,8 +2066,8 @@ export const make = Effect.gen(function* () {
    * nobody works on. Nothing is started here and no worker is replaced, so recovery cannot spawn
    * duplicates; whatever is freed is started by the normal scheduler with its normal owner rules.
    */
-  const recoverStall = (goalId: GoalId) =>
-    Effect.gen(function* () {
+  const recoverStall = Effect.fn("GoalService.recoverStall")(
+    function* (goalId: GoalId) {
       const info = stallInfo.get(goalId);
       if (!info) return;
       const now = yield* nowMillis;
@@ -1989,7 +2087,9 @@ export const make = Effect.gen(function* () {
         yield* ensureIntegration(goalId);
         yield* fillLanes(goalId);
       }).pipe(lock.withPermits(1));
-    }).pipe(Effect.catchCause(logFailure("goals.stall-recovery-failed")));
+    },
+    Effect.catchCause(logFailure("goals.stall-recovery-failed")),
+  );
 
   /** Reserve tasks for free lanes. With no ready task nothing starts and no model turn is spent. */
   const fillQueueLanes: (goalId: GoalId, binding: QueueBinding) => Effect.Effect<void> = Effect.fn(
@@ -2244,11 +2344,8 @@ export const make = Effect.gen(function* () {
   });
 
   /**
-   * Who should oversee. The goal's overseer models take turns, starting after the last one used,
-   * so one account's usage is not spent alone. With none chosen, the overseers are Gemini 3.8 Flash
-   * (High) on the Antigravity accounts after the first (the first stays for the person's own use),
-   * then Chat Agents. Each is skipped while out of usage, paused or signed out. Otherwise the goal's
-   * first agent that can start a chat now.
+   * Rotate configured overseer models, skipping unavailable accounts; otherwise use Antigravity
+   * accounts, Chat Agents, then a ready goal agent.
    */
   const overseerAgent = Effect.fn("GoalService.overseerAgent")(function* (goal: Goal) {
     const now = yield* nowMillis;
@@ -2377,30 +2474,29 @@ export const make = Effect.gen(function* () {
   });
 
   /** Put an escalation's own status (and what was done about it) on record. */
-  const settleEscalation = (
+  const settleEscalation = Effect.fn("GoalService.settleEscalation")(function* (
     goalId: GoalId,
     id: string,
     status: GoalEscalationStatus,
     resolution?: GoalEscalation["resolution"],
-  ) =>
-    Effect.gen(function* () {
-      const now = yield* nowIso;
-      yield* store.update(goalId, (goal) => ({
-        ...goal,
-        updatedAt: now,
-        escalations: (goal.escalations ?? []).map((escalation) =>
-          escalation.id === id
-            ? {
-                ...escalation,
-                status,
-                updatedAt: now,
-                ...(status === "resolved" || status === "cancelled" ? { resolvedAt: now } : {}),
-                ...(resolution !== undefined ? { resolution } : {}),
-              }
-            : escalation,
-        ),
-      }));
-    });
+  ) {
+    const now = yield* nowIso;
+    yield* store.update(goalId, (goal) => ({
+      ...goal,
+      updatedAt: now,
+      escalations: (goal.escalations ?? []).map((escalation) =>
+        escalation.id === id
+          ? {
+              ...escalation,
+              status,
+              updatedAt: now,
+              ...(status === "resolved" || status === "cancelled" ? { resolvedAt: now } : {}),
+              ...(resolution !== undefined ? { resolution } : {}),
+            }
+          : escalation,
+      ),
+    }));
+  });
 
   /**
    * Only one overseer runs per goal. When escalations wait for one and none is running, start it
@@ -2684,17 +2780,20 @@ export const make = Effect.gen(function* () {
     yield* fillLanes(goal.id);
   });
 
-  const patchEscalation = (goalId: GoalId, id: string, change: Partial<GoalEscalation>) =>
-    Effect.gen(function* () {
-      const now = yield* nowIso;
-      yield* store.update(goalId, (goal) => ({
-        ...goal,
-        updatedAt: now,
-        escalations: (goal.escalations ?? []).map((escalation) =>
-          escalation.id === id ? { ...escalation, ...change, updatedAt: now } : escalation,
-        ),
-      }));
-    });
+  const patchEscalation = Effect.fn("GoalService.patchEscalation")(function* (
+    goalId: GoalId,
+    id: string,
+    change: Partial<GoalEscalation>,
+  ) {
+    const now = yield* nowIso;
+    yield* store.update(goalId, (goal) => ({
+      ...goal,
+      updatedAt: now,
+      escalations: (goal.escalations ?? []).map((escalation) =>
+        escalation.id === id ? { ...escalation, ...change, updatedAt: now } : escalation,
+      ),
+    }));
+  });
 
   /** Finds an escalation; `settleable` also refuses one that is already resolved or cancelled. */
   const findEscalation = Effect.fn("GoalService.findEscalation")(function* (
@@ -3080,7 +3179,7 @@ export const make = Effect.gen(function* () {
     }
 
     const remaining = yield* queue.resourceJobs(binding, chat.taskId).pipe(
-      Effect.map(Option.some),
+      Effect.asSome,
       Effect.catch((error) =>
         logQueueError("goals.resource-job-reconcile-failed")(error).pipe(Effect.as(Option.none())),
       ),
@@ -3135,9 +3234,8 @@ export const make = Effect.gen(function* () {
     }
     // A held worker waits for its escalation; its conversation is decided only once it is resolved.
     if (
-      chat.escalationId !== undefined &&
       before.escalations?.some(
-        (escalation) => escalation.id === chat.escalationId && isOpenEscalation(escalation),
+        (escalation) => escalation.threadId === threadId && isOpenEscalation(escalation),
       )
     )
       return;
@@ -3315,48 +3413,47 @@ export const make = Effect.gen(function* () {
     }
   }).pipe(Effect.catchCause(logFailure("goals.resume-limited-failed")));
 
-  const onSessionSet = (event: { readonly threadId: ThreadId }) =>
-    Effect.gen(function* () {
-      const watch = watching.get(event.threadId);
-      if (!watch) return;
-      const view = yield* readThread(event.threadId);
-      if (!view) return;
-      const { session } = view;
-      if (
-        session.activeTurnId !== null ||
-        session.status === "starting" ||
-        session.status === "running"
-      ) {
-        watch.seenRunning = true;
-        yield* updateChat(watch.goalId, event.threadId, { waitingForLimit: undefined });
+  const onSessionSet = Effect.fn("GoalService.onSessionSet")(function* (event: {
+    readonly threadId: ThreadId;
+  }) {
+    const watch = watching.get(event.threadId);
+    if (!watch) return;
+    const view = yield* readThread(event.threadId);
+    if (!view) return;
+    const { session } = view;
+    if (
+      session.activeTurnId !== null ||
+      session.status === "starting" ||
+      session.status === "running"
+    ) {
+      watch.seenRunning = true;
+      yield* updateChat(watch.goalId, event.threadId, { waitingForLimit: undefined });
+      return;
+    }
+    if (session.lastErrorClass === "usage_limit") {
+      const limit = { retryAt: session.retryAt };
+      const goal = yield* currentGoal(watch.goalId);
+      const thread = yield* readThread(event.threadId);
+      if (!goal?.autoResume || !madeProgress(thread)) {
+        // Not resuming, or nothing worth resuming: record it and free the lane.
+        yield* finishChat(watch.goalId, event.threadId, limit);
         return;
       }
-      if (session.lastErrorClass === "usage_limit") {
-        const limit = { retryAt: session.retryAt };
-        const goal = yield* currentGoal(watch.goalId);
-        const thread = yield* readThread(event.threadId);
-        if (!goal?.autoResume || !madeProgress(thread)) {
-          // Not resuming, or nothing worth resuming: record it and free the lane.
-          yield* finishChat(watch.goalId, event.threadId, limit);
-          return;
-        }
-        // Work was under way: keep the chat and continue it when the limit resets.
-        yield* updateChat(watch.goalId, event.threadId, { waitingForLimit: true });
-        const agent =
-          goal.agents[
-            goal.chats.find((chat) => chat.threadId === event.threadId)?.agentIndex ?? -1
-          ];
-        if (agent) yield* pauseAgent(goal.id, agent, "usage-limit", session.retryAt);
-        yield* scheduleResume(event.threadId, session);
-        // Other providers may take the lane while this one waits.
-        yield* fillLanes(watch.goalId);
-        return;
-      }
-      // A quiet session before the turn ever ran is a leftover from before it.
-      if (!watch.seenRunning && session.status !== "error") return;
-      // The turn was seen running after the last resume and has now ended: it is that turn's end.
-      yield* finishChat(watch.goalId, event.threadId, undefined, { vouched: true });
-    }).pipe(lock.withPermits(1));
+      // Work was under way: keep the chat and continue it when the limit resets.
+      yield* updateChat(watch.goalId, event.threadId, { waitingForLimit: true });
+      const agent =
+        goal.agents[goal.chats.find((chat) => chat.threadId === event.threadId)?.agentIndex ?? -1];
+      if (agent) yield* pauseAgent(goal.id, agent, "usage-limit", session.retryAt);
+      yield* scheduleResume(event.threadId, session);
+      // Other providers may take the lane while this one waits.
+      yield* fillLanes(watch.goalId);
+      return;
+    }
+    // A quiet session before the turn ever ran is a leftover from before it.
+    if (!watch.seenRunning && session.status !== "error") return;
+    // The turn was seen running after the last resume and has now ended: it is that turn's end.
+    yield* finishChat(watch.goalId, event.threadId, undefined, { vouched: true });
+  }).pipe(lock.withPermits(1));
 
   /** Chats that paused on background commands are finished once those end and the model is idle. */
   const finishDeferred = Effect.gen(function* () {

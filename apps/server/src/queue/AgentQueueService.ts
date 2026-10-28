@@ -1,12 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off preferSchemaOverJson:off globalConsole:off effectFnOpportunity:off
-/**
- * The server's only door to AgentQueue. Goals never touch the queue database or git
- * directly: they ask this service to bind a plan, reserve a task, land it, and read
- * state. Every operation either succeeds or fails with an `AgentQueueError` that says
- * what went wrong; nothing is swallowed, so the caller decides what a failure means.
- *
- * @module queue/AgentQueueService
- */
+/** @module queue/AgentQueueService */
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
@@ -35,6 +28,7 @@ import {
   verifyPlanCompletion,
   generateOverseerBriefing,
   getEventsSince,
+  getQueueProgressFacts,
   getQueueSnapshot,
   importPlanFile,
   openQueueDatabase,
@@ -64,8 +58,10 @@ import {
   type OverseerRepairResult,
   type PlanPreview,
   type QueueSnapshot,
+  type QueueProgressFacts,
   type ReservedTask,
   type StoredQueueEvent,
+  type TicketState,
 } from "../../../../packages/agent-queue-core/src/index.ts";
 
 export class AgentQueueError extends Data.TaggedError("AgentQueueError")<{
@@ -106,6 +102,8 @@ export interface QueueStatus {
   readonly environmentTaskIds: ReadonlyArray<string>;
   readonly candidates: ReadonlyArray<CandidateInfo>;
   readonly publication: PublicationStatus;
+  readonly progressFacts: QueueProgressFacts;
+  readonly resourceProgress: QueueResourceProgress;
   /** Failed or blocked tasks, with why. */
   readonly problems: ReadonlyArray<{
     readonly taskId: string;
@@ -117,6 +115,116 @@ export interface QueueStatus {
     /** Why it stopped, when classified (configuration, prerequisite, external...). */
     readonly failureClass: string | null;
   }>;
+}
+
+export interface QueueResourceProgressTicket {
+  readonly taskId: string;
+  readonly ticketId: string;
+  readonly state: "waiting" | "granted" | "running" | "finished-unreported";
+  readonly checkId: string | null;
+  readonly resources: ReadonlyArray<string>;
+  readonly enqueuedAt: number;
+  readonly startedAt: number | null;
+  readonly finishedAt: number | null;
+}
+
+export interface QueueResourceProgressCheck extends QueueResourceProgressTicket {
+  readonly state: "waiting" | "granted" | "running";
+}
+
+export interface QueueResourceProgress {
+  readonly inspectionAvailable: boolean;
+  readonly activeChecks: ReadonlyArray<QueueResourceProgressCheck>;
+  readonly activeJobs: ReadonlyArray<QueueResourceProgressTicket>;
+  readonly resourceWaits: ReadonlyArray<QueueResourceProgressTicket>;
+  readonly omittedChecks: number;
+  readonly omittedJobs: number;
+  readonly omittedResourceWaits: number;
+}
+
+const MAX_PROGRESS_TICKETS = 5;
+const isActiveTicketState = (state: TicketState): state is "waiting" | "granted" | "running" =>
+  state === "waiting" || state === "granted" || state === "running";
+
+function inspectQueueResources(
+  binding: QueueBinding,
+  tasks: ReadonlyArray<{ readonly taskId: string }>,
+): QueueResourceProgress {
+  try {
+    const broker = openBroker();
+    try {
+      const activeChecks: QueueResourceProgressCheck[] = [];
+      const activeJobs: QueueResourceProgressTicket[] = [];
+      const resourceWaits: QueueResourceProgressTicket[] = [];
+      for (const task of tasks) {
+        const tickets = broker.forOwner(task.taskId, binding.gitCommonDir);
+        const accounting = broker.accountingFor(binding.gitCommonDir, task.taskId);
+        const attempts = new Map(
+          accounting.attempts.map((attempt) => [attempt.attemptId, attempt]),
+        );
+        for (const ticket of tickets) {
+          const unreportedFinishedJob =
+            ticket.kind === "job" &&
+            !isActiveTicketState(ticket.state) &&
+            ticket.reportedAt === null;
+          const state = unreportedFinishedJob
+            ? "finished-unreported"
+            : isActiveTicketState(ticket.state)
+              ? ticket.state
+              : undefined;
+          if (state === undefined) continue;
+          const attempt = attempts.get(ticket.id);
+          const progress: QueueResourceProgressTicket = {
+            taskId: task.taskId,
+            ticketId: ticket.id,
+            state,
+            checkId: ticket.checkId,
+            resources: ticket.resources.map((resource) => resource.name),
+            enqueuedAt: ticket.enqueuedAt,
+            startedAt: attempt?.startedAt ?? ticket.startedAt,
+            finishedAt: attempt?.finishedAt ?? ticket.finishedAt,
+          };
+          if (ticket.state === "waiting") resourceWaits.push({ ...progress, state: "waiting" });
+          if (ticket.kind === "run" && isActiveTicketState(ticket.state)) {
+            activeChecks.push({ ...progress, state: ticket.state });
+          }
+          if (
+            ticket.kind === "job" &&
+            (isActiveTicketState(ticket.state) || unreportedFinishedJob)
+          ) {
+            activeJobs.push(progress);
+          }
+        }
+      }
+      const order = (left: QueueResourceProgressTicket, right: QueueResourceProgressTicket) =>
+        left.enqueuedAt - right.enqueuedAt ||
+        left.taskId.localeCompare(right.taskId) ||
+        left.ticketId.localeCompare(right.ticketId);
+      const bounded = <T extends QueueResourceProgressTicket>(items: ReadonlyArray<T>): T[] =>
+        [...items].sort(order).slice(0, MAX_PROGRESS_TICKETS);
+      return {
+        inspectionAvailable: true,
+        activeChecks: bounded(activeChecks),
+        activeJobs: bounded(activeJobs),
+        resourceWaits: bounded(resourceWaits),
+        omittedChecks: Math.max(0, activeChecks.length - MAX_PROGRESS_TICKETS),
+        omittedJobs: Math.max(0, activeJobs.length - MAX_PROGRESS_TICKETS),
+        omittedResourceWaits: Math.max(0, resourceWaits.length - MAX_PROGRESS_TICKETS),
+      };
+    } finally {
+      broker.close();
+    }
+  } catch {
+    return {
+      inspectionAvailable: false,
+      activeChecks: [],
+      activeJobs: [],
+      resourceWaits: [],
+      omittedChecks: 0,
+      omittedJobs: 0,
+      omittedResourceWaits: 0,
+    };
+  }
 }
 
 export type CandidateInfo = ReturnType<typeof listCandidates>[number];
@@ -522,6 +630,16 @@ const make = AgentQueueService.of({
             (JSON.parse(row.dependencies || "[]") as string[]).every((dep) => done.has(dep)),
         ).length;
         const deadlock = evaluateDeadlock(db, binding.planId);
+        const progressFacts = getQueueProgressFacts(db, binding.planId);
+        const resourceInspection = inspectQueueResources(
+          binding,
+          rows
+            .filter(
+              (row) =>
+                row.status === "claimed" || row.status === "running" || row.status === "verifying",
+            )
+            .map((row) => ({ taskId: row.id })),
+        );
         const problems = db
           .prepare(
             `SELECT id, title, status, failure_reason, failure_class, retry_count, max_retries FROM tasks
@@ -544,6 +662,8 @@ const make = AgentQueueService.of({
           awaitingEnvironment: deadlock.awaitingEnvironment === true,
           environmentTaskIds: deadlock.environmentTaskIds ?? [],
           candidates: listCandidates(db, binding.planId),
+          progressFacts,
+          resourceProgress: resourceInspection,
           publication: (() => {
             const row = db
               .prepare("SELECT publication_state, publication_note FROM plans WHERE id = ?")
