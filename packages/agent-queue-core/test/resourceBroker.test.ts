@@ -145,6 +145,7 @@ describe("resource broker queue", () => {
     broker.markReported(alpha.id, "/repo/alpha/.git");
     broker.pump();
     expect(broker.get(beta.id)?.state).toBe("granted");
+    broker.markRunning(beta.id, null);
     clock.now += 11;
     broker.finish(beta.id, { outcome: "failed" });
 
