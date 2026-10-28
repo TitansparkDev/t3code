@@ -12,7 +12,7 @@ import { claimTask } from "../src/claimService.ts";
 import { auditUnverifiedTasks } from "../src/audit.ts";
 import { loadContract } from "../src/contract.ts";
 import { auditScope, parseScopeRequests } from "../src/scopeAudit.ts";
-import { runSpec } from "../src/verificationSpec.ts";
+import { runSpec, type VerificationSpec } from "../src/verificationSpec.ts";
 import { withResources } from "../src/resourceLocks.ts";
 import { importPlanFile } from "../src/planImport.ts";
 import { ensureSlot, taskEnvironment } from "../src/taskEnvironment.ts";
@@ -34,6 +34,94 @@ const reserved = async (r: Awaited<ReturnType<typeof makeRepo>>) => {
 };
 
 describe("scope: strict, with legitimate generated and supporting changes", () => {
+  it("blocks a failed artifact producer and exit-zero empty JUnit evidence, then lands once both are satisfied", async () => {
+    const r = await makeRepo({
+      plan: plan([{ id: "A", scope: "src/" }]),
+      contract: { branchPrefixes: ["agent/"] },
+    });
+    try {
+      const spec: VerificationSpec = {
+        source: "declared",
+        checks: [
+          {
+            id: "build",
+            run: `node -e 'const fs=require("node:fs");if(!fs.existsSync("src/disable-build"))fs.writeFileSync("src/app.apk","built")'`,
+            cwd: ".",
+            timeoutSeconds: 30,
+            requires: [],
+            expectExitCode: 0,
+            produces: ["src/app.apk"],
+          },
+          {
+            id: "instrumentation",
+            dependsOn: ["build"],
+            run: "true",
+            cwd: ".",
+            timeoutSeconds: 30,
+            requires: [],
+            expectExitCode: 0,
+            consumes: ["src/app.apk"],
+          },
+          {
+            id: "junit",
+            run: `node -e 'const fs=require("node:fs");fs.mkdirSync("src/reports",{recursive:true});const xml=fs.existsSync("src/disable-tests")?"<testsuite tests=\\"0\\"></testsuite>":"<testsuite><testcase name=\\"instrumented\\" /></testsuite>";fs.writeFileSync("src/reports/run.xml",xml)'`,
+            cwd: ".",
+            timeoutSeconds: 30,
+            requires: [],
+            expectExitCode: 0,
+            junit: { reports: ["src/reports/run.xml"], minTests: 1, maxSkipped: 0 },
+          },
+        ],
+        exemptReason: null,
+        rejected: [],
+      };
+      r.db
+        .prepare(
+          "UPDATE tasks SET verification_spec = ?, verification_command = NULL WHERE id = 'A'",
+        )
+        .run(JSON.stringify(spec));
+      const reserved = await r.reserve();
+      expect(reserved.kind).toBe("reserved");
+      if (reserved.kind !== "reserved") return;
+      await r.commitFile(reserved.task.worktreePath, "src/disable-build", "skip output\n");
+      await r.commitFile(reserved.task.worktreePath, "src/disable-tests", "empty report\n");
+      await r.commitFile(reserved.task.worktreePath, "src/change.ts", "candidate\n");
+
+      const failed = await r.submit(reserved.task);
+      expect(failed.kind).toBe("verification-failed");
+      if (failed.kind !== "verification-failed" || !failed.receipt) return;
+      expect(failed.receipt.state).toBe("failed");
+      expect(failed.receipt.checks.map((check) => check.failureKind)).toEqual([
+        "missing-output",
+        "blocked",
+        "junit-failed",
+      ]);
+      expect(failed.receipt.checks[1]?.failureReason).toContain("build");
+      expect(failed.receipt.checks[2]?.failureReason).toContain("0 executed");
+
+      await NodeFSP.rm(NodePath.join(reserved.task.worktreePath, "src/reports/run.xml"));
+      await execCommand(
+        "git",
+        ["rm", "-q", "src/disable-build", "src/disable-tests"],
+        reserved.task.worktreePath,
+      );
+      await execCommand(
+        "git",
+        ["commit", "-qm", "satisfy verification prerequisites"],
+        reserved.task.worktreePath,
+      );
+      const passed = await r.submit(reserved.task);
+      expect(passed.kind).toBe("submitted");
+      if (passed.kind !== "submitted") return;
+      expect(passed.receipt.state).toBe("passed");
+      expect(passed.receipt.checks.every((check) => check.passed)).toBe(true);
+      expect((await r.integrate("A")).kind).toBe("landed");
+      expect(r.task("A")).toMatchObject({ status: "completed" });
+    } finally {
+      await r.repo.cleanup();
+    }
+  });
+
   it("classifies generated, supporting and unrelated paths", () => {
     const loaded = loadContract({
       repoRoot: import.meta.dirname,
@@ -377,9 +465,10 @@ await withResources(["gpu"], async () => {
     });
     broker.enqueue({ resources: [{ name: "gpu" }], pid: dead.pid!, label: "left behind" });
     broker.pump();
+    const deadExit = new Promise<void>((resolve) => dead.once("close", () => resolve()));
     dead.kill("SIGKILL");
     broker.close();
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    await deadExit;
     const codes = await Promise.all([runChild("one"), runChild("two"), runChild("three")]);
     expect(codes).toEqual([0, 0, 0]);
     const lines = NodeFS.readFileSync(log, "utf8").trim().split("\n");
