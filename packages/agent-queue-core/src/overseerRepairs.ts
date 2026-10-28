@@ -557,7 +557,9 @@ export function addFollowUpTask(
       blocking: input.blocking,
       nowWaitingOnIt: rewired,
       ...(input.failureClass ? { failureClass: input.failureClass } : {}),
-      ...(input.fingerprint !== undefined ? { fingerprint: input.fingerprint.slice(0, 128) } : {}),
+      ...(input.fingerprint !== undefined
+        ? { fingerprint: input.fingerprint?.slice(0, 128) ?? null }
+        : {}),
       ...(dedupeKey ? { dedupeKey } : {}),
       ...(input.repairEvidence
         ? { repairEvidence: boundedRepairEvidence(input.repairEvidence) }
