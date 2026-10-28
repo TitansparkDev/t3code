@@ -928,10 +928,7 @@ export async function submitCandidate(
     const failedResult = receipt.checks.find((entry) => !entry.passed);
     const failedCheck = failedResult
       ? failedResult.checkId
-        ? (remaining.find((check) => check.id === failedResult.checkId) ??
-          remaining.find(
-            (check) => check.run === failedResult.run && (check.cwd ?? ".") === failedResult.cwd,
-          ))
+        ? remaining.find((check) => check.id === failedResult.checkId)
         : remaining.find(
             (check) => check.run === failedResult.run && (check.cwd ?? ".") === failedResult.cwd,
           )
