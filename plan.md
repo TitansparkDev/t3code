@@ -1136,7 +1136,7 @@ This is an extension of the current mobile UI, using the existing foreground/mut
   - Needs SP02's retention, SP03's persistence, SP04's supervisor lifecycle, SP05's HTTP loading and SP06's feed derivation, because their interfaces compile together in this package. Narrow compiler repairs only; no `any`, `@ts-ignore` or weakened schemas.
   - Acceptance: shared runtime compiles, and mobile-only factory defaults stay optional for other clients.
 
-- [ ] **SG05 — Check web and desktop compatibility of the shared cache changes.**
+- [x] **SG05 — Check web and desktop compatibility of the shared cache changes.**
   - Depends on: SP02, SP03, SP04, SP05, SP06.
   - Scope: apps/web/tsconfig.json
   - Checks:
