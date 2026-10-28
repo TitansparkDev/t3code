@@ -1111,7 +1111,7 @@ This is an extension of the current mobile UI, using the existing foreground/mut
   - Compare stage counts and encoded bytes with SP01's baseline and report before/after in the task result (not in tracked files). Assert the memory/disk budgets from Fixed decisions and zero unsolicited output subscriptions. Timing figures are labelled proxies; no real WAN p95 is claimed. A failure is repaired narrowly in the owning package, not by rerunning green checks.
   - Acceptance: transport budgets stay enforced, and cached rows appear before a deliberately blocked network becomes ready.
 
-- [ ] **SG02 — Verify the integrated Android limits banner, routes and lifecycle.**
+- [x] **SG02 — Verify the integrated Android limits banner, routes and lifecycle.**
   - Depends on: LB02, SP02, SP03, SP04, SP06.
   - Scope: apps/mobile/src/features/usage/, apps/mobile/src/features/threads/thread-route-hydration.test.ts, apps/mobile/src/features/threads/thread-feed-live-follow.test.ts, apps/mobile/src/connection/, apps/mobile/src/lib/adaptive-navigation.test.ts, apps/mobile/src/lib/layout.test.ts, scripts/legend-list-initial-reveal.test.ts
   - Checks:
