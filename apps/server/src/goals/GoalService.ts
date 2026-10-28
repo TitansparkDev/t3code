@@ -133,6 +133,8 @@ const STALL_RECOVERY_MILLIS = 2 * 60_000;
 const STALL_RECOVERY_REPEAT_MILLIS = 60_000;
 /** How long a landed worker's worktree waits for its last checkpoint before it is removed anyway. */
 const CHECKPOINT_WAIT_MILLIS = 30_000;
+const RESOURCE_DELIVERY_BATCH_SIZE = 10;
+const RESOURCE_RESULT_MAX_CHARS = 3_000;
 
 export class GoalService extends Context.Service<
   GoalService,
@@ -1067,6 +1069,7 @@ export const make = Effect.gen(function* () {
     }
 
     const assignment = assignmentOf(binding, task, lastFailure);
+    let workerAssignment = assignment;
     if (owner) {
       const reason: QueueResumeReason = task.repair
         ? { kind: "conflict" }
@@ -1119,12 +1122,49 @@ export const make = Effect.gen(function* () {
       }
     }
 
+    if (owner !== undefined || task.ownerTurns > 0) {
+      const context = yield* queue.replacementContext(binding, task.taskId).pipe(
+        Effect.catch((error) =>
+          logQueueError("goals.agentqueue-replacement-context-failed")(error).pipe(
+            Effect.as({
+              integrationHead: null,
+              latestFailure: null,
+              earlierFailure: null,
+              siblingRepairs: [],
+            }),
+          ),
+        ),
+      );
+      const jobs = yield* queue
+        .resourceJobs(binding, task.taskId)
+        .pipe(
+          Effect.catch((error) =>
+            logQueueError("goals.agentqueue-replacement-jobs-failed")(error).pipe(
+              Effect.as({ open: [], finished: [] }),
+            ),
+          ),
+        );
+      const jobIds = [...jobs.open, ...jobs.finished.map((job) => job.id)];
+      workerAssignment = {
+        ...assignment,
+        replacementHandoff: {
+          integrationBranch: task.baseBranch,
+          integrationHead: context.integrationHead,
+          latestFailure: context.latestFailure,
+          earlierFailure: context.earlierFailure,
+          siblingRepairs: context.siblingRepairs,
+          outstandingJobs: jobIds.slice(0, 20),
+          moreOutstandingJobs: Math.max(0, jobIds.length - 20),
+        },
+      };
+    }
+
     const threadId = yield* openChat(goal, {
       title: `${task.repair ? "Repair" : "Goal worker"}: ${task.taskId} ${task.title}`.slice(
         0,
         120,
       ),
-      text: queueWorkerPrompt(goal, assignment),
+      text: queueWorkerPrompt(goal, workerAssignment),
       agentIndex,
       modelSelection: agent.modelSelection,
       worktreePath: task.worktreePath,
@@ -1817,13 +1857,21 @@ export const make = Effect.gen(function* () {
     const handedOver = chat.taskId
       ? yield* queue.resourceJobs(binding, chat.taskId).pipe(Effect.option)
       : Option.none();
-    if (Option.isSome(handedOver) && handedOver.value.open.length > 0) {
+    if (
+      Option.isSome(handedOver) &&
+      (handedOver.value.open.length > 0 ||
+        (chat.taskOutcome === "waiting" && handedOver.value.finished.length > 0))
+    ) {
+      const remainingJobs = [
+        ...handedOver.value.open,
+        ...handedOver.value.finished.map((job) => job.id),
+      ];
       yield* updateChat(goalId, threadId, {
         status: "completed",
         completedAt: now,
         waitingForLimit: undefined,
         taskOutcome: "waiting",
-        resourceJobs: handedOver.value.open,
+        resourceJobs: remainingJobs,
       });
       yield* settleThread(goalId, threadId);
       yield* Effect.logInfo("goals.agentqueue-worker-parked-on-resource", {
@@ -2531,6 +2579,7 @@ export const make = Effect.gen(function* () {
     goal: Goal,
     chat: GoalChat,
     text: string,
+    idempotencyKey?: string,
   ) {
     const agent = goal.agents[chat.agentIndex];
     if (!agent) return false;
@@ -2542,6 +2591,7 @@ export const make = Effect.gen(function* () {
         projectId: goal.projectId,
         text,
         modelSelection: agent.modelSelection,
+        ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
       })
       .pipe(
         Effect.as(true),
@@ -2982,6 +3032,77 @@ export const make = Effect.gen(function* () {
     );
   });
 
+  /** Finish a persisted resource-result delivery, replaying its stable message id after a crash. */
+  const reconcileResourceDelivery = Effect.fn("GoalService.reconcileResourceDelivery")(function* (
+    goal: Goal,
+    chat: GoalChat,
+    delivery: NonNullable<GoalChat["resourceDelivery"]>,
+  ) {
+    const binding = goal.agentQueue;
+    if (!binding || !chat.taskId) return "pending" as const;
+    const thread = yield* readThread(chat.threadId);
+    if (!thread) return "pending" as const;
+    const alreadySent = thread.messages.some((message) => message.id === delivery.idempotencyKey);
+    if (!alreadySent) {
+      if (sessionBusy(thread) || !(yield* workerQuiet(chat.threadId))) return "pending" as const;
+      const unavailable = yield* unavailableAgents(goal);
+      if (unavailable.has(chat.agentIndex)) return "pending" as const;
+      if (!(yield* continueChat(goal, chat, delivery.text, delivery.idempotencyKey)))
+        return "pending" as const;
+    } else if (thread.latestTurn) {
+      const active = sessionBusy(thread) || thread.latestTurn.state === "running";
+      yield* updateChat(goal.id, chat.threadId, {
+        ...(active ? { status: "running" as const, completedAt: undefined } : {}),
+        resumedAt: thread.latestTurn.requestedAt,
+      });
+    }
+
+    let reportsSucceeded = true;
+    for (const jobId of delivery.jobIds) {
+      const reported = yield* queue.reportJob(jobId).pipe(
+        Effect.as(true),
+        Effect.catch((error) =>
+          logQueueError("goals.report-job-failed")(error).pipe(Effect.as(false)),
+        ),
+      );
+      reportsSucceeded &&= reported;
+    }
+    if (!reportsSucceeded) {
+      if (alreadySent && !sessionBusy(thread) && thread.latestTurn?.state !== "running") {
+        yield* updateChat(goal.id, chat.threadId, {
+          status: "completed",
+          completedAt: thread.latestTurn?.completedAt ?? (yield* nowIso),
+          taskOutcome: "waiting",
+        });
+        return "finished-pending" as const;
+      }
+      return "pending" as const;
+    }
+
+    const remaining = yield* queue.resourceJobs(binding, chat.taskId).pipe(
+      Effect.map(Option.some),
+      Effect.catch((error) =>
+        logQueueError("goals.resource-job-reconcile-failed")(error).pipe(Effect.as(Option.none())),
+      ),
+    );
+    if (Option.isNone(remaining)) return "pending" as const;
+    const remainingIds = [
+      ...remaining.value.open,
+      ...remaining.value.finished.map((job) => job.id),
+    ];
+    yield* updateChat(goal.id, chat.threadId, {
+      resourceDelivery: undefined,
+      resourceResumes: (chat.resourceResumes ?? 0) + 1,
+      settled: false,
+      ...(remainingIds.length === 0
+        ? { taskOutcome: undefined, resourceJobs: undefined }
+        : { taskOutcome: "waiting" as const, resourceJobs: remainingIds }),
+    });
+    return alreadySent && !sessionBusy(thread) && thread.latestTurn?.state !== "running"
+      ? ("finished" as const)
+      : ("sent" as const);
+  });
+
   /** A goal chat's turn is over for good: record it and decide what happens next. */
   const finishChat = Effect.fn("GoalService.finishChat")(function* (
     goalId: GoalId,
@@ -2997,8 +3118,8 @@ export const make = Effect.gen(function* () {
   ) {
     watching.delete(threadId);
     const thread = yield* readThread(threadId);
-    const before = yield* currentGoal(goalId);
-    const chat = before?.chats.find((candidate) => candidate.threadId === threadId);
+    let before = yield* currentGoal(goalId);
+    let chat = before?.chats.find((candidate) => candidate.threadId === threadId);
     if (!before || !chat) {
       return;
     }
@@ -3020,6 +3141,12 @@ export const make = Effect.gen(function* () {
       )
     )
       return;
+    if (chat.resourceDelivery) {
+      const delivery = yield* reconcileResourceDelivery(before, chat, chat.resourceDelivery);
+      if (delivery === "finished-pending" || delivery === "pending" || delivery === "sent") return;
+      before = (yield* currentGoal(goalId)) ?? before;
+      chat = before.chats.find((candidate) => candidate.threadId === threadId) ?? chat;
+    }
     if (chat.overseer) {
       yield* finishOverseer(before, thread, threadId);
       return;
@@ -3305,13 +3432,29 @@ export const make = Effect.gen(function* () {
     const binding = goal?.agentQueue;
     if (!goal || !binding || goal.status !== "running") return;
     yield* queue.runJobs(binding).pipe(Effect.catch(logQueueError("goals.resource-jobs-failed")));
-    for (const chat of goal.chats) {
-      if (chat.taskOutcome !== "waiting" || !chat.taskId || chat.status === "running") continue;
+    for (const storedChat of goal.chats) {
+      const fresh = (yield* currentGoal(goalId)) ?? goal;
+      const chat = fresh.chats.find((candidate) => candidate.threadId === storedChat.threadId);
+      if (!chat?.taskId) continue;
+      if (chat.resourceDelivery) {
+        const result = yield* reconcileResourceDelivery(fresh, chat, chat.resourceDelivery);
+        if (result === "finished") {
+          yield* finishChat(goalId, chat.threadId, undefined, { vouched: true });
+        }
+        if (result === "sent" || result === "finished") {
+          yield* Effect.logInfo("goals.agentqueue-resource-results-delivered", {
+            goalId,
+            taskId: chat.taskId,
+            jobs: chat.resourceDelivery.jobIds,
+          });
+        }
+        continue;
+      }
+      if (chat.taskOutcome !== "waiting" || chat.status === "running") continue;
       const jobs = yield* queue.resourceJobs(binding, chat.taskId).pipe(Effect.option);
       if (Option.isNone(jobs) || jobs.value.open.length > 0 || jobs.value.finished.length === 0) {
         continue;
       }
-      const fresh = (yield* currentGoal(goalId)) ?? goal;
       const unavailable = yield* unavailableAgents(fresh);
       if (unavailable.has(chat.agentIndex)) continue;
       if (!(yield* workerQuiet(chat.threadId))) continue;
@@ -3332,23 +3475,38 @@ export const make = Effect.gen(function* () {
           lastFailure: null,
           repair: null,
         },
-        { kind: "resource-results", results: jobs.value.finished.map((job) => job.summary) },
+        {
+          kind: "resource-results",
+          results: jobs.value.finished
+            .slice(0, RESOURCE_DELIVERY_BATCH_SIZE)
+            .map((job) => job.summary.slice(0, RESOURCE_RESULT_MAX_CHARS)),
+        },
       );
-      if (!(yield* continueChat(fresh, chat, text))) continue;
-      for (const job of jobs.value.finished) {
-        yield* queue.reportJob(job.id).pipe(Effect.catch(logQueueError("goals.report-job-failed")));
-      }
+      const jobIds = jobs.value.finished
+        .slice(0, RESOURCE_DELIVERY_BATCH_SIZE)
+        .map((job) => job.id);
+      const delivery = {
+        idempotencyKey: `resource-results:${chat.threadId}:${jobIds.join(",")}`,
+        jobIds,
+        text,
+      };
       yield* updateChat(goalId, chat.threadId, {
-        taskOutcome: undefined,
-        resourceJobs: undefined,
-        settled: false,
-        resumes: (chat.resumes ?? 0) + 1,
+        resourceDelivery: delivery,
       });
-      yield* Effect.logInfo("goals.agentqueue-resource-results-delivered", {
-        goalId,
-        taskId: chat.taskId,
-        jobs: jobs.value.finished.map((job) => job.id),
-      });
+      const pendingGoal = (yield* currentGoal(goalId)) ?? fresh;
+      const pendingChat =
+        pendingGoal.chats.find((candidate) => candidate.threadId === chat.threadId) ?? chat;
+      const result = yield* reconcileResourceDelivery(pendingGoal, pendingChat, delivery);
+      if (result === "finished") {
+        yield* finishChat(goalId, chat.threadId, undefined, { vouched: true });
+      }
+      if (result === "sent" || result === "finished") {
+        yield* Effect.logInfo("goals.agentqueue-resource-results-delivered", {
+          goalId,
+          taskId: chat.taskId,
+          jobs: jobIds,
+        });
+      }
     }
   });
 

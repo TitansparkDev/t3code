@@ -113,6 +113,16 @@ export const GoalChat = Schema.Struct({
   resourceJobs: Schema.optional(Schema.Array(Schema.String)),
   /** Times this same conversation was brought back to continue its task (repair, retry, results). */
   resumes: Schema.optional(Schema.Number),
+  /** Routine stored-job result deliveries; these do not count against repair ownership. */
+  resourceResumes: Schema.optional(Schema.Number),
+  /** A durable intent that makes a stored-job result safe to replay after a server restart. */
+  resourceDelivery: Schema.optional(
+    Schema.Struct({
+      idempotencyKey: Schema.String,
+      jobIds: Schema.Array(Schema.String),
+      text: Schema.String,
+    }),
+  ),
   /** When the latest resume was sent: an end-of-turn event for a turn requested before it is stale. */
   resumedAt: Schema.optional(IsoDateTime),
   /**
@@ -655,6 +665,22 @@ export interface QueueTaskAssignment {
   readonly resources?: ReadonlyArray<string>;
   /** How long a command waits for a busy resource before it is stored as a job. Default 30. */
   readonly deferAfterSeconds?: number;
+  /** Bounded queue evidence provided only when a replacement takes over an existing task. */
+  readonly replacementHandoff?: {
+    readonly integrationBranch: string;
+    readonly integrationHead: string | null;
+    readonly latestFailure: string | null;
+    readonly earlierFailure: string | null;
+    readonly siblingRepairs: ReadonlyArray<{
+      readonly taskId: string;
+      readonly title: string;
+      readonly status: string;
+      readonly landedCommit: string | null;
+      readonly failure: string | null;
+    }>;
+    readonly outstandingJobs: ReadonlyArray<string>;
+    readonly moreOutstandingJobs: number;
+  };
 }
 
 /** Why a conversation that already worked on a task is being continued on it. */
@@ -733,6 +759,7 @@ export function queueWorkerPrompt(
           ...task.existingCommits!.map((commit) => `  ${commit}`),
         ]
       : []),
+    ...replacementHandoffLines(task),
     task.description ? `\nTask details from the plan:\n${task.description}` : "",
     "",
     ...contractLines(task),
@@ -779,6 +806,7 @@ function queueRepairPrompt(
           ...task.existingCommits!.map((commit) => `  ${commit}`),
         ]
       : []),
+    ...replacementHandoffLines(task),
     ...mergeStateLines(task),
     ...contractLines(task),
     "",
@@ -794,6 +822,30 @@ function queueRepairPrompt(
     "6. Nobody can answer questions: choose the safest option and say what you chose.",
     `If a person must act, end with ${GOAL_NEEDS_ATTENTION_MARKER} on a line by itself and say what is needed.`,
   ].join("\n");
+}
+
+function replacementHandoffLines(task: QueueTaskAssignment): string[] {
+  const handoff = task.replacementHandoff;
+  if (!handoff) return [];
+  return [
+    "--- Replacement handoff (bounded queue evidence) ---",
+    `Current integration revision: ${handoff.integrationBranch} at ${handoff.integrationHead ?? "unavailable"}. Reconcile your kept branch with this revision before changing code.`,
+    `Latest recorded failure: ${handoff.latestFailure ?? task.lastFailure ?? "none recorded"}`,
+    `Earlier recorded failure: ${handoff.earlierFailure ?? "none recorded"}`,
+    "Prior approaches are not recorded; do not infer rejected approaches from unavailable conversation history.",
+    ...(handoff.siblingRepairs.length > 0
+      ? [
+          "Related repair tasks:",
+          ...handoff.siblingRepairs.map(
+            (repair) =>
+              `- ${repair.taskId} (${repair.title}): ${repair.status}; landed commit ${repair.landedCommit ?? "not recorded"}; failure ${repair.failure ?? "none recorded"}`,
+          ),
+        ]
+      : ["Related repair tasks: none recorded."]),
+    `Outstanding stored command jobs: ${handoff.outstandingJobs.join(", ") || "none"}${handoff.moreOutstandingJobs > 0 ? `; ${handoff.moreOutstandingJobs} more omitted` : ""}.`,
+    "Use the current integration revision and the preserved commits above as the source of truth. Do not repeat work already kept or landed.",
+    "",
+  ];
 }
 
 /** What the server did to a repair's worktree and what is left to do. */
@@ -858,6 +910,7 @@ export function queueResumePrompt(task: QueueTaskAssignment, reason: QueueResume
         `The stored command${reason.results.length > 1 ? "s" : ""} you queued for ${task.taskId} finished:`,
         ...reason.results,
         where,
+        "If a tool call fails because its input format is rejected, switch to an available read tool with a working format instead of repeating the same failing call.",
         "Continue from these results: fix what they show, re-run only what is needed (through \`agentq run\`), commit, and end your turn with a one-line summary.",
       ].join("\n");
   }

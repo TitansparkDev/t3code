@@ -27,6 +27,7 @@ import {
 import type { Goal, GoalSettings } from "@t3tools/contracts/goals";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as TestClock from "effect/testing/TestClock";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -38,6 +39,8 @@ import {
   openQueueDatabase,
   releaseClaim,
 } from "../../../../packages/agent-queue-core/src/index.ts";
+import { recordEvent } from "../../../../packages/agent-queue-core/src/eventStream.ts";
+import { recordFailure } from "../../../../packages/agent-queue-core/src/failures.ts";
 import {
   createTestGitRepo,
   execCommand,
@@ -57,7 +60,6 @@ import {
   AgentQueueServiceLive,
 } from "../queue/AgentQueueService.ts";
 import { GoalBeads } from "./GoalBeads.ts";
-import { recordFailure } from "../../../../packages/agent-queue-core/src/failures.ts";
 import * as GoalService from "./GoalService.ts";
 import * as GoalStore from "./GoalStore.ts";
 
@@ -146,7 +148,12 @@ const makeFlow = (
       release?: boolean;
       locked?: boolean;
       submitLocked?: boolean;
+      reportJobFailures?: number;
     };
+    readonly resourceJobs?: Ref.Ref<{
+      readonly open: ReadonlyArray<string>;
+      readonly finished: ReadonlyArray<{ readonly id: string; readonly summary: string }>;
+    }>;
     /** How many workspace binds fail before the engine accepts one. */
     readonly bindFailures?: number;
   } = {},
@@ -168,6 +175,7 @@ const makeFlow = (
 
     const commands = yield* Queue.unbounded<OrchestrationCommand>();
     const log: OrchestrationCommand[] = [];
+    const reportEvents = yield* Queue.unbounded<{ readonly id: string; readonly ok: boolean }>();
     const events = yield* PubSub.unbounded<OrchestrationEvent>();
     const subscription = yield* PubSub.subscribe(events);
     let eventCount = 0;
@@ -209,6 +217,7 @@ const makeFlow = (
     const queueLayer = Layer.effect(
       AgentQueueService,
       Effect.map(AgentQueueService, (live) => {
+        let reportJobFailuresLeft = options.queueFaults?.reportJobFailures ?? 0;
         // A locked queue database fails every operation alike, as it did under load.
         const base = Object.fromEntries(
           Object.entries(live).map(([name, operation]) => [
@@ -243,6 +252,37 @@ const makeFlow = (
                   new AgentQueueError({ operation: "release", message: "test release outage" }),
                 )
               : base.release(...args),
+          resourceJobs: options.resourceJobs
+            ? () => Ref.get(options.resourceJobs!)
+            : base.resourceJobs,
+          reportJob: (id) => {
+            const reported =
+              reportJobFailuresLeft > 0
+                ? Effect.sync(() => {
+                    reportJobFailuresLeft -= 1;
+                  }).pipe(
+                    Effect.andThen(
+                      Effect.fail(
+                        new AgentQueueError({
+                          operation: "reportJob",
+                          message: "test report outage",
+                        }),
+                      ),
+                    ),
+                  )
+                : options.resourceJobs
+                  ? Ref.update(options.resourceJobs, (jobs) => ({
+                      ...jobs,
+                      finished: jobs.finished.filter((job) => job.id !== id),
+                    }))
+                  : base.reportJob(id);
+            return reported.pipe(
+              Effect.tap(() => Queue.offer(reportEvents, { id, ok: true }).pipe(Effect.asVoid)),
+              Effect.tapError(() =>
+                Queue.offer(reportEvents, { id, ok: false }).pipe(Effect.asVoid),
+              ),
+            );
+          },
         });
       }),
     ).pipe(Layer.provide(AgentQueueServiceLive));
@@ -485,6 +525,7 @@ const makeFlow = (
       landings,
       goalOf,
       depsLayer,
+      reportEvents,
       bindAttempts: () => bindAttempts,
     };
   });
@@ -2370,6 +2411,286 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
         expect(flow.log.filter((c) => c.type === "thread.create")).toHaveLength(1);
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
+
+  it.effect(
+    "20 routine resource deliveries keep their owner and retry one delivery exactly once after restart",
+    () =>
+      Effect.gen(function* () {
+        const resourceJobs = yield* Ref.make<{
+          readonly open: ReadonlyArray<string>;
+          readonly finished: ReadonlyArray<{ readonly id: string; readonly summary: string }>;
+        }>({ open: [], finished: [] });
+        const flow = yield* makeFlow(planWith([{ id: "T1" }]), {
+          resourceJobs,
+          queueFaults: { reportJobFailures: 1 },
+        });
+        const first = yield* flow.startServer;
+        const firstLoop = yield* Effect.forkScoped(first.loop);
+        const [goal] = yield* first.create(
+          settingsFor({
+            concurrency: 1,
+            agents: settingsFor().agents.map((a) => ({ ...a, count: 1 })),
+          }),
+        );
+        const [created] = yield* flow.waitFor("thread.create", 1);
+        const threadId = created!.threadId;
+        const waitForJobs = (jobId: string) =>
+          flow.goalStore.update(goal!.id, (current) => ({
+            ...current,
+            chats: current.chats.map((chat) =>
+              chat.threadId === threadId
+                ? {
+                    ...chat,
+                    status: "completed" as const,
+                    taskOutcome: "waiting" as const,
+                    resourceJobs: [jobId],
+                  }
+                : chat,
+            ),
+          }));
+
+        yield* Ref.set(resourceJobs, {
+          open: [],
+          finished: [{ id: "job-1", summary: "first result" }],
+        });
+        yield* waitForJobs("job-1");
+        yield* tickOnce;
+        const firstKey = `resource-results:${threadId}:job-1`;
+        yield* flow.awaitCommand(
+          (command) =>
+            command.type === "thread.turn.start" &&
+            command.threadId === threadId &&
+            command.idempotencyKey === firstKey,
+        );
+        expect(yield* Queue.take(flow.reportEvents)).toEqual({ id: "job-1", ok: false });
+        const pending = yield* flow.goalOf(first);
+        expect(pending.chats[0]).toMatchObject({
+          resourceDelivery: { idempotencyKey: firstKey, jobIds: ["job-1"] },
+          taskOutcome: "waiting",
+        });
+
+        yield* Fiber.interrupt(firstLoop);
+        const restarted = yield* flow.startServer;
+        const restartedLoop = yield* Effect.forkScoped(restarted.loop);
+        yield* tickOnce;
+        expect(yield* Queue.take(flow.reportEvents)).toEqual({ id: "job-1", ok: true });
+        expect(
+          flow.log.filter(
+            (command) =>
+              command.type === "thread.turn.start" && command.idempotencyKey === firstKey,
+          ),
+        ).toHaveLength(1);
+
+        for (let index = 2; index <= 20; index += 1) {
+          const id = `job-${index}`;
+          yield* Ref.set(resourceJobs, {
+            open: [],
+            finished: [{ id, summary: `result ${index}` }],
+          });
+          yield* waitForJobs(id);
+          yield* tickOnce;
+          const key = `resource-results:${threadId}:${id}`;
+          yield* flow.awaitCommand(
+            (command) =>
+              command.type === "thread.turn.start" &&
+              command.threadId === threadId &&
+              command.idempotencyKey === key,
+          );
+          expect(yield* Queue.take(flow.reportEvents)).toEqual({ id, ok: true });
+        }
+
+        const after = yield* flow.goalOf(restarted);
+        expect(after.chats).toHaveLength(1);
+        expect(after.chats[0]).toMatchObject({ resourceResumes: 20 });
+        expect(after.chats[0]?.resumes ?? 0).toBe(0);
+        const queue = yield* AgentQueueService.pipe(Effect.provideContext(flow.deps));
+        expect(yield* queue.ownerOf(goal!.agentQueue!, "T1")).toMatchObject({
+          ownerRef: threadId,
+          turns: 1,
+        });
+        expect(flow.log.filter((command) => command.type === "thread.create")).toHaveLength(1);
+        expect(
+          flow.log.filter(
+            (command) =>
+              command.type === "thread.turn.start" && command.idempotencyKey !== undefined,
+          ),
+        ).toHaveLength(20);
+        yield* Fiber.interrupt(restartedLoop);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("repeated actual queue failures still replace an exhausted owner", () =>
+    Effect.gen(function* () {
+      const flow = yield* makeFlow(planWith([{ id: "T1" }]));
+      const service = yield* flow.startServer;
+      const [goal] = yield* service.create(settingsFor());
+      const [created] = yield* flow.waitFor("thread.create", 1);
+      const threadId = created!.threadId;
+      const binding = goal!.agentQueue!;
+      const queue = yield* AgentQueueService.pipe(Effect.provideContext(flow.deps));
+      const db = openQueueDatabase({ gitCommonDir: flow.repo.gitCommonDir });
+      db.prepare("UPDATE tasks SET max_retries = 20 WHERE id = 'T1'").run();
+      db.close();
+      const failures = [
+        "check rejected alpha implementation",
+        "check rejected beta implementation",
+        "check rejected gamma implementation",
+        "check rejected delta implementation",
+        "check rejected epsilon implementation",
+        "check rejected zeta implementation",
+        "check rejected eta implementation",
+        "check rejected theta implementation",
+        "check rejected iota implementation",
+      ];
+
+      for (const [index, reason] of failures.entries()) {
+        const current = yield* flow.goalOf(service);
+        const owner = current.chats.find((chat) => chat.taskId === "T1")!;
+        expect(
+          yield* queue.release(binding, owner.claimToken!, "retry", reason, {
+            failureClass: "verification",
+          }),
+        ).toBe(true);
+        yield* flow.goalStore.update(goal!.id, (value) => ({
+          ...value,
+          chats: value.chats.map((chat) =>
+            chat.threadId === owner.threadId
+              ? { ...chat, status: "failed" as const, taskOutcome: "retry" as const }
+              : chat,
+          ),
+        }));
+        yield* service.addAgents(goal!.id, 0);
+
+        if (index < 8) {
+          yield* flow.awaitCommand(
+            (command) =>
+              command.type === "thread.turn.start" &&
+              command.threadId === threadId &&
+              command.message.text.includes(reason),
+          );
+          const updated = yield* flow.goalOf(service);
+          expect(updated.chats.find((chat) => chat.threadId === threadId)?.resumes).toBe(index + 1);
+        }
+      }
+
+      const replacement = yield* flow.awaitCommand(
+        (command) => command.type === "thread.create" && command.threadId !== threadId,
+      );
+      expect(replacement.type).toBe("thread.create");
+      const after = yield* flow.goalOf(service);
+      expect(after.chats.find((chat) => chat.threadId === threadId)?.resumes).toBe(8);
+      expect(after.chats.filter((chat) => chat.taskId === "T1")).toHaveLength(2);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("a replacement sees current queue evidence and settled sibling repairs", () =>
+    Effect.gen(function* () {
+      const resourceJobs = yield* Ref.make({ open: ["job-handoff-1"], finished: [] });
+      const flow = yield* makeFlow(
+        planWith([
+          {
+            id: "T1",
+            verify: 'node -e "process.exit(3)"',
+          },
+        ]),
+        { resourceJobs },
+      );
+      const service = yield* flow.startServer;
+      const [goal] = yield* service.create(settingsFor());
+      const [created] = yield* flow.waitFor("thread.create", 1);
+      const original = created!;
+      const binding = goal!.agentQueue!;
+      const queue = yield* AgentQueueService.pipe(Effect.provideContext(flow.deps));
+      const integrationHead = yield* Effect.promise(async () => {
+        const result = await execCommand(
+          "git",
+          ["rev-parse", `refs/heads/${binding.integrationBranch}^{commit}`],
+          flow.repo.rootDir,
+        );
+        return result.stdout.trim();
+      });
+      yield* Effect.promise(async () => {
+        await NodeFSP.writeFile(
+          NodePath.join(original.worktreePath!, "T1.txt"),
+          "kept implementation\n",
+        );
+        await execCommand("git", ["add", "-A"], original.worktreePath!);
+        await execCommand(
+          "git",
+          ["commit", "-qm", "keep donor interface consumer"],
+          original.worktreePath!,
+        );
+      });
+      const followUp = yield* queue.addFollowUp(binding, {
+        parentTaskId: "T1",
+        kind: "repair",
+        blocking: false,
+        title: "Donor interface repair",
+        note: "Repair the donor interface before consumers use it.",
+      });
+      expect(followUp.taskId).toBe("T1-FU1");
+      const db = openQueueDatabase({ gitCommonDir: flow.repo.gitCommonDir });
+      db.prepare("UPDATE tasks SET status = 'completed' WHERE id = ?").run(followUp.taskId);
+      recordEvent(db, followUp.taskId, "task_landed", {
+        landedCommit: integrationHead,
+        baseBranch: binding.integrationBranch,
+      });
+      db.close();
+
+      const initial = (yield* flow.goalOf(service)).chats[0]!;
+      expect(
+        yield* queue.release(
+          binding,
+          initial.claimToken!,
+          "retry",
+          "obsolete donor error: old export missing",
+          {
+            failureClass: "verification",
+          },
+        ),
+      ).toBe(true);
+      const failureDb = openQueueDatabase({ gitCommonDir: flow.repo.gitCommonDir });
+      failureDb
+        .prepare("UPDATE tasks SET failure_reason = ? WHERE id = 'T1'")
+        .run("current check failure: node -e exited 3");
+      recordFailure(failureDb, "T1", {
+        failureClass: "verification",
+        message: "current check failure: node -e exited 3",
+      });
+      failureDb.close();
+      yield* flow.goalStore.update(goal!.id, (current) => ({
+        ...current,
+        chats: current.chats.map((chat) =>
+          chat.threadId === original.threadId
+            ? { ...chat, status: "failed" as const, taskOutcome: "retry" as const, resumes: 8 }
+            : chat,
+        ),
+      }));
+      yield* service.addAgents(goal!.id, 0);
+
+      const creates = yield* flow.commandsOf("thread.create");
+      expect(creates).toHaveLength(2);
+      const replacement = creates[1]!;
+      const turn = yield* flow.awaitCommand(
+        (command) =>
+          command.type === "thread.turn.start" && command.threadId === replacement.threadId,
+      );
+      const prompt = turn.type === "thread.turn.start" ? turn.message.text : "";
+      expect(prompt).toContain("keep donor interface consumer");
+      expect(prompt).toContain(integrationHead);
+      expect(prompt).toContain("T1-FU1");
+      expect(prompt).toContain("Donor interface repair");
+      expect(prompt).toContain("job-handoff-1");
+      expect(prompt).toContain("node -e");
+      expect(prompt).toContain("current check failure: node -e exited 3");
+      expect(prompt).toContain("obsolete donor error: old export missing");
+      expect(prompt.indexOf("current check failure: node -e exited 3")).toBeLessThan(
+        prompt.indexOf("obsolete donor error: old export missing"),
+      );
+      expect(prompt.toLowerCase()).toContain("not recorded");
+    }).pipe(Effect.scoped),
+  );
+
   // ───────────── a stalled queue: stale chats, missed events, blocked tasks ─────────────
 
   /** A check that fails with a named failing item until `open` exists in the folder. */
