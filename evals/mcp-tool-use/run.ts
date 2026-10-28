@@ -749,6 +749,7 @@ type Sample = {
   readonly repo: string;
   readonly shell: Array<ShellEntry>;
   readonly shellUsage: Usage;
+  readonly unsupportedNativeTools: Array<string>;
   readonly linked: Set<string>;
   readonly codeStore: Record<string, unknown>;
   nextTask: number;
@@ -782,6 +783,7 @@ export const makeSample = (testCase: McpToolUseCase, base: Base): Sample => {
     repo: testCase.setup.world?.repo ?? "acme/app",
     shell,
     shellUsage: emptyUsage(),
+    unsupportedNativeTools: [],
     linked: new Set([...urls, ...shell.flatMap(createdPullRequests)]),
     codeStore: {},
     nextTask: Math.max(0, ...taskNumbers) + 1,
@@ -1300,6 +1302,9 @@ const simulate = Effect.fn("evaluateMcpToolUse.simulate")(function* (
             throw new Error("Shell simulator does not expose tools.");
           },
         }),
+      );
+      sample.unsupportedNativeTools.push(
+        ...response.unsupportedNativeTools.map((tool) => `simulator:${tool}`),
       );
       const decoded = decodeShellReply(response.text);
       output =
@@ -1977,7 +1982,7 @@ const runNativeSample = Effect.fn("evaluateMcpToolUse.runNativeSample")(function
     usage: spent.usage,
     shellUsage: sample.shellUsage,
     transcript: [...turn.calls],
-    unsupportedNativeTools: turn.unsupportedNativeTools,
+    unsupportedNativeTools: [...turn.unsupportedNativeTools, ...sample.unsupportedNativeTools],
   };
 }, Effect.scoped);
 
@@ -2077,13 +2082,9 @@ export const summarize = (
         ]),
     ...(codex
       ? [
-          ...(options.transport === "codex-app-server"
-            ? [
-                "- Native transport disables `web_search`, runs with empty environments and only the supplied dynamic tool catalog, maps captured `instructions` to `baseInstructions`, concatenates captured system/developer messages into `developerInstructions`, and serializes other input items as text; those items do not keep their original protocol roles. One app-server turn handles the tool loop, capped at 8 × `--max-steps` dynamic and simulated tool calls. The shell simulator uses a second turn on the same Codex model. App-server token usage is unavailable.",
-              ]
-            : [
-                "- Code-mode tools use case mocks and a simulated machine. Native subagent prompts and asynchronous notifications are approximate.",
-              ]),
+          options.transport === "codex-app-server"
+            ? "- Native transport disables `web_search`, runs with empty environments and only the supplied dynamic tool catalog, maps captured `instructions` to `baseInstructions`, concatenates captured system/developer messages into `developerInstructions`, and serializes other input items as text; those items do not keep their original protocol roles. One app-server turn handles the tool loop, capped at 8 × `--max-steps` dynamic and simulated tool calls. The shell simulator uses a second turn on the same Codex model. App-server token usage is unavailable."
+            : "- Code-mode tools use case mocks and a simulated machine. Native subagent prompts and asynchronous notifications are approximate.",
         ]
       : [identityNote]),
     ...(rows.some((row) => row.role === "native-subagent") ? [nativeNote] : []),

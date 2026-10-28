@@ -1,5 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off
-import * as NodeFS from "node:fs/promises";
+import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import { assert, expect, it } from "@effect/vitest";
@@ -35,13 +35,19 @@ it("identifies native tools outside the fake evaluator catalog for denial", () =
 });
 
 const fakeServer = async (
-  mode: "normal" | "protocol-error" | "stall" | "native-tool-attempt" | "bad-tool",
+  mode:
+    | "normal"
+    | "protocol-error"
+    | "stall"
+    | "native-tool-attempt"
+    | "unknown-native-tool"
+    | "bad-tool",
 ) => {
-  const root = await NodeFS.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-eval-native-test-"));
-  await NodeFS.chmod(root, 0o700);
+  const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-eval-native-test-"));
+  await NodeFSP.chmod(root, 0o700);
   const auth = NodePath.join(root, "codex-home");
-  await NodeFS.mkdir(auth, { mode: 0o700 });
-  await NodeFS.writeFile(NodePath.join(auth, "auth.json"), "{}", { mode: 0o600 });
+  await NodeFSP.mkdir(auth, { mode: 0o700 });
+  await NodeFSP.writeFile(NodePath.join(auth, "auth.json"), "{}", { mode: 0o600 });
   const script = NodePath.join(root, "fake-codex");
   const source = `#!/usr/bin/env node
 const readline = require("node:readline");
@@ -58,8 +64,8 @@ rl.on("line", line => {
     send({ id: req.id, result: { thread: { id: safe ? "thread-1" : "unsafe" } } });
   } else if (req.method === "turn/start") {
     send({ id: req.id, result: { turn: { id: "turn-1" } } });
-    if (${JSON.stringify(mode)} === "native-tool-attempt") {
-      send({ method: "turn/completed", params: { threadId: "thread-1", turn: { id: "turn-1", status: "completed", items: [{ id: "comment-1", type: "agentMessage", phase: "commentary", text: "I will not use the shell." }, { id: "final-1", type: "agentMessage", phase: "final_answer", text: "Done safely." }, { id: "command-1", type: "commandExecution", command: "echo blocked", status: "failed" }] } } });
+    if (["native-tool-attempt", "unknown-native-tool"].includes(${JSON.stringify(mode)})) {
+      send({ method: "turn/completed", params: { threadId: "thread-1", turn: { id: "turn-1", status: "completed", items: [{ id: "comment-1", type: "agentMessage", phase: "commentary", text: "I will not use the shell." }, { id: "final-1", type: "agentMessage", phase: "final_answer", text: "Done safely." }, { id: "command-1", type: ${JSON.stringify(mode === "unknown-native-tool" ? "computerUseFuture" : "commandExecution")}, command: "echo blocked", status: "failed" }] } } });
       return;
     }
     send({ id: "dynamic-1", method: "item/tool/call", params: { callId: "call-1", threadId: req.params.threadId, turnId: "turn-1", tool: ${JSON.stringify(mode === "bad-tool" ? "exec_command" : "mock")}, arguments: { value: 2 } } });
@@ -69,14 +75,14 @@ rl.on("line", line => {
   }
 });
 `;
-  await NodeFS.writeFile(script, source, { mode: 0o700 });
-  await NodeFS.chmod(script, 0o700);
+  await NodeFSP.writeFile(script, source, { mode: 0o700 });
+  await NodeFSP.chmod(script, 0o700);
   return { root, auth, script };
 };
 
 it("uses only the supplied app-server tools and cleans its isolated home", async () => {
   const fixture = await fakeServer("normal");
-  const tempDirsBefore = (await NodeFS.readdir(NodeOS.tmpdir())).filter((name) =>
+  const tempDirsBefore = (await NodeFSP.readdir(NodeOS.tmpdir())).filter((name) =>
     name.startsWith("t3-eval-codex-"),
   );
   try {
@@ -95,18 +101,24 @@ it("uses only the supplied app-server tools and cleans its isolated home", async
     assert.deepEqual(result.calls, [
       { id: "call-1", name: "mock", arguments: { value: 2 }, output: "fake-result" },
     ]);
-    assert.deepEqual(await NodeFS.readFile(NodePath.join(fixture.auth, "auth.json"), "utf8"), "{}");
+    assert.deepEqual(
+      await NodeFSP.readFile(NodePath.join(fixture.auth, "auth.json"), "utf8"),
+      "{}",
+    );
   } finally {
-    await NodeFS.rm(fixture.root, { recursive: true, force: true });
+    await NodeFSP.rm(fixture.root, { recursive: true, force: true });
   }
-  const tempDirsAfter = (await NodeFS.readdir(NodeOS.tmpdir())).filter((name) =>
+  const tempDirsAfter = (await NodeFSP.readdir(NodeOS.tmpdir())).filter((name) =>
     name.startsWith("t3-eval-codex-"),
   );
   assert.deepEqual(tempDirsAfter, tempDirsBefore);
 });
 
-it("records blocked native actions and uses only the final-answer message", async () => {
-  const fixture = await fakeServer("native-tool-attempt");
+it.each([
+  ["native-tool-attempt", "exec_command"],
+  ["unknown-native-tool", "native:computerUseFuture"],
+] as const)("records %s and uses only the final-answer message", async (mode, blockedTool) => {
+  const fixture = await fakeServer(mode);
   try {
     const result = await runNativeCodexTurn({
       model: "gpt-6-luna",
@@ -120,9 +132,9 @@ it("records blocked native actions and uses only the final-answer message", asyn
     });
     assert.equal(result.text, "I will not use the shell.\n\nDone safely.");
     assert.equal(result.finalText, "Done safely.");
-    assert.deepEqual(result.unsupportedNativeTools, ["exec_command"]);
+    assert.deepEqual(result.unsupportedNativeTools, [blockedTool]);
   } finally {
-    await NodeFS.rm(fixture.root, { recursive: true, force: true });
+    await NodeFSP.rm(fixture.root, { recursive: true, force: true });
   }
 });
 
@@ -132,7 +144,7 @@ it("fails closed on app-server protocol errors and startup deadlines", async () 
     ["stall", 30, "exceeded 30 ms"],
   ] as const) {
     const fixture = await fakeServer(mode);
-    const homes = (await NodeFS.readdir(NodeOS.tmpdir())).filter((name) =>
+    const homes = (await NodeFSP.readdir(NodeOS.tmpdir())).filter((name) =>
       name.startsWith("t3-eval-codex-"),
     );
     try {
@@ -150,38 +162,45 @@ it("fails closed on app-server protocol errors and startup deadlines", async () 
         }),
       ).rejects.toThrow(expected);
       assert.deepEqual(
-        (await NodeFS.readdir(NodeOS.tmpdir())).filter((name) => name.startsWith("t3-eval-codex-")),
+        (await NodeFSP.readdir(NodeOS.tmpdir())).filter((name) =>
+          name.startsWith("t3-eval-codex-"),
+        ),
         homes,
       );
     } finally {
-      await NodeFS.rm(fixture.root, { recursive: true, force: true });
+      await NodeFSP.rm(fixture.root, { recursive: true, force: true });
     }
   }
 });
 
-it("denies an unadvertised dynamic tool without turning it into an infrastructure error", async () => {
-  const fixture = await fakeServer("bad-tool");
-  const homes = (await NodeFS.readdir(NodeOS.tmpdir())).filter((name) =>
-    name.startsWith("t3-eval-codex-"),
-  );
-  try {
-    const result = await runNativeCodexTurn({
-      model: "gpt-6-luna",
-      effort: "low",
-      codexHome: fixture.auth,
-      developerInstructions: "",
-      input: "",
-      tools: [{ name: "mock", description: "Fake", inputSchema: {} }],
-      command: fixture.script,
-      onToolCall: async () => "unused",
-    });
-    assert.deepEqual(result.unsupportedNativeTools, ["exec_command"]);
-    assert.equal(result.calls[0]?.output, "Unsupported dynamic tool call was denied.");
-  } finally {
-    await NodeFS.rm(fixture.root, { recursive: true, force: true });
-  }
-  assert.deepEqual(
-    (await NodeFS.readdir(NodeOS.tmpdir())).filter((name) => name.startsWith("t3-eval-codex-")),
-    homes,
-  );
-});
+it.each([0, 1])(
+  "denies an unadvertised tool with budget %s as a graded failure",
+  async (maxToolCalls) => {
+    const fixture = await fakeServer("bad-tool");
+    const homes = (await NodeFSP.readdir(NodeOS.tmpdir())).filter((name) =>
+      name.startsWith("t3-eval-codex-"),
+    );
+    try {
+      const result = await runNativeCodexTurn({
+        model: "gpt-6-luna",
+        effort: "low",
+        codexHome: fixture.auth,
+        developerInstructions: "",
+        input: "",
+        tools: [{ name: "mock", description: "Fake", inputSchema: {} }],
+        maxToolCalls,
+        command: fixture.script,
+        onToolCall: async () => "unused",
+      });
+      assert.include(result.unsupportedNativeTools, "exec_command");
+      if (maxToolCalls === 0) assert.equal(result.status, "tool_call_limit");
+      assert.equal(result.calls[0]?.output, "Unsupported dynamic tool call was denied.");
+    } finally {
+      await NodeFSP.rm(fixture.root, { recursive: true, force: true });
+    }
+    assert.deepEqual(
+      (await NodeFSP.readdir(NodeOS.tmpdir())).filter((name) => name.startsWith("t3-eval-codex-")),
+      homes,
+    );
+  },
+);

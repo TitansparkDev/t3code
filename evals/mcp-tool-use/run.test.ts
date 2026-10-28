@@ -55,6 +55,18 @@ it("grades Codex shell and subagent calls with the shared rules", () => {
     ),
     ["notCalls Agent", "shellMustNot /sleep/"],
   );
+  assert.deepEqual(
+    failed(
+      {},
+      {
+        calls: [],
+        text: "Done safely.",
+        stopReason: "end_turn",
+        unsupportedNativeTools: ["simulator:exec_command"],
+      },
+    ),
+    ["native tools disabled simulator:exec_command"],
+  );
 });
 
 it("accepts any tool listed as an alternative", () => {

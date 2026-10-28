@@ -1,5 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off
-import * as NodeFS from "node:fs/promises";
+import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeChildProcess from "node:child_process";
@@ -95,7 +95,7 @@ export const runNativeCodexTurn = async (options: NativeCodexOptions): Promise<N
   const sourceHome =
     options.codexHome ?? process.env.CODEX_HOME ?? NodePath.join(NodeOS.homedir(), ".codex");
   const authPath = NodePath.join(sourceHome, "auth.json");
-  const tempHome = await NodeFS.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-eval-codex-"));
+  const tempHome = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-eval-codex-"));
   const workspace = NodePath.join(tempHome, "workspace");
   let child: NodeChildProcess.ChildProcessWithoutNullStreams | undefined;
   let childClosed: Promise<void> | undefined;
@@ -118,10 +118,10 @@ export const runNativeCodexTurn = async (options: NativeCodexOptions): Promise<N
   try {
     if (options.signal?.aborted) throw new Error("Codex app-server turn was aborted.");
     options.signal?.addEventListener("abort", onExternalAbort, { once: true });
-    await NodeFS.chmod(tempHome, 0o700);
-    await NodeFS.mkdir(workspace, { mode: 0o700 });
-    await NodeFS.copyFile(authPath, NodePath.join(tempHome, "auth.json"));
-    await NodeFS.chmod(NodePath.join(tempHome, "auth.json"), 0o600);
+    await NodeFSP.chmod(tempHome, 0o700);
+    await NodeFSP.mkdir(workspace, { mode: 0o700 });
+    await NodeFSP.copyFile(authPath, NodePath.join(tempHome, "auth.json"));
+    await NodeFSP.chmod(NodePath.join(tempHome, "auth.json"), 0o600);
     child = NodeChildProcess.spawn(
       options.command ?? "codex",
       [
@@ -175,6 +175,16 @@ export const runNativeCodexTurn = async (options: NativeCodexOptions): Promise<N
       sleep: "sleep",
       imageGeneration: "image_generation",
     };
+    const passiveItemTypes = new Set([
+      "userMessage",
+      "agentMessage",
+      "reasoning",
+      "plan",
+      "contextCompaction",
+      "dynamicToolCall",
+    ]);
+    const nativeToolName = (type: string) =>
+      itemToolNames[type] ?? (passiveItemTypes.has(type) ? undefined : `native:${type}`);
     let attemptedToolCalls = 0;
     child.stderr.on("data", () => {});
     lines.on("line", (line) => {
@@ -196,11 +206,7 @@ export const runNativeCodexTurn = async (options: NativeCodexOptions): Promise<N
         return;
       }
       if (message.method === "item/tool/call") {
-        if (attemptedToolCalls >= maxToolCalls) {
-          done.reject(new Error("Codex app-server exceeded the dynamic tool call limit."));
-          child?.kill("SIGTERM");
-          return;
-        }
+        const limitExceeded = attemptedToolCalls >= maxToolCalls;
         attemptedToolCalls += 1;
         let call: ReturnType<typeof nativeCodexToolRequest>;
         try {
@@ -224,6 +230,20 @@ export const runNativeCodexTurn = async (options: NativeCodexOptions): Promise<N
             arguments: args,
             output: "Unsupported dynamic tool call was denied.",
           });
+        }
+        if (limitExceeded) {
+          unsupportedNativeTools.push("tool_call_limit");
+          done.resolve({
+            text: [...turnTexts.values()].join("\n\n"),
+            finalText: "",
+            calls,
+            unsupportedNativeTools,
+            status: "tool_call_limit",
+          });
+          child?.kill("SIGTERM");
+          return;
+        }
+        if (!allowed) {
           child?.stdin.write(
             `${JSON.stringify({
               jsonrpc: "2.0",
@@ -281,8 +301,8 @@ export const runNativeCodexTurn = async (options: NativeCodexOptions): Promise<N
         if (item?.type === "agentMessage" && typeof item.id === "string") {
           if (typeof item.text === "string") turnTexts.set(item.id, item.text);
           if (typeof item.phase === "string") turnPhases.set(item.id, item.phase);
-        } else if (typeof item?.type === "string" && itemToolNames[item.type]) {
-          const name = itemToolNames[item.type]!;
+        } else if (typeof item?.type === "string" && nativeToolName(item.type)) {
+          const name = nativeToolName(item.type)!;
           unsupportedNativeTools.push(name);
           calls.push({
             id: String(item.id ?? `blocked-${calls.length + 1}`),
@@ -301,7 +321,7 @@ export const runNativeCodexTurn = async (options: NativeCodexOptions): Promise<N
         const items = Array.isArray(turn.items) ? turn.items : [];
         for (const value of items) {
           const item = asRecord(value);
-          const name = typeof item?.type === "string" ? itemToolNames[item.type] : undefined;
+          const name = typeof item?.type === "string" ? nativeToolName(item.type) : undefined;
           if (name && !calls.some((call) => call.id === String(item?.id))) {
             unsupportedNativeTools.push(name);
             calls.push({
@@ -435,6 +455,6 @@ export const runNativeCodexTurn = async (options: NativeCodexOptions): Promise<N
         await closed;
       }
     }
-    await NodeFS.rm(tempHome, { recursive: true, force: true });
+    await NodeFSP.rm(tempHome, { recursive: true, force: true });
   }
 };
