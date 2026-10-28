@@ -417,6 +417,8 @@ const GOAL_ESCALATION_MESSAGES = {
   "not-held": "The worker is still working; wait until it stops.",
   "invalid-chat": "The worker chat is not part of this goal.",
   "not-sent": "The message could not be sent to the worker.",
+  "queue-action-failed":
+    "The queue could not apply the recovery action; the escalation remains open.",
 } as const;
 
 export class GoalEscalationError extends Schema.TaggedError<GoalEscalationError>()(
@@ -429,11 +431,15 @@ export class GoalEscalationError extends Schema.TaggedError<GoalEscalationError>
       "not-held",
       "invalid-chat",
       "not-sent",
+      "queue-action-failed",
     ]),
+    detail: Schema.optional(Schema.String),
   },
 ) {
   override get message(): string {
-    return GOAL_ESCALATION_MESSAGES[this.reason];
+    return this.detail
+      ? `${GOAL_ESCALATION_MESSAGES[this.reason]} ${this.detail}`
+      : GOAL_ESCALATION_MESSAGES[this.reason];
   }
 }
 

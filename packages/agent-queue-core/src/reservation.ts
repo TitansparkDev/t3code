@@ -64,6 +64,7 @@ export interface ReservedTask {
   readonly baseBranch: string;
   readonly retryCount: number;
   readonly lastFailure: string | null;
+  readonly needsVerificationRepair?: boolean;
   /** Set when the worker must repair a submitted candidate instead of implementing the task. */
   readonly repair: RepairContext | null;
   /** The task's declared scope, and everything it may touch (scope, generated, supporting, amended). */
@@ -463,6 +464,9 @@ export async function reserveNextTask(
           `The optional tool "${tool}" is not available; skip the checks that need it and say so.`,
       ),
     ];
+    const lastFailure = db
+      .prepare("SELECT class FROM task_failures WHERE task_id = ? ORDER BY id DESC LIMIT 1")
+      .get(row.id) as { class: string } | undefined;
     return {
       taskId: row.id,
       title: row.title,
@@ -474,6 +478,8 @@ export async function reserveNextTask(
       baseBranch: options.baseBranch,
       retryCount: row.retry_count,
       lastFailure: repair ? repair.reason : row.failure_reason,
+      needsVerificationRepair:
+        lastFailure?.class === "verification" || lastFailure?.class === "scope",
       repair,
       scope,
       allowedPaths: allowed,

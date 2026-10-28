@@ -57,6 +57,7 @@ import {
   AgentQueueServiceLive,
 } from "../queue/AgentQueueService.ts";
 import { GoalBeads } from "./GoalBeads.ts";
+import { recordFailure } from "../../../../packages/agent-queue-core/src/failures.ts";
 import * as GoalService from "./GoalService.ts";
 import * as GoalStore from "./GoalStore.ts";
 
@@ -2017,6 +2018,122 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
         );
         expect((yield* flow.taskRow("T1")).status).toBe("pending");
       }).pipe(Effect.scoped),
+  );
+
+  it.effect("a refused queue recovery leaves the escalation open", () =>
+    Effect.gen(function* () {
+      const flow = yield* makeFlow(planWith([{ id: "T1" }]));
+      const service = yield* flow.startServer;
+      yield* Effect.forkScoped(service.loop);
+      yield* Effect.yieldNow;
+      yield* service.create(settingsFor());
+      yield* flow.waitFor("thread.create", 1);
+      const db = openQueueDatabase({ gitCommonDir: flow.repo.gitCommonDir });
+      db.prepare(
+        "UPDATE tasks SET status = 'blocked', failure_class = 'external' WHERE id = 'T1'",
+      ).run();
+      db.close();
+      const goal = yield* flow.goalOf(service);
+      const escalation = yield* service.openEscalation(
+        goal.id,
+        undefined,
+        "External prerequisite unavailable.",
+      );
+      const error = yield* service
+        .resolveEscalation(
+          escalation.id,
+          { action: "unblock", taskIds: ["T1"], note: "Try to release T1." },
+          "overseer",
+        )
+        .pipe(Effect.flip);
+      expect(error.reason).toBe("queue-action-failed");
+      expect((yield* flow.taskRow("T1")).status).toBe("blocked");
+      const pending = (yield* service.readEscalation(escalation.id)).escalation;
+      expect(["open", "reviewing"]).toContain(pending.status);
+      expect(pending.resolution).toBeUndefined();
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("an unblocked failed verification reaches its worker before another check", () =>
+    Effect.gen(function* () {
+      const flow = yield* makeFlow(
+        planWith([
+          {
+            id: "T1",
+            verify: `node -e "require('fs').writeFileSync('check-ran', 'yes');process.exit(3)"`,
+          },
+        ]),
+      );
+      const service = yield* flow.startServer;
+      yield* Effect.forkScoped(service.loop);
+      yield* Effect.yieldNow;
+      yield* service.create(settingsFor());
+      yield* flow.waitFor("thread.create", 1);
+      const created = flow.createdFor("T1")!;
+      const goal = yield* flow.goalOf(service);
+      yield* service.stop(goal.id);
+      yield* Effect.promise(async () => {
+        await NodeFSP.writeFile(NodePath.join(created.worktreePath!, "T1.txt"), "unfinished\n");
+        await execCommand("git", ["add", "-A"], created.worktreePath!);
+        await execCommand("git", ["commit", "-m", "T1: checkpoint"], created.worktreePath!);
+      });
+      flow.scripts.set(created.threadId, {
+        reply: "",
+        turnState: "error",
+        progress: true,
+        lastError: null,
+      });
+      yield* flow.goalStore.update(goal.id, (current) => ({
+        ...current,
+        chats: current.chats.map((chat) => ({
+          ...chat,
+          status: "failed",
+          taskOutcome: "retry",
+          completedAt: current.updatedAt,
+        })),
+      }));
+      const db = openQueueDatabase({ gitCommonDir: flow.repo.gitCommonDir });
+      releaseClaim(db, { ownerToken: goal.chats[0]!.claimToken!, finalStatus: "pending" });
+      for (let i = 0; i < 2; i++)
+        recordFailure(db, "T1", {
+          failureClass: "verification",
+          message: "Check exited 3",
+          headCommit: "checkpoint",
+        });
+      db.prepare(
+        "UPDATE tasks SET status = 'blocked', retry_count = 2, failure_reason = 'Check exited 3' WHERE id = 'T1'",
+      ).run();
+      db.close();
+      const escalation = yield* service.openEscalation(
+        goal.id,
+        undefined,
+        "T1 needs a code repair.",
+      );
+      yield* service.resolveEscalation(
+        escalation.id,
+        {
+          action: "unblock",
+          taskIds: ["T1"],
+          note: "Repair the failed check.",
+          guidance: "Repair recommendation for T1",
+        },
+        "overseer",
+      );
+      yield* service.restart(goal.id);
+      const after = yield* flow.eventually(
+        flow.goalOf(service),
+        (value) =>
+          value.status === "failed" ||
+          value.chats.some((chat) => !chat.overseer && chat.status === "running"),
+        "a repair worker or a re-held task",
+      );
+      expect(NodeFS.existsSync(NodePath.join(created.worktreePath!, "check-ran"))).toBe(false);
+      expect(after.status).toBe("running");
+      expect((yield* flow.taskRow("T1")).status).toBe("claimed");
+      const turns = yield* flow.commandsOf("thread.turn.start");
+      expect(turns).toHaveLength(2);
+      expect(turns[1]!.message.text).toContain("Repair recommendation for T1");
+    }).pipe(Effect.scoped),
   );
 
   it.effect(
