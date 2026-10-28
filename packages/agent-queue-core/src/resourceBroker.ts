@@ -1,25 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off preferSchemaOverJson:off
 /**
- * One machine-wide queue for the things workers cannot share: an Android emulator, a heavy
- * Gradle build, Docker, a fixed database, a GPU. Every actor (a worker's shell command, the
- * server's own checks, a deferred job) asks this broker, so none can bypass another.
- *
- * - Capacities are configured (`~/.config/agentqueue/resources.json`) over measured defaults.
- * - Requests are tickets in a fair FIFO. An aged ticket that cannot run yet blocks everything
- *   behind it, so nothing starves; younger ones may be backfilled when they fit.
- * - A grant is one atomic SQLite transaction, so independent processes cannot both win.
- * - A holder proves it is alive by its process (pid + start time) and by heartbeats. A dead
- *   holder's units are freed at once; a holder whose heartbeats stopped is torn down first
- *   (its process group is killed) and only then freed.
- * - Memory is admission-controlled: a ticket is granted only when the host has headroom for it
- *   beyond what recent grants will still claim.
- * - A ticket can be a stored job (command, directory, environment). Jobs outlive the process
- *   that asked, are run by a runner when their resource is free, and keep their result.
- *
- * Physical exclusion on top of this (flock slot files shared with `agent-resources`, so older
- * scripts remain mutually exclusive) is done by `resourceRunner.ts`.
- *
- * @module resourceBroker
+ * SQLite grants machine-wide resources atomically; process identity and heartbeats recover holders.
+ * resourceRunner also holds flock files to exclude older resource scripts.
  */
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
@@ -473,7 +455,7 @@ export function processIsLive(pid: number, startTicks?: number | null): boolean 
     // No /proc (not Linux): fall back to a signal probe.
     try {
       process.kill(pid, 0);
-      return NodeFS.existsSync("/proc") ? false : true;
+      return !NodeFS.existsSync("/proc");
     } catch (error: any) {
       return error.code === "EPERM";
     }
@@ -1270,7 +1252,7 @@ export class ResourceBroker {
         )
         .all() as unknown as TicketRow[]
     ).map(toTicket);
-    const names = new Set<string>([...Object.keys(config.resources)]);
+    const names = new Set<string>(Object.keys(config.resources));
     for (const ticket of rows) for (const item of ticket.resources) names.add(item.name);
     const resources = [...names].sort().map((name): ResourceStatus => {
       const definition = this.definitionOf(name, config);

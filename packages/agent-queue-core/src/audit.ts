@@ -1,12 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off preferSchemaOverJson:off
 /**
- * Landed is not checked. A task can merge with no executable check at the time (its plan had
- * none then, or the check could not run) and the plan then cannot complete: "unverified" is
- * never a pass. This runs the task's stored checks, once, against the plan's real integration
- * tip, records the result as the task's audit, and turns a failure into a blocking repair task
- * instead of silently counting the task as done.
- *
- * @module audit
+ * A merge without executable checks remains unverified until its integration-tip audit passes.
+ * Audit failures create blocking repairs rather than marking the plan complete.
  */
 import { environmentFailureOf } from "./toolchain.ts";
 import type * as NodeSqlite from "node:sqlite";

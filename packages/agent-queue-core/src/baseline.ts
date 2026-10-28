@@ -1,17 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off preferSchemaOverJson:off
 /**
- * Whose failure is it? A check that fails on a worker's commit may fail only because of that
- * commit, or may already fail on the integration branch the worker started from. Sending the worker
- * to repair code it never touched wastes its context and rewards nothing; calling the check passed
- * would hide a real failure. This runs the failing check once on the untouched integration tip
- * (remembered per check and tip) and compares what fails:
- *
- *  - passes there: the commit introduced the failure and its owner must fix it;
- *  - fails there the same way: a baseline failure, which the task is not made to repair but which
- *    stays on the plan as its own blocking task and keeps the check from counting as passed;
- *  - fails there differently, or cannot be run: treated as introduced (the safe default).
- *
- * @module baseline
+ * Only an identical failure on the untouched integration tip is a shared baseline defect.
+ * A different or unavailable baseline remains the worker's failure.
  */
 import type * as NodeSqlite from "node:sqlite";
 import * as NodeChildProcess from "node:child_process";

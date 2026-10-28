@@ -1,12 +1,4 @@
 // @effect-diagnostics effectFnOpportunity:off - fork service predating the rule; convert to Effect.fn as it is touched.
-/**
- * The goal runner's whole view of the orchestration engine: start a worker thread, say
- * something to it, stop or settle it, and read how it is doing. Goals only ever need the
- * handful of facts in {@link GoalThreadView}, so the engine's projection shapes stay behind
- * this port and the runner can be tested without an engine.
- *
- * @module goals/GoalThreads
- */
 import {
   CommandId,
   MessageId,

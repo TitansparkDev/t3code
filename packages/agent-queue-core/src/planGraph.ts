@@ -208,14 +208,6 @@ function commandFrom(label: string, value: string): string | null {
   return null;
 }
 
-/**
- * Parses markdown plan documents. Three task shapes are accepted:
- * ### [Status] TASK-ID: Title
- * - [ ] [TASK-ID] Title   (or "- [ ] TASK-ID: Title")
- * - [ ] **TASK-ID — Title**   (the shape `plan-work` plans use)
- * Indented or following lines may carry `Depends on:`, `Scope:`, `Verify:` (or `Done:` as a
- * single code span) and `Priority:`. A ticked checkbox marks the task already done.
- */
 export function parsePlanMarkdown(markdown: string): ParsedPlan {
   const lines = markdown.split(/\r?\n/);
   let title = "Untitled Plan";
