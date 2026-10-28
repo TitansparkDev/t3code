@@ -261,6 +261,7 @@ export async function auditUnverifiedTasks(
             contract: loaded.contract,
           }).variables,
           lockDir: NodePath.join(input.gitCommonDir, "agentqueue", "locks"),
+          allowReuse: false,
         });
       } catch (error) {
         if (error instanceof ResourceWaitError) continue; // looked at again on the next pass
@@ -322,6 +323,7 @@ export async function auditUnverifiedTasks(
                 gitCommonDir: input.gitCommonDir,
                 contract: loaded.contract,
               }).variables,
+              allowReuse: false,
               extraRequires: resourcesNeededBy(
                 loaded.contract,
                 scope,

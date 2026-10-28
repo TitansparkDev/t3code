@@ -1,27 +1,17 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off preferSchemaOverJson:off globalConsole:off
-/**
- * `node scripts/reliability-check.ts typecheck [--fresh] [--timeout SECONDS] -- <command>`: the entry
- * point the root and server `typecheck` scripts run through.
- *
- * - Admission: the check takes the machine's `heavy_build` lock with a memory demand that covers a
- *   compiler's measured peak (see TYPECHECK_DEMAND_MB), through the same broker as `agentq run`.
- * - Coalescing: identical checks (same source, lock file, checker versions, environment and command)
- *   share one process. A finished identical check answers from its receipt unless `--fresh` is given.
- * - Nesting: when a granted command runs this script again (the root script runs the server's), the
- *   inner check runs under the grant it inherited instead of queueing for the same unit.
- * - Timeouts stop the whole process tree and release the lock; the exit status is the command's own.
- *
- * @module reliability-check
- */
+/** Brokered typecheck execution. @module reliability-check */
+import * as NodeCrypto from "node:crypto";
 import {
   brokerHome,
-  checkIdentity,
   claimCheck,
-  readReceipt,
+  defaultReuseEnv,
+  declaredCheckIdentity,
+  matchingReceipt,
   releaseCheck,
   runningCheck,
   runUnderBroker,
   TYPECHECK_DEMAND_MB,
+  waitForCheck,
   writeReceipt,
   type CheckReceipt,
   type RunUnderBrokerResult,
@@ -30,6 +20,7 @@ import {
 const USAGE =
   "Usage: node scripts/reliability-check.ts typecheck [--fresh] [--timeout SECONDS] [--wait SECONDS] -- <command> [args]";
 const DEFAULT_TIMEOUT_SECONDS = 1800;
+const TYPECHECK_INPUTS = ["**/*", "**/.*"] as const;
 
 export interface ReliableCheckOptions {
   readonly argv: ReadonlyArray<string>;
@@ -40,7 +31,22 @@ export interface ReliableCheckOptions {
   readonly fresh?: boolean;
 }
 
-const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+function identity(options: ReliableCheckOptions) {
+  return declaredCheckIdentity({
+    argv: options.argv,
+    cwd: options.cwd,
+    reuseInputs: TYPECHECK_INPUTS,
+    reuseEnv: defaultReuseEnv(process.env),
+  });
+}
+
+function reusableReceipt(
+  currentIdentity: NonNullable<ReturnType<typeof identity>>,
+  runMs: number,
+): CheckReceipt | null {
+  const receipt = matchingReceipt(currentIdentity, {});
+  return receipt && receipt.elapsedMs < runMs ? receipt : null;
+}
 
 function exitCodeOf(result: RunUnderBrokerResult): number {
   if (result.kind === "ran") return result.result.exitCode;
@@ -53,17 +59,16 @@ function exitCodeOf(result: RunUnderBrokerResult): number {
 
 function replay(receipt: CheckReceipt): number {
   process.stderr.write(
-    `[reliability-check] identical inputs were already checked (${receipt.key.slice(0, 12)}: ${receipt.outcome}, exit ${receipt.exitCode}); no compiler was launched.\n`,
+    `[reliability-check] identical inputs already passed (${receipt.key.slice(0, 12)}); no compiler was launched.\n`,
   );
-  process.stdout.write(receipt.tail);
-  return receipt.exitCode;
+  return 0;
 }
 
 /** Runs the check and returns the exit status it should end with. */
 export async function runReliableCheck(options: ReliableCheckOptions): Promise<number> {
   const home = brokerHome();
   const chain = (process.env.AGENTQUEUE_CHECK_CHAIN ?? "").split(",").filter(Boolean);
-  const identity = checkIdentity({ argv: options.argv, cwd: options.cwd });
+  const initialIdentity = identity(options);
   const request = {
     resources: [{ name: "typecheck", memoryMb: TYPECHECK_DEMAND_MB }],
     argv: options.argv,
@@ -78,7 +83,7 @@ export async function runReliableCheck(options: ReliableCheckOptions): Promise<n
 
   // Not a repository, or an identical check is an ancestor of this process: waiting for the same
   // check would wait on ourselves, so run under the grant this process inherited (or queue alone).
-  if (!identity || chain.includes(identity.key)) {
+  if (!initialIdentity || chain.includes(initialIdentity.key)) {
     const result = await runUnderBroker({
       ...request,
       env: { AGENTQUEUE_CHECK_CHAIN: chain.join(",") },
@@ -86,57 +91,96 @@ export async function runReliableCheck(options: ReliableCheckOptions): Promise<n
     return exitCodeOf(result);
   }
 
-  const { key } = identity;
   while (true) {
+    const currentIdentity = identity(options);
+    if (!currentIdentity) return exitCodeOf(await runUnderBroker(request));
+    const { key } = currentIdentity;
     if (!options.fresh) {
-      const receipt = readReceipt(key, home);
+      const receipt = reusableReceipt(currentIdentity, options.runMs);
       if (receipt) return replay(receipt);
     }
-    // Claims are taken only after admission, so a process that holds a grant never waits on a
-    // claim whose owner is still queued; the owner of a claim is already running.
     if (runningCheck(key, home)) {
-      await sleep(500);
+      if (!(await waitForCheck(key, home, options.runMs))) {
+        process.stderr.write(
+          "[reliability-check] an identical typecheck remained in progress for this timeout; no compiler was launched.\n",
+        );
+        return 76;
+      }
       continue;
     }
 
+    let claimOwner: string | null = null;
     let startedAt = 0;
-    const result = await runUnderBroker({
-      ...request,
-      env: { AGENTQUEUE_CHECK_CHAIN: [...chain, key].join(",") },
-      shouldStop: () =>
-        runningCheck(key, home) !== null || (!options.fresh && readReceipt(key, home) !== null),
-      beforeRun: () => {
-        if (!options.fresh && readReceipt(key, home) !== null) return false;
-        if (!claimCheck(key, home)) return false;
-        startedAt = Date.now();
-        return true;
-      },
-      beforeFinish: (ended) => {
-        // Written before the lock is released, so no waiter can be granted between the two.
-        try {
-          if (ended.outcome === "ok" || ended.outcome === "failed") {
-            writeReceipt(
-              {
-                key,
-                command: options.argv.join(" "),
-                outcome: ended.outcome,
-                exitCode: ended.exitCode,
-                tail: ended.tail,
-                elapsedMs: Date.now() - startedAt,
-                peakRssKb: ended.peakRssKb,
-                checkers: identity.checkers,
-                finishedAt: Date.now(),
-              },
-              home,
-            );
+    let invalidated = false;
+    let result: RunUnderBrokerResult;
+    try {
+      result = await runUnderBroker({
+        ...request,
+        env: { AGENTQUEUE_CHECK_CHAIN: [...chain, key].join(",") },
+        shouldStop: () =>
+          runningCheck(key, home) !== null ||
+          (!options.fresh && reusableReceipt(currentIdentity, options.runMs) !== null),
+        beforeRun: () => {
+          const current = identity(options);
+          if (!current || current.key !== key) return false;
+          if (!options.fresh && reusableReceipt(currentIdentity, options.runMs)) return false;
+          try {
+            claimOwner = claimCheck(key, home);
+          } catch {
+            claimOwner = null;
           }
-        } finally {
-          releaseCheck(key, home);
-        }
-      },
-    });
+          if (!claimOwner && runningCheck(key, home)) return false;
+          startedAt = Date.now();
+          return true;
+        },
+        beforeFinish: (ended) => {
+          try {
+            if (ended.outcome === "ok" && ended.exitCode === 0 && !ended.oomKilled) {
+              const after = identity(options);
+              if (!after || after.key !== key) {
+                invalidated = true;
+                return;
+              }
+              if (!claimOwner) return;
+              try {
+                writeReceipt(
+                  {
+                    schemaVersion: 2,
+                    key,
+                    commandHash: NodeCrypto.createHash("sha256")
+                      .update(JSON.stringify(options.argv))
+                      .digest("hex"),
+                    outcome: "ok",
+                    exitCode: 0,
+                    elapsedMs: Date.now() - startedAt,
+                    peakRssKb: ended.peakRssKb,
+                    checkers: currentIdentity.checkers,
+                    outputs: {},
+                    finishedAt: Date.now(),
+                  },
+                  home,
+                );
+              } catch {
+                // An unwritable cache only causes a later rerun.
+              }
+            }
+          } finally {
+            if (claimOwner) releaseCheck(key, claimOwner, home);
+            claimOwner = null;
+          }
+        },
+      });
+    } finally {
+      if (claimOwner) releaseCheck(key, claimOwner, home);
+      claimOwner = null;
+    }
+    if (invalidated) {
+      process.stderr.write(
+        "[reliability-check] inputs changed while typecheck was running; rerun it.\n",
+      );
+      return 1;
+    }
     if (result.kind === "superseded") continue;
-    releaseCheck(key, home);
     return exitCodeOf(result);
   }
 }

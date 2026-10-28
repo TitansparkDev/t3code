@@ -298,6 +298,7 @@ async function runAtBaseline(
         {
           ...(input.env ? { env: input.env } : {}),
           ...(input.extraRequires ? { extraRequires: input.extraRequires } : {}),
+          allowReuse: false,
         },
       );
     } catch (error) {

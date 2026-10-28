@@ -510,6 +510,13 @@ CREATE TABLE IF NOT EXISTS resource_hints (
   capacity INTEGER NOT NULL,
   memory_mb INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS check_claims (
+  key TEXT PRIMARY KEY,
+  pid INTEGER NOT NULL,
+  pid_start INTEGER,
+  owner TEXT NOT NULL,
+  claimed_at INTEGER NOT NULL
+);
 `;
 
 /** A ticket that has waited this long and still cannot run blocks everything behind it. */

@@ -3,6 +3,7 @@ import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import { describe, expect, it } from "vite-plus/test";
+import { claimCheck, declaredCheckIdentity, releaseCheck } from "../src/checkReceipts.ts";
 import { openQueueDatabase } from "../src/db.ts";
 import { verifyPlanCompletion } from "../src/completion.ts";
 import { importPlanFile } from "../src/planImport.ts";
@@ -14,6 +15,7 @@ import {
   runSpec,
   type VerificationSpec,
 } from "../src/verificationSpec.ts";
+import { ResourceWaitError } from "../src/resourceRunner.ts";
 import { createTestGitRepo, execCommand } from "./harness/gitHarness.ts";
 
 const task = (body: string) =>
@@ -107,7 +109,7 @@ describe("declared checks", () => {
       ["id: first, produces: dist/**/*.apk", "id: second, produces: dist/app.apk"],
     ];
     for (const options of invalid) {
-      const checks = options.map((option, index) => `    - \`true\` (${option})`);
+      const checks = options.map((option) => `    - \`true\` (${option})`);
       const parsed = task(["  - Checks:", ...checks].join("\n"));
       expect(parsed.verification?.source).toBe("none");
       expect(parsed.verification?.checks).toEqual([]);
@@ -224,6 +226,60 @@ describe("running checks", () => {
     }
   });
 
+  it("fails as exhausted without running when an identical check owner exceeds the wait bound", async () => {
+    const repo = await createTestGitRepo("aq-spec-receipt-wait-");
+    const home = NodePath.join(repo.rootDir, ".receipt-home");
+    const previousHome = process.env.AGENTQUEUE_RESOURCE_HOME;
+    await NodeFSP.mkdir(home);
+    await NodeFSP.mkdir(NodePath.join(repo.rootDir, "node_modules", ".bin"), { recursive: true });
+    const marker = NodePath.join(repo.rootDir, "ran.txt");
+    const compiler = NodePath.join(repo.rootDir, "node_modules", ".bin", "tsc");
+    await NodeFSP.writeFile(compiler, `#!/bin/sh\necho ran > ${JSON.stringify(marker)}\n`);
+    await NodeFSP.chmod(compiler, 0o755);
+    await NodeFSP.writeFile(NodePath.join(repo.rootDir, "source.ts"), "export {};\n");
+    process.env.AGENTQUEUE_RESOURCE_HOME = home;
+    let identity: ReturnType<typeof declaredCheckIdentity> = null;
+    let owner: string | null = null;
+    try {
+      identity = declaredCheckIdentity({
+        argv: ["./node_modules/.bin/tsc", "--noEmit"],
+        cwd: repo.rootDir,
+        reuseInputs: ["source.ts"],
+        reuseEnv: [],
+      });
+      expect(identity).not.toBeNull();
+      if (!identity) return;
+      owner = claimCheck(identity.key, home);
+      expect(owner).not.toBeNull();
+      if (!owner) return;
+      const error = await runSpec(
+        "WAIT01",
+        repo.rootDir,
+        spec([
+          check("./node_modules/.bin/tsc --noEmit", {
+            id: "compile",
+            requires: ["heavy_build"],
+            reuseInputs: ["source.ts"],
+            reuseEnv: [],
+            produces: [],
+          }),
+        ]),
+        0,
+      ).then(
+        () => null,
+        (caught: unknown) => caught,
+      );
+      expect(error).toBeInstanceOf(ResourceWaitError);
+      expect(error).toMatchObject({ outcome: "exhausted" });
+      expect(NodeFS.existsSync(marker)).toBe(false);
+    } finally {
+      if (owner && identity) releaseCheck(identity.key, owner, home);
+      if (previousHome === undefined) delete process.env.AGENTQUEUE_RESOURCE_HOME;
+      else process.env.AGENTQUEUE_RESOURCE_HOME = previousHome;
+      await repo.cleanup();
+    }
+  });
+
   it("never reports no checks as a pass, and an exemption is not a pass either", async () => {
     const repo = await createTestGitRepo("aq-spec-");
     try {
@@ -282,8 +338,16 @@ describe("running checks", () => {
       );
       expect(result.state).toBe("failed");
       expect(result.checks).toHaveLength(3);
-      expect(result.checks[0]).toMatchObject({ passed: false, failureKind: "exit-code" });
-      expect(result.checks[1]).toMatchObject({ passed: false, failureKind: "blocked" });
+      expect(result.checks[0]).toMatchObject({
+        checkId: "build",
+        passed: false,
+        failureKind: "exit-code",
+      });
+      expect(result.checks[1]).toMatchObject({
+        checkId: "instrumentation",
+        passed: false,
+        failureKind: "blocked",
+      });
       expect(result.checks[1]?.stderrTail).toContain("build");
       expect(result.checks[2]).toMatchObject({ passed: true });
       expect(NodeFS.existsSync(consumer)).toBe(false);
@@ -618,16 +682,16 @@ describe("plan import and completion", () => {
       );
       db.prepare(
         "INSERT INTO landing_queue (task_id, source_branch, target_branch, status, commit_hash, queued_at) VALUES ('A','x',?, 'landed', ?, ?)",
-      ).run(base, head, new Date().toISOString());
+      ).run(base, head, "2026-10-28T00:00:00.000Z");
       expect((await report()).unchecked).toEqual(["A"]);
       expect((await report()).complete).toBe(false);
       db.prepare(
         "INSERT INTO task_events (task_id, event_type, payload_json, created_at) VALUES ('A','task_audited',?,?)",
-      ).run(JSON.stringify({ state: "failed" }), new Date().toISOString());
+      ).run(JSON.stringify({ state: "failed" }), "2026-10-28T00:00:00.000Z");
       expect((await report()).unchecked).toEqual(["A"]);
       db.prepare(
         "INSERT INTO task_events (task_id, event_type, payload_json, created_at) VALUES ('A','task_audited',?,?)",
-      ).run(JSON.stringify({ state: "passed" }), new Date().toISOString());
+      ).run(JSON.stringify({ state: "passed" }), "2026-10-28T00:00:00.000Z");
       expect((await report()).unchecked).toEqual([]);
       db.close();
     } finally {

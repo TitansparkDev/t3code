@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
+import * as NodeOS from "node:os";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import { runCli, runCliAsync } from "../src/cli.ts";
@@ -199,6 +200,114 @@ Verify: vp test src/second
       expect(result.exitCode).toBe(0);
       expect(result.output).toContain("Usage: agentq");
       expect(result.output).not.toContain("Host:");
+    }
+  });
+  it("reuses only the selected declared check through agentq run", async () => {
+    const repo = await createTestGitRepo("aq-cli-reuse-");
+    const home = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "aq-cli-reuse-home-"));
+    const bin = NodePath.join(home, "bin");
+    await NodeFSP.mkdir(bin);
+    await NodeFSP.mkdir(NodePath.join(repo.rootDir, "src"));
+    await NodeFSP.writeFile(NodePath.join(repo.rootDir, "src", "source.ts"), "export {};\n");
+    const counter = NodePath.join(home, "launches.log");
+    const compiler = NodePath.join(bin, "tsc");
+    await NodeFSP.writeFile(
+      compiler,
+      `#!/bin/sh\nmkdir -p build\necho result > build/output.txt\necho run >> ${JSON.stringify(counter)}\n`,
+    );
+    await NodeFSP.chmod(compiler, 0o755);
+    const plan = NodePath.join(repo.rootDir, "CHECKS.md");
+    await NodeFSP.writeFile(
+      plan,
+      [
+        "# Cache plan",
+        "",
+        "- [ ] **CACHE01 — Verify source.**",
+        "  - Scope: src/**.",
+        "  - Checks:",
+        "    - `tsc --noEmit --pretty false` (id: compile, requires: heavy_build, reuse-inputs: src/**, reuse-env: none, produces: build/output.txt)",
+      ].join("\n"),
+    );
+    const keys = [
+      "PATH",
+      "AGENTQUEUE_RESOURCE_HOME",
+      "AGENTQUEUE_LOCK_ROOT",
+      "AGENTQUEUE_TEST_HOST_MEMORY_MB",
+      "AGENTQUEUE_OWNER",
+      "AGENTQUEUE_RESOURCE_TICKET",
+    ] as const;
+    const previous = new Map(keys.map((key) => [key, process.env[key]]));
+    try {
+      process.env.PATH = `${bin}${NodePath.delimiter}${process.env.PATH ?? ""}`;
+      process.env.AGENTQUEUE_RESOURCE_HOME = home;
+      process.env.AGENTQUEUE_LOCK_ROOT = NodePath.join(home, "locks");
+      process.env.AGENTQUEUE_TEST_HOST_MEMORY_MB = "20000";
+      delete process.env.AGENTQUEUE_OWNER;
+      delete process.env.AGENTQUEUE_RESOURCE_TICKET;
+
+      const imported = runCli(["plan", "import", "CHECKS.md", "--json"], repo.rootDir);
+      expect(imported.exitCode).toBe(0);
+      const args = [
+        "run",
+        "--owner",
+        "CACHE01",
+        "--check",
+        "compile",
+        "--",
+        "tsc",
+        "--noEmit",
+        "--pretty",
+        "false",
+      ];
+      expect((await runCliAsync(args, repo.rootDir)).exitCode).toBe(0);
+      const reused = await runCliAsync(args, repo.rootDir);
+      expect(reused.exitCode).toBe(0);
+      expect(reused.error).toContain("reusing the successful declared check");
+      expect((await NodeFSP.readFile(counter, "utf8")).trim().split("\n")).toHaveLength(1);
+
+      await NodeFSP.writeFile(NodePath.join(repo.rootDir, "build", "output.txt"), "changed\n");
+      expect((await runCliAsync(args, repo.rootDir)).exitCode).toBe(0);
+      expect((await NodeFSP.readFile(counter, "utf8")).trim().split("\n")).toHaveLength(2);
+
+      const ambiguousArgs = [
+        "run",
+        "--owner",
+        "CACHE01",
+        "--check",
+        "compile",
+        "--",
+        "tsc",
+        "--noEmit --pretty",
+        "false",
+      ];
+      expect((await runCliAsync(ambiguousArgs, repo.rootDir)).exitCode).toBe(0);
+      expect((await NodeFSP.readFile(counter, "utf8")).trim().split("\n")).toHaveLength(3);
+
+      const wrongCheck = await runCliAsync(
+        [
+          "run",
+          "--owner",
+          "CACHE01",
+          "--check",
+          "other",
+          "--",
+          "tsc",
+          "--noEmit",
+          "--pretty",
+          "false",
+        ],
+        repo.rootDir,
+      );
+      expect(wrongCheck.exitCode).toBe(0);
+      expect((await NodeFSP.readFile(counter, "utf8")).trim().split("\n")).toHaveLength(4);
+    } finally {
+      for (const key of keys) {
+        const value = previous.get(key);
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      await NodeFSP.rm(home, { recursive: true, force: true });
+      await repo.cleanup();
     }
   });
 
