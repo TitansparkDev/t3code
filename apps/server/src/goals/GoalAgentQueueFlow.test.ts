@@ -2539,6 +2539,20 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
         );
         const [created] = yield* flow.waitFor("thread.create", 1);
         const threadId = created!.threadId;
+        const setCurrentTurn = (index: number, state: "running" | "completed") => {
+          const turnTime = `2026-10-04T12:${String(index).padStart(2, "0")}:00.000Z`;
+          flow.scripts.set(threadId, {
+            reply: "Resource result processed.",
+            turnState: state,
+            progress: true,
+            lastError: null,
+            ...(state === "running" ? { busy: true } : {}),
+            turn: {
+              requestedAt: turnTime,
+              ...(state === "completed" ? { completedAt: turnTime } : {}),
+            },
+          });
+        };
         const waitForJobs = (jobId: string) =>
           flow.goalStore.update(goal!.id, (current) => ({
             ...current,
@@ -2567,7 +2581,9 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
             command.threadId === threadId &&
             command.idempotencyKey === firstKey,
         );
-        expect(yield* Queue.take(flow.reportEvents)).toEqual({ id: "job-1", ok: false });
+        setCurrentTurn(1, "running");
+        const firstReport = yield* Queue.take(flow.reportEvents);
+        expect(firstReport).toEqual({ id: "job-1", ok: false });
         const pending = yield* flow.goalOf(first);
         expect(pending.chats[0]).toMatchObject({
           resourceDelivery: { idempotencyKey: firstKey, jobIds: ["job-1"] },
@@ -2578,7 +2594,9 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
         const restarted = yield* flow.startServer;
         const restartedLoop = yield* Effect.forkScoped(restarted.loop);
         yield* tickOnce;
-        expect(yield* Queue.take(flow.reportEvents)).toEqual({ id: "job-1", ok: true });
+        const replayReport = yield* Queue.take(flow.reportEvents);
+        expect(replayReport).toEqual({ id: "job-1", ok: true });
+        setCurrentTurn(1, "completed");
         expect(
           flow.log.filter(
             (command) =>
@@ -2601,7 +2619,10 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
               command.threadId === threadId &&
               command.idempotencyKey === key,
           );
-          expect(yield* Queue.take(flow.reportEvents)).toEqual({ id, ok: true });
+          setCurrentTurn(index, "running");
+          const report = yield* Queue.take(flow.reportEvents);
+          expect(report).toEqual({ id, ok: true });
+          setCurrentTurn(index, "completed");
         }
 
         const after = yield* flow.goalOf(restarted);

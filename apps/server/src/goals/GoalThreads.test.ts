@@ -2,6 +2,7 @@ import { expect, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Stream from "effect/Stream";
 
 import { ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
@@ -89,7 +90,10 @@ it.effect("reuses the command and message ids for a replayed resource delivery",
   Effect.gen(function* () {
     const sent: Array<{ readonly commandId: string; readonly messageId: string }> = [];
     const dependencies = Layer.mergeAll(
-      Layer.succeed(OrchestratorV2.OrchestratorV2, OrchestratorV2.OrchestratorV2.of({} as never)),
+      Layer.succeed(
+        OrchestratorV2.OrchestratorV2,
+        OrchestratorV2.OrchestratorV2.of({ streamDomainEvents: Stream.empty } as never),
+      ),
       Layer.succeed(
         ThreadLaunch.ThreadLaunchService,
         ThreadLaunch.ThreadLaunchService.of({} as never),
