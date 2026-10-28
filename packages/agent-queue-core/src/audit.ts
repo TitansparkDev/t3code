@@ -14,7 +14,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodePath from "node:path";
 import { loadContract, matchesAny, resourcesNeededBy } from "./contract.ts";
 import { scopesIntersect } from "./scopeManager.ts";
-import { recordEvent } from "./eventStream.ts";
+import { recordEvent, summarizePlanAudit, type PlanAuditSummary } from "./eventStream.ts";
 import { prepareVerificationDependencies } from "./baseline.ts";
 import { acquireLandingLock, prepareStagingWorktree } from "./integration.ts";
 import { addFollowUpTask } from "./overseerRepairs.ts";
@@ -88,6 +88,8 @@ export interface AuditReport {
   readonly followUps: ReadonlyArray<string>;
   /** Merged tasks that have no check at all, so nothing can be audited. */
   readonly unauditable: ReadonlyArray<string>;
+  /** Persisted completion and audit counts, with original tasks separate from repair entries. */
+  readonly summary: PlanAuditSummary;
 }
 
 export async function auditUnverifiedTasks(
@@ -122,7 +124,13 @@ export async function auditUnverifiedTasks(
   const audited: Array<{ taskId: string; state: string }> = [];
   const followUps: string[] = [];
   const unauditable: string[] = [];
-  if (!tip) return { audited, followUps, unauditable };
+  const report = (): AuditReport => ({
+    audited,
+    followUps,
+    unauditable,
+    summary: summarizePlanAudit(db, input.planId),
+  });
+  if (!tip) return report();
 
   const needs = tasks.filter((task) => {
     const checkedByHand = db
@@ -204,7 +212,7 @@ export async function auditUnverifiedTasks(
       needs.push(task);
     }
   }
-  if (needs.length === 0) return { audited, followUps, unauditable };
+  if (needs.length === 0) return report();
 
   const loaded = loadContract({
     repoRoot: input.repoRoot,
@@ -227,7 +235,7 @@ export async function auditUnverifiedTasks(
           reason: preparation,
         });
       }
-      return { audited, followUps, unauditable };
+      return report();
     }
     for (const task of needs) {
       const spec = parseStoredSpec(task.verification_spec, task.verification_command);
@@ -310,7 +318,7 @@ export async function auditUnverifiedTasks(
                 commit: suspects[mid]!.commit,
                 reason: probeProblem,
               });
-              return { audited, followUps, unauditable };
+              return report();
             }
             const earlier = await runSpec(task.id, probe, spec, undefined, {
               env: taskEnvironment({
@@ -346,5 +354,5 @@ export async function auditUnverifiedTasks(
   } finally {
     release();
   }
-  return { audited, followUps, unauditable };
+  return report();
 }

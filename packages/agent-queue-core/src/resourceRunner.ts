@@ -759,8 +759,20 @@ export async function runUnderBroker(
 ): Promise<RunUnderBrokerResult> {
   for (let attempt = 1; ; attempt++) {
     const outcome = await runUnderBrokerOnce(options);
-    if (outcome.kind !== "ran" || !outcome.result.oomKilled || attempt > MAX_MEMORY_RETRIES)
+    if (outcome.kind !== "ran" || !outcome.result.oomKilled || attempt > MAX_MEMORY_RETRIES) {
+      if (
+        outcome.kind !== "deferred" &&
+        outcome.ticket.id !== process.env.AGENTQUEUE_RESOURCE_TICKET
+      ) {
+        const broker = options.broker ?? openBroker(options.brokerOptions);
+        try {
+          broker.markReported(outcome.ticket.id, outcome.ticket.repo);
+        } finally {
+          if (options.broker === undefined) broker.close();
+        }
+      }
       return outcome;
+    }
     options.onMemoryRetry?.(attempt);
   }
 }
@@ -784,6 +796,7 @@ async function runUnderBrokerOnce(options: RunUnderBrokerOptions): Promise<RunUn
       pid: process.pid,
       ...(options.label ? { label: options.label } : {}),
       ...(options.ownerRef ? { ownerRef: options.ownerRef } : {}),
+      ...(options.checkId !== undefined ? { checkId: options.checkId } : {}),
       ...(options.repo ? { repo: options.repo } : {}),
       ...(options.hints ? { hints: options.hints } : {}),
       ...(options.waitMs !== undefined ? { waitMs: options.waitMs } : {}),
@@ -904,14 +917,17 @@ async function holdLocks(files: ReadonlyArray<string>, waitSeconds: number): Pro
   return release;
 }
 
-export interface WithBrokerOptions {
+export interface WithBrokerOptions<A = unknown> {
   readonly label?: string;
   readonly ownerRef?: string;
+  readonly checkId?: string;
   readonly repo?: string;
   readonly hints?: ResourceRequest["hints"];
   readonly waitMs?: number;
   readonly broker?: ResourceBroker;
   readonly brokerOptions?: BrokerOptions;
+  /** Classify a returned result when completion does not imply success. */
+  readonly outcomeOf?: (result: A) => TicketOutcome;
 }
 
 /**
@@ -922,7 +938,7 @@ export interface WithBrokerOptions {
 export async function withBrokerResources<A>(
   names: ReadonlyArray<string>,
   body: (env: Record<string, string>) => Promise<A>,
-  options: WithBrokerOptions = {},
+  options: WithBrokerOptions<A> = {},
 ): Promise<A> {
   const unique = [...new Set(names.map(normalizeResource))];
   if (unique.length === 0) return body({});
@@ -941,6 +957,7 @@ export async function withBrokerResources<A>(
     pid: process.pid,
     label: options.label ?? "server check",
     ...(options.ownerRef ? { ownerRef: options.ownerRef } : {}),
+    ...(options.checkId !== undefined ? { checkId: options.checkId } : {}),
     ...(options.repo ? { repo: options.repo } : {}),
     ...(options.hints ? { hints: options.hints } : {}),
     ...(options.waitMs !== undefined ? { waitMs: options.waitMs } : {}),
@@ -957,7 +974,22 @@ export async function withBrokerResources<A>(
     beat = setInterval(() => broker.heartbeat(ticket.id), 10_000);
     const grantedEnv = ticketEnv(granted);
     await ensureEmulator(grantedEnv, { repo: granted.repo ?? null });
-    return await body(grantedEnv);
+    const result = await body(grantedEnv);
+    const outcome = options.outcomeOf?.(result) ?? "ok";
+    broker.finish(ticket.id, { outcome });
+    return result;
+  } catch (error) {
+    const final = broker.get(ticket.id);
+    if (
+      final &&
+      (final.state === "waiting" || final.state === "granted" || final.state === "running")
+    ) {
+      broker.finish(ticket.id, {
+        outcome: error instanceof ResourceWaitError ? error.outcome : "failed",
+        note: error instanceof Error ? error.message.slice(0, 500) : "Resource callback failed",
+      });
+    }
+    throw error;
   } finally {
     if (beat) clearInterval(beat);
     release();
@@ -966,9 +998,11 @@ export async function withBrokerResources<A>(
       final &&
       (final.state === "waiting" || final.state === "granted" || final.state === "running")
     ) {
-      broker.finish(ticket.id, { outcome: "ok" });
+      broker.finish(ticket.id, { outcome: "failed" });
     }
     broker.pump();
+    const completed = broker.get(ticket.id);
+    if (completed) broker.markReported(completed.id, completed.repo);
     if (owned) broker.close();
   }
 }

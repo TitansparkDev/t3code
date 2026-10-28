@@ -1,7 +1,12 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off preferSchemaOverJson:off
 import { describe, expect, it } from "vite-plus/test";
 import { openQueueDatabase } from "../src/db.ts";
-import { recordEvent, getEventsSince, pollEventsSince } from "../src/eventStream.ts";
+import {
+  recordEvent,
+  getEventsSince,
+  pollEventsSince,
+  summarizePlanAudit,
+} from "../src/eventStream.ts";
 import { createTestGitRepo } from "./harness/gitHarness.ts";
 
 describe("AgentQueue Durable Event Stream (AQ-013)", () => {
@@ -60,6 +65,67 @@ describe("AgentQueue Durable Event Stream (AQ-013)", () => {
       expect(batch.events).toHaveLength(1);
       expect(batch.events[0].eventType).toBe("task_heartbeat");
 
+      db.close();
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it("summarizes completed repair entries separately from their original tasks", async () => {
+    const repo = await createTestGitRepo("aq-audit-summary-");
+    try {
+      const db = openQueueDatabase({ gitCommonDir: repo.gitCommonDir });
+      db.prepare(
+        `INSERT INTO plans (id, file_path, checksum, title, status, registered_at, updated_at)
+         VALUES ('P', 'PLAN.md', 'hash', 'Plan', 'active', 'now', 'now')`,
+      ).run();
+      const insertTask = db.prepare(
+        `INSERT INTO tasks (id, plan_id, title, status, created_at, updated_at)
+         VALUES (?, 'P', ?, ?, 'now', 'now')`,
+      );
+      insertTask.run("A", "Original A", "completed");
+      insertTask.run("A-FU1", "Repair A", "pending");
+      insertTask.run("B", "Original B", "completed");
+      insertTask.run("B-FU1", "Repair B", "completed");
+      insertTask.run("C", "Historical entry", "completed");
+      recordEvent(db, "A", "task_imported", { planId: "P" });
+      recordEvent(db, "B", "task_imported", { planId: "P" });
+      recordEvent(db, "A-FU1", "task_followup_created", { kind: "repair", parentTaskId: "A" });
+      recordEvent(db, "B-FU1", "task_followup_created", { kind: "repair", parentTaskId: "B" });
+      recordEvent(db, "A", "task_audited", { state: "passed" });
+      recordEvent(db, "B", "task_audited", { state: "failed" });
+      recordEvent(db, "B-FU1", "task_audited", { state: "passed" });
+
+      expect(summarizePlanAudit(db, "P")).toEqual({
+        originalTasks: {
+          total: 2,
+          completed: 2,
+          audited: 2,
+          passed: 1,
+          failed: 1,
+          otherAuditStates: 0,
+          unknown: 0,
+        },
+        repairEntries: {
+          total: 2,
+          completed: 1,
+          audited: 1,
+          passed: 1,
+          failed: 0,
+          otherAuditStates: 0,
+          unknown: 0,
+          created: 2,
+        },
+        unclassifiedEntries: {
+          total: 1,
+          completed: 1,
+          audited: 0,
+          passed: 0,
+          failed: 0,
+          otherAuditStates: 0,
+          unknown: 1,
+        },
+      });
       db.close();
     } finally {
       await repo.cleanup();

@@ -14,6 +14,23 @@ export interface EventBatch {
   readonly lastEventId: number;
 }
 
+export interface AuditEntrySummary {
+  readonly total: number;
+  readonly completed: number;
+  readonly audited: number;
+  readonly passed: number;
+  readonly failed: number;
+  readonly otherAuditStates: number;
+  /** Completed entries without a persisted audit result; historical absence stays unknown. */
+  readonly unknown: number;
+}
+
+export interface PlanAuditSummary {
+  readonly originalTasks: AuditEntrySummary;
+  readonly repairEntries: AuditEntrySummary & { readonly created: number };
+  readonly unclassifiedEntries: AuditEntrySummary;
+}
+
 /**
  * Appends a durable event to the task_events outbox.
  */
@@ -69,6 +86,68 @@ export function getEventsSince(
   const lastEventId = events.length > 0 ? events[events.length - 1]!.id : sinceEventId;
 
   return { events, lastEventId };
+}
+
+/** Summarize durable audit outcomes while keeping repair entries separate from their parent tasks. */
+export function summarizePlanAudit(db: NodeSqlite.DatabaseSync, planId: string): PlanAuditSummary {
+  const tasks = db.prepare("SELECT id, status FROM tasks WHERE plan_id = ?").all(planId) as Array<{
+    id: string;
+    status: string;
+  }>;
+  const events = db
+    .prepare(
+      `SELECT e.task_id, e.event_type, e.payload_json FROM task_events e
+       JOIN tasks t ON t.id = e.task_id WHERE t.plan_id = ?
+       AND e.event_type IN ('task_imported','task_synced','task_followup_created','task_audited')
+       ORDER BY e.id`,
+    )
+    .all(planId) as Array<{ task_id: string; event_type: string; payload_json: string }>;
+  const repairs = new Set<string>();
+  const originals = new Set<string>();
+  const audits = new Map<string, string>();
+  for (const event of events) {
+    if (event.event_type === "task_imported" || event.event_type === "task_synced") {
+      originals.add(event.task_id);
+      continue;
+    }
+    let payload: { kind?: unknown; state?: unknown };
+    try {
+      payload = JSON.parse(event.payload_json) as typeof payload;
+    } catch {
+      if (event.event_type === "task_audited") audits.set(event.task_id, "unknown");
+      continue;
+    }
+    if (event.event_type === "task_followup_created" && payload.kind === "repair") {
+      repairs.add(event.task_id);
+    } else if (event.event_type === "task_audited") {
+      audits.set(event.task_id, typeof payload.state === "string" ? payload.state : "unknown");
+    }
+  }
+  const summarize = (entries: ReadonlyArray<{ id: string; status: string }>): AuditEntrySummary => {
+    const completed = entries.filter((task) => task.status === "completed");
+    const states = completed.map((task) => audits.get(task.id));
+    const audited = states.filter((state) => state !== undefined);
+    const passed = audited.filter((state) => state === "passed").length;
+    const failed = audited.filter((state) => state === "failed" || state === "timed-out").length;
+    return {
+      total: entries.length,
+      completed: completed.length,
+      audited: audited.length,
+      passed,
+      failed,
+      otherAuditStates: audited.length - passed - failed,
+      unknown: completed.length - audited.length,
+    };
+  };
+  const repairTasks = tasks.filter((task) => repairs.has(task.id));
+  const originalTasks = tasks.filter((task) => originals.has(task.id) && !repairs.has(task.id));
+  return {
+    originalTasks: summarize(originalTasks),
+    repairEntries: { ...summarize(repairTasks), created: repairTasks.length },
+    unclassifiedEntries: summarize(
+      tasks.filter((task) => !originals.has(task.id) && !repairs.has(task.id)),
+    ),
+  };
 }
 
 /**
