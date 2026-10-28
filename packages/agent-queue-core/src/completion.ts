@@ -186,7 +186,12 @@ export async function verifyPlanCompletion(
       }
       if (imported.has(task.id)) return false;
       const state = receiptState(task.receipt_json);
-      return state === "unverified" || state === "failed" || state === "timed-out";
+      return (
+        state === "unverified" ||
+        state === "failed" ||
+        state === "timed-out" ||
+        state === "baseline-failed"
+      );
     })
     .map((task) => task.id);
 

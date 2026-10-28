@@ -10,6 +10,7 @@ import * as NodePath from "node:path";
 import { describe, expect, it } from "vite-plus/test";
 import { claimTask } from "../src/claimService.ts";
 import { auditUnverifiedTasks } from "../src/audit.ts";
+import { verifyPlanCompletion } from "../src/completion.ts";
 import { loadContract } from "../src/contract.ts";
 import { auditScope, parseScopeRequests } from "../src/scopeAudit.ts";
 import { runSpec, type VerificationSpec } from "../src/verificationSpec.ts";
@@ -554,6 +555,159 @@ await withResources(["gpu"], async () => {
 });
 
 describe("landed is not checked: auditing", () => {
+  it("reruns a retained blocked consumer on the full original spec after its producer repair lands", async () => {
+    const r = await makeRepo({
+      plan: plan([{ id: "A", scope: "src/a/", verify: 'node -e "process.exit(0)"' }]),
+      contract: { branchPrefixes: ["agent/"] },
+      files: { "src/a/source.txt": "broken\n" },
+    });
+    const runLogDir = await tmpDir("aq-baseline-repair-audit-");
+    const runLog = NodePath.join(runLogDir, "checks.log");
+    const previousRunLog = process.env.RUNLOG;
+    process.env.RUNLOG = runLog;
+    try {
+      const append = (name: string, body = "") =>
+        `node -e 'const fs=require("fs");fs.appendFileSync(process.env.RUNLOG,${JSON.stringify(`${name}\n`)});${body}'`;
+      const originalSpec: VerificationSpec = {
+        source: "declared",
+        checks: [
+          {
+            id: "producer",
+            run: append(
+              "producer",
+              'const source=fs.readFileSync("src/a/source.txt","utf8").trim();if(source!=="repaired")process.exit(1);fs.writeFileSync("src/a/generated.txt",source+"\\n");',
+            ),
+            cwd: ".",
+            timeoutSeconds: 30,
+            requires: [],
+            expectExitCode: 0,
+            produces: ["src/a/generated.txt"],
+          },
+          {
+            id: "consumer",
+            run: append(
+              "consumer",
+              'if(fs.readFileSync("src/a/generated.txt","utf8").trim()!=="repaired")process.exit(1);',
+            ),
+            cwd: ".",
+            timeoutSeconds: 30,
+            requires: [],
+            expectExitCode: 0,
+            dependsOn: ["producer"],
+            consumes: ["src/a/generated.txt"],
+          },
+          {
+            id: "independent",
+            run: append("independent"),
+            cwd: ".",
+            timeoutSeconds: 30,
+            requires: [],
+            expectExitCode: 0,
+          },
+        ],
+        exemptReason: null,
+        rejected: [],
+      };
+      r.db
+        .prepare(
+          "UPDATE tasks SET status = 'completed', receipt_json = ?, verification_spec = ? WHERE id = 'A'",
+        )
+        .run(JSON.stringify({ state: "baseline-failed" }), JSON.stringify(originalSpec));
+
+      await execCommand("git", ["checkout", r.goal], r.repo.rootDir);
+      await r.write("src/a/work.txt", "original task\n");
+      await execCommand("git", ["add", "src/a/work.txt"], r.repo.rootDir);
+      await execCommand("git", ["commit", "-m", "A lands with a baseline failure"], r.repo.rootDir);
+      const originalCommit = (
+        await execCommand("git", ["rev-parse", "HEAD"], r.repo.rootDir)
+      ).stdout.trim();
+      const queuedAt = "2026-10-28T00:00:00.000Z";
+      const recordLanding = (taskId: string, commit: string) =>
+        r.db
+          .prepare(
+            "INSERT INTO landing_queue (task_id, source_branch, target_branch, status, commit_hash, queued_at) VALUES (?, 'agent/test', 'main', 'landed', ?, ?)",
+          )
+          .run(taskId, commit, queuedAt);
+      recordLanding("A", originalCommit);
+
+      const initial = await auditUnverifiedTasks(r.db, {
+        repoRoot: r.repo.rootDir,
+        gitCommonDir: r.repo.gitCommonDir,
+        baseBranch: "main",
+        integrationBranch: r.goal,
+        planId: r.planId,
+      });
+      expect(initial.audited).toContainEqual({ taskId: "A", state: "failed" });
+      expect(initial.followUps).toEqual(["A-FU1"]);
+      const failedAudit = r.db
+        .prepare(
+          "SELECT payload_json FROM task_events WHERE task_id = 'A' AND event_type = 'task_audited' ORDER BY id DESC LIMIT 1",
+        )
+        .get() as { payload_json: string };
+      expect(
+        (JSON.parse(failedAudit.payload_json) as { checks: Array<{ passed: boolean }> }).checks.map(
+          (check) => check.passed,
+        ),
+      ).toEqual([false, false, true]);
+      expect(NodeFS.readFileSync(runLog, "utf8").trim().split("\n")).toEqual([
+        "producer",
+        "independent",
+      ]);
+
+      await r.write("src/a/source.txt", "repaired\n");
+      await execCommand("git", ["add", "src/a/source.txt"], r.repo.rootDir);
+      await execCommand(
+        "git",
+        ["commit", "-m", "A-FU1 repairs the producer input"],
+        r.repo.rootDir,
+      );
+      const repairCommit = (
+        await execCommand("git", ["rev-parse", "HEAD"], r.repo.rootDir)
+      ).stdout.trim();
+      r.db
+        .prepare("UPDATE tasks SET status = 'completed', receipt_json = ? WHERE id = 'A-FU1'")
+        .run(JSON.stringify({ state: "passed" }));
+      recordLanding("A-FU1", repairCommit);
+
+      await execCommand("git", ["checkout", "main"], r.repo.rootDir);
+      await execCommand("git", ["merge", "--ff-only", r.goal], r.repo.rootDir);
+      await execCommand("git", ["checkout", r.goal], r.repo.rootDir);
+      const completion = () =>
+        verifyPlanCompletion(r.db, {
+          repoRoot: r.repo.rootDir,
+          gitCommonDir: r.repo.gitCommonDir,
+          baseBranch: "main",
+          integrationBranch: r.goal,
+          planId: r.planId,
+          runFinalCheck: false,
+        });
+      expect((await completion()).unchecked).toContain("A");
+      expect((await completion()).complete).toBe(false);
+
+      const report = await auditUnverifiedTasks(r.db, {
+        repoRoot: r.repo.rootDir,
+        gitCommonDir: r.repo.gitCommonDir,
+        baseBranch: "main",
+        integrationBranch: r.goal,
+        planId: r.planId,
+      });
+      expect(report.audited).toContainEqual({ taskId: "A", state: "passed" });
+      expect(NodeFS.readFileSync(runLog, "utf8").trim().split("\n")).toEqual([
+        "producer",
+        "independent",
+        "producer",
+        "consumer",
+        "independent",
+      ]);
+      expect((await completion()).complete).toBe(true);
+    } finally {
+      if (previousRunLog === undefined) delete process.env.RUNLOG;
+      else process.env.RUNLOG = previousRunLog;
+      await NodeFSP.rm(runLogDir, { recursive: true, force: true });
+      await r.repo.cleanup();
+    }
+  });
+
   it("runs a landed task's stored check against the integrated branch and turns a failure into a blocking repair", async () => {
     const r = await makeRepo({
       plan: plan([
