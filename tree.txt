@@ -24137,6 +24137,7 @@ apps/server/src/goals/supervise.ts
 apps/server/src/goals/usageLimitText.ts
 apps/server/src/guest/GuestShareService.test.ts
 apps/server/src/guest/GuestShareService.ts
+apps/server/src/guest/guestAttachments.test.ts
 apps/server/src/guest/guestAttachments.ts
 apps/server/src/guest/guestView.test.ts
 apps/server/src/guest/guestView.ts
@@ -25504,7 +25505,6 @@ apps/web/src/components/KeybindingsConfigWarning.tsx
 apps/web/src/components/KeybindingsUpdateToast.logic.ts
 apps/web/src/components/KeybindingsUpdateToast.test.ts
 apps/web/src/components/KeybindingsUpdateToast.tsx
-apps/web/src/components/LegacySidebar.tsx
 apps/web/src/components/LegacyThreadMigrationToast.ts
 apps/web/src/components/MorphIcon.tsx
 apps/web/src/components/NoActiveThreadState.tsx
@@ -25607,7 +25607,6 @@ apps/web/src/components/chat/ComposerFeedback.tsx
 apps/web/src/components/chat/ComposerFooterControls.tsx
 apps/web/src/components/chat/ComposerImageThumbnail.tsx
 apps/web/src/components/chat/ComposerPendingApprovalActions.tsx
-apps/web/src/components/chat/ComposerPendingApprovalPanel.tsx
 apps/web/src/components/chat/ComposerPendingTerminalContexts.tsx
 apps/web/src/components/chat/ComposerPendingUserInputPanel.navigation.browser.test.tsx
 apps/web/src/components/chat/ComposerPendingUserInputPanel.tsx
@@ -25716,6 +25715,7 @@ apps/web/src/components/chat/ThreadVisitWatermark.tsx
 apps/web/src/components/chat/TimelineAssistantRows.tsx
 apps/web/src/components/chat/TimelineMinimap.tsx
 apps/web/src/components/chat/TimelineOverlays.tsx
+apps/web/src/components/chat/TimelinePendingApprovalRow.tsx
 apps/web/src/components/chat/TimelineRowParts.tsx
 apps/web/src/components/chat/TimelineSystemDivider.tsx
 apps/web/src/components/chat/TimelineToolActivityIcon.tsx
@@ -25788,6 +25788,7 @@ apps/web/src/components/chat/folderDrop.ts
 apps/web/src/components/chat/guestMessageStyle.tsx
 apps/web/src/components/chat/guestShareAvailability.ts
 apps/web/src/components/chat/guestShareDialogState.ts
+apps/web/src/components/chat/hostImageUrl.ts
 apps/web/src/components/chat/interruptState.test.ts
 apps/web/src/components/chat/interruptState.ts
 apps/web/src/components/chat/markdownActionFailure.ts
@@ -25892,6 +25893,7 @@ apps/web/src/components/clerk/ElectronManagedAuthShell.tsx
 apps/web/src/components/clerk/MobileClientsUserProfilePage.logic.ts
 apps/web/src/components/clerk/MobileClientsUserProfilePage.tsx
 apps/web/src/components/clerk/RemoveT3ConnectEnvironmentDialog.tsx
+apps/web/src/components/clerk/T3ChatUserProfilePage.tsx
 apps/web/src/components/clerk/T3ConnectAccountPages.tsx
 apps/web/src/components/clerk/T3ConnectSidebarSignIn.tsx
 apps/web/src/components/clerk/T3ConnectUserProfilePage.tsx
@@ -26462,6 +26464,7 @@ apps/web/src/components/sidebar/HostCapacityChip.tsx
 apps/web/src/components/sidebar/SidebarChrome.tsx
 apps/web/src/components/sidebar/SidebarDraftBlock.tsx
 apps/web/src/components/sidebar/SidebarListMarkers.tsx
+apps/web/src/components/sidebar/SidebarProjectFolderHeader.tsx
 apps/web/src/components/sidebar/SidebarProviderUpdatePill.browser.test.tsx
 apps/web/src/components/sidebar/SidebarProviderUpdatePill.tsx
 apps/web/src/components/sidebar/SidebarThreadHeader.tsx
@@ -26803,6 +26806,8 @@ apps/web/src/lib/terminalFocus.ts
 apps/web/src/lib/threadContextAttachment.test.ts
 apps/web/src/lib/threadContextAttachment.ts
 apps/web/src/lib/tickTextContent.ts
+apps/web/src/lib/toolCallDiff.test.ts
+apps/web/src/lib/toolCallDiff.ts
 apps/web/src/lib/triageTarget.test.ts
 apps/web/src/lib/triageTarget.ts
 apps/web/src/lib/turnDiffTree.test.ts
@@ -27286,6 +27291,8 @@ infra/relay/migrations/postgres/20261020013101_upstream_api_pauses/migration.sql
 infra/relay/migrations/postgres/20261020013101_upstream_api_pauses/snapshot.json
 infra/relay/migrations/postgres/20261027210820_delivery_attempts_retention/migration.sql
 infra/relay/migrations/postgres/20261027210820_delivery_attempts_retention/snapshot.json
+infra/relay/migrations/postgres/20261028062605_backfill_withdrawn_tunnel_allocations/migration.sql
+infra/relay/migrations/postgres/20261028062605_backfill_withdrawn_tunnel_allocations/snapshot.json
 infra/relay/package.json
 infra/relay/scripts/android-push-smoke.ts
 infra/relay/scripts/android-push-watch.ts
@@ -27353,6 +27360,7 @@ infra/relay/src/environments/ManagedEndpointProvider.test.ts
 infra/relay/src/environments/ManagedEndpointProvider.ts
 infra/relay/src/environments/ManagedEndpointReaper.test.ts
 infra/relay/src/environments/ManagedEndpointReaper.ts
+infra/relay/src/environments/ManagedTunnelLimits.test.ts
 infra/relay/src/environments/ManagedTunnelLimits.ts
 infra/relay/src/environments/endpointFailure.test.ts
 infra/relay/src/environments/endpointFailure.ts
@@ -27381,6 +27389,8 @@ infra/relay/src/previewStages.ts
 infra/relay/src/previewTunnelSweep.test.ts
 infra/relay/src/previewTunnelSweep.ts
 infra/relay/src/queues.ts
+infra/relay/src/t3chat/T3ChatAccounts.test.ts
+infra/relay/src/t3chat/T3ChatAccounts.ts
 infra/relay/src/worker.ts
 infra/relay/src/zone.ts
 infra/relay/tsconfig.json

@@ -364,7 +364,8 @@ jobs:
       id-token: write
     name: Test Server ${{ matrix.shard }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # Shared cache throttling can add several minutes to otherwise short shards.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
