@@ -1401,6 +1401,7 @@ export async function integrateCandidate(
             env: taskEnvironment({ taskId: input.taskId, slot, gitCommonDir: gitDir, contract })
               .variables,
             lockDir: NodePath.join(gitDir, "agentqueue", "locks"),
+            allowReuse: false,
             extraRequires: resourcesNeededBy(
               contract,
               taskScope,

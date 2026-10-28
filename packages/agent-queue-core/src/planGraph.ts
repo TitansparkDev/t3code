@@ -483,6 +483,7 @@ export function exportPlanMarkdown(plan: ParsedPlan): string {
         check.produces !== undefined ||
         check.consumes !== undefined ||
         check.reuseInputs !== undefined ||
+        check.reuseEnv !== undefined ||
         check.junit !== undefined,
     );
     if (hasStructuredChecks) {

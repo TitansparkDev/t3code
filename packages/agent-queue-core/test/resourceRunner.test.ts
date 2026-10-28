@@ -11,10 +11,12 @@ import {
 } from "../src/resourceBroker.ts";
 import {
   DEFAULT_RUN_MS,
+  EmulatorPrerequisiteError,
   inferResourceDemands,
   inferResources,
   isCompilerCommand,
   runUnderBroker,
+  withBrokerResources,
 } from "../src/resourceRunner.ts";
 
 const homes: string[] = [];
@@ -36,7 +38,12 @@ const CONFIG: ResourceConfig = {
   },
 };
 
-function makeBroker(home: string, free = 20_000) {
+const ANDROID_CONFIG: ResourceConfig = {
+  reserveMb: 1000,
+  resources: { android: { capacity: 1 } },
+};
+
+function makeBroker(home: string, free = 20_000, config = CONFIG) {
   return new ResourceBroker({
     home,
     host: () => ({
@@ -47,7 +54,7 @@ function makeBroker(home: string, free = 20_000) {
       cpus: 16,
       load1: 1,
     }),
-    config: () => CONFIG,
+    config: () => config,
   });
 }
 
@@ -210,6 +217,85 @@ describe("nested invocation", () => {
 });
 
 describe("running under the broker", () => {
+  it("blocks checks when an explicitly requested emulator cannot be provisioned", async () => {
+    const home = newHome();
+    const sdk = NodePath.join(home, "sdk");
+    const adb = NodePath.join(sdk, "platform-tools", "adb");
+    const emulator = NodePath.join(sdk, "emulator", "emulator");
+    const emulatorLaunch = NodePath.join(home, "emulator-launched");
+    NodeFS.mkdirSync(NodePath.dirname(adb), { recursive: true });
+    NodeFS.mkdirSync(NodePath.dirname(emulator), { recursive: true });
+    NodeFS.writeFileSync(adb, "#!/bin/sh\nexit 0\n");
+    NodeFS.writeFileSync(
+      emulator,
+      `#!/bin/sh\nif [ "$1" = "-list-avds" ]; then echo other_profile; else echo launched >> ${JSON.stringify(emulatorLaunch)}; fi\n`,
+    );
+    NodeFS.chmodSync(adb, 0o755);
+    NodeFS.chmodSync(emulator, 0o755);
+    const keys = [
+      "ANDROID_HOME",
+      "ANDROID_SDK_ROOT",
+      "ANDROID_AVD_HOME",
+      "AGENTQUEUE_AVD",
+      "AGENTQUEUE_AVD_API",
+      "AGENTQUEUE_LEGACY_ANDROID_LOCK",
+      "AGENTQUEUE_RESOURCE_HOME",
+      "AGENTQUEUE_NO_EMULATOR_BOOT",
+      "AGENTQUEUE_RESOURCE_TICKET",
+      "VITEST",
+    ] as const;
+    const previous = new Map(keys.map((key) => [key, process.env[key]]));
+    const broker = makeBroker(home, 20_000, ANDROID_CONFIG);
+    const marker = NodePath.join(home, "ran");
+    try {
+      process.env.ANDROID_HOME = sdk;
+      process.env.ANDROID_AVD_HOME = NodePath.join(home, "avds");
+      process.env.AGENTQUEUE_LEGACY_ANDROID_LOCK = NodePath.join(home, "android-heavy.lock");
+      process.env.AGENTQUEUE_RESOURCE_HOME = home;
+      process.env.AGENTQUEUE_AVD = "required_profile";
+      process.env.AGENTQUEUE_AVD_API = "35";
+      delete process.env.ANDROID_SDK_ROOT;
+      delete process.env.AGENTQUEUE_NO_EMULATOR_BOOT;
+      delete process.env.AGENTQUEUE_RESOURCE_TICKET;
+      delete process.env.VITEST;
+
+      const worker = await runUnderBroker({
+        broker,
+        resources: [{ name: "android" }],
+        argv: ["touch", marker],
+        cwd: home,
+        waitMs: 3_000,
+        stdio: "pipe",
+      });
+      expect(worker.kind).toBe("ran");
+      if (worker.kind !== "ran") return;
+      expect(worker.result.outcome).toBe("unavailable");
+      expect(worker.result.exitCode).toBe(77);
+      expect(worker.result.tail).toContain("not in the provisioned inventory");
+      expect(NodeFS.existsSync(marker)).toBe(false);
+      expect(NodeFS.existsSync(emulatorLaunch)).toBe(false);
+
+      let serverCheckRan = false;
+      await expect(
+        withBrokerResources(
+          ["android"],
+          async () => {
+            serverCheckRan = true;
+          },
+          { broker, waitMs: 3_000 },
+        ),
+      ).rejects.toBeInstanceOf(EmulatorPrerequisiteError);
+      expect(serverCheckRan).toBe(false);
+    } finally {
+      broker.close();
+      for (const key of keys) {
+        const value = previous.get(key);
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
   it("stops the whole process tree at its time limit and releases the resource", async () => {
     const home = newHome();
     const broker = makeBroker(home);

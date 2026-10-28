@@ -29,6 +29,8 @@ describe("Phase 6: Planning Formats, Skills, Rules & Import (AQ-042 - AQ-050, Ga
             expectExitCode: 0,
             id: "build",
             produces: ["app/build/outputs/**/*.apk"],
+            reuseInputs: ["app/src/main/**", "gradle/libs.versions.toml"],
+            reuseEnv: ["CI"],
           },
           {
             run: "./gradlew connectedDebugAndroidTest",
@@ -39,6 +41,9 @@ describe("Phase 6: Planning Formats, Skills, Rules & Import (AQ-042 - AQ-050, Ga
             id: "instrumentation",
             dependsOn: ["build"],
             consumes: ["app/build/outputs/app.apk"],
+            produces: [],
+            reuseInputs: ["app/src/androidTest/**", "gradle/libs.versions.toml"],
+            reuseEnv: [],
             junit: {
               reports: ["app/build/reports/**/*.xml"],
               minTests: 12,
@@ -177,7 +182,7 @@ Second component.
 
       const parsed = parsePlanMarkdown(planMarkdown);
       const db = openQueueDatabase({ gitCommonDir: repo.gitCommonDir });
-      const now = new Date().toISOString();
+      const now = "2026-10-28T00:00:00.000Z";
       const checksum = computePlanChecksum(planMarkdown);
 
       // First import

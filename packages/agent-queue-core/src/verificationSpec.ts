@@ -1,25 +1,35 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off preferSchemaOverJson:off
-/**
- * What it means for a task to be checked. A task has one of:
- *  - declared checks (`Checks:` / `Check:` / `Verify:` in the plan): run exactly as written;
- *  - derived checks (code spans of a prose `Done:` line that pass the safety policy): run too,
- *    but are labelled as derived because nobody wrote them as checks;
- *  - an explicit exemption with a reason (`Verify: none — <reason>`);
- *  - nothing: "unverified". That is never a pass; it is reported until someone defines a check
- *    or an exemption.
- *
- * @module verificationSpec
- */
+/** Task check parsing and execution. @module verificationSpec */
 import * as NodeChildProcess from "node:child_process";
+import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import { XMLParser, XMLValidator } from "fast-xml-parser";
+import { artifactPathsOverlap } from "./artifactPaths.ts";
+import {
+  claimCheck,
+  declaredCheckIdentity,
+  matchingReceipt,
+  outputSnapshot,
+  releaseCheck,
+  runningCheck,
+  waitForCheck,
+  writeReceipt,
+  type CheckIdentity,
+  type CheckReceipt,
+  isReusableCommand,
+} from "./checkReceipts.ts";
 import {
   redactVerificationOutput,
   runVerification,
   type VerificationExecutionResult,
 } from "./verifier.ts";
-import { inferResources, withBrokerResources } from "./resourceRunner.ts";
+import {
+  EmulatorPrerequisiteError,
+  inferResources,
+  ResourceWaitError,
+  withBrokerResources,
+} from "./resourceRunner.ts";
 
 export interface VerificationCheck {
   readonly run: string;
@@ -34,6 +44,7 @@ export interface VerificationCheck {
   readonly produces?: ReadonlyArray<string>;
   readonly consumes?: ReadonlyArray<string>;
   readonly reuseInputs?: ReadonlyArray<string>;
+  readonly reuseEnv?: ReadonlyArray<string>;
   readonly junit?: {
     readonly reports: ReadonlyArray<string>;
     readonly minTests: number;
@@ -251,6 +262,7 @@ function hasStructuredMetadata(check: VerificationCheck): boolean {
     check.produces !== undefined ||
     check.consumes !== undefined ||
     check.reuseInputs !== undefined ||
+    check.reuseEnv !== undefined ||
     check.junit !== undefined
   );
 }
@@ -281,8 +293,6 @@ export function validateVerificationSpec(spec: VerificationSpec): VerificationSp
 
   const deps = new Map<string, string[]>();
   for (const check of checks) {
-    if (check.cwd !== null && safeRelativeDirectory(check.cwd) === null)
-      reject(check, "working directory leaves the worktree");
     if (check.id) deps.set(check.id, [...(check.dependsOn ?? [])]);
     for (const id of check.dependsOn ?? []) {
       if (!CHECK_ID.test(id)) reject(check, `invalid dependency check id "${id}"`);
@@ -294,6 +304,8 @@ export function validateVerificationSpec(spec: VerificationSpec): VerificationSp
           reject(check, `${key} contains an unsafe repository path`);
       }
     }
+    if (check.reuseEnv?.some((name) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)))
+      reject(check, "reuseEnv contains an invalid environment variable name");
     if (check.junit) {
       if (check.junit.reports.length === 0)
         reject(check, "junit must name at least one report path");
@@ -330,18 +342,7 @@ export function validateVerificationSpec(spec: VerificationSpec): VerificationSp
   const producers = checks.flatMap((check) =>
     (check.produces ?? []).map((path) => ({ check, path: safeRepositoryPath(path) ?? path })),
   );
-  const staticPrefix = (path: string) => {
-    const wildcard = path.search(GLOB_CHARS);
-    return wildcard < 0 ? path : path.slice(0, wildcard).replace(/[^/]*$/, "");
-  };
-  const overlaps = (left: string, right: string) => {
-    const a = staticPrefix(left);
-    const b = staticPrefix(right);
-    if (a === "" || b === "") return true;
-    const isSameOrNestedPath = (parent: string, child: string) =>
-      child === parent || child.startsWith(`${parent.replace(/\/+$/, "")}/`);
-    return isSameOrNestedPath(a, b) || isSameOrNestedPath(b, a);
-  };
+  const overlaps = artifactPathsOverlap;
   for (let i = 0; i < producers.length; i++) {
     for (let j = i + 1; j < producers.length; j++) {
       const left = producers[i]!;
@@ -401,9 +402,14 @@ export function formatCheckOptions(check: VerificationCheck): string {
     `expect: exit ${check.expectExitCode}`,
     ...(check.id ? [`id: ${check.id}`] : []),
     ...(check.dependsOn?.length ? [`after: ${check.dependsOn.join("|")}`] : []),
-    ...(check.produces?.length ? [`produces: ${check.produces.join("|")}`] : []),
+    ...(check.produces !== undefined
+      ? [`produces: ${check.produces.length ? check.produces.join("|") : "none"}`]
+      : []),
     ...(check.consumes?.length ? [`consumes: ${check.consumes.join("|")}`] : []),
     ...(check.reuseInputs?.length ? [`reuse-inputs: ${check.reuseInputs.join("|")}`] : []),
+    ...(check.reuseEnv !== undefined
+      ? [`reuse-env: ${check.reuseEnv.length ? check.reuseEnv.join("|") : "none"}`]
+      : []),
     ...(check.junit
       ? [
           `junit: ${check.junit.reports.join("|")}`,
@@ -430,17 +436,23 @@ export function parseCheckOptions(text: string): {
   readonly requires: ReadonlyArray<string>;
   readonly expectExitCode: number;
   readonly metadata: Partial<
-    Pick<VerificationCheck, "id" | "dependsOn" | "produces" | "consumes" | "reuseInputs" | "junit">
+    Pick<
+      VerificationCheck,
+      "id" | "dependsOn" | "produces" | "consumes" | "reuseInputs" | "reuseEnv" | "junit"
+    >
   >;
   readonly problems: ReadonlyArray<string>;
 } {
+  type ParsedMetadata = Pick<
+    VerificationCheck,
+    "id" | "dependsOn" | "produces" | "consumes" | "reuseInputs" | "reuseEnv" | "junit"
+  >;
+  type Mutable<T> = { -readonly [K in keyof T]: T[K] };
   let cwd: string | null | "invalid" = null;
   let timeoutSeconds = DEFAULT_CHECK_TIMEOUT_SECONDS;
   let requires: string[] = [];
   let expectExitCode = 0;
-  let metadata: Partial<
-    Pick<VerificationCheck, "id" | "dependsOn" | "produces" | "consumes" | "reuseInputs" | "junit">
-  > = {};
+  const metadata: Partial<Mutable<ParsedMetadata>> = {};
   const problems: string[] = [];
   for (const part of text.split(/[,;]/)) {
     const match = /^\s*([a-z-]+)\s*[:=]\s*(.+?)\s*$/i.exec(part);
@@ -467,26 +479,38 @@ export function parseCheckOptions(text: string): {
       if (code) expectExitCode = Number(code[1]);
     } else if (key === "id") {
       if (!CHECK_ID.test(value)) problems.push(`invalid check id "${value}"`);
-      else metadata = { ...metadata, id: value };
+      else metadata.id = value;
     } else if (key === "after") {
       const ids = value
         .split("|")
         .map((item) => item.trim())
         .filter(Boolean);
       if (ids.some((id) => !CHECK_ID.test(id))) problems.push("after contains an invalid check id");
-      else metadata = { ...metadata, dependsOn: ids };
+      else metadata.dependsOn = ids;
+    } else if (key === "produces" && value.toLowerCase() === "none") {
+      metadata.produces = [];
+    } else if (key === "reuse-env") {
+      if (value.toLowerCase() === "none") metadata.reuseEnv = [];
+      else {
+        const names = value.split("|").map((name) => name.trim());
+        if (names.some((name) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)))
+          problems.push("reuse-env contains an invalid environment variable name");
+        else metadata.reuseEnv = [...new Set(names)];
+      }
     } else if (["produces", "consumes", "reuse-inputs"].includes(key)) {
       const rawPaths = value.split("|").map((item) => item.trim());
       const paths = rawPaths
         .map((item) => safeRepositoryPath(item))
         .filter((item): item is string => item !== null);
-      if (paths.length !== rawPaths.length || paths.length === 0)
+      if (paths.length !== rawPaths.length || (key !== "produces" && paths.length === 0))
         problems.push(`${key} contains an unsafe repository path`);
-      else if (key === "produces") metadata = { ...metadata, produces: paths };
-      else if (key === "consumes") metadata = { ...metadata, consumes: paths };
-      else metadata = { ...metadata, reuseInputs: paths };
+      else if (key === "produces") metadata.produces = paths;
+      else if (key === "consumes") metadata.consumes = paths;
+      else metadata.reuseInputs = paths;
     } else if (["junit", "min-tests", "max-skipped"].includes(key)) {
-      const current = { ...(metadata.junit ?? { reports: [], minTests: 0, maxSkipped: 0 }) };
+      const current: { reports: string[]; minTests: number; maxSkipped: number } = metadata.junit
+        ? { ...metadata.junit, reports: [...metadata.junit.reports] }
+        : { reports: [], minTests: 0, maxSkipped: 0 };
       if (key === "junit") {
         const rawReports = value.split("|").map((item) => item.trim());
         const reports = rawReports
@@ -502,7 +526,7 @@ export function parseCheckOptions(text: string): {
         else if (key === "min-tests") current.minTests = n;
         else current.maxSkipped = n;
       }
-      metadata = { ...metadata, junit: current };
+      metadata.junit = current;
     }
   }
   return { cwd, timeoutSeconds, requires, expectExitCode, metadata, problems };
@@ -683,6 +707,7 @@ type CheckFailureKind =
   | "junit-failed"
   | "exit-code"
   | "timed-out"
+  | "source-changed"
   | "working-directory";
 
 const MAX_JUNIT_REPORTS = 100;
@@ -905,6 +930,7 @@ function checkJUnitEvidence(
 }
 
 export interface CheckResult {
+  readonly checkId?: string;
   readonly run: string;
   readonly cwd: string;
   readonly expectExitCode: number;
@@ -919,6 +945,8 @@ export interface CheckResult {
   readonly failureReason?: string;
   readonly diagnosticExcerpt?: string;
   readonly diagnosticLogPath?: string | null;
+  readonly reused?: true;
+  readonly inputFingerprint?: string;
 }
 
 export interface SpecResult {
@@ -944,6 +972,86 @@ export interface RunSpecOptions {
   readonly lockDir?: string;
   /** Exclusive resources every check of this run needs besides its own `requires` (from the repository contract). */
   readonly extraRequires?: ReadonlyArray<string>;
+  /** Historical and integration checks must judge the exact tree they are given. */
+  readonly allowReuse?: boolean;
+}
+
+function plainArgv(command: string): ReadonlyArray<string> | null {
+  const text = command.trim();
+  if (!text || /[;&|<>`$()'"\\\n\r*?\[\]{}#~!]/.test(text)) return null;
+  const argv = text.split(/\s+/);
+  return argv.length && argv.every(Boolean) ? argv : null;
+}
+
+function reusableCheck(
+  source: VerificationSpec["source"],
+  check: VerificationCheck,
+  extraRequires: ReadonlyArray<string>,
+): {
+  readonly argv: ReadonlyArray<string>;
+  readonly inputs: ReadonlyArray<string>;
+  readonly outputs: ReadonlyArray<string>;
+} | null {
+  if (
+    source !== "declared" ||
+    check.expectExitCode !== 0 ||
+    check.reuseInputs === undefined ||
+    check.reuseInputs.length === 0 ||
+    check.reuseEnv === undefined ||
+    check.produces === undefined ||
+    check.junit !== undefined
+  )
+    return null;
+  const argv = plainArgv(check.run);
+  if (!argv || !isReusableCommand(argv)) return null;
+  const resources = [...check.requires, ...extraRequires, ...inferResources(check.run)];
+  if (
+    resources.length === 0 ||
+    resources.some((name) => !["heavy_build", "typecheck"].includes(name))
+  )
+    return null;
+  return {
+    argv,
+    inputs: [...check.reuseInputs, ...(check.consumes ?? [])],
+    outputs: check.produces,
+  };
+}
+
+function declaredIdentity(
+  check: VerificationCheck,
+  cwd: string,
+  argv: ReadonlyArray<string>,
+  env: Readonly<Record<string, string>> | undefined,
+  reuseInputs: ReadonlyArray<string>,
+): CheckIdentity | null {
+  if (check.reuseEnv === undefined) return null;
+  return declaredCheckIdentity({
+    argv,
+    cwd,
+    reuseInputs,
+    reuseEnv: check.reuseEnv,
+    ...(env ? { env } : {}),
+  });
+}
+
+function syntheticReuseResult(
+  taskId: string,
+  check: VerificationCheck,
+  identity: CheckIdentity,
+): VerificationExecutionResult {
+  return {
+    taskId,
+    commitHash: identity.commitHash,
+    verificationCommand: check.run,
+    exitCode: 0,
+    passed: true,
+    outcome: "passed",
+    signal: null,
+    stdoutSnippet: "",
+    stderrSnippet: "",
+    durationMs: 0,
+    verifiedAt: new Date().toISOString(),
+  };
 }
 
 export async function runSpec(
@@ -1004,6 +1112,12 @@ export async function runSpec(
     { cwd: root, encoding: "utf8", timeout: 5_000 },
   );
   const repo = gitContext.status === 0 ? gitContext.stdout.trim() : undefined;
+  const head = NodeChildProcess.spawnSync("git", ["rev-parse", "HEAD"], {
+    cwd: root,
+    encoding: "utf8",
+    timeout: 5_000,
+  });
+  const currentCommit = head.status === 0 ? head.stdout.trim() : "unknown";
   let realRoot = root;
   try {
     realRoot = NodeFS.realpathSync(root);
@@ -1015,6 +1129,7 @@ export async function runSpec(
     if (blockedBy) {
       const failureReason = `Blocked: prerequisite check ${blockedBy} failed; this check was not run.`;
       results.push({
+        ...(check.id ? { checkId: check.id } : {}),
         run: check.run,
         cwd: check.cwd ?? ".",
         expectExitCode: check.expectExitCode,
@@ -1042,6 +1157,7 @@ export async function runSpec(
     if (!isWithin(root, cwd) || realCwd === null || !isWithin(realRoot, realCwd)) {
       const failureReason = `Working directory ${check.cwd} does not exist inside the checked repository.`;
       results.push({
+        ...(check.id ? { checkId: check.id } : {}),
         run: check.run,
         cwd: check.cwd ?? ".",
         expectExitCode: check.expectExitCode,
@@ -1069,6 +1185,7 @@ export async function runSpec(
             ? `Blocked: required input escapes the repository: ${inputs.unsafe.join(", ")}`
             : `Blocked: required input is missing: ${inputs.missing.join(", ")}`;
         results.push({
+          ...(check.id ? { checkId: check.id } : {}),
           run: check.run,
           cwd: check.cwd ?? ".",
           expectExitCode: check.expectExitCode,
@@ -1090,73 +1207,252 @@ export async function runSpec(
     }
     // The same shared pool a worker's `agentq run` uses: what the check declares, what the
     // repository's contract says, and what its command line shows it will touch.
-    const attempt = await withBrokerResources(
-      [...check.requires, ...(options.extraRequires ?? []), ...inferResources(check.run)],
-      async (granted) => {
-        const startedAt = Date.now();
-        const beforeReports = check.junit ? junitSnapshot(root, check.junit.reports) : new Map();
-        const result = await runVerification(
-          taskId,
-          realCwd,
-          check.run,
-          (timeoutOverrideSeconds ?? check.timeoutSeconds) * 1000,
-          { ...options.env, ...granted },
-        );
-        const commandPassed =
-          result.outcome !== "timed-out" &&
-          result.signal === null &&
-          result.exitCode === check.expectExitCode;
-        let failureKind: CheckFailureKind | undefined;
-        let failureReason: string | undefined;
-        let diagnosticExcerpt = result.diagnosticExcerpt;
-        if (result.outcome === "timed-out") {
-          failureKind = "timed-out";
-          failureReason = "The command did not finish before its deadline.";
-        } else if (!commandPassed) {
-          failureKind = "exit-code";
-          failureReason = `Command exited ${result.exitCode}, expected ${check.expectExitCode}.`;
-        } else if (check.produces?.length) {
-          const outputs = matchingRepositoryPaths(root, check.produces);
-          if (outputs.unsafe.length > 0) {
-            failureKind = "missing-output";
-            failureReason = `Declared output escapes the repository: ${outputs.unsafe.join(", ")}`;
-          } else if (outputs.missing.length > 0) {
-            failureKind = "missing-output";
-            failureReason = `Declared output missing: ${outputs.missing.join(", ")}`;
-          }
+    const declaration = reusableCheck(acceptedSpec.source, check, options.extraRequires ?? []);
+    const reuse = options.allowReuse === false ? null : declaration;
+    const timeoutMs = (timeoutOverrideSeconds ?? check.timeoutSeconds) * 1000;
+    const firstIdentity = declaration
+      ? declaredIdentity(check, realCwd, declaration.argv, options.env, declaration.inputs)
+      : null;
+    const firstOutputs = firstIdentity && reuse ? outputSnapshot(realRoot, reuse.outputs) : null;
+    const possibleReceipt =
+      reuse && firstIdentity ? matchingReceipt(firstIdentity, firstOutputs) : null;
+    const receiptCandidate =
+      possibleReceipt && possibleReceipt.elapsedMs < timeoutMs ? possibleReceipt : null;
+    const recheckedIdentity =
+      receiptCandidate && declaration
+        ? declaredIdentity(check, realCwd, declaration.argv, options.env, declaration.inputs)
+        : null;
+    const recheckedReceipt =
+      recheckedIdentity && recheckedIdentity.key === firstIdentity?.key && reuse
+        ? matchingReceipt(recheckedIdentity, outputSnapshot(realRoot, reuse.outputs))
+        : null;
+    const initialReceipt =
+      recheckedReceipt && recheckedReceipt.elapsedMs < timeoutMs ? recheckedReceipt : null;
+    type Attempt = {
+      readonly result: VerificationExecutionResult;
+      readonly passed: boolean;
+      readonly outcome: "passed" | "failed" | "timed-out";
+      readonly failureKind?: CheckFailureKind;
+      readonly failureReason?: string;
+      readonly diagnosticExcerpt?: string;
+      readonly reused?: boolean;
+      readonly inputFingerprint?: string;
+      readonly waitKey?: string;
+    };
+    let attempt: Attempt;
+    if (initialReceipt && recheckedIdentity) {
+      attempt = {
+        result: syntheticReuseResult(taskId, check, recheckedIdentity),
+        passed: true,
+        outcome: "passed",
+        reused: true,
+        inputFingerprint: recheckedIdentity.key,
+      };
+    } else {
+      while (true) {
+        try {
+          attempt = await withBrokerResources(
+            [...check.requires, ...(options.extraRequires ?? []), ...inferResources(check.run)],
+            async (granted): Promise<Attempt> => {
+              const env = { ...options.env, ...granted };
+              let identity = declaration
+                ? declaredIdentity(check, realCwd, declaration.argv, env, declaration.inputs)
+                : null;
+              let cacheKey = reuse ? identity?.key : undefined;
+              if (cacheKey && identity && reuse && declaration) {
+                const currentOutputs = outputSnapshot(realRoot, reuse.outputs);
+                const possibleReceipt = matchingReceipt(identity, currentOutputs);
+                if (possibleReceipt && possibleReceipt.elapsedMs < timeoutMs) {
+                  const rechecked = declaredIdentity(
+                    check,
+                    realCwd,
+                    declaration.argv,
+                    env,
+                    declaration.inputs,
+                  );
+                  const recheckedReceipt =
+                    rechecked?.key === identity.key
+                      ? matchingReceipt(rechecked, outputSnapshot(realRoot, reuse.outputs))
+                      : null;
+                  if (rechecked && recheckedReceipt && recheckedReceipt.elapsedMs < timeoutMs) {
+                    return {
+                      result: syntheticReuseResult(taskId, check, rechecked),
+                      passed: true,
+                      outcome: "passed",
+                      reused: true,
+                      inputFingerprint: rechecked.key,
+                    };
+                  }
+                  identity = rechecked;
+                  cacheKey = identity?.key;
+                }
+              }
+              const owner = cacheKey ? claimCheck(cacheKey) : null;
+              if (identity && cacheKey && !owner && runningCheck(cacheKey)) {
+                return {
+                  result: syntheticReuseResult(taskId, check, identity),
+                  passed: true,
+                  outcome: "passed",
+                  waitKey: cacheKey,
+                };
+              }
+              const startedAt = Date.now();
+              try {
+                const beforeReports = check.junit
+                  ? junitSnapshot(root, check.junit.reports)
+                  : new Map();
+                const result = await runVerification(
+                  taskId,
+                  realCwd,
+                  check.run,
+                  (timeoutOverrideSeconds ?? check.timeoutSeconds) * 1000,
+                  env,
+                );
+                const commandPassed =
+                  result.outcome !== "timed-out" &&
+                  result.signal === null &&
+                  result.exitCode === check.expectExitCode;
+                let failureKind: CheckFailureKind | undefined;
+                let failureReason: string | undefined;
+                let diagnosticExcerpt = result.diagnosticExcerpt;
+                if (result.outcome === "timed-out") {
+                  failureKind = "timed-out";
+                  failureReason = "The command did not finish before its deadline.";
+                } else if (!commandPassed) {
+                  failureKind = "exit-code";
+                  failureReason = `Command exited ${result.exitCode}, expected ${check.expectExitCode}.`;
+                } else if (check.produces?.length) {
+                  const outputs = matchingRepositoryPaths(root, check.produces);
+                  if (outputs.unsafe.length > 0) {
+                    failureKind = "missing-output";
+                    failureReason = `Declared output escapes the repository: ${outputs.unsafe.join(", ")}`;
+                  } else if (outputs.missing.length > 0) {
+                    failureKind = "missing-output";
+                    failureReason = `Declared output missing: ${outputs.missing.join(", ")}`;
+                  }
+                }
+                if (commandPassed && !failureReason && check.junit) {
+                  const junit = checkJUnitEvidence(root, check.junit, beforeReports, env);
+                  failureKind = junit.failureKind;
+                  failureReason = junit.reason;
+                  diagnosticExcerpt = junit.diagnosticExcerpt ?? diagnosticExcerpt;
+                }
+                let passed = commandPassed && failureReason === undefined;
+                let inputFingerprint: string | undefined;
+                if (identity && declaration) {
+                  const finalIdentity = declaredIdentity(
+                    check,
+                    realCwd,
+                    declaration.argv,
+                    env,
+                    declaration.inputs,
+                  );
+                  if (!finalIdentity || finalIdentity.key !== identity.key) {
+                    passed = false;
+                    failureKind = "source-changed";
+                    failureReason =
+                      "Verification inputs changed while the check was running; rerun it.";
+                  } else inputFingerprint = identity.key;
+                }
+                if (passed && identity && cacheKey && owner && reuse) {
+                  const outputs = outputSnapshot(realRoot, reuse.outputs);
+                  if (outputs === null) {
+                    passed = false;
+                    failureKind = "missing-output";
+                    failureReason =
+                      "A declared verification output could not be safely fingerprinted.";
+                  } else {
+                    const receipt: CheckReceipt = {
+                      schemaVersion: 2,
+                      key: cacheKey,
+                      commandHash: NodeCrypto.createHash("sha256")
+                        .update(JSON.stringify(reuse.argv))
+                        .digest("hex"),
+                      outcome: "ok",
+                      exitCode: 0,
+                      elapsedMs: Date.now() - startedAt,
+                      peakRssKb: 0,
+                      checkers: identity.checkers,
+                      outputs,
+                      finishedAt: Date.now(),
+                    };
+                    try {
+                      writeReceipt(receipt);
+                    } catch {
+                      // An unwritable cache only causes the check to run again next time.
+                    }
+                  }
+                }
+                return {
+                  result,
+                  passed,
+                  outcome: passed
+                    ? "passed"
+                    : result.outcome === "timed-out"
+                      ? "timed-out"
+                      : "failed",
+                  ...(failureKind ? { failureKind } : {}),
+                  ...(failureReason ? { failureReason } : {}),
+                  ...(diagnosticExcerpt ? { diagnosticExcerpt } : {}),
+                  ...(inputFingerprint ? { inputFingerprint } : {}),
+                };
+              } finally {
+                if (cacheKey && owner) releaseCheck(cacheKey, owner);
+              }
+            },
+            {
+              label: `check of ${taskId}: ${check.run.slice(0, 80)}`,
+              ownerRef: taskId,
+              ...(repo ? { repo } : {}),
+              ...(check.id ? { checkId: check.id } : {}),
+              outcomeOf: (current) =>
+                current.waitKey || current.reused
+                  ? "cancelled"
+                  : current.outcome === "timed-out"
+                    ? "timed-out"
+                    : current.passed
+                      ? "ok"
+                      : "failed",
+            },
+          );
+        } catch (error) {
+          if (!(error instanceof EmulatorPrerequisiteError)) throw error;
+          const failureReason = `Blocking Android emulator prerequisite: ${error.message}`;
+          const result: VerificationExecutionResult = {
+            taskId,
+            commitHash: currentCommit,
+            verificationCommand: check.run,
+            exitCode: 77,
+            passed: false,
+            outcome: "failed",
+            signal: null,
+            stdoutSnippet: "",
+            stderrSnippet: failureReason,
+            durationMs: 0,
+            verifiedAt: new Date().toISOString(),
+          };
+          attempt = {
+            result,
+            passed: false,
+            outcome: "failed",
+            failureKind: "blocked",
+            failureReason,
+          };
+          break;
         }
-        if (commandPassed && !failureReason && check.junit) {
-          const junit = checkJUnitEvidence(root, check.junit, beforeReports, {
-            ...options.env,
-            ...granted,
-          });
-          failureKind = junit.failureKind;
-          failureReason = junit.reason;
-          diagnosticExcerpt = junit.diagnosticExcerpt ?? diagnosticExcerpt;
-        }
-        const passed = commandPassed && failureReason === undefined;
-        return {
-          result,
-          passed,
-          outcome: passed ? "passed" : result.outcome === "timed-out" ? "timed-out" : "failed",
-          ...(failureKind ? { failureKind } : {}),
-          ...(failureReason ? { failureReason } : {}),
-          ...(diagnosticExcerpt ? { diagnosticExcerpt } : {}),
-        };
-      },
-      {
-        label: `check of ${taskId}: ${check.run.slice(0, 80)}`,
-        ownerRef: taskId,
-        ...(repo ? { repo } : {}),
-        ...(check.id ? { checkId: check.id } : {}),
-        outcomeOf: (attempt) =>
-          attempt.outcome === "timed-out" ? "timed-out" : attempt.passed ? "ok" : "failed",
-      },
-    );
+        if (!attempt.waitKey) break;
+        if (!(await waitForCheck(attempt.waitKey, undefined, timeoutMs)))
+          throw new ResourceWaitError(
+            "exhausted",
+            `Waiting for an identical check exceeded ${Math.ceil(timeoutMs / 1000)} seconds; nothing ran.`,
+          );
+      }
+    }
     const result = attempt.result;
     commit = result.commitHash;
     if (check.id && !attempt.passed) failedIds.add(check.id);
     results.push({
+      ...(check.id ? { checkId: check.id } : {}),
       run: check.run,
       cwd: check.cwd ?? ".",
       expectExitCode: check.expectExitCode,
@@ -1173,6 +1469,8 @@ export async function runSpec(
       ...(attempt.failureReason ? { failureReason: attempt.failureReason } : {}),
       ...(attempt.diagnosticExcerpt ? { diagnosticExcerpt: attempt.diagnosticExcerpt } : {}),
       ...(result.diagnosticLogPath ? { diagnosticLogPath: result.diagnosticLogPath } : {}),
+      ...(attempt.reused ? { reused: true } : {}),
+      ...(attempt.inputFingerprint ? { inputFingerprint: attempt.inputFingerprint } : {}),
     });
     if (!attempt.passed) {
       state = result.outcome === "timed-out" ? "timed-out" : "failed";

@@ -1,16 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off preferSchemaOverJson:off
-/**
- * Running things under the broker (resourceBroker.ts): wait in the fair queue, take the physical
- * lock files, heartbeat while the work runs, tear it down at its time limit, record how it ended.
- *
- * The physical lock files are the same ones `agent-resources` uses (flock slot files in the
- * account's lock directory, plus `/tmp/android-heavy.lock` for the first emulator slot), so older
- * scripts that still call `agent-resources run --class android` or `flock /tmp/android-heavy.lock`
- * exclude AgentQueue work and the other way round. A lock held by `flock` dies with the process
- * tree that holds it, so a crashed holder never leaves a stale lock.
- *
- * @module resourceRunner
- */
+/** Resource-aware process execution. @module resourceRunner */
 import { ensureEmulator } from "./emulatorProvision.ts";
 import { cgroupOomKills, cgroupUsedKb } from "./hostCapacity.ts";
 import * as NodeChildProcess from "node:child_process";
@@ -335,12 +324,23 @@ export function jobEnvironment(source: NodeJS.ProcessEnv = process.env): Record<
 
 export class ResourceWaitError extends Error {
   readonly outcome: "exhausted" | "unavailable" | "cancelled";
-  readonly ticket: Ticket;
-  constructor(outcome: "exhausted" | "unavailable" | "cancelled", message: string, ticket: Ticket) {
+  readonly ticket?: Ticket;
+  constructor(
+    outcome: "exhausted" | "unavailable" | "cancelled",
+    message: string,
+    ticket?: Ticket,
+  ) {
     super(message);
     this.name = "ResourceWaitError";
     this.outcome = outcome;
-    this.ticket = ticket;
+    if (ticket) this.ticket = ticket;
+  }
+}
+
+export class EmulatorPrerequisiteError extends Error {
+  constructor(note: string) {
+    super(note);
+    this.name = "EmulatorPrerequisiteError";
   }
 }
 
@@ -600,7 +600,30 @@ export async function runGranted(
   const files = ticketLockFiles(ticket);
   const lockWait = 1800;
   const full = [...flockPrefix(files, lockWait), ...command.argv];
-  await ensureEmulator(ticketEnv(ticket), { repo: ticket.repo ?? null });
+  const emulator = await ensureEmulator(ticketEnv(ticket), { repo: ticket.repo ?? null });
+  if (!emulator.ready && emulator.blocking) {
+    const tail = `[agentq] required Android emulator unavailable: ${emulator.note}\n`;
+    const result: CommandResult = {
+      outcome: "unavailable",
+      exitCode: 77,
+      tail,
+      logPath: command.logFile ?? null,
+      peakRssKb: 0,
+      oomKilled: false,
+    };
+    try {
+      command.beforeFinish?.(result);
+    } finally {
+      broker.finish(ticket.id, {
+        outcome: "unavailable",
+        exitCode: 77,
+        tail,
+        logPath: command.logFile ?? null,
+        note: `Blocking Android emulator prerequisite: ${emulator.note}`,
+      });
+    }
+    return result;
+  }
   const run = await runTree(
     full,
     {
@@ -841,6 +864,7 @@ async function runUnderBrokerOnce(options: RunUnderBrokerOptions): Promise<RunUn
       return { kind: "ran", result, ticket: broker.get(ticket.id)! };
     } catch (error) {
       if (error instanceof ResourceWaitError) {
+        if (!error.ticket) throw error;
         return {
           kind: "not-granted",
           outcome: error.outcome,
@@ -973,7 +997,8 @@ export async function withBrokerResources<A>(
     broker.markRunning(ticket.id, null);
     beat = setInterval(() => broker.heartbeat(ticket.id), 10_000);
     const grantedEnv = ticketEnv(granted);
-    await ensureEmulator(grantedEnv, { repo: granted.repo ?? null });
+    const emulator = await ensureEmulator(grantedEnv, { repo: granted.repo ?? null });
+    if (!emulator.ready && emulator.blocking) throw new EmulatorPrerequisiteError(emulator.note);
     const result = await body(grantedEnv);
     const outcome = options.outcomeOf?.(result) ?? "ok";
     broker.finish(ticket.id, { outcome });
@@ -985,11 +1010,18 @@ export async function withBrokerResources<A>(
       (final.state === "waiting" || final.state === "granted" || final.state === "running")
     ) {
       broker.finish(ticket.id, {
-        outcome: error instanceof ResourceWaitError ? error.outcome : "failed",
+        outcome:
+          error instanceof ResourceWaitError
+            ? error.outcome
+            : error instanceof EmulatorPrerequisiteError
+              ? "unavailable"
+              : "failed",
         note:
           error instanceof ResourceWaitError
             ? `Resource wait ${error.outcome}`
-            : "Resource callback failed",
+            : error instanceof EmulatorPrerequisiteError
+              ? `Blocking Android emulator prerequisite: ${error.message}`
+              : "Resource callback failed",
       });
     }
     throw error;

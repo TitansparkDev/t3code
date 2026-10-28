@@ -29,15 +29,28 @@ dependants, and independent checks continue so the receipt can collect their fai
 The bounded, redacted output and actionable diagnostics are recorded with a private log reference in the
 `task_verification_failed` event or candidate receipt.
 
-`Checks:` bullets may opt into check-level metadata with `id`, `after`, `produces`, `consumes`, `reuse-inputs`, and `junit`;
-`after`, path lists, and report globs use `|` to separate values. For example, `` `./gradlew assembleDebug` (id: build,
-produces: app/build/outputs/**/*.apk) `` followed by `` `./gradlew connectedDebugAndroidTest` (id: instrumentation, after: build,
-consumes: app/build/outputs/**/*.apk, junit: app/build/reports/**/*.xml, min-tests: 1, max-skipped: 0) `` declares a build
-predecessor and fresh instrumentation evidence. IDs must be unique, dependencies must resolve without cycles, and output paths
-must have one unambiguous producer. `produces`, `consumes`, and JUnit report paths are repository-relative and checked after
-filesystem resolution, so a symlink cannot make a check read or claim an artifact outside the repository. Required JUnit reports
-must be fresh, well-formed, contain at least one executed test, have no failures, and stay within `max-skipped`; custom DTDs and
-entities are rejected. `reuse-inputs` is validated and preserved for future check-reuse qualification; it does not skip runs yet.
+`Checks:` bullets may opt into check-level metadata with `id`, `after`, `produces`, `consumes`, `reuse-inputs`, `reuse-env`, and
+`junit`; `after`, path lists, and report globs use `|` to separate values. `produces: none` explicitly declares no build
+artifacts, and `reuse-env: none` declares no additional named environment inputs. For example,
+`` `./gradlew assembleDebug` (id: build, produces: app/build/outputs/**/*.apk) `` followed by
+`` `./gradlew connectedDebugAndroidTest` (id: instrumentation, after: build, consumes: app/build/outputs/**/*.apk,
+junit: app/build/reports/**/*.xml, min-tests: 1, max-skipped: 0) `` declares a build predecessor and fresh instrumentation
+evidence. IDs must be unique, dependencies must resolve without cycles, and output paths must have one unambiguous producer.
+`produces`, `consumes`, and JUnit report paths are repository-relative and checked after filesystem resolution, so a symlink
+cannot make a check read or claim an artifact outside the repository. Required JUnit reports must be fresh, well-formed, contain
+at least one executed test, have no failures, and stay within `max-skipped`; custom DTDs and entities are rejected.
+
+Reuse is opt-in: a check must declare `reuse-inputs`, `reuse-env` (a pipe-delimited list or `none`), and `produces` (or
+`produces: none`). It applies only to an allowlisted plain local command and checks using no resource other than `typecheck` or
+`heavy_build`; checks requiring JUnit evidence always run fresh. The private receipt identity includes the repository and account, declared file contents (including ignored and
+untracked files), command and working directory, lockfiles, toolchain and safely traversable installed type/source files, an
+HMAC of the effective environment, and output hashes. A dependency tree with symlinks outside the repository or installed
+dependency roots, unresolved links, or beyond the fingerprint limits runs fresh. Queue ticket, owner, slot, per-task
+port/database/compose, working-directory, and temporary-directory
+variables are excluded from that HMAC unless named in `reuse-env`. Device, browser, database, Docker, GPU, network,
+custom-resource, ambiguous-shell, and unknown-tool checks always run fresh. A stored result must also fit the current timeout.
+Only completed successful checks are stored; timeouts and crashes never create reusable receipts. Legacy checks without these
+fields keep their existing execution order and serialization.
 
 **Nothing silent counts as a pass.** A task with no definition is `unverified`: it may merge, but its receipt says so, it is listed
 as `unchecked` by `verifyPlanCompletion`, and the plan is not complete until a later audit (`task_audited` event with state
