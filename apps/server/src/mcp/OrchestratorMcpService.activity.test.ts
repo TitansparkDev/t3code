@@ -1,5 +1,6 @@
 import {
   EnvironmentId,
+  MessageId,
   NodeId,
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2ThreadShell,
@@ -9,6 +10,7 @@ import {
   RunId,
   ScheduledTaskId,
   ThreadId,
+  TurnItemId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -180,6 +182,136 @@ it("readThread prefers activity-run status over a newer cancelled queued run", a
     expect(result.thread.status).toBe("running");
     expect(result.thread.latestRunId).toBe(cancelledRunId);
     expect(result.thread.activeRunId).toBe(activeRunId);
+  }).pipe(Effect.provide(layer), Effect.runPromise);
+});
+
+it("readThread follows message cursors through long histories with interspersed tool activity", async () => {
+  const visibleTurnItems = Array.from({ length: 500 }, (_, position) => {
+    const ordinal = position + 1;
+    const message = position % 2 === 0;
+    const itemId = TurnItemId.make(`item-mcp-pagination-${ordinal}`);
+    return {
+      position,
+      visibility: "local" as const,
+      sourceThreadId: parentThreadId,
+      sourceItemId: itemId,
+      item: {
+        id: itemId,
+        threadId: parentThreadId,
+        runId: activeRunId,
+        nodeId: null,
+        providerThreadId: null,
+        providerTurnId: null,
+        parentItemId: null,
+        ordinal,
+        status: "completed" as const,
+        title: message ? `Message ${ordinal}` : `Tool ${ordinal}`,
+        startedAt: now,
+        completedAt: now,
+        updatedAt: now,
+        ...(message
+          ? {
+              type: "assistant_message" as const,
+              messageId: MessageId.make(`message-mcp-pagination-${ordinal}`),
+              text: `Message ${ordinal}`,
+              streaming: false,
+            }
+          : {
+              type: "command_execution" as const,
+              input: `echo ${ordinal}`,
+              output: "ok",
+              exitCode: 0,
+            }),
+      },
+    };
+  }) as unknown as OrchestrationV2ThreadProjection["visibleTurnItems"];
+  const projection = {
+    thread: baseThread({
+      threadId: parentThreadId,
+      title: "Parent",
+      instanceId: parentInstanceId,
+      model: "gpt-5.4",
+    }),
+    runs: [makeRun({ id: activeRunId, ordinal: 1, status: "running" })],
+    visibleTurnItems,
+    runtimeRequests: [],
+    messages: [],
+    contextTransfers: [],
+    subagents: [],
+    updatedAt: now,
+  } as unknown as OrchestrationV2ThreadProjection;
+
+  const layer = layerOrchestratorService.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        Layer.mock(ThreadManagementService.ThreadManagementService)({
+          getTimelinePage: (_threadId, options) => {
+            const matching = visibleTurnItems.filter(
+              (row) =>
+                row.position > (options.afterPosition ?? -1) &&
+                (options.view === "activity" ||
+                  ["user_message", "assistant_message", "proposed_plan"].includes(row.item.type)),
+            );
+            return Effect.succeed({
+              items: matching.slice(0, options.limit),
+              totalItems: visibleTurnItems.length,
+              hasMore: matching.length > options.limit,
+            });
+          },
+          getThreadRecords: () => Effect.succeed(projection),
+          getThreadShell: () => Effect.succeed(liveThreadShell(parentThreadId)),
+          getProjectThreadRecords: () => Effect.succeed(projection),
+        } satisfies Partial<ThreadManagementService.ThreadManagementService["Service"]>),
+        ServerSettings.layerTest(),
+        Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
+        Layer.mock(ProjectService.ProjectService)({}),
+        Layer.mock(SecretRequests.SecretRequests)({}),
+        Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(ScheduledTaskService.ScheduledTaskService)({
+          list: () => Effect.succeed({ tasks: [] }),
+        }),
+        Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
+          list: () => Effect.succeed([]),
+        }),
+        NodeCrypto.layer,
+      ),
+    ),
+  );
+
+  await Effect.gen(function* () {
+    const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+    const messageIds: Array<MessageId> = [];
+    let afterPosition = -1;
+    let lastPageHasMore = false;
+    let pageCount = 0;
+    for (let pageNumber = 0; pageNumber < 4; pageNumber += 1) {
+      const page = yield* service.readThread(makeScope(), {
+        threadId: parentThreadId,
+        limit: 100,
+        afterPosition,
+      });
+      const pageMessageIds = page.items.map((item) => item.messageId);
+      expect(pageMessageIds.every((id) => id !== null)).toBe(true);
+      messageIds.push(...pageMessageIds.filter((id): id is MessageId => id !== null));
+      lastPageHasMore = page.hasMore;
+      pageCount += 1;
+      if (!page.hasMore) break;
+      expect(page.nextPosition).toBeGreaterThan(afterPosition);
+      afterPosition = page.nextPosition!;
+    }
+    expect(messageIds).toHaveLength(250);
+    expect(new Set(messageIds).size).toBe(250);
+    expect(pageCount).toBe(3);
+    expect(lastPageHasMore).toBe(false);
+
+    const activity = yield* service.readThread(makeScope(), {
+      threadId: parentThreadId,
+      view: "activity",
+      limit: 100,
+    });
+    expect(activity.items).toHaveLength(100);
+    expect(activity.items.some((item) => item.type === "command_execution")).toBe(true);
+    expect(activity.hasMore).toBe(true);
   }).pipe(Effect.provide(layer), Effect.runPromise);
 });
 

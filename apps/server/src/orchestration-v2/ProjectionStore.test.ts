@@ -1700,6 +1700,93 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           },
         });
       }
+
+      for (let offset = 1; offset <= 402; offset += 1) {
+        const ordinal = 1_000 + offset;
+        const id = `turn-item:bounded-sql-history:pagination:${offset}`;
+        const message = offset % 2 === 1;
+        const type = message ? "user_message" : "command_execution";
+        yield* sql`
+          INSERT INTO orchestration_v2_projection_turn_items (
+            turn_item_id, thread_id, run_id, node_id, provider_thread_id, provider_turn_id,
+            parent_item_id, ordinal, type, status, updated_at, payload_json
+          ) VALUES (
+            ${id}, ${threadId}, ${"run:bounded-sql-history:1000"}, NULL, NULL, NULL, NULL,
+            ${ordinal}, ${type}, 'completed', ${nowIso},
+            ${encodeUnknownJsonString({
+              id,
+              threadId,
+              runId: RunId.make("run:bounded-sql-history:1000"),
+              nodeId: null,
+              providerThreadId: null,
+              providerTurnId: null,
+              nativeItemRef: null,
+              parentItemId: null,
+              ordinal,
+              status: "completed",
+              title: message ? `Message ${offset}` : `Tool ${offset}`,
+              startedAt: nowIso,
+              completedAt: nowIso,
+              updatedAt: nowIso,
+              ...(message
+                ? {
+                    type,
+                    createdBy: "user",
+                    creationSource: "web",
+                    messageId: `message:bounded-sql-history:pagination:${offset}`,
+                    inputIntent: "turn_start",
+                    text: `Message ${offset}`,
+                    attachments: [],
+                  }
+                : { type, input: `echo ${offset}`, output: "ok", exitCode: 0 }),
+            })}
+          )
+        `;
+      }
+
+      const readTimelinePages = (view: "activity" | "messages") =>
+        Effect.gen(function* () {
+          const ids: Array<string> = [];
+          const hasMoreValues: Array<boolean> = [];
+          let afterPosition = -1;
+          let hasMore = true;
+          let pageCount = 0;
+          while (hasMore) {
+            const page = yield* projectionStore.getTimelinePage(threadId, {
+              view,
+              limit: 100,
+              afterPosition,
+            });
+            ids.push(...page.items.map((row) => String(row.sourceItemId)));
+            hasMoreValues.push(page.hasMore);
+            afterPosition = page.items.at(-1)?.position ?? afterPosition;
+            hasMore = page.hasMore;
+            pageCount += 1;
+          }
+          return { ids, hasMoreValues, pageCount };
+        });
+      const messagesPage = yield* readTimelinePages("messages");
+      assert.lengthOf(messagesPage.ids, 203);
+      assert.lengthOf(new Set(messagesPage.ids), 203);
+      assert.strictEqual(messagesPage.pageCount, 3);
+      assert.deepEqual(messagesPage.hasMoreValues, [true, true, false]);
+      assert.deepEqual(messagesPage.ids, [
+        "turn-item:bounded-sql-history:1",
+        "turn-item:bounded-sql-history:1000",
+        ...Array.from(
+          { length: 201 },
+          (_, index) => `turn-item:bounded-sql-history:pagination:${index * 2 + 1}`,
+        ),
+      ]);
+      const activityPage = yield* projectionStore.getTimelinePage(threadId, {
+        view: "activity",
+        limit: 100,
+        afterPosition: 1_000,
+      });
+      assert.lengthOf(activityPage.items, 100);
+      assert.isTrue(activityPage.items.some((row) => row.item.type === "command_execution"));
+      assert.isTrue(activityPage.hasMore);
+
       const scopeId = CheckpointScopeId.make("scope:bounded-sql-history:root");
       const baselineId = CheckpointId.make("checkpoint:bounded-sql-history:baseline");
       yield* projectionStore.apply({
