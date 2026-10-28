@@ -1088,6 +1088,7 @@ This is an extension of the current mobile UI, using the existing foreground/mut
   - Acceptance: example 80% left is never rendered as 20%; unknown never appears as zero; adding the strip causes no usage RPC or transcript scan, and percentages update without reordering cells.
 
 - [ ] **LB02 — Build and mount the fixed-height mobile quota strip.**
+  - Owner check (deferred): On a future provisioned device, visually confirm native paint, accessibility focus restoration and Android Back gesture behavior; the worker checks cover the state and geometry proxies only.
   - Context: read this section's Fixed decisions, Banner design contract and Limits first.
   - Depends on: LB01.
   - Scope: apps/mobile/src/features/usage/, apps/mobile/src/state/usage-banner.ts, apps/mobile/src/Stack.tsx, apps/mobile/src/features/layout/AdaptiveWorkspaceLayout.tsx, apps/mobile/src/features/layout/workspace-content-width.ts, apps/mobile/src/features/layout/native-glass-header-items.ts, apps/mobile/src/features/threads/ThreadDetailScreen.tsx, apps/mobile/src/features/threads/ThreadFeed.tsx, apps/mobile/src/lib/layoutMetrics.ts, apps/mobile/src/lib/adaptive-navigation.ts, apps/mobile/src/lib/adaptive-navigation.test.ts, apps/mobile/src/features/settings/components/settings-sheet-targets.ts

@@ -1,9 +1,17 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
-import { useEffect, useMemo, useRef, useState } from "react";
+import * as Haptics from "expo-haptics";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import {
   AccessibilityInfo,
-  AppState,
   BackHandler,
   findNodeHandle,
   I18nManager,
@@ -18,16 +26,34 @@ import {
 import { ProviderIcon } from "../../components/ProviderIcon";
 import { AppText } from "../../components/ui/AppText";
 import { usageBannerPresentationsAtom } from "../../state/usage-banner";
-import { usageBannerExpansionStore, useUsageBannerExpanded } from "./usage-banner-expansion";
 import { useHardwareKeyboardCommand } from "../keyboard/hardwareKeyboardCommands";
-import { usageBannerCellWidth, usageBannerHeight } from "./usage-banner-layout";
+import { usageBannerMinuteClock } from "./usage-banner-clock";
+import { usageBannerExpansionStore, useUsageBannerExpanded } from "./usage-banner-expansion";
+import {
+  USAGE_BANNER_COLLAPSE_CONTROL_WIDTH,
+  USAGE_BANNER_EDGE_PADDING,
+  USAGE_BANNER_CELL_GAP,
+  usageBannerCellWidth,
+  usageBannerCollapsedContentWidth,
+  usageBannerCollapsedNeedsScroll,
+  usageBannerExpandedCellWidth,
+  usageBannerHeight,
+} from "./usage-banner-layout";
 import {
   buildUsageBannerModel,
+  type UsageBannerAccountCell,
   type UsageBannerCell,
   type UsageBannerRow,
 } from "./usage-banner-model";
+import {
+  usageBannerAccountRouteTarget,
+  usageBannerExpandedAccountLabel,
+  usageBannerFocusTarget,
+  usageBannerRowTone,
+  usageBannerStartsProviderGroup,
+} from "./usage-banner-presentation";
 
-const MINUTE = 60_000;
+const UNKNOWN_QUOTA = String.fromCodePoint(0x2014);
 
 function RowValue({
   row,
@@ -38,8 +64,15 @@ function RowValue({
   readonly fontScale: number;
   readonly dense: boolean;
 }) {
-  const value = row.percent === null ? "—" : `${row.percent}%`;
+  const value = row.percent === null ? UNKNOWN_QUOTA : `${row.percent}%`;
   const timerBelow = fontScale >= 1.15;
+  const tone = usageBannerRowTone(row);
+  const valueTone =
+    tone === "danger"
+      ? "text-destructive"
+      : tone === "warning"
+        ? "text-warning-foreground"
+        : "text-foreground";
   return (
     <View
       className={
@@ -51,12 +84,13 @@ function RowValue({
       <AppText
         numberOfLines={1}
         adjustsFontSizeToFit={false}
-        className={`${fontScale >= 1.15 || !dense ? "text-xs" : "text-[11px]"} font-t3-medium tabular-nums text-foreground`}
+        className={`${fontScale >= 1.15 || !dense ? "text-xs" : "text-[11px]"} font-t3-medium tabular-nums ${valueTone}`}
       >
         {value}
       </AppText>
       <AppText
         numberOfLines={1}
+        adjustsFontSizeToFit={false}
         className={`${fontScale >= 1.15 || !dense ? "text-[10px]" : "text-[9px]"} tabular-nums text-foreground-muted`}
       >
         {row.reset.countdown}
@@ -71,6 +105,7 @@ function BannerCell({
   fontScale,
   dense,
   expanded,
+  expandedAccountLabel,
   ref,
   onPress,
 }: {
@@ -79,14 +114,15 @@ function BannerCell({
   readonly fontScale: number;
   readonly dense?: boolean;
   readonly expanded?: boolean;
+  readonly expandedAccountLabel?: string;
   readonly ref?: React.Ref<ViewInstance>;
   readonly onPress: () => void;
 }) {
   const provider = cell.kind === "antigravity" ? "antigravity" : cell.provider;
-  const name =
+  const summaryName =
     cell.kind === "antigravity"
       ? `AGY${cell.accountCount > 1 ? ` ×${cell.accountCount}` : ""}`
-      : (cell.name ?? "");
+      : null;
   return (
     <Pressable
       ref={ref}
@@ -102,11 +138,18 @@ function BannerCell({
         style={{ height: fontScale >= 1.15 ? 16 * fontScale : 14 }}
       >
         <ProviderIcon provider={provider} size={12} />
-        {cell.kind === "antigravity" ? (
+        {summaryName !== null ? (
+          <>
+            <AppText numberOfLines={1} className="text-[9px] font-t3-medium text-foreground-muted">
+              {summaryName}
+            </AppText>
+            <AppText className="text-[9px] text-foreground-muted">›</AppText>
+          </>
+        ) : expandedAccountLabel ? (
           <AppText numberOfLines={1} className="text-[9px] font-t3-medium text-foreground-muted">
-            {name}
+            {expandedAccountLabel}
           </AppText>
-        ) : cell.badge !== null ? (
+        ) : cell.kind === "account" && cell.badge !== null ? (
           <AppText className="text-[9px] text-foreground-muted">{cell.badge}</AppText>
         ) : null}
       </View>
@@ -127,12 +170,21 @@ function BannerCell({
   );
 }
 
+function withSelectionFeedback(action: () => void) {
+  void Haptics.selectionAsync().catch(() => undefined);
+  action();
+}
+
 export function UsageLimitBanner(props: { readonly visible: boolean }) {
   const navigation = useNavigation();
   const presentations = useAtomValue(usageBannerPresentationsAtom);
   const { width, fontScale } = useWindowDimensions();
-  const [now, setNow] = useState(() => Date.now());
-  const [foreground, setForeground] = useState(AppState.currentState === "active");
+  const clockClientId = useId();
+  const now = useSyncExternalStore(
+    usageBannerMinuteClock.subscribe,
+    usageBannerMinuteClock.getSnapshot,
+    usageBannerMinuteClock.getSnapshot,
+  );
   const [expanded, setExpanded] = useUsageBannerExpanded();
   const [availableWidth, setAvailableWidth] = useState(0);
   const closeRef = useRef<ViewInstance>(null);
@@ -143,22 +195,35 @@ export function UsageLimitBanner(props: { readonly visible: boolean }) {
   const count = model.cells.length;
   const bannerWidth = availableWidth || width;
   const cellWidth = usageBannerCellWidth(bannerWidth, count);
-  const summaryAccountIds = summary?.accounts.map((account) => account.id).join("|") ?? "";
-  const accountIds = model.cells.flatMap((cell) =>
-    cell.kind === "account" ? [cell.id] : cell.accounts.map((account) => account.id),
+  const collapsedContentWidth = usageBannerCollapsedContentWidth(bannerWidth, count);
+  const collapsedNeedsScroll = usageBannerCollapsedNeedsScroll(count);
+  const { accountIds, antigravityIds } = useMemo(
+    () => ({
+      accountIds: model.cells.flatMap((cell) =>
+        cell.kind === "account" ? [cell.id] : cell.accounts.map((account) => account.id),
+      ),
+      antigravityIds: summary?.accounts.map((account) => account.id) ?? [],
+    }),
+    [model.cells, summary],
   );
-  const antigravityIds = summary?.accounts.map((account) => account.id) ?? [];
+
   const onLayout = (event: LayoutChangeEvent) => {
     const nextWidth = event.nativeEvent.layout.width;
     setAvailableWidth((current) => (current === nextWidth ? current : nextWidth));
   };
-  const collapse = () => {
-    setExpanded(false);
+
+  const focusSummary = useCallback(() => {
     requestAnimationFrame(() => {
       const tag = findNodeHandle(summaryRef.current);
       if (tag != null) AccessibilityInfo.setAccessibilityFocus(tag);
     });
-  };
+  }, []);
+
+  const collapse = useCallback(() => {
+    setExpanded(false);
+    focusSummary();
+  }, [focusSummary, setExpanded]);
+
   const dismissExpansion = () => {
     if (!expanded) return false;
     collapse();
@@ -166,25 +231,20 @@ export function UsageLimitBanner(props: { readonly visible: boolean }) {
   };
   useHardwareKeyboardCommand("paletteDismiss", dismissExpansion);
 
+  // oxlint-disable-next-line t3code/react-effect-budget -- The shared clock is an external resource whose lifetime follows this mounted visible banner slot.
   useEffect(() => {
-    const subscription = AppState.addEventListener("change", (state) => {
-      const active = state === "active";
-      setForeground(active);
-      if (active) {
-        setNow(Date.now());
-      } else {
-        setExpanded(false);
-      }
-    });
-    return () => subscription.remove();
-  }, []);
+    const visible = props.visible && count > 0;
+    usageBannerMinuteClock.setVisible(clockClientId, visible);
+    return () => usageBannerMinuteClock.remove(clockClientId);
+  }, [clockClientId, count, props.visible]);
 
+  // oxlint-disable-next-line t3code/react-effect-budget -- Fresh provider data re-samples wall time without coupling a refresh RPC to rendering.
   useEffect(() => {
-    if (!props.visible || !foreground) return;
-    const timer = setInterval(() => setNow(Date.now()), MINUTE);
-    return () => clearInterval(timer);
-  }, [foreground, props.visible]);
+    usageBannerMinuteClock.refresh();
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- Provider identity is intentionally the trigger even when the clock callback does not read the data.
+  }, [presentations]);
 
+  // oxlint-disable-next-line t3code/react-effect-budget -- Android Back is a native subscription that exists only while the replacement row is expanded.
   useEffect(() => {
     if (!expanded) return;
     const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
@@ -194,101 +254,100 @@ export function UsageLimitBanner(props: { readonly visible: boolean }) {
     return () => subscription.remove();
   }, [collapse, expanded]);
 
+  // oxlint-disable-next-line t3code/react-effect-budget -- Account-scope removal is external lifecycle state and must collapse an already-mounted expansion.
   useEffect(() => {
     if (props.visible) usageBannerExpansionStore.syncAccounts(accountIds, antigravityIds);
-  }, [props.visible, summaryAccountIds, model.cells]);
+  }, [accountIds, antigravityIds, props.visible]);
 
-  const openAccount = (cell: Exclude<UsageBannerCell, { kind: "antigravity" }>) => {
-    const row = cell.rows.find((candidate) => candidate.window !== null) ?? cell.rows[0];
-    navigation.navigate("SettingsUsageAccount", {
-      accountKey: cell.navigation.accountKey,
-      windowId: row.window?.id ?? null,
-      windowKind: row.window?.kind ?? null,
-      environmentIds: cell.navigation.environmentIds,
-      now,
-    });
+  const openAccount = (cell: UsageBannerAccountCell) => {
+    const target = usageBannerAccountRouteTarget(cell, now);
+    withSelectionFeedback(() => navigation.navigate(target.name, target.params));
   };
 
   const toggleExpansion = () => {
     const next = !expanded;
-    setExpanded(next);
+    withSelectionFeedback(() => setExpanded(next));
     if (next && summary) {
       AccessibilityInfo.announceForAccessibility(`${summary.accountCount} Antigravity accounts`);
+    }
+    const focusTarget = usageBannerFocusTarget(next);
+    if (focusTarget === "close") {
       requestAnimationFrame(() => {
         const tag = findNodeHandle(closeRef.current);
         if (tag != null) AccessibilityInfo.setAccessibilityFocus(tag);
       });
     } else {
-      requestAnimationFrame(() => {
-        const tag = findNodeHandle(summaryRef.current);
-        if (tag != null) AccessibilityInfo.setAccessibilityFocus(tag);
-      });
+      focusSummary();
     }
   };
 
-  if (!props.visible || !foreground || count === 0) return null;
+  if (!props.visible || count === 0) return null;
 
   if (expanded && summary) {
+    const expandedCellWidth = usageBannerExpandedCellWidth(bannerWidth, summary.accounts.length);
     return (
       <View
         onLayout={onLayout}
         className="w-full flex-row items-center border-b border-separator bg-screen"
-        style={{ height }}
+        style={{ height, direction: I18nManager.isRTL ? "rtl" : "ltr" }}
       >
         <Pressable
           ref={closeRef}
           accessibilityRole="button"
           accessibilityLabel="Collapse Antigravity accounts"
-          className="h-full w-12 items-center justify-center active:opacity-60"
+          className="h-full items-center justify-center active:opacity-60"
+          style={{ width: USAGE_BANNER_COLLAPSE_CONTROL_WIDTH }}
           onPress={toggleExpansion}
         >
           <AppText className="text-lg text-foreground">×</AppText>
         </Pressable>
         <ScrollView
           horizontal
+          directionalLockEnabled
           showsHorizontalScrollIndicator={false}
-          contentContainerClassName="h-full flex-row items-center gap-1"
+          contentContainerClassName="h-full flex-row items-center"
           style={{ flex: 1 }}
         >
-          {summary.accounts.map((account) => (
-            <BannerCell
-              key={account.id}
-              cell={account}
-              width={Math.max(
-                88,
-                usageBannerCellWidth(bannerWidth, Math.min(3, summary.accounts.length)),
-              )}
-              fontScale={fontScale}
-              dense={false}
-              onPress={() => openAccount(account)}
-            />
+          {summary.accounts.map((account, index) => (
+            <View key={account.id} className="h-full" style={{ marginStart: index === 0 ? 0 : 2 }}>
+              <BannerCell
+                cell={account}
+                width={expandedCellWidth}
+                fontScale={fontScale}
+                dense={false}
+                expandedAccountLabel={usageBannerExpandedAccountLabel(account)}
+                onPress={() => openAccount(account)}
+              />
+            </View>
           ))}
         </ScrollView>
       </View>
     );
   }
 
-  return (
+  const cells = (
     <View
-      onLayout={onLayout}
-      className="w-full flex-row items-center justify-center border-b border-separator bg-screen"
-      style={{ height }}
+      className="h-full flex-row items-center"
+      style={{
+        width: collapsedContentWidth,
+        paddingHorizontal: USAGE_BANNER_EDGE_PADDING,
+        direction: I18nManager.isRTL ? "rtl" : "ltr",
+      }}
     >
-      <View
-        className="h-full flex-row items-center"
-        style={{ width: Math.min(bannerWidth, count * cellWidth + 8 + 2 * (count - 1)) }}
-      >
-        {model.cells.map((cell, index) => (
+      {model.cells.map((cell, index) => {
+        const previous = model.cells[index - 1];
+        const startsGroup = usageBannerStartsProviderGroup(previous, cell);
+        return (
           <View
             key={cell.id}
             className="relative h-full flex-row items-center"
-            style={{
-              marginLeft: index === 0 ? 0 : 2,
-              direction: I18nManager.isRTL ? "rtl" : "ltr",
-            }}
+            style={{ marginStart: index === 0 ? 0 : USAGE_BANNER_CELL_GAP }}
           >
-            {index > 0 && cell.kind === "antigravity" ? (
-              <View className="absolute -left-px top-2 bottom-2 w-px bg-separator" />
+            {startsGroup ? (
+              <View
+                className="absolute top-2 bottom-2 w-px bg-separator"
+                style={I18nManager.isRTL ? { right: -1 } : { left: -1 }}
+              />
             ) : null}
             <BannerCell
               cell={cell}
@@ -300,8 +359,30 @@ export function UsageLimitBanner(props: { readonly visible: boolean }) {
               onPress={() => (cell.kind === "antigravity" ? toggleExpansion() : openAccount(cell))}
             />
           </View>
-        ))}
-      </View>
+        );
+      })}
+    </View>
+  );
+
+  return (
+    <View
+      onLayout={onLayout}
+      className="w-full flex-row items-center justify-center border-b border-separator bg-screen"
+      style={{ height }}
+    >
+      {collapsedNeedsScroll ? (
+        <ScrollView
+          horizontal
+          directionalLockEnabled
+          showsHorizontalScrollIndicator={false}
+          style={{ width: bannerWidth }}
+          contentContainerStyle={{ minWidth: collapsedContentWidth }}
+        >
+          {cells}
+        </ScrollView>
+      ) : (
+        cells
+      )}
     </View>
   );
 }
