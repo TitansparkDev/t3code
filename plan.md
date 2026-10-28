@@ -1102,7 +1102,7 @@ This is an extension of the current mobile UI, using the existing foreground/mut
 
 ### Integration gates
 
-- [ ] **SG01 — Verify the integrated thread runtime, wire and cache path.**
+- [x] **SG01 — Verify the integrated thread runtime, wire and cache path.**
   - Depends on: SP02, SP03, SP04, SP05, SP06.
   - Scope: packages/client-runtime/src/state/threads-sync.test.ts, apps/server/src/orchestration-v2/ThreadTransportPerformance.test.ts, scripts/mobile-thread-performance.ts, scripts/mobile-thread-performance.test.ts
   - Checks:
