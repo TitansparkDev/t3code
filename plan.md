@@ -1087,7 +1087,7 @@ This is an extension of the current mobile UI, using the existing foreground/mut
   - Add focused new model tests within scope and run them in the declared task check. Cover native+proxy duplicate, same account across two environments, distinct workspaces, no fingerprint, all 1+1, 2+1, 1+2 and 2+2 Codex/Claude combinations, partial AGY source failure, 0/100/fractional percentages, changed window duration, model-only quotas, reset crossing, stale clock, unsupported/auth-required, no accounts, and stable order/reference identity when unrelated thread tokens change. Using fake timestamps and no elapsed waits, test minute boundaries 59/60, 1,439/1,440 and 2,879/2,880, plus sub-minute durations, missing/invalid/elapsed resets, very distant timestamps, clock jumps and foreground resume. Test aggregate next-refill selection, zero-restoration members and mixed-family reset pairing. Keep countdown formatting local to the banner so existing widget/Usage formats and pooling semantics do not change.
   - Acceptance: example 80% left is never rendered as 20%; unknown never appears as zero; adding the strip causes no usage RPC or transcript scan, and percentages update without reordering cells.
 
-- [ ] **LB02 — Build and mount the fixed-height mobile quota strip.**
+- [x] **LB02 — Build and mount the fixed-height mobile quota strip.**
   - Owner check (deferred): On a future provisioned device, visually confirm native paint, accessibility focus restoration and Android Back gesture behavior; the worker checks cover the state and geometry proxies only.
   - Context: read this section's Fixed decisions, Banner design contract and Limits first.
   - Depends on: LB01.
