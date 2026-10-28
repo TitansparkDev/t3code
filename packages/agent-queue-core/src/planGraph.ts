@@ -7,6 +7,8 @@ import {
   exemptSpec,
   proseCheck,
   safeRelativeDirectory,
+  formatCheckOptions,
+  validateVerificationSpec,
   type RejectedCheck,
   type VerificationCheck,
   type VerificationSpec,
@@ -254,24 +256,26 @@ export function parsePlanMarkdown(markdown: string): ParsedPlan {
   });
 
   const specOf = (draft: Draft): VerificationSpec => {
+    let spec: VerificationSpec;
     if (draft.declared.length > 0) {
-      return {
+      spec = {
         source: "declared",
         checks: draft.declared,
         exemptReason: null,
         rejected: draft.rejected,
       };
-    }
-    if (draft.exempt)
-      return { ...draft.exempt, rejected: [...draft.exempt.rejected, ...draft.rejected] };
-    if (draft.derived.length > 0) {
+    } else if (draft.exempt) {
+      spec = { ...draft.exempt, rejected: [...draft.exempt.rejected, ...draft.rejected] };
+    } else if (draft.derived.length > 0) {
       const checks = draft.derived.map((check) => ({
         ...check,
         cwd: draft.derivedDirectory ?? check.cwd,
       }));
-      return { source: "derived", checks, exemptReason: null, rejected: draft.rejected };
+      spec = { source: "derived", checks, exemptReason: null, rejected: draft.rejected };
+    } else {
+      spec = { ...NO_VERIFICATION, rejected: draft.rejected };
     }
-    return { ...NO_VERIFICATION, rejected: draft.rejected };
+    return validateVerificationSpec(spec);
   };
 
   const commitCurrentTask = () => {
@@ -480,7 +484,21 @@ export function exportPlanMarkdown(plan: ParsedPlan): string {
     if (task.scopePatterns && task.scopePatterns.length > 0) {
       lines.push(`- **Scope:** ${task.scopePatterns.join(", ")}`);
     }
-    if (task.verificationCommand) {
+    const hasStructuredChecks = task.verification?.checks.some(
+      (check) =>
+        check.id !== undefined ||
+        check.dependsOn !== undefined ||
+        check.produces !== undefined ||
+        check.consumes !== undefined ||
+        check.reuseInputs !== undefined ||
+        check.junit !== undefined,
+    );
+    if (hasStructuredChecks) {
+      lines.push("- **Checks:**");
+      for (const check of task.verification!.checks) {
+        lines.push(`  - \`${check.run}\` (${formatCheckOptions(check)})`);
+      }
+    } else if (task.verificationCommand) {
       lines.push(`- **Verification:** \`${task.verificationCommand}\``);
     }
     lines.push("", "---", "");

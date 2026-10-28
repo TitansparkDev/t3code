@@ -22,10 +22,22 @@ checks, an exemption with a reason, or nothing. Declared checks come from `Check
 their directory is inferred from the project files and the task's scope, or the check is rejected. The policy
 (`inspectCheckCommand`) allows plain test, lint and build runners only and refuses deployment, network, other hosts, deletion,
 repository changes, paths outside the worktree and secrets on the command line; refused commands are listed on the task.
-`runSpec` is the only executor: it runs checks in order in their directory, in their own process group, asynchronously, with the
-timeout enforced, holding any `requires` resource exclusively. A check that did not finish is a failure. The first failure
-stops the rest and its exact result (command, directory, exit code, signal, output tails) is recorded as a `task_verification_failed`
-event; a passing run is stored in the candidate's receipt.
+For task-level checks, `runSpec` runs commands in their directory, in their own process group, asynchronously, with the timeout
+enforced, holding any `requires` resource exclusively. Checks without structured metadata keep their declared order and stop at
+the first failure. When any check opts into structured metadata, dependencies run first, a failed predecessor blocks its
+dependants, and independent checks continue so the receipt can collect their failures. A check that did not finish is a failure.
+The bounded, redacted output and actionable diagnostics are recorded with a private log reference in the
+`task_verification_failed` event or candidate receipt.
+
+`Checks:` bullets may opt into check-level metadata with `id`, `after`, `produces`, `consumes`, `reuse-inputs`, and `junit`;
+`after`, path lists, and report globs use `|` to separate values. For example, `` `./gradlew assembleDebug` (id: build,
+produces: app/build/outputs/**/*.apk) `` followed by `` `./gradlew connectedDebugAndroidTest` (id: instrumentation, after: build,
+consumes: app/build/outputs/**/*.apk, junit: app/build/reports/**/*.xml, min-tests: 1, max-skipped: 0) `` declares a build
+predecessor and fresh instrumentation evidence. IDs must be unique, dependencies must resolve without cycles, and output paths
+must have one unambiguous producer. `produces`, `consumes`, and JUnit report paths are repository-relative and checked after
+filesystem resolution, so a symlink cannot make a check read or claim an artifact outside the repository. Required JUnit reports
+must be fresh, well-formed, contain at least one executed test, have no failures, and stay within `max-skipped`; custom DTDs and
+entities are rejected. `reuse-inputs` is validated and preserved for future check-reuse qualification; it does not skip runs yet.
 
 **Nothing silent counts as a pass.** A task with no definition is `unverified`: it may merge, but its receipt says so, it is listed
 as `unchecked` by `verifyPlanCompletion`, and the plan is not complete until a later audit (`task_audited` event with state

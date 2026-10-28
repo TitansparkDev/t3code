@@ -4,10 +4,12 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import { describe, expect, it } from "vite-plus/test";
 import { openQueueDatabase } from "../src/db.ts";
+import { attributeFailure } from "../src/baseline.ts";
 import { importPlanFile } from "../src/planImport.ts";
 import { addFollowUpTask } from "../src/overseerRepairs.ts";
 import { parsePlanMarkdown } from "../src/planGraph.ts";
 import { runVerification } from "../src/verifier.ts";
+import { runSpec } from "../src/verificationSpec.ts";
 import { teardownWorktree } from "../src/worktreeManager.ts";
 import { createTestGitRepo, createTestWorktree, execCommand } from "./harness/gitHarness.ts";
 
@@ -93,6 +95,103 @@ describe("runVerification", () => {
       const pid = Number((await NodeFSP.readFile(pidFile, "utf8")).trim());
       await new Promise((resolve) => setTimeout(resolve, 200));
       expect(() => process.kill(pid, 0)).toThrow();
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it("keeps source diagnostics ahead of long footers and writes redacted private logs", async () => {
+    const repo = await createTestGitRepo("aq-verify-log-");
+    try {
+      const secret = "qe-test-secret-9a32";
+      const result = await runSpec(
+        "T1",
+        repo.rootDir,
+        {
+          source: "declared",
+          checks: [
+            {
+              run: `node -e 'console.log(process.env.T3_QE_TEST_SECRET);console.log("app/src/Thing.kt:12:4: Unexpected spacing");console.log("Gradle footer ".repeat(12000));process.exit(2)'`,
+              cwd: ".",
+              timeoutSeconds: 30,
+              requires: [],
+              expectExitCode: 0,
+            },
+          ],
+          exemptReason: null,
+          rejected: [],
+        },
+        undefined,
+        { env: { T3_QE_TEST_SECRET: secret } },
+      );
+      const check = result.checks[0]!;
+      expect(result.summary.indexOf("Thing.kt:12:4")).toBeLessThan(
+        result.summary.indexOf("Gradle footer"),
+      );
+      expect(result.summary).not.toContain(secret);
+      expect(check.diagnosticLogPath).toBeTruthy();
+      const log = NodeFS.readFileSync(check.diagnosticLogPath!, "utf8");
+      expect(log).not.toContain(secret);
+      expect(NodeFS.statSync(check.diagnosticLogPath!).mode & 0o777).toBe(0o600);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it("does not follow a symlink when creating private verification logs", async () => {
+    const repo = await createTestGitRepo("aq-verify-log-symlink-");
+    const outside = `${repo.rootDir}-outside`;
+    const logDirectory = NodePath.join(repo.gitCommonDir, "agentqueue");
+    try {
+      await NodeFSP.mkdir(outside);
+      await NodeFSP.symlink(outside, logDirectory);
+      const result = await runVerification("T1", repo.rootDir, "true");
+      expect(result.diagnosticLogPath).toBeNull();
+      expect(NodeFS.readdirSync(outside)).toEqual([]);
+    } finally {
+      await NodeFSP.unlink(logDirectory).catch(() => undefined);
+      await NodeFSP.rm(outside, { recursive: true, force: true });
+      await repo.cleanup();
+    }
+  });
+
+  it("does not classify a missing produced artifact as an existing baseline failure", async () => {
+    const repo = await createTestGitRepo("aq-verify-baseline-output-");
+    const check = {
+      run: "true",
+      cwd: ".",
+      timeoutSeconds: 30,
+      requires: [],
+      expectExitCode: 0,
+      id: "build",
+      produces: ["app.apk"],
+    };
+    try {
+      const receipt = await runSpec("T1", repo.rootDir, {
+        source: "declared",
+        checks: [check],
+        exemptReason: null,
+        rejected: [],
+      });
+      const db = openQueueDatabase({ gitCommonDir: repo.gitCommonDir });
+      const origin = await attributeFailure(db, {
+        planId: "plan",
+        taskId: "T1",
+        repoRoot: repo.rootDir,
+        integrationBranch: "missing-base-is-not-read",
+        candidateWorktree: repo.rootDir,
+        check,
+        failed: receipt.checks[0]!,
+        scope: [],
+        changed: [],
+      });
+      const cached = db.prepare("SELECT count(*) AS count FROM check_baselines").get() as {
+        count: number;
+      };
+      db.close();
+      expect(receipt.checks[0]).toMatchObject({ failureKind: "missing-output" });
+      expect(origin.origin).toBe("introduced");
+      expect(cached.count).toBe(0);
     } finally {
       await repo.cleanup();
     }
