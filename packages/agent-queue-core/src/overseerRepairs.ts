@@ -3,7 +3,7 @@ import type * as NodeSqlite from "node:sqlite";
 import { validatePlanDag, type PlanTaskDefinition } from "./planGraph.ts";
 import type { VerificationCheck, VerificationSpec } from "./verificationSpec.ts";
 import { recordEvent } from "./eventStream.ts";
-import { unchangedHeldFailure, type FailureClass } from "./failures.ts";
+import { failureSignature, unchangedHeldFailure, type FailureClass } from "./failures.ts";
 import { reconcileExpiredLeases } from "./leaseRecovery.ts";
 import { getQueueSnapshot, evaluateDeadlock } from "./queueInspector.ts";
 
@@ -24,6 +24,50 @@ export class RetryBudgetExceededError extends Error {
     this.taskId = taskId;
     this.attempts = attempts;
   }
+}
+
+export interface RepairEvidence {
+  readonly failedCheckId?: string | null;
+  readonly producerDependencyIds?: ReadonlyArray<string>;
+  /** Exact declared input identity; absent when inputs are not safely covered. */
+  readonly inputFingerprint?: string | null;
+  readonly diagnostics?: {
+    readonly failureKind?: string;
+    readonly failureReason?: string;
+    readonly diagnosticExcerpt?: string;
+    readonly diagnosticLogPath?: string | null;
+  };
+}
+
+function boundedRepairEvidence(evidence: RepairEvidence) {
+  const diagnostics = evidence.diagnostics;
+  return {
+    ...(evidence.failedCheckId ? { failedCheckId: evidence.failedCheckId.slice(0, 128) } : {}),
+    producerDependencyIds: [
+      ...new Set((evidence.producerDependencyIds ?? []).map((id) => id.slice(0, 128))),
+    ].slice(0, 50),
+    ...(evidence.inputFingerprint !== undefined
+      ? { inputFingerprint: evidence.inputFingerprint?.slice(0, 128) ?? null }
+      : {}),
+    ...(diagnostics
+      ? {
+          diagnostics: {
+            ...(diagnostics.failureKind
+              ? { failureKind: diagnostics.failureKind.slice(0, 64) }
+              : {}),
+            ...(diagnostics.failureReason
+              ? { failureReason: diagnostics.failureReason.slice(0, 1000) }
+              : {}),
+            ...(diagnostics.diagnosticExcerpt
+              ? { diagnosticExcerpt: diagnostics.diagnosticExcerpt.slice(0, 2000) }
+              : {}),
+            ...(diagnostics.diagnosticLogPath !== undefined
+              ? { diagnosticLogPath: diagnostics.diagnosticLogPath?.slice(0, 500) ?? null }
+              : {}),
+          },
+        }
+      : {}),
+  };
 }
 
 /**
@@ -380,6 +424,8 @@ export interface FollowUpInput {
   readonly fingerprint?: string | null;
   /** Judge the follow-up by these checks alone instead of the parent's whole verification. */
   readonly checks?: ReadonlyArray<VerificationCheck>;
+  /** The declared failed check and evidence needed to retry only when its inputs change. */
+  readonly repairEvidence?: RepairEvidence;
   /**
    * Plan-wide identity of the problem. While an unfinished follow-up with the same key exists,
    * no second one is made; the tasks that waited on the parent wait on it instead.
@@ -411,7 +457,18 @@ export function addFollowUpTask(
         }
       | undefined;
     if (!parent) throw new Error(`Task ${input.parentTaskId} not found`);
-    const dedupeMarker = input.dedupeKey ? `\n[${input.dedupeKey}]` : "";
+    const inputFingerprint = input.repairEvidence?.inputFingerprint;
+    const dedupeKey =
+      input.dedupeKey ??
+      (input.kind === "repair" && inputFingerprint && inputFingerprint.length <= 128
+        ? `repair-input:${inputFingerprint}`
+        : input.kind === "decision" &&
+            (input.failureClass === "configuration" || input.failureClass === "prerequisite") &&
+            input.fingerprint &&
+            input.fingerprint.length <= 128
+          ? `held:${input.failureClass}:${input.fingerprint}:${failureSignature(input.failureClass, input.note)}`
+          : undefined);
+    const dedupeMarker = dedupeKey ? `\n[${dedupeKey}]` : "";
     const note = `${input.note.trim().slice(0, 4000 - dedupeMarker.length)}${dedupeMarker}`;
     const siblings = db
       .prepare("SELECT id, description FROM tasks WHERE plan_id = ? AND id LIKE ? ESCAPE '\\'")
@@ -448,12 +505,12 @@ export function addFollowUpTask(
       }
       return rewired;
     };
-    if (input.dedupeKey) {
+    if (dedupeKey) {
       const open = db
         .prepare(
           "SELECT id FROM tasks WHERE plan_id = ? AND status != 'completed' AND description LIKE ? ESCAPE '\\' ORDER BY created_at LIMIT 1",
         )
-        .get(input.planId, `%\n[${input.dedupeKey.replace(/[\\%_]/g, "\\$&")}]`) as
+        .get(input.planId, `%\n[${dedupeKey.replace(/[\\%_]/g, "\\$&")}]`) as
         | { id: string }
         | undefined;
       if (open) {
@@ -499,6 +556,12 @@ export function addFollowUpTask(
       kind: input.kind,
       blocking: input.blocking,
       nowWaitingOnIt: rewired,
+      ...(input.failureClass ? { failureClass: input.failureClass } : {}),
+      ...(input.fingerprint !== undefined ? { fingerprint: input.fingerprint.slice(0, 128) } : {}),
+      ...(dedupeKey ? { dedupeKey } : {}),
+      ...(input.repairEvidence
+        ? { repairEvidence: boundedRepairEvidence(input.repairEvidence) }
+        : {}),
     });
     db.exec("COMMIT;");
     return { taskId, created: true };
