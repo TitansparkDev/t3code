@@ -3,6 +3,7 @@
  * Checks whether planned work can run from the repository's committed state.
  * @module planLint
  */
+import { artifactPathsOverlap } from "./artifactPaths.ts";
 import * as NodeChildProcess from "node:child_process";
 import { toolAvailable, matchesAny, pathMatches, type RepoContract } from "./contract.ts";
 import { loadResourceConfig, normalizeResource } from "./resourceBroker.ts";
@@ -213,17 +214,6 @@ function checkMetadataDeclared(
     check.reuseInputs !== undefined ||
     check.junit !== undefined
   );
-}
-
-function artifactPatternsOverlap(left: string, right: string): boolean {
-  if (pathMatches(left, right) || pathMatches(right, left)) return true;
-  const prefix = (value: string) => {
-    const wildcard = value.search(/[?*]/);
-    return wildcard < 0 ? value : value.slice(0, value.lastIndexOf("/", wildcard) + 1);
-  };
-  const a = prefix(left);
-  const b = prefix(right);
-  return a === "" || b === "" || a === b || a.startsWith(b) || b.startsWith(a);
 }
 
 function combinedGateCommand(command: string): boolean {
@@ -668,10 +658,10 @@ export function lintPlan(input: PlanLintInput): PlanFinding[] {
       const missingProject = missingGradleProject(repoRoot, ref, check);
       if (missingProject) {
         add({
-          level: structured ? "error" : "warning",
+          level: "warning",
           code: "check-gradle-project-missing",
           taskId: task.id,
-          message: `${task.id}'s Gradle check targets ${missingProject}, which is not included by the settings file in ${check.cwd ?? "."}.`,
+          message: `${task.id}'s Gradle check targets ${missingProject}, which was not found in static include entries in ${check.cwd ?? "."}.`,
           fix: "Use the actual module path from settings.gradle(.kts) and confirm the task exists in that module.",
         });
       }
@@ -706,7 +696,7 @@ export function lintPlan(input: PlanLintInput): PlanFinding[] {
         const candidates = checkProducers.filter(
           (producer) =>
             !(producer.taskId === task.id && producer.check === check) &&
-            artifactPatternsOverlap(producer.path, consumed),
+            artifactPathsOverlap(producer.path, consumed),
         );
         if (candidates.length > 1) {
           add({

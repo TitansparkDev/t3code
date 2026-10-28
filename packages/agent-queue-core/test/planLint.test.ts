@@ -280,6 +280,9 @@ describe("plan lint finds what stops small agents before any of them starts", ()
       expect(has("artifact-producer-missing", "TEST")).toBe(false);
       expect(has("artifact-producer-missing", "ORPHAN")).toBe(true);
       expect(has("check-gradle-project-missing", "WRONG")).toBe(true);
+      expect(
+        findings.find((finding) => finding.code === "check-gradle-project-missing")?.level,
+      ).toBe("warning");
       expect(has("combined-gate", "COMBINED")).toBe(true);
       expect(has("repair-scope-protected", "REPAIR")).toBe(true);
       expect(

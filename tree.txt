@@ -27607,6 +27607,7 @@ packages/agent-queue-cli/src/resourceCommands.ts
 packages/agent-queue-cli/test/cli.test.ts
 packages/agent-queue-cli/tsconfig.json
 packages/agent-queue-core/package.json
+packages/agent-queue-core/src/artifactPaths.ts
 packages/agent-queue-core/src/audit.ts
 packages/agent-queue-core/src/baseline.ts
 packages/agent-queue-core/src/checkReceipts.ts

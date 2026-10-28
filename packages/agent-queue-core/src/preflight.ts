@@ -3,6 +3,7 @@
  * Checks whether an assignment is ready before dispatching a worker.
  * @module preflight
  */
+import { artifactPathsOverlap } from "./artifactPaths.ts";
 import type * as NodeSqlite from "node:sqlite";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
@@ -12,7 +13,6 @@ import {
   capabilityAvailable,
   expandCommand,
   prefixesInUse,
-  pathMatches,
   runShell,
   toolAvailable,
   type GuardSpec,
@@ -89,7 +89,7 @@ function artifactExists(root: string, pattern: string): boolean {
   let candidates: string[];
   try {
     candidates = /[*?]/.test(pattern)
-      ? NodeFS.globSync(pattern, { cwd: root, maxDepth: 12 })
+      ? NodeFS.globSync(pattern, { cwd: root })
       : NodeFS.existsSync(NodePath.resolve(root, pattern))
         ? [pattern]
         : [];
@@ -115,17 +115,6 @@ function parseDependencies(value: string): string[] {
   } catch {
     return [];
   }
-}
-
-function artifactPatternsOverlap(left: string, right: string): boolean {
-  if (pathMatches(left, right) || pathMatches(right, left)) return true;
-  const prefix = (pattern: string) => {
-    const wildcard = pattern.search(/[?*]/);
-    return wildcard < 0 ? pattern : pattern.slice(0, pattern.lastIndexOf("/", wildcard) + 1);
-  };
-  const a = prefix(left);
-  const b = prefix(right);
-  return a === "" || b === "" || a === b || a.startsWith(b) || b.startsWith(a);
 }
 
 function artifactPreflightFindings(input: {
@@ -211,7 +200,7 @@ function artifactPreflightFindings(input: {
             producer.taskId === input.taskId &&
             producer.checkId !== undefined &&
             producer.checkId === check.id
-          ) && artifactPatternsOverlap(producer.path, consumed),
+          ) && artifactPathsOverlap(producer.path, consumed),
       );
       if (candidates.length > 1) {
         findings.push({
