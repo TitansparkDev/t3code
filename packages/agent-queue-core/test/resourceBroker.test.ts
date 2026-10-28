@@ -631,24 +631,37 @@ describe("running under the broker", () => {
     expect(broker.get(ran.ticket.id)!.state).toBe("done");
   });
 
-  it("serves independent processes one at a time through the physical lock, even without the broker's help", async () => {
-    // Two server-style checks use the same resource concurrently: the second must wait.
+  it("serializes concurrent callbacks at the resource capacity", async () => {
     const home = newHome();
     const { broker } = makeBroker({ home });
     let active = 0;
     let peak = 0;
+    const entered = Promise.withResolvers<void>();
+    const released = Promise.withResolvers<void>();
     const work = () =>
       withBrokerResources(
         ["db"],
         async () => {
           active++;
           peak = Math.max(peak, active);
-          await new Promise((resolve) => setTimeout(resolve, 150));
+          entered.resolve();
+          await released.promise;
           active--;
         },
         { broker },
       );
-    await Promise.all([work(), work(), work()]);
+    const first = work();
+    await entered.promise;
+    const rest = [work(), work()];
+    try {
+      expect(broker.status().resources.find((resource) => resource.name === "db")).toMatchObject({
+        active: 1,
+        waiting: 2,
+      });
+    } finally {
+      released.resolve();
+    }
+    await Promise.all([first, ...rest]);
     expect(peak).toBe(1);
   });
 
@@ -731,7 +744,7 @@ describe("running under the broker", () => {
     );
     expect(Math.max(...seen)).toBeLessThanOrEqual(2);
     expect(Math.max(...seen)).toBeGreaterThanOrEqual(1);
-  }, 60_000);
+  });
 });
 
 describe("stored jobs", () => {
@@ -752,7 +765,8 @@ describe("stored jobs", () => {
       job: { command: "echo job-output; exit 0", cwd: home },
     });
     expect(job.kind).toBe("job");
-    const runner = createJobRunner({ repo: null, broker });
+    const finished = Promise.withResolvers<void>();
+    const runner = createJobRunner({ repo: null, broker, onFinished: () => finished.resolve() });
     await runner.tick();
     expect(broker.get(job.id)!.state).toBe("waiting"); // blocked behind the live holder, nobody was spawned
     expect(broker.openJobsFor("T1").map((t) => t.id)).toEqual([job.id]);
@@ -760,8 +774,7 @@ describe("stored jobs", () => {
     broker.finish(blocker.id, { outcome: "ok" });
     const started = await runner.tick();
     expect(started).toEqual([job.id]);
-    for (let i = 0; i < 100 && broker.get(job.id)!.state !== "done"; i++)
-      await new Promise((r) => setTimeout(r, 50));
+    await finished.promise;
     const done = broker.get(job.id)!;
     expect(done.outcome).toBe("ok");
     expect(done.tail).toContain("job-output");
