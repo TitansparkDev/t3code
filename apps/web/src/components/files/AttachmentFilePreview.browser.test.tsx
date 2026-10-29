@@ -303,12 +303,10 @@ describe("bounded binary previews", () => {
   );
 
   it("reauthorizes a failed image when retry is clicked", async () => {
+    const failedUrl = "data:image/png;base64,broken";
     const image =
       'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"/>';
-    refresh
-      .mockReset()
-      .mockResolvedValueOnce("data:image/png;base64,broken")
-      .mockResolvedValue(image);
+    refresh.mockReset().mockResolvedValueOnce(failedUrl).mockResolvedValue(image);
     await using screen = await render(
       <AttachmentFilePreview
         name="photo.png"
@@ -317,11 +315,10 @@ describe("bounded binary previews", () => {
         asset={{ environmentId: EnvironmentId.make("test-environment"), attachmentId: "image" }}
       />,
     );
-    await vi.waitFor(() =>
-      expect(screen.container.querySelector('[role="alert"]')?.textContent).toContain(
-        "Unable to load image.",
-      ),
-    );
+    const preview = screen.getByRole("img", { name: "photo.png" });
+    await expect.element(preview).toHaveAttribute("src", failedUrl);
+    await act(() => preview.element().dispatchEvent(new Event("error")));
+    await expect.element(screen.getByText("Unable to load image.")).toBeVisible();
     await act(() =>
       screen.container.querySelector<HTMLButtonElement>('[role="alert"] button')!.click(),
     );

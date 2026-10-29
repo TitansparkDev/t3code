@@ -11,10 +11,9 @@ import type { TurnItemSource } from "./timelineRowContext";
 
 const FOLLOW_SLACK_PX = 8;
 
-export function useCommandOutputStreaming(environmentId: EnvironmentId): boolean {
-  return (
-    useServerConfigs().get(environmentId)?.environment.capabilities.commandOutputStreaming === true
-  );
+export function useCommandOutputStreaming(environmentId: EnvironmentId, enabled = true): boolean {
+  const serverConfig = useServerConfigs(enabled).get(environmentId);
+  return enabled && serverConfig?.environment.capabilities.commandOutputStreaming === true;
 }
 
 /**

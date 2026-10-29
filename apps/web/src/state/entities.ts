@@ -7,6 +7,7 @@ import type {
   EnvironmentThreadStructure,
   ThreadStructureVisibleTurnItem,
 } from "@t3tools/client-runtime/state/shell";
+import type { EnvironmentServerConfig } from "@t3tools/client-runtime/connection";
 import {
   EMPTY_THREAD_HISTORY_META,
   type EnvironmentThreadStatus,
@@ -74,6 +75,9 @@ const EMPTY_UPDATED_AT_ATOM = Atom.make<DateTime.Utc | null>(null).pipe(
 const EMPTY_THREAD_HISTORY_ATOM = Atom.make<ThreadHistoryMeta>(EMPTY_THREAD_HISTORY_META).pipe(
   Atom.withLabel("web-thread-history:empty"),
 );
+const EMPTY_SERVER_CONFIGS_ATOM = Atom.make<ReadonlyMap<EnvironmentId, EnvironmentServerConfig>>(
+  new Map(),
+).pipe(Atom.withLabel("web-server-configs:empty"));
 
 export function useThreadRefs(enabled = true): ReadonlyArray<ScopedThreadRef> {
   return useAtomValue(enabled ? environmentThreadShells.threadRefsAtom : EMPTY_THREAD_REFS_ATOM);
@@ -94,8 +98,10 @@ export function useProjects(): ReadonlyArray<EnvironmentProject> {
 }
 
 /** Providers are left out; read them with `useEnvironmentProviders()`. */
-export function useServerConfigs() {
-  return useAtomValue(environmentPresentations.serverConfigsAtom);
+export function useServerConfigs(enabled = true) {
+  return useAtomValue(
+    enabled ? environmentPresentations.serverConfigsAtom : EMPTY_SERVER_CONFIGS_ATOM,
+  );
 }
 
 export function useThreadShells(enabled = true): ReadonlyArray<EnvironmentThreadShell> {

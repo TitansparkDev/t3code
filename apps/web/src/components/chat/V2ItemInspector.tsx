@@ -231,7 +231,10 @@ function ToolCallBody(
 
 export const V2ItemInspector = memo(function V2ItemInspector(props: V2ItemInspectorProps) {
   // Command rows stream their output, including the final output, from the server.
-  const environmentStreamsOutput = useCommandOutputStreaming(props.environmentId);
+  const environmentStreamsOutput = useCommandOutputStreaming(
+    props.environmentId,
+    props.source === undefined,
+  );
   const streamsOutput =
     (props.source !== undefined || environmentStreamsOutput) &&
     props.projectedItem.item.type === "command_execution";
