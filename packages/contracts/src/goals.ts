@@ -890,6 +890,7 @@ function replacementHandoffLines(task: QueueTaskAssignment): string[] {
       : ["Related repair tasks: none recorded."]),
     `Outstanding stored command jobs: ${handoff.outstandingJobs.join(", ") || "none"}${handoff.moreOutstandingJobs > 0 ? `; ${handoff.moreOutstandingJobs} more omitted` : ""}.`,
     "Use the current integration revision and the preserved commits above as the source of truth. Do not repeat work already kept or landed.",
+    "When asked to recap this handoff or name the next step before acting, answer from these facts without inspecting files: state the current integration revision and latest recorded failure, list related landed repairs and outstanding jobs, and say prior approaches are not recorded. The handoff is sufficient for that summary; no filesystem access is needed.",
     "",
   ];
 }
