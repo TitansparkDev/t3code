@@ -2355,6 +2355,7 @@ describe("EnvironmentThreads", () => {
       expect(Option.getOrThrow(state.error)).toBe("stream failed");
       expect(yield* Ref.get(harness.retryCount)).toBe(0);
 
+      expect(yield* Queue.take(harness.subscriptionEvents)).toBe(1);
       yield* harness.replaceSession;
       expect(yield* Queue.take(harness.subscriptionEvents)).toBe(2);
       yield* Queue.offer(
@@ -2490,6 +2491,7 @@ describe("EnvironmentThreads", () => {
         "Before",
       ]);
 
+      expect(yield* Queue.take(harness.subscriptionEvents)).toBe(1);
       yield* harness.replaceSession;
       expect(yield* Queue.take(harness.subscriptionEvents)).toBe(2);
       expect(yield* SubscriptionRef.get(harness.subscriptionCount)).toBe(2);
