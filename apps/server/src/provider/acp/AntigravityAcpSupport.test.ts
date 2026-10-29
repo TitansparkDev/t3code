@@ -32,14 +32,23 @@ const modelConfig = {
 function makeModelRuntime(
   configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption> = [modelConfig],
   failure?: EffectAcpErrors.AcpError,
+  ignoreSelection = false,
 ) {
+  let currentOptions = configOptions;
   const selections: string[] = [];
   const setModel = Effect.fn("AntigravityAcpSupportTest.setModel")(function* (model: string) {
     if (failure) return yield* failure;
     selections.push(model);
+    if (!ignoreSelection) {
+      currentOptions = currentOptions.map((option) =>
+        option.id === "model" && option.type === "select"
+          ? { ...option, currentValue: model }
+          : option,
+      );
+    }
   });
   return {
-    runtime: { getConfigOptions: Effect.succeed(configOptions), setModel },
+    runtime: { getConfigOptions: Effect.sync(() => currentOptions), setModel },
     selections,
   };
 }
@@ -178,6 +187,40 @@ describe("applyAntigravityAcpModelSelection", () => {
 
       expect(model).toBe("gemini-saved");
       expect(selections).toEqual(["gemini-saved"]);
+    }),
+  );
+
+  it.effect("rejects an unavailable explicit effort instead of silently selecting another", () =>
+    Effect.gen(function* () {
+      const { runtime, selections } = makeModelRuntime([
+        {
+          ...modelConfig,
+          currentValue: "gemini-3.8-flash-low",
+          options: [{ value: "gemini-3.8-flash-low", name: "Flash Low" }],
+        },
+      ]);
+      const error = yield* applyAntigravityAcpModelSelection({
+        runtime,
+        model: "gemini-3.8-flash",
+        options: [{ id: "effort", value: "high" }],
+        mapError: (cause) => cause,
+      }).pipe(Effect.flip);
+      expect(error).toMatchObject({ _tag: "AcpRequestError", code: -32602 });
+      expect(error.message).toContain("gemini-3.8-flash-low");
+      expect(selections).toEqual([]);
+    }),
+  );
+
+  it.effect("does not report an acknowledged but unapplied model as effective", () =>
+    Effect.gen(function* () {
+      const { runtime } = makeModelRuntime([modelConfig], undefined, true);
+      const error = yield* applyAntigravityAcpModelSelection({
+        runtime,
+        model: "gemini-saved",
+        mapError: (cause) => cause,
+      }).pipe(Effect.flip);
+      expect(error).toMatchObject({ _tag: "AcpRequestError", code: -32602 });
+      expect(error.message).toContain("gemini-default");
     }),
   );
 });

@@ -26,6 +26,7 @@ const GENERIC_WINDOW_WORDS = new Set([
   "rolling",
   "spend",
   "credits",
+  "shared",
 ]);
 
 /**
@@ -42,6 +43,14 @@ function windowCoversModel(
     .split(/[^a-z0-9]+/u)
     .filter((word) => word.length >= 3 && !/^\d+$/u.test(word) && !GENERIC_WINDOW_WORDS.has(word));
   const slug = model.toLowerCase();
+  if (words.includes("claude") && words.includes("gpt")) {
+    return (
+      (slug.includes("claude") || slug.includes("gpt")) &&
+      words
+        .filter((word) => word !== "claude" && word !== "gpt")
+        .every((word) => slug.includes(word))
+    );
+  }
   return words.every((word) => slug.includes(word));
 }
 
@@ -120,6 +129,26 @@ export function providerUsageReport(provider: ServerProvider, nowMs: number): Pr
       status: "unknown",
       reason: limits?.unavailable?.message ?? "does not report usage",
     };
+  }
+  const checkedAt = Date.parse(limits.checkedAt);
+  // Old quota is useful context, but it is not proof of current headroom.
+  if (
+    !Number.isFinite(checkedAt) ||
+    nowMs - checkedAt > 5 * 60_000 ||
+    windows.every(
+      (window) => window.resetsAt !== undefined && !(Date.parse(window.resetsAt) > nowMs),
+    )
+  ) {
+    return { ...base, status: "unknown", reason: "usage data is stale; refresh provider status" };
+  }
+  if (
+    !limits.windows.some(
+      (window) =>
+        windowCoversModel(window, "") ||
+        provider.models.some((model) => windowCoversModel(window, model.slug)),
+    )
+  ) {
+    return { ...base, status: "unknown", reason: "does not report usage for available models" };
   }
   return { ...base, status: "available" };
 }

@@ -55,6 +55,10 @@ it("blocks only the models a model-family window covers", () => {
   const opus = withWindows(window("seven_day_opus", "Opus weekly", 100));
   expect(providerBlock(opus, "sonnet", now)).toBeUndefined();
   expect(providerBlock(opus, "opus-4", now)).toBeDefined();
+  const shared = withWindows(window("3p-weekly", "Claude & GPT (shared) · Weekly", 100));
+  expect(providerBlock(shared, "gemini-3.8-flash-high", now)).toBeUndefined();
+  expect(providerBlock(shared, "claude-haiku-5-5", now)).toBeDefined();
+  expect(providerBlock(shared, "gpt-6-luna", now)).toBeDefined();
 });
 
 it("explains why a provider is not set up, switched off, not installed or signed out", () => {
@@ -116,4 +120,25 @@ it("reports unknown when the provider has no usage data or cannot report it", ()
   expect(providerUsageReport(providerSnapshot("codex", { installed: false }), now).status).toBe(
     "unknown",
   );
+});
+
+it.each([
+  ["2026-10-01T12:00:00.000Z", RESET],
+  ["2026-10-04T12:00:00.000Z", "2026-10-01T00:00:00.000Z"],
+])("does not advertise available quota from stale readings (%s, %s)", (checkedAt, resetsAt) => {
+  const provider = providerSnapshot("antigravity", {
+    usageLimits: { checkedAt, windows: [window("gemini-weekly", "Gemini Weekly", 20, resetsAt)] },
+  });
+  expect(providerUsageReport(provider, now).status).toBe("unknown");
+});
+
+it("does not treat the separate Claude/GPT quota as Gemini headroom", () => {
+  const provider = providerSnapshot("antigravity", {
+    models: [{ slug: "gemini-3.8-flash-high" }],
+    usageLimits: {
+      checkedAt: "2026-10-04T12:00:00.000Z",
+      windows: [window("3p-weekly", "Claude & GPT (shared) · Weekly", 20)],
+    },
+  });
+  expect(providerUsageReport(provider, now).status).toBe("unknown");
 });

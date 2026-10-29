@@ -113,7 +113,8 @@ function effortModel(
 ): string {
   if (effort !== undefined) {
     const variant = `${model.replace(EFFORT_SUFFIX, "")}-${effort}`;
-    if (offered(variant)) return variant;
+    // An explicit effort must not fall through to another tier or an unqualified model.
+    return variant;
   }
   if (offered(model)) return model;
   return ["high", "medium", "low"].map((level) => `${model}-${level}`).find(offered) ?? model;
@@ -167,13 +168,26 @@ export const applyAntigravityAcpModelSelection = Effect.fn("applyAntigravityAcpM
       return yield* Effect.fail(
         input.mapError(
           EffectAcpErrors.AcpRequestError.invalidParams(
-            `Antigravity model '${resolved}' is unavailable for this Google account. Select an available model.`,
+            `Antigravity model '${resolved}' is unavailable for this Google account. Available models: ${options.map((option) => option.value).join(", ") || "none"}. Refresh the model list before retrying.`,
           ),
         ),
       );
     }
     yield* input.runtime.setModel(resolved).pipe(Effect.mapError(input.mapError));
-    return resolved;
+    const reported = (yield* input.runtime.getConfigOptions).find(
+      (option) => option.id === "model",
+    );
+    const effective = reported?.type === "select" ? reported.currentValue : undefined;
+    if (effective !== resolved) {
+      return yield* Effect.fail(
+        input.mapError(
+          EffectAcpErrors.AcpRequestError.invalidParams(
+            `Antigravity did not confirm model '${resolved}'; the runtime reports '${effective ?? "unknown"}'. Refresh the model list before retrying.`,
+          ),
+        ),
+      );
+    }
+    return effective;
   },
 );
 
