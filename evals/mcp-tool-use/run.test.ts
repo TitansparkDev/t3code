@@ -19,6 +19,7 @@ import {
   mockOutput,
   normalizeToolInput,
   normalizeToolName,
+  addNativeCodexToolRouting,
   nativeCodexToolAlias,
   nativeCodexToolName,
   type SampleRun,
@@ -78,6 +79,16 @@ it("maps app-server-safe T3 aliases back to the evaluator tool catalog", () => {
   assert.equal(nativeCodexToolName(alias), original);
   assert.equal(nativeCodexToolAlias("exec"), "exec");
   assert.equal(nativeCodexToolName("exec"), "exec");
+});
+
+it("adds the same native transport routing note after supplied developer instructions", () => {
+  const source = "Existing shared evaluator instructions.";
+  const wrapped = addNativeCodexToolRouting(source);
+  assert.isTrue(wrapped.startsWith(`${source}\n\n`));
+  assert.include(wrapped, "eval_t3_* aliases");
+  assert.include(wrapped, "ALL_TOOLS with canonical mcp__t3_code__* names");
+  assert.include(wrapped, "native Codex MCP resource discovery");
+  assert.notInclude(wrapped, "expected case answer");
 });
 
 it("accepts any tool listed as an alternative", () => {

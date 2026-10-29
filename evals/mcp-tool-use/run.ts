@@ -1833,6 +1833,12 @@ export const nativeCodexToolAlias = (name: string) =>
 export const nativeCodexToolName = (name: string) =>
   name.startsWith("eval_t3_") ? `mcp__t3_code__${name.slice("eval_t3_".length)}` : name;
 
+const nativeCodexToolRouting =
+  "In this isolated evaluator, direct T3 tools use the supplied eval_t3_* aliases. The exec code-cell simulator exposes ALL_TOOLS with canonical mcp__t3_code__* names and returns only simulated results. Use these supplied tools; native Codex MCP resource discovery and other native tools are outside this evaluator.";
+
+export const addNativeCodexToolRouting = (instructions: string) =>
+  [instructions, nativeCodexToolRouting].filter(Boolean).join("\n\n");
+
 /** Runs a complete real Codex turn through app-server's dynamic-tool callback. */
 const nativeCodexRequest = (base: Base, body: ReturnType<typeof codexRequest>) => {
   const nativeInput = Array.isArray(body.input) ? body.input : [];
@@ -1872,7 +1878,7 @@ const nativeCodexRequest = (base: Base, body: ReturnType<typeof codexRequest>) =
   });
   return {
     baseInstructions: valueText(body.instructions),
-    developerInstructions: developer.filter(Boolean).join("\n\n"),
+    developerInstructions: addNativeCodexToolRouting(developer.filter(Boolean).join("\n\n")),
     input: user.join("\n\n"),
     tools,
   };
