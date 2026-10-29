@@ -113,7 +113,10 @@ export const runNativeCodexTurn = async (options: NativeCodexOptions): Promise<N
   const calls: Array<NativeCodexCall> = [];
   const maxToolCalls = options.maxToolCalls ?? 128;
   let requestId = 0;
-  const pending = new Map<string, { resolve(value: unknown): void; reject(reason: Error): void }>();
+  const pending = new Map<
+    string,
+    { method: string; resolve(value: unknown): void; reject(reason: Error): void }
+  >();
   const timeoutMs = options.timeoutMs ?? 5 * 60_000;
   try {
     if (options.signal?.aborted) throw new Error("Codex app-server turn was aborted.");
@@ -200,8 +203,11 @@ export const runNativeCodexTurn = async (options: NativeCodexOptions): Promise<N
         const request = pending.get(String(message.id));
         if (request) {
           pending.delete(String(message.id));
-          if (message.error) request.reject(new Error("Codex app-server request failed."));
-          else request.resolve(message.result);
+          if (message.error) {
+            const error = asRecord(message.error);
+            const code = typeof error?.code === "number" ? ` (${error.code})` : "";
+            request.reject(new Error(`Codex app-server ${request.method} failed${code}.`));
+          } else request.resolve(message.result);
         }
         return;
       }
@@ -377,7 +383,7 @@ export const runNativeCodexTurn = async (options: NativeCodexOptions): Promise<N
     const request = (method: string, params: unknown) => {
       const id = String(++requestId);
       const promise = new Promise<unknown>((resolve, reject) =>
-        pending.set(id, { resolve, reject }),
+        pending.set(id, { method, resolve, reject }),
       );
       child!.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
       return Promise.race([promise, exited, deadlineFailure, abortFailure, done.promise]);

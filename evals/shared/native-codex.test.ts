@@ -140,7 +140,7 @@ it.each([
 
 it("fails closed on app-server protocol errors and startup deadlines", async () => {
   for (const [mode, timeoutMs, expected] of [
-    ["protocol-error", 1000, "request failed"],
+    ["protocol-error", 1000, "initialize failed (-1)"],
     ["stall", 30, "exceeded 30 ms"],
   ] as const) {
     const fixture = await fakeServer(mode);
