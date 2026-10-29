@@ -231,20 +231,20 @@ export function UsageLimitBanner(props: { readonly visible: boolean }) {
   };
   useHardwareKeyboardCommand("paletteDismiss", dismissExpansion);
 
-  // oxlint-disable-next-line t3code/react-effect-budget -- The shared clock is an external resource whose lifetime follows this mounted visible banner slot.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- The shared clock is an external resource whose lifetime follows this mounted visible banner slot.
   useEffect(() => {
     const visible = props.visible && count > 0;
     usageBannerMinuteClock.setVisible(clockClientId, visible);
     return () => usageBannerMinuteClock.remove(clockClientId);
   }, [clockClientId, count, props.visible]);
 
-  // oxlint-disable-next-line t3code/react-effect-budget -- Fresh provider data re-samples wall time without coupling a refresh RPC to rendering.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Fresh provider data re-samples wall time without coupling a refresh RPC to rendering.
   useEffect(() => {
     usageBannerMinuteClock.refresh();
     // oxlint-disable-next-line react/exhaustive-effect-dependencies -- Provider identity is intentionally the trigger even when the clock callback does not read the data.
   }, [presentations]);
 
-  // oxlint-disable-next-line t3code/react-effect-budget -- Android Back is a native subscription that exists only while the replacement row is expanded.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Android Back is a native subscription that exists only while the replacement row is expanded.
   useEffect(() => {
     if (!expanded) return;
     const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
@@ -254,7 +254,7 @@ export function UsageLimitBanner(props: { readonly visible: boolean }) {
     return () => subscription.remove();
   }, [collapse, expanded]);
 
-  // oxlint-disable-next-line t3code/react-effect-budget -- Account-scope removal is external lifecycle state and must collapse an already-mounted expansion.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Account-scope removal is external lifecycle state and must collapse an already-mounted expansion.
   useEffect(() => {
     if (props.visible) usageBannerExpansionStore.syncAccounts(accountIds, antigravityIds);
   }, [accountIds, antigravityIds, props.visible]);
