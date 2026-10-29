@@ -19,6 +19,8 @@ import {
   mockOutput,
   normalizeToolInput,
   normalizeToolName,
+  nativeCodexToolAlias,
+  nativeCodexToolName,
   type SampleRun,
   shellOutput,
   shellRequest,
@@ -67,6 +69,15 @@ it("grades Codex shell and subagent calls with the shared rules", () => {
     ),
     ["native tools disabled simulator:exec_command"],
   );
+});
+
+it("maps app-server-safe T3 aliases back to the evaluator tool catalog", () => {
+  const original = "mcp__t3_code__delegate_task";
+  const alias = nativeCodexToolAlias(original);
+  assert.equal(alias, "eval_t3_delegate_task");
+  assert.equal(nativeCodexToolName(alias), original);
+  assert.equal(nativeCodexToolAlias("exec"), "exec");
+  assert.equal(nativeCodexToolName("exec"), "exec");
 });
 
 it("accepts any tool listed as an alternative", () => {

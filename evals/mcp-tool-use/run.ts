@@ -1827,6 +1827,12 @@ const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
   };
 }, Effect.scoped);
 
+export const nativeCodexToolAlias = (name: string) =>
+  name.startsWith("mcp__t3_code__") ? `eval_t3_${name.slice("mcp__t3_code__".length)}` : name;
+
+export const nativeCodexToolName = (name: string) =>
+  name.startsWith("eval_t3_") ? `mcp__t3_code__${name.slice("eval_t3_".length)}` : name;
+
 /** Runs a complete real Codex turn through app-server's dynamic-tool callback. */
 const nativeCodexRequest = (base: Base, body: ReturnType<typeof codexRequest>) => {
   const nativeInput = Array.isArray(body.input) ? body.input : [];
@@ -1850,7 +1856,7 @@ const nativeCodexRequest = (base: Base, body: ReturnType<typeof codexRequest>) =
     }
   }
   const tools: Array<NativeCodexTool> = base.t3.map((tool) => ({
-    name: tool.name.replace("mcp__t3-code__", "mcp__t3_code__"),
+    name: nativeCodexToolAlias(tool.name.replace("mcp__t3-code__", "mcp__t3_code__")),
     description: valueText(tool.description),
     inputSchema: tool.input_schema,
   }));
@@ -1948,7 +1954,8 @@ const runNativeSample = Effect.fn("evaluateMcpToolUse.runNativeSample")(function
       input: native.input,
       tools,
       onToolCall: async (name, args, signal) => {
-        if (name === "exec") {
+        const evaluatorName = nativeCodexToolName(name);
+        if (evaluatorName === "exec") {
           const code = isRecord(args) ? valueText(args.code) : valueText(args);
           return executeCodex(
             code,
@@ -1957,7 +1964,7 @@ const runNativeSample = Effect.fn("evaluateMcpToolUse.runNativeSample")(function
             sample.codeStore,
           );
         }
-        return answerNativeTool(name, args, signal);
+        return answerNativeTool(evaluatorName, args, signal);
       },
     }),
   );
