@@ -149,6 +149,7 @@ describe("AgentQueue Lease Expiration & Recovery (AQ-012)", () => {
         NodePath.join(worktreePath, "partial_progress.txt"),
         "Important unsaved work\n",
       );
+      const originalHead = (await execCommand("git", ["rev-parse", "HEAD"], worktreePath)).stdout.trim();
 
       db.prepare(`
         INSERT INTO tasks (id, title, status, version, max_retries, retry_count, created_at, updated_at)
@@ -165,6 +166,8 @@ describe("AgentQueue Lease Expiration & Recovery (AQ-012)", () => {
       expect(results).toHaveLength(1);
       expect(results[0].action).toBe("recovered");
       expect(results[0].recoveryBranch).toBeDefined();
+      expect((await execCommand("git", ["rev-parse", "HEAD"], worktreePath)).stdout.trim()).toBe(originalHead);
+      expect((await execCommand("git", ["status", "--porcelain"], worktreePath)).stdout).toContain("partial_progress.txt");
 
       // Verify task was reset to pending with retry_count incremented
       const task = db
@@ -184,6 +187,8 @@ describe("AgentQueue Lease Expiration & Recovery (AQ-012)", () => {
           worktreePath,
         );
         expect(code).toBe(0);
+        const savedContent = await execCommand("git", ["show", `${results[0].recoveryBranch}:partial_progress.txt`], worktreePath);
+        expect(savedContent.stdout).toBe("Important unsaved work\n");
       }
 
       db.close();
