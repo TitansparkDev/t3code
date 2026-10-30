@@ -28,6 +28,9 @@ export interface ParsedArgs {
   readonly flags: Record<string, string | boolean>;
 }
 
+/** Flags that never take a value, so `--json VG1` keeps VG1 as the task id. */
+const BOOLEAN_FLAGS = new Set(["json", "strict", "force", "help"]);
+
 export function parseArgs(rawArgs: string[]): ParsedArgs {
   const flags: Record<string, string | boolean> = {};
   const positional: string[] = [];
@@ -41,7 +44,7 @@ export function parseArgs(rawArgs: string[]): ParsedArgs {
         flags[arg.slice(2, eqIdx)] = arg.slice(eqIdx + 1);
       } else {
         const next = rawArgs[i + 1];
-        if (next && !next.startsWith("-")) {
+        if (next && !next.startsWith("-") && !BOOLEAN_FLAGS.has(arg.slice(2))) {
           flags[arg.slice(2)] = next;
           i++;
         } else {
@@ -191,8 +194,23 @@ export function runCli(
 
           case "heartbeat": {
             const token = (args.flags.token as string) || args.positional[0];
-            if (!token) throw new Error("Usage: agentqueue task heartbeat --token <token>");
-            result = heartbeatCommand(token, 120, { cwd, json: jsonMode });
+            if (!token)
+              throw new Error("Usage: agentqueue task heartbeat --token <token> [--lease SECONDS]");
+            const lease =
+              typeof args.flags.lease === "string" ? parseInt(args.flags.lease, 10) : NaN;
+            result = heartbeatCommand(token, Number.isNaN(lease) ? undefined : lease, {
+              cwd,
+              json: jsonMode,
+            });
+            // A lost lease means another worker may now own the task: say so in the exit status.
+            if (result.success === false) {
+              return {
+                exitCode: 3,
+                output: jsonMode
+                  ? JSON.stringify(result, null, 2)
+                  : `Lease not renewed: ${token} no longer holds its task. Stop work on it.`,
+              };
+            }
             break;
           }
 

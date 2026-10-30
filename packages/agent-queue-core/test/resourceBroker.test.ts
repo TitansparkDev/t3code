@@ -88,6 +88,17 @@ describe("resource broker queue", () => {
     expect(broker.get(b!.id)!.state).toBe("granted");
   });
 
+  it("says who holds and who waits for a resource, and why a waiter waits", () => {
+    const { broker } = makeBroker();
+    broker.enqueue({ resources: [{ name: "db" }], pid: process.pid, label: "a", ownerRef: "VG1" });
+    broker.enqueue({ resources: [{ name: "db" }], pid: process.pid, label: "b", ownerRef: "FX2" });
+    broker.pump();
+    const db = broker.status().resources.find((resource) => resource.name === "db")!;
+    expect(db.holders[0]).toMatchObject({ owner: "VG1" });
+    expect(db.queue[0]).toMatchObject({ owner: "FX2", pid: process.pid });
+    expect(db.queue[0]!.note).toBeTruthy();
+  });
+
   it("takes several resources atomically, so two multi-resource requests cannot deadlock", () => {
     const { broker } = makeBroker();
     // Each wants both; capacity 1 of "db" and 2 of heavy_build. Whoever is first gets both.

@@ -216,13 +216,15 @@ function statusText(broker: ResourceBroker): string {
     lines.push(
       `${resource.name}: ${resource.active}/${resource.capacity} in use, ${resource.waiting} waiting`,
     );
+    const who = (entry: { owner: string | null; pid: number | null }) =>
+      `${entry.owner ?? "no owner"}, pid ${entry.pid ?? "?"}`;
     for (const holder of resource.holders)
       lines.push(
-        `    holding ${holder.ticket} slot ${holder.slots.join(",")} for ${fmtMs(holder.sinceMs)}: ${holder.label}`,
+        `    holding ${holder.ticket} slot ${holder.slots.join(",")} for ${fmtMs(holder.sinceMs)} (${who(holder)}): ${holder.label}`,
       );
     for (const waiter of resource.queue)
       lines.push(
-        `    #${waiter.position} ${waiter.ticket} waiting ${fmtMs(waiter.waitingMs)}: ${waiter.label}`,
+        `    #${waiter.position} ${waiter.ticket} waiting ${fmtMs(waiter.waitingMs)} (${who(waiter)}${waiter.note ? `; ${waiter.note}` : ""}): ${waiter.label}`,
       );
   }
   return lines.join("\n");
@@ -314,11 +316,16 @@ export async function runResourceCommand(
       }
     }
     if (resources.length === 0 && !reusable) {
-      // Nothing shared is involved: run it straight away, as if the prefix were not there.
+      // Nothing shared is involved: run it straight away, as if the prefix were not there,
+      // but still under the deadline the caller asked for.
       const child = NodeChildProcess.spawnSync(command[0]!, command.slice(1), {
         cwd,
         stdio: "inherit",
+        ...(typeof flags.timeout === "string" && runMs > 0 ? { timeout: runMs } : {}),
       });
+      if (child.error && (child.error as NodeJS.ErrnoException).code === "ETIMEDOUT") {
+        return { exitCode: 124, stdout: "", stderr: "[agentq] killed at its time limit." };
+      }
       return { exitCode: child.status ?? 1, stdout: "", stderr: "" };
     }
     const hints = Object.fromEntries(

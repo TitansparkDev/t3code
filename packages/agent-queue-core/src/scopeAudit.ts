@@ -181,9 +181,22 @@ export function decideScope(
   const waits: Array<{ path: string; ownerTaskId: string }> = [];
   const already = storedAmendments(db, input.taskId);
   const reasons = new Map<string, string>();
+  const patternReasons: Array<{ pattern: string; reason: string }> = [];
   for (const request of input.requests) {
-    for (const path of request.paths) reasons.set(normalizeRepoPath(path), request.reason);
+    for (const raw of request.paths) {
+      const path = normalizeRepoPath(raw);
+      reasons.set(path, request.reason);
+      // `**` or `*.kt` would widen the task to the whole repository: a pattern needs a directory.
+      if (/^[^*?]+\//.test(path)) patternReasons.push({ pattern: path, reason: request.reason });
+    }
   }
+  // A request may name a directory or glob; it still grants only the concrete files the audit
+  // found under it. A sensitive file must be named itself.
+  const reasonFor = (path: string): string | undefined =>
+    reasons.get(path) ??
+    (isSensitivePath(path)
+      ? undefined
+      : patternReasons.find((entry) => matchesAny(path, [entry.pattern]))?.reason);
   const grant = (path: string, reason: string, source: "worker-request" | "auto") => {
     if (!already.includes(path)) {
       db.prepare(
@@ -193,9 +206,10 @@ export function decideScope(
     granted.push(path);
     if (source === "auto") auto.push(path);
   };
-  for (const raw of input.violations.slice(0, MAX_PATHS * 4)) {
+  // Every violation gets a verdict: one left out would be neither granted nor reported.
+  for (const raw of input.violations) {
     const path = normalizeRepoPath(raw);
-    const reason = reasons.get(path);
+    const reason = reasonFor(path);
     if (matchesAny(path, input.contract.protectedPaths)) {
       denied.push({ path, why: "this path is protected" });
       continue;
@@ -223,7 +237,7 @@ export function decideScope(
     if (auto.length >= MAX_PATHS) {
       denied.push({
         path,
-        why: `more than ${MAX_PATHS} files outside the scope; the task is too wide for its scope`,
+        why: `more than ${MAX_PATHS} files outside the scope; the task is too wide for its scope (name the directory with \`SCOPE-REQUEST: <dir>/** — <why>\`, or revert)`,
       });
       continue;
     }

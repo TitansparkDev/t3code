@@ -241,6 +241,13 @@ describe("plan lint finds what stops small agents before any of them starts", ()
           "./gradlew :missing:connectedDebugAndroidTest --tests com.example.Smoke (cwd: android, timeout: 5m, id: wrong-target, junit: android/app/build/reports/android/TEST.xml, min-tests: 1)",
         ),
         ...task(
+          "MULTI",
+          "Run two instrumentation classes",
+          "BUILD",
+          "android/app/src/androidTest/",
+          "./gradlew :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.example.Smoke,com.example.Other (cwd: android, timeout: 5m, id: multi, consumes: android/app/build/outputs/apk/debug/app-debug.apk, junit: android/app/build/reports/android/TEST-*.xml, min-tests: 1, max-skipped: 0)",
+        ),
+        ...task(
           "COMBINED",
           "Keep two gates separate",
           "none",
@@ -258,6 +265,7 @@ describe("plan lint finds what stops small agents before any of them starts", ()
       const files: Record<string, string> = {
         "android/settings.gradle": 'include ":app"\n',
         "android/app/src/androidTest/java/com/example/Smoke.kt": "class Smoke\n",
+        "android/app/src/androidTest/java/com/example/Other.kt": "class Other\n",
         "android/app/src/test/java/com/example/Unit.kt": "class Unit\n",
         "android/app/build.gradle": "plugins { }\n",
         ".bridge/verify.json": "{}\n",
@@ -283,6 +291,8 @@ describe("plan lint finds what stops small agents before any of them starts", ()
       expect(
         findings.find((finding) => finding.code === "check-gradle-project-missing")?.level,
       ).toBe("warning");
+      expect(has("check-selection-undercounted", "MULTI")).toBe(true);
+      expect(has("check-selection-undercounted", "TEST")).toBe(false);
       expect(has("combined-gate", "COMBINED")).toBe(true);
       expect(has("repair-scope-protected", "REPAIR")).toBe(true);
       expect(

@@ -607,7 +607,7 @@ export async function submitCandidate(
   commitPendingChanges(input.worktreePath, `${input.taskId}: commit changes left uncommitted`);
   // A merge of the base into the branch is not work; the guards want a linear branch.
   const linear = linearizeBranch(input.worktreePath, `refs/heads/${input.baseBranch}`);
-  if (linear.outcome === "rebased") {
+  if (linear.outcome === "rebased" || linear.outcome === "squashed") {
     recordEvent(db, input.taskId, "task_branch_linearized", { note: linear.note });
   }
   const head = git(input.worktreePath, ["rev-parse", "HEAD"]).stdout;

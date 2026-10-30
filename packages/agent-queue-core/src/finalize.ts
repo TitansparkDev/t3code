@@ -78,12 +78,20 @@ export function finalizeTask(
       violations: verdict.violations,
     });
     verdict = auditScope({ changed, scope, contract: loaded.contract, amendments: amendments() });
+    const explained = new Set([
+      ...decision.denied.map((entry) => entry.path),
+      ...decision.waits.map((entry) => entry.path),
+    ]);
     problems = [
       ...decision.denied.map((entry) => `${entry.path}: ${entry.why}`),
       ...decision.waits.map(
         (entry) =>
           `${entry.path}: held by ${entry.ownerTaskId}; the server pauses your task until it is free (commit it and finish)`,
       ),
+      // Ready means the re-audit is clean, not that the decision had nothing to say.
+      ...verdict.violations
+        .filter((path) => !explained.has(path))
+        .map((path) => `${path}: outside the task's scope and not approved`),
     ];
   }
   const linearized = linearizeBranch(input.worktree, `refs/heads/${base}`);

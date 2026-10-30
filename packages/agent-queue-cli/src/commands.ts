@@ -276,18 +276,40 @@ export function claimTaskCommand(
 }
 
 /**
- * Renews an active task claim heartbeat.
+ * Renews an active task claim heartbeat. Without an explicit extension the lease is renewed for
+ * as long as it was first taken, so `task claim --lease 1800` is not cut to two minutes by the
+ * first heartbeat.
  */
 export function heartbeatCommand(
   ownerToken: string,
-  extensionSeconds = 120,
+  extensionSeconds: number | undefined,
   options: CommandOptions = {},
 ): Record<string, unknown> {
   const git = resolveGitContext(options.cwd);
   const db = openQueueDatabase({ gitCommonDir: git.gitCommonDir });
   try {
-    const success = renewLease(db, ownerToken, extensionSeconds);
-    return { success, ownerToken };
+    const claim = db
+      .prepare(
+        "SELECT heartbeat_at, expires_at FROM task_claims WHERE owner_token = ? AND released_at IS NULL",
+      )
+      .get(ownerToken) as { heartbeat_at: string; expires_at: string } | undefined;
+    if (!claim) return { success: false, ownerToken, reason: "LEASE_NOT_HELD" };
+    // Every renewal sets heartbeat_at and expires_at together, so their gap is the lease length.
+    const taken = Math.round(
+      (Date.parse(claim.expires_at) - Date.parse(claim.heartbeat_at)) / 1000,
+    );
+    const seconds = extensionSeconds ?? Math.max(taken, 120);
+    const success = renewLease(db, ownerToken, seconds);
+    const renewed = db
+      .prepare("SELECT expires_at FROM task_claims WHERE owner_token = ?")
+      .get(ownerToken) as { expires_at: string };
+    return {
+      success,
+      ownerToken,
+      leaseSeconds: seconds,
+      expiresAt: renewed.expires_at,
+      ...(success ? {} : { reason: "LEASE_NOT_HELD" }),
+    };
   } finally {
     db.close();
   }
@@ -373,6 +395,15 @@ export function abortTaskCommand(
     const now = new Date().toISOString();
     db.exec("BEGIN IMMEDIATE;");
     try {
+      const task = db.prepare("SELECT status FROM tasks WHERE id = ?").get(taskId) as
+        | { status: string }
+        | undefined;
+      // Landed work is not a failure, and a mistyped id must not look aborted.
+      if (!task || task.status === "completed") {
+        throw new Error(
+          task ? `Task ${taskId} is completed; it cannot be aborted.` : `Task ${taskId} not found`,
+        );
+      }
       // Mark active claims released
       db.prepare(
         "UPDATE task_claims SET released_at = ? WHERE task_id = ? AND released_at IS NULL",
@@ -408,6 +439,17 @@ export function retryTaskCommand(
   const git = resolveGitContext(options.cwd);
   const db = openQueueDatabase({ gitCommonDir: git.gitCommonDir });
   try {
+    const task = db.prepare("SELECT status FROM tasks WHERE id = ?").get(taskId) as
+      | { status: string }
+      | undefined;
+    if (!task) throw new Error(`Task ${taskId} not found`);
+    // Resetting a claimed task would start a second worker on it; resetting a completed one
+    // would redo landed work. Neither is a retry, even with --force.
+    if (!["failed", "blocked", "pending"].includes(task.status)) {
+      throw new Error(
+        `Task ${taskId} is ${task.status}; only a failed, blocked or held task can be retried.`,
+      );
+    }
     if (!options.force) {
       const unchanged = unchangedHeldFailure(db, taskId);
       if (unchanged) {

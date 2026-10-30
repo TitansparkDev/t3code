@@ -556,6 +556,7 @@ export interface ResourceStatus {
   readonly holders: ReadonlyArray<{
     ticket: string;
     label: string;
+    owner: string | null;
     pid: number | null;
     sinceMs: number;
     slots: ReadonlyArray<number>;
@@ -563,6 +564,10 @@ export interface ResourceStatus {
   readonly queue: ReadonlyArray<{
     ticket: string;
     label: string;
+    owner: string | null;
+    pid: number | null;
+    /** Why it is still waiting: no free slot, or not enough memory headroom. */
+    note: string | null;
     waitingMs: number;
     position: number;
   }>;
@@ -1283,6 +1288,7 @@ export class ResourceBroker {
         holders: holders.map((ticket) => ({
           ticket: ticket.id,
           label: ticket.label,
+          owner: ticket.ownerRef,
           pid: ticket.pid,
           sinceMs: now - (ticket.grantedAt ?? now),
           slots: ticket.slots[name] ?? [],
@@ -1290,6 +1296,9 @@ export class ResourceBroker {
         queue: queue.map((ticket, index) => ({
           ticket: ticket.id,
           label: ticket.label,
+          owner: ticket.ownerRef,
+          pid: ticket.pid,
+          note: ticket.note,
           waitingMs: now - ticket.enqueuedAt,
           position: index + 1,
         })),

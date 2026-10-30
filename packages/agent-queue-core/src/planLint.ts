@@ -680,6 +680,21 @@ export function lintPlan(input: PlanLintInput): PlanFinding[] {
             fix: "Name the focused instrumentation test with --tests or android.testInstrumentationRunnerArguments.class; keep the full matrix for final verification.",
           });
         }
+        // A report with one passing test proves one class ran, not every class in the list.
+        const classes =
+          /android\.testInstrumentationRunnerArguments\.class\s*=\s*['"]?([^\s'"]+)/i
+            .exec(check.run)?.[1]
+            ?.split(",")
+            .filter(Boolean).length ?? 0;
+        if (classes > 1 && check.junit && check.junit.minTests < classes) {
+          add({
+            level: "warning",
+            code: "check-selection-undercounted",
+            taskId: task.id,
+            message: `${task.id}'s instrumentation check selects ${classes} classes but accepts a report with ${check.junit.minTests} test(s), so a run of only the first class would pass.`,
+            fix: `Set min-tests to at least ${classes} (one per class), or give each class its own check.`,
+          });
+        }
         if (!check.junit || check.junit.minTests < 1) {
           add({
             level: structured ? "error" : "warning",

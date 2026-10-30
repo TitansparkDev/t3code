@@ -358,6 +358,47 @@ describe("what the worker runs before finishing agrees with the server", () => {
       await r.repo.cleanup();
     }
   }, 60_000);
+
+  it("widens a task to a requested directory, beyond the automatic limit, but not to a sensitive file in it", async () => {
+    const { finalizeTask } = await import("../src/finalize.ts");
+    const { parseScopeRequests } = await import("../src/scopeAudit.ts");
+    const r = await makeRepo({ plan: plan([{ id: "A", scope: "src/a/" }]), contract: CONTRACT });
+    try {
+      const a = await r.reserve();
+      if (a.kind !== "reserved") throw new Error("A should start");
+      const cwd = a.task.worktreePath;
+      NodeFS.mkdirSync(NodePath.join(cwd, "src/ui"), { recursive: true });
+      for (let i = 0; i < 110; i++) {
+        NodeFS.writeFileSync(NodePath.join(cwd, `src/ui/screen${i}.kt`), `${i}\n`);
+      }
+      NodeFS.writeFileSync(NodePath.join(cwd, "src/ui/.env"), "TOKEN=x\n");
+      await execCommand("git", ["add", "-A"], cwd);
+      await execCommand("git", ["commit", "-qm", "gate repairs"], cwd);
+      const finalize = (text: string) =>
+        finalizeTask(r.db, {
+          taskId: "A",
+          worktree: cwd,
+          repoRoot: r.repo.rootDir,
+          gitCommonDir: r.repo.gitCommonDir,
+          requests: parseScopeRequests(text),
+        });
+
+      const widened = finalize(
+        "SCOPE-REQUEST: src/ui/** — the gate found real defects in these screens",
+      );
+      expect(widened.ok).toBe(false);
+      expect(widened.problems).toHaveLength(1);
+      expect(widened.problems[0]).toContain("src/ui/.env");
+      expect(widened.approved).toContain("src/ui/screen109.kt");
+
+      const named = finalize(
+        "SCOPE-REQUEST: src/ui/.env — the screens read their endpoint from this file",
+      );
+      expect(named.ok).toBe(true);
+    } finally {
+      await r.repo.cleanup();
+    }
+  }, 60_000);
 });
 
 describe("a repair that waited is retried without a worker when the branch moved", () => {
