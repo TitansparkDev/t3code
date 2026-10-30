@@ -3269,10 +3269,11 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
           (g) => (g.queueErrors ?? 0) > 0,
           "the outage to be observed before advancing its duration",
         );
-        console.log("DBG before adjust", JSON.stringify(yield* flow.goalOf(service)).slice(0, 600));
+        const dbgBefore = DateTime.toEpochMillis(yield* DateTime.now);
         yield* TestClock.adjust(Duration.minutes(4));
+        const dbgAfter = DateTime.toEpochMillis(yield* DateTime.now);
+        throw new Error(`DBG clock before=${dbgBefore} after=${dbgAfter}`);
         for (let round = 0; round < 6; round++) yield* tickOnce;
-        console.log("DBG after adjust", JSON.stringify(yield* flow.goalOf(service)).slice(0, 900));
         const goal = yield* flow.eventually(
           flow.goalOf(service),
           (g) => g.status === "failed",
