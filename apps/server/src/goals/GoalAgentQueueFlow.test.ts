@@ -1040,6 +1040,58 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
   );
 
   it.effect(
+    "hands back a usage-limited queue task when the limit lasts long",
+    () =>
+      Effect.gen(function* () {
+        const flow = yield* makeFlow(planWith([{ id: "T1" }]));
+        const service = yield* flow.startServer;
+        yield* Effect.forkScoped(service.loop);
+        yield* Effect.yieldNow;
+        yield* service.create(settingsFor());
+        const [created] = yield* flow.waitFor("thread.create", 1);
+        yield* flow.sessionEvent(created!.threadId, {
+          status: "rate-limited",
+          activeTurnId: null,
+          lastErrorClass: "usage_limit",
+          retryAt: "2026-10-04T17:00:00.000Z",
+        });
+        const goal = yield* flow.eventually(
+          flow.goalOf(service),
+          (g) => g.chats[0]?.taskOutcome === "returned",
+          "the chat to be returned",
+        );
+        expect(goal.chats[0]?.status).toBe("stopped");
+        expect(yield* flow.taskRow("T1")).toMatchObject({ status: "pending", retry_count: 0 });
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "keeps a usage-limited queue task when the limit ends soon",
+    () =>
+      Effect.gen(function* () {
+        const flow = yield* makeFlow(planWith([{ id: "T1" }]));
+        const service = yield* flow.startServer;
+        yield* Effect.forkScoped(service.loop);
+        yield* Effect.yieldNow;
+        yield* service.create(settingsFor());
+        const [created] = yield* flow.waitFor("thread.create", 1);
+        yield* flow.sessionEvent(created!.threadId, {
+          status: "rate-limited",
+          activeTurnId: null,
+          lastErrorClass: "usage_limit",
+          retryAt: "2026-10-04T12:10:00.000Z",
+        });
+        const goal = yield* flow.eventually(
+          flow.goalOf(service),
+          (g) => g.chats[0]?.waitingForLimit === true,
+          "the chat to wait for the limit",
+        );
+        expect(goal.chats[0]?.taskOutcome).toBeUndefined();
+        expect(yield* flow.taskRow("T1")).toMatchObject({ status: "running", retry_count: 0 });
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
     "a provider failure before any work returns the task untouched and spends no retry",
     () =>
       Effect.gen(function* () {

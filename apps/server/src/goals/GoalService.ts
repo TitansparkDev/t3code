@@ -81,6 +81,7 @@ const TICK_MILLIS = 5_000;
  * scheduler stops waiting for an event that never came and finishes it from the thread's state.
  */
 const IDLE_CHAT_GRACE_MILLIS = 90_000;
+const LIMIT_HOLD_MAX_MILLIS = 30 * 60_000;
 /** Report a slow scheduler pass without interrupting operations it still owns. */
 const SCHEDULER_PASS_TIMEOUT = "10 minutes";
 /** How long the AgentQueue must keep failing, in a row, before a goal is stopped because of it. */
@@ -3437,6 +3438,15 @@ export const make = Effect.gen(function* () {
       const thread = yield* readThread(event.threadId);
       if (!goal?.autoResume || !madeProgress(thread)) {
         // Not resuming, or nothing worth resuming: record it and free the lane.
+        yield* finishChat(watch.goalId, event.threadId, limit);
+        return;
+      }
+      const now = yield* nowMillis;
+      if (
+        goal.agentQueue &&
+        session.retryAt !== undefined &&
+        Date.parse(session.retryAt) - now > LIMIT_HOLD_MAX_MILLIS
+      ) {
         yield* finishChat(watch.goalId, event.threadId, limit);
         return;
       }
