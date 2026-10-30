@@ -20,6 +20,7 @@ import {
 } from "@t3tools/contracts";
 import type { Goal, GoalSettings } from "@t3tools/contracts/goals";
 import * as Duration from "effect/Duration";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as TestClock from "effect/testing/TestClock";
@@ -173,6 +174,7 @@ const makeFlow = (
     const events = yield* PubSub.unbounded<OrchestrationEvent>();
     const subscription = yield* PubSub.subscribe(events);
     let eventCount = 0;
+    let eventSequence = 1;
     const scripts = new Map<string, ThreadScript>();
     /** Background work the registry reports per thread (tests, watchers, subagents). */
     const liveness = new Map<string, "working" | "monitoring">();
@@ -390,7 +392,7 @@ const makeFlow = (
 
     const sessionEvent = (threadId: string, session: Record<string, unknown>) =>
       PubSub.publish(events, {
-        sequence: 2,
+        sequence: ++eventSequence,
         eventId: EventId.make(`e-${threadId}-${++eventCount}`),
         aggregateKind: "thread",
         aggregateId: threadId,
@@ -789,7 +791,7 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
         const service = yield* flow.startServer;
         yield* Effect.forkScoped(service.loop);
         yield* Effect.yieldNow;
-        yield* service.create(settingsFor());
+        yield* service.create(settingsFor({ autoResume: true }));
         yield* flow.waitFor("thread.create", 2);
         yield* Effect.all([flow.work("T1"), flow.work("T2")], { concurrency: 2 });
         yield* flow.waitFor("thread.create", 3);
@@ -1022,7 +1024,7 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
         const service = yield* flow.startServer;
         yield* Effect.forkScoped(service.loop);
         yield* Effect.yieldNow;
-        yield* service.create(settingsFor());
+        yield* service.create(settingsFor({ autoResume: true }));
         yield* flow.waitFor("thread.create", 2);
         const t1 = yield* flow.work("T1", { reply: "Merged. NEEDS ATTENTION\n\nNEEDS ATTENTION" });
         yield* flow.eventually(
@@ -1037,6 +1039,62 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
         );
         expect(goal.chats.find((chat) => chat.threadId === t1)?.status).toBe("completed");
       }).pipe(Effect.scoped),
+  );
+
+  it.effect("hands back a usage-limited queue task when the limit lasts long", () =>
+    Effect.gen(function* () {
+      const flow = yield* makeFlow(planWith([{ id: "T1" }]));
+      const service = yield* flow.startServer;
+      yield* Effect.forkScoped(service.loop);
+      yield* Effect.yieldNow;
+      yield* service.create(settingsFor({ autoResume: true }));
+      const [created] = yield* flow.waitFor("thread.create", 1);
+      yield* flow.sessionEvent(created!.threadId, { status: "running", activeTurnId: "turn-1" });
+      const retryAt = new Date(
+        DateTime.toEpochMillis(yield* DateTime.now) + 5 * 60 * 60_000,
+      ).toISOString();
+      yield* flow.sessionEvent(created!.threadId, {
+        status: "rate-limited",
+        activeTurnId: null,
+        lastErrorClass: "usage_limit",
+        retryAt,
+      });
+      const goal = yield* flow.eventually(
+        flow.goalOf(service),
+        (g) => g.chats[0]?.taskOutcome === "returned",
+        "the chat to be returned",
+      );
+      expect(goal.chats[0]?.status).toBe("stopped");
+      expect(yield* flow.taskRow("T1")).toMatchObject({ status: "pending", retry_count: 0 });
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("keeps a usage-limited queue task when the limit ends soon", () =>
+    Effect.gen(function* () {
+      const flow = yield* makeFlow(planWith([{ id: "T1" }]));
+      const service = yield* flow.startServer;
+      yield* Effect.forkScoped(service.loop);
+      yield* Effect.yieldNow;
+      yield* service.create(settingsFor({ autoResume: true }));
+      const [created] = yield* flow.waitFor("thread.create", 1);
+      yield* flow.sessionEvent(created!.threadId, { status: "running", activeTurnId: "turn-1" });
+      const retryAt = new Date(
+        DateTime.toEpochMillis(yield* DateTime.now) + 10 * 60_000,
+      ).toISOString();
+      yield* flow.sessionEvent(created!.threadId, {
+        status: "rate-limited",
+        activeTurnId: null,
+        lastErrorClass: "usage_limit",
+        retryAt,
+      });
+      const goal = yield* flow.eventually(
+        flow.goalOf(service),
+        (g) => g.chats[0]?.waitingForLimit === true,
+        "the chat to wait for the limit",
+      );
+      expect(goal.chats[0]?.taskOutcome).toBeUndefined();
+      expect(yield* flow.taskRow("T1")).toMatchObject({ status: "claimed", retry_count: 0 });
+    }).pipe(Effect.scoped),
   );
 
   it.effect(
