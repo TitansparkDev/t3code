@@ -9,6 +9,8 @@ export interface QueueStatusCounts {
   readonly completed: number;
   readonly failed: number;
   readonly blocked: number;
+  /** Completed tasks dropped with a recorded reason (a subset of `completed`). */
+  readonly waived: number;
   readonly total: number;
   /** Submitted work waiting to be merged or repaired (a subset of `verifying`). */
   readonly awaitingIntegration?: number;
@@ -102,6 +104,12 @@ export function getQueueSnapshot(
     total += row.cnt;
   }
 
+  const waived = db
+    .prepare(
+      `SELECT count(*) AS cnt FROM tasks WHERE status = 'completed' AND waived_reason IS NOT NULL ${planId === undefined ? "" : "AND plan_id = ?"}`,
+    )
+    .get(...(planId === undefined ? [] : [planId])) as { cnt: number };
+
   const leaseRows = db
     .prepare(`
       SELECT task_claims.task_id, task_claims.worker_pid,
@@ -149,6 +157,7 @@ export function getQueueSnapshot(
       completed: counts.completed ?? 0,
       failed: counts.failed ?? 0,
       blocked: counts.blocked ?? 0,
+      waived: waived.cnt,
       total,
     },
     activeLeases,

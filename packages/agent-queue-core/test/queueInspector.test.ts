@@ -39,6 +39,15 @@ describe("AgentQueue Diagnostics & Deadlock Evaluator (AQ-014)", () => {
       expect(snapshot.activeLeases).toHaveLength(1);
       expect(snapshot.activeLeases[0].taskId).toBe("T-3");
       expect(snapshot.activeLeases[0]).not.toHaveProperty("ownerToken");
+      expect(snapshot.counts.waived).toBe(0);
+
+      db.prepare(
+        "UPDATE tasks SET waived_reason = 'Dropped from the plan', waived_at = ? WHERE id = 'T-4'",
+      ).run(now);
+      const waivedSnapshot = getQueueSnapshot(db);
+      expect(waivedSnapshot.counts.waived).toBe(1);
+      expect(waivedSnapshot.counts.completed).toBe(1);
+      expect(waivedSnapshot.counts.failed).toBe(0);
 
       db.close();
     } finally {
