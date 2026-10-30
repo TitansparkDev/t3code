@@ -2,6 +2,8 @@
 import type * as NodeSqlite from "node:sqlite";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 
 export interface LeaseRecoveryResult {
   readonly taskId: string;
@@ -36,28 +38,28 @@ export function preserveWorktreeChanges(
   }
 
   const branch = `recovery/${taskId}-${Date.now()}`;
+  const indexPath = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "agentqueue-index-"));
+  const indexFile = NodePath.join(indexPath, "index");
+  const gitEnv = { ...process.env, GIT_INDEX_FILE: indexFile };
   try {
-    // Check if git status has dirty changes
-    const status = NodeChildProcess.execSync("git status --porcelain", {
-      cwd: worktreePath,
-      encoding: "utf8",
+    NodeChildProcess.execFileSync("git", ["read-tree", "HEAD"], { cwd: worktreePath, env: gitEnv });
+    NodeChildProcess.execFileSync("git", ["add", "-A"], { cwd: worktreePath, env: gitEnv, stdio: "ignore" });
+    const tree = NodeChildProcess.execFileSync("git", ["write-tree"], {
+      cwd: worktreePath, env: gitEnv, encoding: "utf8",
     }).trim();
-
-    if (status.length > 0) {
-      NodeChildProcess.execSync("git add -A", { cwd: worktreePath, stdio: "ignore" });
-      NodeChildProcess.execFileSync(
-        "git",
-        ["commit", "-m", `AgentQueue recovery stash for ${taskId}`],
-        { cwd: worktreePath, stdio: "ignore" },
-      );
-      NodeChildProcess.execFileSync("git", ["branch", branch], {
-        cwd: worktreePath,
-        stdio: "ignore",
-      });
-      return { saved: true, branch };
-    }
+    const headTree = NodeChildProcess.execFileSync("git", ["rev-parse", "HEAD^{tree}"], {
+      cwd: worktreePath, encoding: "utf8",
+    }).trim();
+    if (tree === headTree) return { saved: false };
+    const commit = NodeChildProcess.execFileSync("git", [
+      "commit-tree", tree, "-p", "HEAD", "-m", `AgentQueue recovery snapshot for ${taskId}`,
+    ], { cwd: worktreePath, encoding: "utf8" }).trim();
+    NodeChildProcess.execFileSync("git", ["branch", branch, commit], { cwd: worktreePath });
+    return { saved: true, branch };
   } catch {
     // Non-fatal if git commit fails
+  } finally {
+    NodeFS.rmSync(indexPath, { recursive: true, force: true });
   }
 
   return { saved: false };
@@ -115,7 +117,8 @@ export function reconcileExpiredLeases(
       continue;
     }
 
-    // Recheck under the write lock before touching files: another process may have renewed
+    const preservation = preserveWorktreeChanges(claim.worktree_path, claim.task_id);
+    // Recheck under the write lock before updating the claim: another process may have renewed
     // this lease after the expired-claim snapshot was read.
     db.exec("BEGIN IMMEDIATE;");
     let committed = false;
@@ -127,9 +130,11 @@ export function reconcileExpiredLeases(
         .get(claim.id, now, claim.task_version);
       if (!current || isAlive(claim.worker_pid, claim.worker_session_id)) {
         db.exec("ROLLBACK;");
+        if (preservation.branch) {
+          NodeChildProcess.execFileSync("git", ["branch", "-D", preservation.branch], { cwd: claim.worktree_path });
+        }
         continue;
       }
-      const preservation = preserveWorktreeChanges(claim.worktree_path, claim.task_id);
       // Mark claim released
       db.prepare("UPDATE task_claims SET released_at = ? WHERE id = ?").run(now, claim.id);
 
