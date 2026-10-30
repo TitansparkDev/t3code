@@ -1188,7 +1188,9 @@ it.layer(NodeServices.layer)("GoalService", (it) => {
         const [worker] = yield* harness.waitFor("thread.create", 1);
         yield* harness.runAndFinish(threadIdOf(worker));
         const [, first] = yield* harness.waitFor("thread.create", 2);
-        expect(first?.modelSelection).toMatchObject({ instanceId: "agy2", model: unavailable });
+        expect(first?.type).toBe("thread.create");
+        if (first?.type !== "thread.create") throw new Error("expected overseer thread creation");
+        expect(first.modelSelection).toMatchObject({ instanceId: "agy2", model: unavailable });
 
         yield* Ref.set(harness.threadState, { reply: "", turnState: "error" });
         yield* harness.sessionEvent(threadIdOf(first), {
@@ -1201,7 +1203,9 @@ it.layer(NodeServices.layer)("GoalService", (it) => {
           lastError: `The agent did not accept the model "${unavailable}"`,
         });
         const [, , second] = yield* harness.waitFor("thread.create", 3);
-        expect(second?.modelSelection).toMatchObject({ instanceId: "agy3", model: unavailable });
+        expect(second?.type).toBe("thread.create");
+        if (second?.type !== "thread.create") throw new Error("expected overseer thread creation");
+        expect(second.modelSelection).toMatchObject({ instanceId: "agy3", model: unavailable });
         const [goal] = yield* service.list;
         expect(goal?.pauses).toContainEqual(
           expect.objectContaining({ instanceId: "agy2", model: unavailable }),

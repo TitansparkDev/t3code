@@ -1050,9 +1050,7 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
       yield* service.create(settingsFor({ autoResume: true }));
       const [created] = yield* flow.waitFor("thread.create", 1);
       yield* flow.sessionEvent(created!.threadId, { status: "running", activeTurnId: "turn-1" });
-      const retryAt = new Date(
-        DateTime.toEpochMillis(yield* DateTime.now) + 5 * 60 * 60_000,
-      ).toISOString();
+      const retryAt = DateTime.formatIso(DateTime.add(yield* DateTime.now, { hours: 5 }));
       yield* flow.sessionEvent(created!.threadId, {
         status: "rate-limited",
         activeTurnId: null,
@@ -1078,9 +1076,7 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
       yield* service.create(settingsFor({ autoResume: true }));
       const [created] = yield* flow.waitFor("thread.create", 1);
       yield* flow.sessionEvent(created!.threadId, { status: "running", activeTurnId: "turn-1" });
-      const retryAt = new Date(
-        DateTime.toEpochMillis(yield* DateTime.now) + 10 * 60_000,
-      ).toISOString();
+      const retryAt = DateTime.formatIso(DateTime.add(yield* DateTime.now, { minutes: 10 }));
       yield* flow.sessionEvent(created!.threadId, {
         status: "rate-limited",
         activeTurnId: null,
