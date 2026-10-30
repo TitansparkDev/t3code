@@ -211,7 +211,7 @@ describe("whose failure is it", () => {
       contract: CONTRACT,
       files: {
         "tests/check.js":
-          "const fs=require('fs');if(fs.existsSync('src/a/broken')){console.error('FAILED test_a');process.exit(1)}\n",
+          "import * as fs from 'node:fs';if(fs.existsSync('src/a/broken')){console.error('FAILED test_a');process.exit(1)}\n",
       },
     });
     try {
@@ -240,8 +240,9 @@ describe("change-impact audit", () => {
       contract: { ...CONTRACT, scopeEnforcement: "report" },
       files: {
         "tests/a.js":
-          "const fs=require('fs');fs.appendFileSync(process.env.RUNLOG,'a\\n');if(fs.readFileSync('src/a/value.txt','utf8').trim()!=='1')process.exit(1);\n",
-        "tests/c.js": "const fs=require('fs');fs.appendFileSync(process.env.RUNLOG,'c\\n');\n",
+          "import * as fs from 'node:fs';fs.appendFileSync(process.env.RUNLOG,'a\\n');if(fs.readFileSync('src/a/value.txt','utf8').trim()!=='1')process.exit(1);\n",
+        "tests/c.js":
+          "import * as fs from 'node:fs';fs.appendFileSync(process.env.RUNLOG,'c\\n');\n",
         "src/a/value.txt": "0\n",
       },
     });
@@ -295,7 +296,7 @@ describe("what the worker runs before finishing agrees with the server", () => {
   it("approves a necessary extra file now, runs the repository's finalizer with the real allowed paths, and refuses protected files", async () => {
     const { finalizeTask } = await import("../src/finalize.ts");
     const guard = [
-      'const { execFileSync } = require("node:child_process");',
+      'import { execFileSync } from "node:child_process";',
       "const allowed = process.argv.slice(2);",
       "const base = process.env.BASE;",
       'const changed = execFileSync("git", ["diff", "--name-only", base + "...HEAD"]).toString().split("\\n").filter(Boolean);',
