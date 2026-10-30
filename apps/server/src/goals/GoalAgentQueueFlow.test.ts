@@ -1657,14 +1657,14 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
 
         // The suite ends but the worker was woken by it and is writing again: still not done.
         flow.liveness.delete(threadId);
-        flow.scripts.set(threadId, { ...flow.scripts.get(threadId)!, busy: true });
+        yield* flow.sessionEvent(threadId, { status: "running", activeTurnId: "turn-2" });
         yield* tickOnce;
         yield* flow.drain;
         expect((yield* flow.taskRow("T1")).status).toBe("claimed");
         expect(flow.log.filter((c) => c.type === "thread.settle")).toHaveLength(0);
 
         // Genuinely finished: no turn, no background job. Now it is checked, merged and settled.
-        flow.scripts.set(threadId, { ...flow.scripts.get(threadId)!, busy: false });
+        yield* flow.sessionEvent(threadId, { status: "ready", activeTurnId: null });
         yield* tickOnce;
         for (let round = 0; round < 3; round++) yield* tickOnce;
         yield* flow.eventually(
@@ -3269,8 +3269,10 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
           (g) => (g.queueErrors ?? 0) > 0,
           "the outage to be observed before advancing its duration",
         );
+        console.log("DBG before adjust", JSON.stringify(yield* flow.goalOf(service)).slice(0, 600));
         yield* TestClock.adjust(Duration.minutes(4));
         for (let round = 0; round < 6; round++) yield* tickOnce;
+        console.log("DBG after adjust", JSON.stringify(yield* flow.goalOf(service)).slice(0, 900));
         const goal = yield* flow.eventually(
           flow.goalOf(service),
           (g) => g.status === "failed",

@@ -674,6 +674,7 @@ export const make = Effect.gen(function* () {
     const now = yield* nowMillis;
     const since = queueOutageSince.get(goalId) ?? now;
     queueOutageSince.set(goalId, since);
+    console.log("DBG queueFailed", operation, now, since, error.message.slice(0, 120));
     const updated = yield* store.update(goalId, (goal) => ({
       ...goal,
       queueErrors: (goal.queueErrors ?? 0) + 1,
