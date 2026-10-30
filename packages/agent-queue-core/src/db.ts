@@ -25,12 +25,21 @@ export function resolveDatabasePath(gitCommonDir: string): string {
  */
 export function openQueueDatabase(options: QueueDatabaseOptions): NodeSqlite.DatabaseSync {
   const dbDir = resolveDatabaseDir(options.gitCommonDir);
-  if (!NodeFS.existsSync(dbDir)) {
+  if (!options.readonly && !NodeFS.existsSync(dbDir)) {
     NodeFS.mkdirSync(dbDir, { recursive: true });
   }
 
   const dbPath = resolveDatabasePath(options.gitCommonDir);
   const existed = NodeFS.existsSync(dbPath);
+  if (options.readonly && !existed) {
+    const db = new NodeSqlite.DatabaseSync(":memory:");
+    db.exec("PRAGMA busy_timeout = 30000;");
+    db.exec("PRAGMA foreign_keys = ON;");
+    runMigrations(db);
+    db.exec("PRAGMA query_only = ON;");
+    return db;
+  }
+
   const db = new NodeSqlite.DatabaseSync(dbPath, {
     readOnly: options.readonly ?? false,
   });
@@ -40,15 +49,18 @@ export function openQueueDatabase(options: QueueDatabaseOptions): NodeSqlite.Dat
   // queue call fail with "database is locked" on 2026-10-22. Set first, so the WAL switch
   // below also waits when several processes open a new database together.
   db.exec("PRAGMA busy_timeout = 30000;");
-  db.exec("PRAGMA journal_mode = WAL;");
-  db.exec("PRAGMA synchronous = NORMAL;");
-  db.exec("PRAGMA foreign_keys = ON;");
 
   if (!options.readonly) {
+    db.exec("PRAGMA journal_mode = WAL;");
+    db.exec("PRAGMA synchronous = NORMAL;");
+    db.exec("PRAGMA foreign_keys = ON;");
     if (existed) {
       backupBeforeMigration(db, dbPath);
     }
     runMigrations(db);
+  } else {
+    db.exec("PRAGMA foreign_keys = ON;");
+    db.exec("PRAGMA query_only = ON;");
   }
 
   return db;

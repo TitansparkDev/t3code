@@ -179,6 +179,24 @@ function chatsSinceStart(goal: Goal): ReadonlyArray<GoalChat> {
   );
 }
 
+function problemStallReason(goal: Goal, limit: number, withTasks: string): string {
+  const recentProblems = chatsSinceStart(goal)
+    .filter(
+      (chat) =>
+        chat.completedAt !== undefined &&
+        chat.status !== "running" &&
+        chat.status !== "stopped" &&
+        (chat.status === "failed" || chat.status === "attention" || chat.blockedWork === true),
+    )
+    .toSorted(
+      (left, right) => Date.parse(right.completedAt ?? "") - Date.parse(left.completedAt ?? ""),
+    )
+    .slice(0, limit);
+  return recentProblems.every((chat) => chat.taskId === undefined)
+    ? `The last ${limit} workers found no task to run. Check that the goal names a plan with ready tasks.`
+    : withTasks;
+}
+
 /** An escalation still needs the overseer: it waits for one, or one is working on it. */
 const isOpenEscalation = (escalation: GoalEscalation) =>
   escalation.status === "open" || escalation.status === "reviewing";
@@ -199,8 +217,13 @@ export function stuckSinceProgress(goal: Goal): number {
   ).length;
 }
 
-/** The model every default overseer runs on; the account's catalog still decides if it is offered. */
-const OVERSEER_GEMINI_MODEL = "gemini-3.8-flash-high";
+/** Preferred models for default Antigravity overseers, in fallback order. */
+const OVERSEER_GEMINI_MODELS = [
+  "gemini-3.8-flash-high",
+  "gemini-3.8-flash",
+  "gemini-3.8-flash-medium",
+  "gemini-3.8-flash-low",
+] as const;
 
 /** How long a login hold lasts when nothing ends it: starting the goal again clears it first. */
 const LOGIN_HOLD_MS = 365 * 24 * 60 * 60 * 1000;
@@ -214,6 +237,8 @@ function overseerPrompt(goal: Goal, count: number): string {
     "T3-OVERSEER/1",
     `You are the overseer for T3 Code goal "${goal.name}" (goalId ${goal.id}). ${count} escalation(s) are open.`,
     `Use the T3 tools: call t3_escalation_list with goalId "${goal.id}", then t3_escalation_read for each. Investigate with t3_repo_read_file / t3_repo_search / t3_repo_git (use the projectId and worktreePath in the packet) and t3_thread_read. Then act on every escalation with exactly one of: t3_escalation_reply (send the stuck worker precise instructions in its own conversation, preferred), or t3_escalation_resolve with action retry | unblock | give-up | needs-person. A whole-goal stall has no worker: its packet's queueBriefing lists the blocked and failed tasks, so read why each is held and resolve with unblock or retry and taskIds naming the ones that should run (a task held for a stale or already-settled reason, never an unmet real prerequisite). Use needs-person only when a human must act (missing credential, irreversible product decision); say exactly what they must do. Never edit, merge, clean or take over another worker's branch or worktree. Finish with a one-paragraph summary.`,
+    "Arguments: t3_escalation_list {goalId}; t3_escalation_read {id}; t3_thread_read {threadId}; t3_goal_read {goalId}; t3_repo_git {projectId, view}.",
+    "When a goal has no runnable plan, read t3_goal_preview_plan and resolve with needs-person naming the exact plan path to set; do not give up without it.",
     "Change queue state only through the escalation tools; never reset retry counters, force retry unchanged failures, or edit the queue database.",
   ].join("\n");
 }
@@ -440,6 +465,7 @@ export const make = Effect.gen(function* () {
     agent: Goal["agents"][number],
     reason: GoalProviderPause["reason"],
     retryAt?: string,
+    modelSpecific = false,
   ) {
     const now = yield* nowMillis;
     const nowText = yield* nowIso;
@@ -449,8 +475,9 @@ export const make = Effect.gen(function* () {
     );
     // Antigravity limits belong to a model group; every other provider's cover the account.
     const perModel =
-      reason === "usage-limit" &&
-      providers.find((provider) => provider.instanceId === instanceId)?.driver === "antigravity";
+      modelSpecific ||
+      (reason === "usage-limit" &&
+        providers.find((provider) => provider.instanceId === instanceId)?.driver === "antigravity");
     yield* store.update(goalId, (goal) => {
       const existing = (goal.pauses ?? []).find((pause) =>
         pauseCovers(pause, instanceId, perModel ? model : ""),
@@ -467,11 +494,13 @@ export const make = Effect.gen(function* () {
             })
           : reason === "login"
             ? (DateTime.formatIso(DateTime.makeUnsafe(now + LOGIN_HOLD_MS)) as never)
-            : (DateTime.formatIso(
-                DateTime.makeUnsafe(
-                  now + ERROR_BACKOFF_MINUTES[Math.min(strikes - 1, 3)]! * 60_000,
-                ),
-              ) as never);
+            : modelSpecific
+              ? (DateTime.formatIso(DateTime.makeUnsafe(now + 60 * 60_000)) as never)
+              : (DateTime.formatIso(
+                  DateTime.makeUnsafe(
+                    now + ERROR_BACKOFF_MINUTES[Math.min(strikes - 1, 3)]! * 60_000,
+                  ),
+                ) as never);
       const kept = (goal.pauses ?? []).filter(
         (pause) =>
           !(pause.instanceId === instanceId && pause.model === (perModel ? model : undefined)),
@@ -1825,7 +1854,11 @@ export const make = Effect.gen(function* () {
     if (problemStreak(chatsSinceStart(after)) >= limit) {
       yield* escalate(
         goalId,
-        `The last ${limit} workers in a row could not get their task verified and merged.`,
+        problemStallReason(
+          after,
+          limit,
+          `The last ${limit} workers in a row could not get their task verified and merged.`,
+        ),
       );
       return;
     }
@@ -2368,20 +2401,21 @@ export const make = Effect.gen(function* () {
     const runs = goal.chats.filter((chat) => chat.overseer).length;
     const turns = <T>(list: ReadonlyArray<T>) =>
       list.map((_, step) => list[(runs + step) % list.length]!);
-    const geminiModel = (provider: ServerProvider) =>
-      provider.models.length === 0 ||
-      provider.models.some((model) => model.slug === OVERSEER_GEMINI_MODEL)
-        ? OVERSEER_GEMINI_MODEL
-        : provider.models[0]!.slug;
+    const geminiModels = (provider: ServerProvider) =>
+      (provider.models.length === 0
+        ? OVERSEER_GEMINI_MODELS
+        : OVERSEER_GEMINI_MODELS.filter((slug) =>
+            provider.models.some((model) => model.slug === slug),
+          )
+      ).map((model) => ({ instanceId: provider.instanceId, model }));
     const accounts = providers
       .filter((provider) => provider.driver === "antigravity")
       .toSorted((left, right) => left.instanceId.localeCompare(right.instanceId));
-    const gemini = turns(
-      (accounts.length > 1
+    const geminiAccounts =
+      accounts.length > 1
         ? accounts.filter((provider) => provider.instanceId !== "antigravity")
-        : accounts
-      ).flatMap((provider) => [{ instanceId: provider.instanceId, model: geminiModel(provider) }]),
-    );
+        : accounts;
+    const gemini = turns(geminiAccounts).flatMap(geminiModels);
     // Chat Agents is a local ACP command now, so it is known by its instance id.
     const chatAgents = providers.flatMap((provider) => {
       const model = provider.models[0]?.slug;
@@ -2733,6 +2767,8 @@ export const make = Effect.gen(function* () {
       (escalation) => escalation.status === "reviewing" && escalation.overseerThreadId === threadId,
     );
     if (providerFailure !== undefined && thread) {
+      const modelUnavailable =
+        /did not accept the model|is unavailable for this Google account/i.test(providerFailure);
       yield* pauseAgent(
         goal.id,
         { modelSelection: thread.modelSelection } as Goal["agents"][number],
@@ -2742,6 +2778,7 @@ export const make = Effect.gen(function* () {
             ? "usage-limit"
             : "errors",
         usageLimitOf(thread)?.retryAt,
+        modelUnavailable,
       );
     }
     if (fresh.status !== "running") {
@@ -3367,7 +3404,11 @@ export const make = Effect.gen(function* () {
     if (after && problemStreak(chatsSinceStart(after)) >= limit) {
       yield* escalate(
         goalId,
-        `Stopped to protect your usage: the last ${limit} agents in a row could not finish (failed, needed you, or found only blocked work). Agents already working are left to finish.`,
+        problemStallReason(
+          after,
+          limit,
+          `Stopped to protect your usage: the last ${limit} agents in a row could not finish (failed, needed you, or found only blocked work). Agents already working are left to finish.`,
+        ),
       );
       return;
     }
@@ -3759,9 +3800,17 @@ export const make = Effect.gen(function* () {
         : input.queueMode === "agentqueue" || ready
           ? "agentqueue"
           : "standard";
-    const blocked = input.queueMode === "agentqueue" && !ready;
+    const blocked =
+      (input.queueMode === "agentqueue" && !ready) ||
+      (input.queueMode === "auto" && readiness === "ambiguous");
     const where = found?.planPath ? `${found.planPath} (${found.title ?? "plan"})` : "the project";
-    const problem = found?.errors[0] ?? "No plan with tasks was found.";
+    const problem =
+      found?.errors[0] ??
+      (readiness === "complete"
+        ? "Every task in the plan files of this project is already complete."
+        : readiness === "no-plan"
+          ? "No plan file with tasks was found."
+          : "No plan with tasks was found.");
     const summary =
       input.queueMode === "standard"
         ? "Standard mode: workers pick their own work with plan-work."

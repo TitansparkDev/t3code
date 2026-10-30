@@ -2,11 +2,135 @@ import { describe, expect, it } from "vite-plus/test";
 import * as NodeOS from "node:os";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
+import * as NodeSqlite from "node:sqlite";
 import { parseArgs, runCli, runCliAsync } from "../src/cli.ts";
 import { runResourceCommand } from "../src/resourceCommands.ts";
+import {
+  MIGRATIONS,
+  openQueueDatabase,
+  resolveDatabaseDir,
+  resolveDatabasePath,
+} from "../../agent-queue-core/src/index.ts";
 import { createTestGitRepo } from "../../agent-queue-core/test/harness/gitHarness.ts";
 
 describe("AgentQueue CLI & Human Intervention (AQ-016, AQ-017, AQ-018)", () => {
+  it("reports empty status without creating a queue database", async () => {
+    const repo = await createTestGitRepo("aq-cli-empty-status-");
+    try {
+      const status = runCli(["status", "--json"], repo.rootDir);
+      expect(status.exitCode).toBe(0);
+      expect(JSON.parse(status.output).snapshot.counts.total).toBe(0);
+      await expect(
+        NodeFSP.stat(NodePath.join(repo.gitCommonDir, "agentqueue")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it("reads a pre-waiver schema for status without migrating it", async () => {
+    const repo = await createTestGitRepo("aq-cli-old-status-");
+    const dbPath = resolveDatabasePath(repo.gitCommonDir);
+    try {
+      await NodeFSP.mkdir(resolveDatabaseDir(repo.gitCommonDir), { recursive: true });
+      const legacy = new NodeSqlite.DatabaseSync(dbPath);
+      for (const migration of MIGRATIONS.filter((entry) => entry.version <= 6)) {
+        migration.up(legacy);
+      }
+      legacy.exec("PRAGMA user_version = 6;");
+      legacy
+        .prepare(
+          "INSERT INTO tasks (id, title, status, version, created_at, updated_at) VALUES ('OLD', 'Old task', 'completed', 1, 'now', 'now')",
+        )
+        .run();
+      legacy.close();
+
+      const status = runCli(["status", "--json"], repo.rootDir);
+      expect(status.exitCode).toBe(0);
+      expect(JSON.parse(status.output).snapshot.counts).toMatchObject({
+        total: 1,
+        completed: 1,
+        waived: 0,
+      });
+
+      const reader = openQueueDatabase({ gitCommonDir: repo.gitCommonDir, readonly: true });
+      try {
+        expect(reader.prepare("PRAGMA user_version").get()).toEqual({ user_version: 6 });
+        expect(
+          (reader.prepare("PRAGMA table_info(tasks)").all() as Array<{ name: string }>).some(
+            (column) => column.name === "waived_reason",
+          ),
+        ).toBe(false);
+      } finally {
+        reader.close();
+      }
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it("requires owner tasks to be waived instead of retried or unblocked", async () => {
+    const repo = await createTestGitRepo("aq-cli-owner-");
+    try {
+      await NodeFSP.writeFile(
+        NodePath.join(repo.rootDir, "PLAN.md"),
+        "# Plan\n\n- [ ] **OWNER — Verify the physical handset.**\n  - Kind: owner\n  - Verify: none — owner task.\n",
+      );
+      expect(runCli(["plan", "import", "PLAN.md", "--json"], repo.rootDir).exitCode).toBe(0);
+
+      const retry = runCli(["task", "retry", "OWNER", "--force", "--json"], repo.rootDir);
+      expect(retry.exitCode).toBe(1);
+      expect(JSON.parse(retry.output).error).toContain(
+        'Task OWNER is an owner task; close it with agentq task waive OWNER --reason "...".',
+      );
+
+      const unblock = runCli(["task", "unblock", "OWNER", "--json"], repo.rootDir);
+      expect(unblock.exitCode).toBe(1);
+      expect(JSON.parse(unblock.output).error).toContain(
+        'Task OWNER is an owner task; close it with agentq task waive OWNER --reason "...".',
+      );
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it("never claims an unwaived owner task by id or automatic selection", async () => {
+    const repo = await createTestGitRepo("aq-cli-owner-claim-");
+    try {
+      await NodeFSP.writeFile(
+        NodePath.join(repo.rootDir, "PLAN.md"),
+        [
+          "# Plan",
+          "",
+          "- [ ] **OWNER — Verify the physical handset.**",
+          "  - Kind: owner",
+          "  - Verify: none — owner task.",
+          "- [ ] **FREE — Continue ordinary work.**",
+          "",
+        ].join("\n"),
+      );
+      expect(runCli(["plan", "import", "PLAN.md", "--json"], repo.rootDir).exitCode).toBe(0);
+      runCli(
+        ["task", "waive", "OWNER", "--reason", "No longer required by the plan"],
+        repo.rootDir,
+      );
+      runCli(["task", "unwaive", "OWNER"], repo.rootDir);
+
+      const explicit = JSON.parse(
+        runCli(["task", "claim", "OWNER", "--json"], repo.rootDir).output,
+      );
+      expect(explicit).toMatchObject({ success: false, reason: "OWNER_TASK" });
+      const automatic = JSON.parse(runCli(["task", "claim", "--json"], repo.rootDir).output);
+      expect(automatic.claim.taskId).toBe("FREE");
+      runCli(
+        ["task", "release", "--token", automatic.claim.ownerToken, "--status", "pending"],
+        repo.rootDir,
+      );
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
   it("imports a plan file, lists tasks, claims, heartbeats, and releases with --json output", async () => {
     const repo = await createTestGitRepo("aq-cli-test-");
     try {
@@ -235,6 +359,7 @@ Verify: vp test src/second
       const statusRes = runCli(["status"], repo.rootDir);
       expect(statusRes.exitCode).toBe(0);
       expect(statusRes.output).toContain("=== AgentQueue Status ===");
+      expect(statusRes.output).toContain("Waived: 0");
       expect(statusRes.output).toContain("Queue Healthy");
     } finally {
       await repo.cleanup();
@@ -386,5 +511,135 @@ Verify: vp test src/second
     const result = await runResourceCommand(["run", "--help"], process.cwd());
     expect(result?.exitCode).toBe(0);
     expect(result?.stdout).toContain("default 3600");
+  });
+
+  it("waives a task, makes its dependent claimable, and allows unwaiving", async () => {
+    const repo = await createTestGitRepo("aq-cli-waive-");
+    try {
+      await NodeFSP.writeFile(
+        NodePath.join(repo.rootDir, "WAIVE_PLAN.md"),
+        "# Waive plan\n\n- [ ] **W-01 — Root**\n\n- [ ] **W-02 — Dependent**\n  - Depends on: W-01.\n",
+      );
+      runCli(["plan", "import", "WAIVE_PLAN.md", "--json"], repo.rootDir);
+
+      const waived = runCli(
+        ["task", "waive", "W-01", "--reason", "Removed from active work", "--json"],
+        repo.rootDir,
+      );
+      expect(waived.exitCode).toBe(0);
+
+      const dependent = JSON.parse(runCli(["task", "claim", "--json"], repo.rootDir).output);
+      expect(dependent.claim.taskId).toBe("W-02");
+      runCli(
+        ["task", "release", "--token", dependent.claim.ownerToken, "--status", "pending"],
+        repo.rootDir,
+      );
+
+      const unwaived = runCli(["task", "unwaive", "W-01", "--json"], repo.rootDir);
+      expect(unwaived.exitCode).toBe(0);
+      const tasks = JSON.parse(runCli(["task", "list", "--json"], repo.rootDir).output).tasks;
+      expect(tasks.find((task: { id: string }) => task.id === "W-01").status).toBe("pending");
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it("requires an explicit final status when releasing a task", async () => {
+    const repo = await createTestGitRepo("aq-cli-release-status-");
+    try {
+      const result = runCli(["task", "release", "--token", "claim-token"], repo.rootDir);
+      expect(result.exitCode).toBe(1);
+      expect(result.output).toContain(
+        "Usage: agentqueue task release --token <token> --status pending|failed|completed",
+      );
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it("skips ready tasks whose temporary scope waits are still held", async () => {
+    const repo = await createTestGitRepo("aq-cli-pending-waits-");
+    try {
+      await NodeFSP.writeFile(
+        NodePath.join(repo.rootDir, "WAITS.md"),
+        "# Waits\n\n- [ ] **WAIT — Waiting task**\n\n- [ ] **HOLDER — Holding task**\n\n- [ ] **FREE — Free task**\n",
+      );
+      runCli(["plan", "import", "WAITS.md", "--json"], repo.rootDir);
+      const db = openQueueDatabase({ gitCommonDir: repo.gitCommonDir });
+      try {
+        db.prepare(
+          "UPDATE tasks SET waits_for = '[\"HOLDER\"]', priority = 200 WHERE id = 'WAIT'",
+        ).run();
+        db.prepare(
+          "UPDATE tasks SET status = 'verifying', integration_state = 'pending' WHERE id = 'HOLDER'",
+        ).run();
+      } finally {
+        db.close();
+      }
+      const next = JSON.parse(runCli(["task", "claim", "--json"], repo.rootDir).output);
+      expect(next.claim?.taskId, JSON.stringify(next)).toBe("FREE");
+      runCli(
+        ["task", "release", "--token", next.claim.ownerToken, "--status", "pending"],
+        repo.rootDir,
+      );
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it("keeps status read-only and recovers expired claims through task reconcile", async () => {
+    const repo = await createTestGitRepo("aq-cli-reconcile-");
+    try {
+      await NodeFSP.writeFile(
+        NodePath.join(repo.rootDir, "RECONCILE.md"),
+        "# Reconcile\n### R-01: Task\n",
+      );
+      runCli(["plan", "import", "RECONCILE.md", "--json"], repo.rootDir);
+      const claim = JSON.parse(runCli(["task", "claim", "R-01", "--json"], repo.rootDir).output);
+      const db = openQueueDatabase({ gitCommonDir: repo.gitCommonDir });
+      try {
+        db.prepare(
+          "UPDATE task_claims SET expires_at = ?, worker_pid = ? WHERE owner_token = ?",
+        ).run("2000-01-01T00:00:00.000Z", 2_147_483_647, claim.claim.ownerToken);
+      } finally {
+        db.close();
+      }
+
+      const status = runCli(["status", "--json"], repo.rootDir);
+      expect(JSON.parse(status.output).snapshot.counts.claimed).toBe(1);
+      expect(
+        JSON.parse(runCli(["task", "list", "--json"], repo.rootDir).output).tasks[0].status,
+      ).toBe("claimed");
+
+      const reconciled = runCli(["task", "reconcile", "--json"], repo.rootDir);
+      expect(reconciled.exitCode).toBe(0);
+      expect(JSON.parse(reconciled.output).results[0].action).toBe("recovered");
+      expect(
+        JSON.parse(runCli(["task", "list", "--json"], repo.rootDir).output).tasks[0].status,
+      ).toBe("pending");
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it("prints orphaned task IDs after plan import", async () => {
+    const repo = await createTestGitRepo("aq-cli-orphaned-");
+    try {
+      const planPath = NodePath.join(repo.rootDir, "ORPHAN_PLAN.md");
+      await NodeFSP.writeFile(
+        planPath,
+        "# Orphan plan\n\n- [ ] **KEEP — keep**\n\n- [ ] **DROP — drop**\n",
+      );
+      runCli(["plan", "import", "ORPHAN_PLAN.md", "--json"], repo.rootDir);
+      await NodeFSP.writeFile(planPath, "# Orphan plan\n\n- [ ] **KEEP — keep**\n");
+
+      const result = runCli(["plan", "import", "ORPHAN_PLAN.md"], repo.rootDir);
+      expect(result.exitCode).toBe(0);
+      expect(result.output).toContain(
+        'Not in the plan file any more: DROP (waive with agentq task waive <id> --reason "...").',
+      );
+    } finally {
+      await repo.cleanup();
+    }
   });
 });

@@ -1,23 +1,56 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off preferSchemaOverJson:off
-/**
- * A realistic multi-worker goal on a repository with its own guard rules: concurrent workers,
- * a guard that rejects the default branch convention, generated files every task touches,
- * a scope mistake, a failing check, and a task that needs an external capability. The queue
- * must finish everything it can, spend no worker on the same problem twice, keep the
- * external task visible and incomplete, and finish the plan once the capability exists.
- */
+/** Exercises multi-worker recovery and completion with repository-specific guard failures. */
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import { describe, expect, it } from "vite-plus/test";
+import { auditUnverifiedTasks } from "../src/audit.ts";
 import { verifyPlanCompletion } from "../src/completion.ts";
 import { publishPlan } from "../src/publication.ts";
 import { evaluateDeadlock } from "../src/queueInspector.ts";
+import { waiveTask } from "../src/stateMachine.ts";
 import { execCommand } from "./harness/gitHarness.ts";
 import { makeRepo, plan, tmpDir } from "./harness/contractHarness.ts";
 
 type Repo = Awaited<ReturnType<typeof makeRepo>>;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+it("excludes waived tasks from completion verification", async () => {
+  const r = await makeRepo({ plan: "# Plan\n\n- [x] **DONE — Already complete.**\n" });
+  try {
+    r.db
+      .prepare(`
+      INSERT INTO tasks (id, plan_id, title, status, version, created_at, updated_at)
+      VALUES ('WAIVED', ?, 'Dropped task', 'pending', 1, 'now', 'now')
+    `)
+      .run(r.planId);
+    waiveTask(r.db, { taskId: "WAIVED", reason: "No longer required for this plan" });
+
+    const result = await verifyPlanCompletion(r.db, {
+      repoRoot: r.repo.rootDir,
+      gitCommonDir: r.repo.gitCommonDir,
+      baseBranch: "main",
+      integrationBranch: r.goal,
+      planId: r.planId,
+      runFinalCheck: false,
+    });
+
+    expect(result.waived).toEqual(["WAIVED"]);
+    expect(result.unverified).not.toContain("WAIVED");
+    const audit = await auditUnverifiedTasks(r.db, {
+      repoRoot: r.repo.rootDir,
+      gitCommonDir: r.repo.gitCommonDir,
+      baseBranch: "main",
+      integrationBranch: r.goal,
+      planId: r.planId,
+    });
+    expect(audit.unauditable).not.toContain("WAIVED");
+    expect(audit.audited.map(({ taskId }) => taskId)).not.toContain("WAIVED");
+  } finally {
+    r.db.close();
+    await r.repo.cleanup();
+  }
+});
 
 describe("a multi-worker goal with foreseeable failures", () => {
   it("recovers by itself, wastes no worker, keeps the external task visible, and completes once it can", async () => {

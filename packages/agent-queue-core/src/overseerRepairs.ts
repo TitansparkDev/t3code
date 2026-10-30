@@ -92,11 +92,18 @@ export function retryTask(
   db.exec("BEGIN IMMEDIATE;");
   try {
     const task = db
-      .prepare("SELECT id, status, retry_count FROM tasks WHERE id = ?")
-      .get(taskId) as { id: string; status: string; retry_count: number } | undefined;
+      .prepare("SELECT id, status, retry_count, failure_class FROM tasks WHERE id = ?")
+      .get(taskId) as
+      | { id: string; status: string; retry_count: number; failure_class: string | null }
+      | undefined;
 
     if (!task) {
       throw new Error(`Task ${taskId} not found`);
+    }
+    if (task.failure_class === "owner") {
+      throw new Error(
+        `Task ${taskId} is an owner task; close it with agentq task waive ${taskId} --reason "...".`,
+      );
     }
 
     // Submitted work the automatic repair gave up on: give it a fresh set of repair attempts.
@@ -293,6 +300,11 @@ export function unblockTask(db: NodeSqlite.DatabaseSync, taskId: string): Overse
     if (!task) {
       throw new Error(`Task ${taskId} not found`);
     }
+    if (task.failure_class === "owner") {
+      throw new Error(
+        `Task ${taskId} is an owner task; close it with agentq task waive ${taskId} --reason "...".`,
+      );
+    }
     // An external blocker (a capability, a credential, a live host) is not cured by saying so:
     // the task is released by itself when the environment can provide it. Releasing it by hand
     // would only send a worker at a wall, or let work look done that was never possible.
@@ -382,7 +394,9 @@ export function generateOverseerBriefing(
                 t.failure_class === "configuration" ||
                 t.failure_class === "prerequisite"
                   ? "held by the server until the environment changes; retrying or unblocking it by hand cannot help"
-                  : "needs a change to the work itself"
+                  : t.failure_class === "owner"
+                    ? "no worker runs it; close it only with `agentq task waive` and a reason"
+                    : "needs a change to the work itself"
               })`
             : ""
         }`,
@@ -393,10 +407,10 @@ export function generateOverseerBriefing(
   lines.push(
     "",
     "**Permitted Repair Operations**:",
-    "- `retry <taskId>`: Retry failed task within budget",
+    "- `retry <taskId>`: Retry failed task within budget (owner tasks must be waived)",
     "- `add-prerequisite <taskId> <dependsOnTaskId>`: Add prerequisite (cycle checked)",
     "- `remove-dependency <taskId> <dependsOnTaskId>`: Remove unnecessary dependency",
-    "- `unblock <taskId>`: Unblock task when prerequisite condition is resolved",
+    "- `unblock <taskId>`: Unblock task when prerequisite condition is resolved (owner tasks must be waived)",
     "",
     "Respond with CONTINUE and repair actions, or STOP if unrecoverable.",
   );

@@ -113,6 +113,29 @@ describe("AgentQueue Diagnostics & Deadlock Evaluator (AQ-014)", () => {
     }
   });
 
+  it("reports an owner task as awaiting the owner instead of deadlocked", async () => {
+    const repo = await createTestGitRepo("aq-inspector-owner-");
+    try {
+      const db = openQueueDatabase({ gitCommonDir: repo.gitCommonDir });
+      const now = "2026-01-01T00:00:00.000Z";
+      db.prepare(`
+        INSERT INTO tasks (id, title, status, failure_class, version, dependencies, created_at, updated_at)
+        VALUES
+          ('OWNER', 'Verify handset', 'pending', 'owner', 1, '[]', ?, ?),
+          ('CHILD', 'Continue work', 'pending', NULL, 1, '["OWNER"]', ?, ?)
+      `).run(now, now, now, now);
+
+      expect(evaluateDeadlock(db)).toMatchObject({
+        isDeadlocked: false,
+        awaitingOwner: true,
+        ownerTaskIds: ["OWNER"],
+      });
+      db.close();
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
   it("reports no deadlock when pending tasks are runnable or active workers exist", async () => {
     const repo = await createTestGitRepo("aq-inspector-runnable-");
     try {

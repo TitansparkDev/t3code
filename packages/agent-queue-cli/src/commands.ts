@@ -16,6 +16,9 @@ import {
   finalizeTask,
   parseScopeRequests,
   reconcileExpiredLeases,
+  waiveTask,
+  unwaiveTask,
+  pendingWaits,
   initRepo,
   doctorRepo,
   unchangedHeldFailure,
@@ -65,6 +68,7 @@ export function importPlanCommand(
     title: imported.title,
     taskCount: imported.total,
     added: imported.added,
+    orphaned: imported.orphaned,
     checksum: imported.checksum,
   };
 }
@@ -243,8 +247,17 @@ export function claimTaskCommand(
     if (!targetId) {
       // Find eligible ready task
       const allTasks = db
-        .prepare("SELECT id, status, dependencies, priority FROM tasks")
-        .all() as Array<{ id: string; status: string; dependencies: string; priority: number }>;
+        .prepare("SELECT id, status, dependencies, priority, failure_class FROM tasks")
+        .all() as Array<{
+        id: string;
+        status: string;
+        dependencies: string;
+        priority: number;
+        failure_class: string | null;
+      }>;
+      const ownerTaskIds = new Set(
+        allTasks.filter((task) => task.failure_class === "owner").map((task) => task.id),
+      );
 
       const parsed = allTasks.map((t) => ({
         id: t.id,
@@ -253,11 +266,13 @@ export function claimTaskCommand(
         priority: t.priority,
       }));
 
-      const ready = getReadyTasks(parsed);
-      if (ready.length === 0) {
+      const ready = getReadyTasks(parsed).find(
+        (id) => !ownerTaskIds.has(id) && pendingWaits(db, id).length === 0,
+      );
+      if (!ready) {
         return { success: false, reason: "NO_READY_TASKS" };
       }
-      targetId = ready[0]!;
+      targetId = ready;
     }
 
     const branch = getCurrentBranch(cwd);
@@ -266,10 +281,50 @@ export function claimTaskCommand(
       workerPid: process.pid,
       worktreePath: cwd,
       branch,
-      leaseSeconds: args.leaseSeconds ?? 120,
+      leaseSeconds: args.leaseSeconds ?? 900,
     });
 
     return result;
+  } finally {
+    db.close();
+  }
+}
+
+/** Waives a task after an operator records why it is no longer needed. */
+export function waiveTaskCommand(
+  taskId: string,
+  reason: string,
+  options: CommandOptions = {},
+): Record<string, unknown> {
+  const git = resolveGitContext(options.cwd);
+  const db = openQueueDatabase({ gitCommonDir: git.gitCommonDir });
+  try {
+    return { taskId, ...waiveTask(db, { taskId, reason }) };
+  } finally {
+    db.close();
+  }
+}
+
+/** Reopens a previously waived task when its work is needed again. */
+export function unwaiveTaskCommand(
+  taskId: string,
+  options: CommandOptions = {},
+): Record<string, unknown> {
+  const git = resolveGitContext(options.cwd);
+  const db = openQueueDatabase({ gitCommonDir: git.gitCommonDir });
+  try {
+    return { taskId, ...unwaiveTask(db, taskId) };
+  } finally {
+    db.close();
+  }
+}
+
+/** Recovers expired worker claims on explicit operator request. */
+export function reconcileTasksCommand(options: CommandOptions = {}): Record<string, unknown> {
+  const git = resolveGitContext(options.cwd);
+  const db = openQueueDatabase({ gitCommonDir: git.gitCommonDir });
+  try {
+    return { results: reconcileExpiredLeases(db) };
   } finally {
     db.close();
   }
@@ -343,11 +398,8 @@ export function releaseCommand(
  */
 export function statusCommand(options: CommandOptions = {}): Record<string, unknown> {
   const git = resolveGitContext(options.cwd);
-  const db = openQueueDatabase({ gitCommonDir: git.gitCommonDir });
+  const db = openQueueDatabase({ gitCommonDir: git.gitCommonDir, readonly: true });
   try {
-    // Reconcile any expired leases first
-    reconcileExpiredLeases(db);
-
     const snapshot = getQueueSnapshot(db);
     const deadlock = evaluateDeadlock(db);
 
@@ -376,10 +428,6 @@ export function eventsCommand(
     db.close();
   }
 }
-
-/* ========================================================================= */
-/* Human Intervention Commands (AQ-017)                                       */
-/* ========================================================================= */
 
 /**
  * Aborts an active task, resetting it or releasing active claims.
@@ -439,10 +487,15 @@ export function retryTaskCommand(
   const git = resolveGitContext(options.cwd);
   const db = openQueueDatabase({ gitCommonDir: git.gitCommonDir });
   try {
-    const task = db.prepare("SELECT status FROM tasks WHERE id = ?").get(taskId) as
-      | { status: string }
+    const task = db.prepare("SELECT status, failure_class FROM tasks WHERE id = ?").get(taskId) as
+      | { status: string; failure_class: string | null }
       | undefined;
     if (!task) throw new Error(`Task ${taskId} not found`);
+    if (task.failure_class === "owner") {
+      throw new Error(
+        `Task ${taskId} is an owner task; close it with agentq task waive ${taskId} --reason "...".`,
+      );
+    }
     // Resetting a claimed task would start a second worker on it; resetting a completed one
     // would redo landed work. Neither is a retry, even with --force.
     if (!["failed", "blocked", "pending"].includes(task.status)) {
@@ -514,6 +567,15 @@ export function unblockTaskCommand(
   const git = resolveGitContext(options.cwd);
   const db = openQueueDatabase({ gitCommonDir: git.gitCommonDir });
   try {
+    const task = db.prepare("SELECT failure_class FROM tasks WHERE id = ?").get(taskId) as
+      | { failure_class: string | null }
+      | undefined;
+    if (!task) throw new Error(`Task ${taskId} not found`);
+    if (task.failure_class === "owner") {
+      throw new Error(
+        `Task ${taskId} is an owner task; close it with agentq task waive ${taskId} --reason "...".`,
+      );
+    }
     const result = transitionTask(db, {
       taskId,
       expectedStatus: "blocked",

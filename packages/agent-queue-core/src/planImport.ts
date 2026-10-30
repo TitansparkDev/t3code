@@ -83,6 +83,7 @@ export interface ImportedPlan {
   readonly updated: number;
   readonly synced: number;
   readonly total: number;
+  readonly orphaned: ReadonlyArray<string>;
 }
 
 function git(cwd: string, args: string[]): string | null {
@@ -149,10 +150,20 @@ export function findLegacyOwners(gitCommonDir: string, planPath: string): string
 
 const PLAN_FILE_PATTERN = /(^|[/_-])plan([._-]|$)/i;
 
-/** Plan-like markdown files in the repository root and `docs/`, best candidates first. */
+/** Plan-like Markdown files in the repository root, `docs/`, and direct `.plans/` folders. */
 export function discoverPlanFiles(repoRoot: string): string[] {
   const found: string[] = [];
-  for (const dir of ["", "docs"]) {
+  const directories = ["", "docs"];
+  try {
+    for (const entry of NodeFS.readdirSync(NodePath.join(repoRoot, ".plans"), {
+      withFileTypes: true,
+    })) {
+      if (entry.isDirectory()) directories.push(`.plans/${entry.name}`);
+    }
+  } catch {
+    // `.plans/` is optional and may be unreadable.
+  }
+  for (const dir of directories) {
     let names: string[];
     try {
       names = NodeFS.readdirSync(NodePath.join(repoRoot, dir));
@@ -163,7 +174,7 @@ export function discoverPlanFiles(repoRoot: string): string[] {
       if (!name.toLowerCase().endsWith(".md") || !PLAN_FILE_PATTERN.test(name)) continue;
       const rel = dir ? `${dir}/${name}` : name;
       try {
-        if (NodeFS.statSync(NodePath.join(repoRoot, rel)).isFile()) found.push(rel);
+        if (NodeFS.lstatSync(NodePath.join(repoRoot, rel)).isFile()) found.push(rel);
       } catch {
         // Unreadable entries are not plans.
       }
@@ -552,7 +563,7 @@ export function previewPlan(repoRoot: string, planPath?: string): PlanPreview {
   };
   if (counts.withoutVerification > 0 && counts.total > 0) {
     warnings.push(
-      `${counts.withoutVerification} of ${counts.total} tasks define no executable check and no exemption. They can merge but are reported as unverified, and the plan is not complete until each has a check (Checks:) or an explicit exemption (Verify: none — reason).`,
+      `${counts.withoutVerification} of ${counts.total} tasks define no executable check and no exemption. They can merge but are reported as unverified, and the plan is not complete until each has a check (Checks:) or an explicit exemption (Verify: none: reason).`,
     );
   }
 
@@ -644,6 +655,10 @@ export function importPlanFile(repoRoot: string, planPath: string): ImportedPlan
           repoRoot,
           task.scopePatterns ?? [],
         );
+        const ownerFailureReason =
+          task.kind === "owner"
+            ? `Owner task: ${task.title}. Close it with agentq task waive ${task.id} --reason "<what was done>".`
+            : null;
         const existing = db
           .prepare(
             "SELECT status, plan_id, verification_spec, dependencies FROM tasks WHERE id = ?",
@@ -661,19 +676,22 @@ export function importPlanFile(repoRoot: string, planPath: string): ImportedPlan
             INSERT INTO tasks (
               id, plan_id, title, description, status, priority,
               scope_patterns, dependencies, verification_command, verification_spec,
+              failure_reason, failure_class,
               created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `).run(
             task.id,
             planId,
             task.title,
             task.description ?? null,
-            task.checked ? "completed" : "pending",
+            task.kind === "owner" ? "blocked" : task.checked ? "completed" : "pending",
             task.priority ?? 100,
             JSON.stringify(task.scopePatterns ?? []),
             JSON.stringify(task.dependencies ?? []),
             describeSpec(spec) || null,
             JSON.stringify(spec),
+            ownerFailureReason,
+            task.kind === "owner" ? "owner" : null,
             now,
             now,
           );
@@ -690,6 +708,11 @@ export function importPlanFile(repoRoot: string, planPath: string): ImportedPlan
         }
         if (existing.plan_id !== planId) {
           throw new Error(`Task ${task.id} already belongs to queue plan ${existing.plan_id}.`);
+        }
+        if (ownerFailureReason && existing.status !== "completed") {
+          db.prepare(
+            "UPDATE tasks SET failure_reason = ?, failure_class = 'owner', updated_at = ? WHERE id = ?",
+          ).run(ownerFailureReason, now, task.id);
         }
         if (
           existing.status === "pending" ||
@@ -728,7 +751,7 @@ export function importPlanFile(repoRoot: string, planPath: string): ImportedPlan
           ).run(describeSpec(spec) || null, JSON.stringify(spec), now, task.id);
         }
         // A task ticked in the plan file by hand or by plan-work is done for the queue too.
-        if (task.checked && existing.status === "pending") {
+        if (task.kind !== "owner" && task.checked && existing.status === "pending") {
           db.prepare(
             "UPDATE tasks SET status = 'completed', version = version + 1, updated_at = ? WHERE id = ?",
           ).run(now, task.id);
@@ -743,6 +766,19 @@ export function importPlanFile(repoRoot: string, planPath: string): ImportedPlan
       db.exec("ROLLBACK;");
       throw error;
     }
+    const planTaskIds = new Set(plan.parsed.tasks.map((task) => task.id));
+    const orphaned = (
+      db.prepare("SELECT id, status FROM tasks WHERE plan_id = ?").all(planId) as Array<{
+        id: string;
+        status: string;
+      }>
+    )
+      .filter(
+        (task) =>
+          !planTaskIds.has(task.id) && task.status !== "completed" && !/-FU\d+$/.test(task.id),
+      )
+      .map((task) => task.id)
+      .sort((a, b) => a.localeCompare(b));
     return {
       planId,
       planPath: preview.planPath!,
@@ -752,6 +788,7 @@ export function importPlanFile(repoRoot: string, planPath: string): ImportedPlan
       updated,
       synced,
       total: plan.parsed.tasks.length,
+      orphaned,
     };
   } finally {
     db.close();

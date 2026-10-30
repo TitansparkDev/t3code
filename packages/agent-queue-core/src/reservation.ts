@@ -124,6 +124,7 @@ interface Row {
   scope_patterns: string | null;
   retry_count: number;
   failure_reason: string | null;
+  failure_class?: string | null;
   wait_reason?: string | null;
 }
 
@@ -184,15 +185,7 @@ function repairContext(
   };
 }
 
-/**
- * Reserves the next ready task of a plan for one worker, but only a task whose assignment
- * is executable. The claim (a compare-and-swap in one transaction) is taken BEFORE the
- * worktree is created, so two reservers can never both build a worktree for the same task.
- * Before any worker exists the assignment is checked against the repository's contract
- * (see preflight.ts): a correctable problem is corrected, an uncorrectable one holds the
- * task with its reason and the next ready task is tried. Only a worktree that cannot be
- * created at all raises an error.
- */
+/** Reserves a ready task after preflight and claims it before creating its worktree. */
 export async function reserveNextTask(
   db: NodeSqlite.DatabaseSync,
   options: {
@@ -247,10 +240,13 @@ export async function reserveNextTask(
   const rows = db
     .prepare(
       `SELECT id, title, description, status, dependencies, priority, verification_command,
-              verification_spec, scope_patterns, retry_count, failure_reason, wait_reason
+              verification_spec, scope_patterns, retry_count, failure_reason, failure_class, wait_reason
        FROM tasks WHERE plan_id = ? ORDER BY created_at ASC, rowid ASC`,
     )
     .all(options.planId) as unknown as Row[];
+  const ownerTaskIds = new Set(
+    rows.filter((row) => row.failure_class === "owner").map((row) => row.id),
+  );
 
   const readyIds = getReadyTasks(
     rows.map((row) => ({
@@ -260,6 +256,7 @@ export async function reserveNextTask(
       priority: row.priority ?? 100,
     })),
   ).filter((id) => {
+    if (ownerTaskIds.has(id)) return false;
     // A task parked for a file another running task holds starts again by itself once it is free.
     return pendingWaits(db, id).length === 0;
   });

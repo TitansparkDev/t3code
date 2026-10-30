@@ -2,6 +2,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
   parsePlanMarkdown,
+  exportPlanMarkdown,
   validatePlanDag,
   topologicalSort,
   getReadyTasks,
@@ -87,6 +88,16 @@ Priority: 200
     );
     expect(tasks[0]?.priority).toBe(150);
     expect(tasks[0]?.description ?? "").not.toContain("Priority");
+  });
+
+  it("reads owner kind case-insensitively", () => {
+    const { tasks } = parsePlanMarkdown(
+      ["- [ ] **OWN1 — Verify the physical handset.**", "  - Kind: OWNER"].join("\n"),
+    );
+    expect(tasks[0]?.kind).toBe("owner");
+    expect(parsePlanMarkdown(exportPlanMarkdown({ title: "Plan", tasks })).tasks[0]?.kind).toBe(
+      "owner",
+    );
   });
 
   it("computes ready-task sets respecting completion state and priority", () => {

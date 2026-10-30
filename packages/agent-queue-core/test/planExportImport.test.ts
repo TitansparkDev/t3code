@@ -1,6 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off preferSchemaOverJson:off
+import * as NodeFSP from "node:fs/promises";
 import { describe, expect, it } from "vite-plus/test";
 import { openQueueDatabase } from "../src/db.ts";
+import { importPlanFile } from "../src/planImport.ts";
 import {
   parsePlanMarkdown,
   exportPlanMarkdown,
@@ -9,9 +11,46 @@ import {
   DependencyCycleError,
   type PlanTaskDefinition,
 } from "../src/planGraph.ts";
-import { createTestGitRepo } from "./harness/gitHarness.ts";
+import { createTestGitRepo, execCommand } from "./harness/gitHarness.ts";
 
 describe("Phase 6: Planning Formats, Skills, Rules & Import (AQ-042 - AQ-050, Gate G6)", () => {
+  it("reports removed unfinished tasks without deleting them", async () => {
+    const repo = await createTestGitRepo("plan-import-orphan-");
+    const planText = (includeRemoved: boolean) =>
+      [
+        "# Plan",
+        "",
+        "- [ ] **KEEP — Keep this task.**",
+        ...(includeRemoved ? ["- [ ] **REMOVE — Remove this unfinished task.**"] : []),
+        "- [x] **DONE — This completed task is also removed.**",
+        "",
+      ].join("\n");
+    try {
+      await NodeFSP.writeFile(`${repo.rootDir}/PLAN.md`, planText(true));
+      await execCommand("git", ["add", "PLAN.md"], repo.rootDir);
+      await execCommand("git", ["commit", "-m", "initial plan"], repo.rootDir);
+      importPlanFile(repo.rootDir, "PLAN.md");
+
+      await NodeFSP.writeFile(`${repo.rootDir}/PLAN.md`, planText(false));
+      await execCommand("git", ["add", "PLAN.md"], repo.rootDir);
+      await execCommand("git", ["commit", "-m", "remove tasks from plan"], repo.rootDir);
+      const imported = importPlanFile(repo.rootDir, "PLAN.md");
+
+      expect(imported.added).toBe(0);
+      expect(imported.orphaned).toEqual(["REMOVE"]);
+      const db = openQueueDatabase({ gitCommonDir: repo.gitCommonDir });
+      try {
+        expect(db.prepare("SELECT status FROM tasks WHERE id = 'REMOVE'").get()).toEqual({
+          status: "pending",
+        });
+      } finally {
+        db.close();
+      }
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
   it("roundtrips structured check metadata through Markdown export and import", () => {
     const plan: PlanTaskDefinition = {
       id: "QE04",

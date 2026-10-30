@@ -369,9 +369,19 @@ export function lintPlan(input: PlanLintInput): PlanFinding[] {
     const scope = task.scopePatterns ?? [];
     const checks = task.verification?.checks ?? [];
     const release = isRelease(task);
+    const ownerTask = task.kind === "owner";
+
+    if (ownerTask) {
+      add({
+        level: "warning",
+        code: "owner-task",
+        taskId: task.id,
+        message: `${task.id} is an owner task: no worker runs it, and the plan finishes only after it is waived.`,
+      });
+    }
 
     // 1. Agents cannot do it.
-    for (const rule of [...HUMAN_RULES, ...UNDECIDED_RULES]) {
+    for (const rule of ownerTask ? [] : [...HUMAN_RULES, ...UNDECIDED_RULES]) {
       const hit = sentences.find((sentence) => affirmed(sentence, rule.pattern));
       if (hit) {
         add({
@@ -573,6 +583,15 @@ export function lintPlan(input: PlanLintInput): PlanFinding[] {
     }
 
     // 6. Checks.
+    if (ownerTask && checks.length > 0) {
+      add({
+        level: "error",
+        code: "owner-task-has-checks",
+        taskId: task.id,
+        message: `${task.id} is an owner task and cannot have executable checks.`,
+        fix: "Remove Checks and mark this as `Verify: none` with an owner-task reason.",
+      });
+    }
     if (
       task.verification?.source === "none" ||
       (checks.length === 0 && task.verification?.source !== "exempt")

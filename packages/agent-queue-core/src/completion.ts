@@ -20,6 +20,8 @@ export interface CompletionReport {
   readonly outstanding: ReadonlyArray<string>;
   /** Tasks recorded as completed that Git does not show on the base branch. */
   readonly unverified: ReadonlyArray<string>;
+  /** Completed tasks explicitly waived from the plan. */
+  readonly waived: ReadonlyArray<string>;
   /**
    * Completed tasks that were merged without any executable check or exemption, or whose
    * latest recorded audit failed. Never counted as passed; the plan is not complete while
@@ -82,6 +84,7 @@ export async function verifyPlanCompletion(
   let tasks: Array<{
     id: string;
     status: string;
+    waived_reason: string | null;
     integration_state: string | null;
     receipt_json: string | null;
   }>;
@@ -99,7 +102,9 @@ export async function verifyPlanCompletion(
     | undefined;
   try {
     tasks = db
-      .prepare("SELECT id, status, integration_state, receipt_json FROM tasks WHERE plan_id = ?")
+      .prepare(
+        "SELECT id, status, waived_reason, integration_state, receipt_json FROM tasks WHERE plan_id = ?",
+      )
       .all(input.planId) as typeof tasks;
     // The newest recorded audit of a task decides: an audit is a real run of its checks later on.
     audits = new Map(
@@ -150,11 +155,15 @@ export async function verifyPlanCompletion(
   }
 
   const completedTasks = tasks.filter((task) => task.status === "completed");
+  const waived = completedTasks
+    .filter((task) => task.waived_reason !== null)
+    .map((task) => task.id);
+  const verifiableCompletedTasks = completedTasks.filter((task) => task.waived_reason === null);
   const outstanding = tasks.filter((task) => task.status !== "completed").map((task) => task.id);
   const integrationPending = tasks
     .filter((task) => task.integration_state !== null)
     .map((task) => task.id);
-  const unverified = completedTasks
+  const unverified = verifiableCompletedTasks
     .filter((task) => {
       if (imported.has(task.id)) return false;
       const commit = landings.get(task.id);
@@ -177,7 +186,7 @@ export async function verifyPlanCompletion(
       return "unverified";
     }
   };
-  const unchecked = completedTasks
+  const unchecked = verifiableCompletedTasks
     .filter((task) => {
       const audit = audits.get(task.id);
       if (audit) {
@@ -203,6 +212,7 @@ export async function verifyPlanCompletion(
     completed: completedTasks.length,
     outstanding,
     unverified,
+    waived,
     unchecked,
     integrationPending,
     activeClaims,

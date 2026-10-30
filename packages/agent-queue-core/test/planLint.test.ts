@@ -82,6 +82,45 @@ const PLAN = [
 ].join("\n");
 
 describe("plan lint finds what stops small agents before any of them starts", () => {
+  it("warns for owner tasks without flagging the human step as an error", async () => {
+    const repo = await createTestGitRepo("aq-lint-owner-");
+    try {
+      await NodeFSP.writeFile(
+        NodePath.join(repo.rootDir, "PLAN.md"),
+        [
+          "# Plan",
+          "",
+          "- [ ] **OWNER — Verify the app on a physical handset.**",
+          "  - Kind: owner",
+          "  - Verify: none — owner task.",
+          "- [ ] **OWNER2 — Run an executable check.**",
+          "  - Kind: owner",
+          '  - Checks: `node -e "process.exit(0)"` (cwd: ., timeout: 1m)',
+          "",
+        ].join("\n"),
+      );
+      await execCommand("git", ["add", "PLAN.md"], repo.rootDir);
+      await execCommand("git", ["commit", "-m", "owner task"], repo.rootDir);
+
+      const { findings } = lintPlanFile(repo.rootDir, "PLAN.md");
+      expect(findings).toContainEqual(
+        expect.objectContaining({ code: "owner-task", taskId: "OWNER", level: "warning" }),
+      );
+      expect(findings).not.toContainEqual(
+        expect.objectContaining({ code: "physical-device", taskId: "OWNER" }),
+      );
+      expect(findings).toContainEqual(
+        expect.objectContaining({
+          code: "owner-task-has-checks",
+          taskId: "OWNER2",
+          level: "error",
+        }),
+      );
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
   it("flags a missing database scope, production work, contradictions, protected files, broad checks, soaks and human steps", async () => {
     const repo = await createTestGitRepo("aq-lint-");
     try {

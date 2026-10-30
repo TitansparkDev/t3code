@@ -13,6 +13,29 @@ import { DependencyCycleError } from "../src/planGraph.ts";
 import { createTestGitRepo } from "./harness/gitHarness.ts";
 
 describe("Phase 5: Structured Overseer & Autonomous Recovery (AQ-039 - AQ-041, Gate G5)", () => {
+  it("requires owner tasks to be waived instead of retried or unblocked", async () => {
+    const repo = await createTestGitRepo("overseer-owner-repair-");
+    try {
+      const db = openQueueDatabase({ gitCommonDir: repo.gitCommonDir });
+      const now = "2026-10-30T00:00:00.000Z";
+      db.prepare(`
+        INSERT INTO tasks (id, title, status, failure_class, dependencies, created_at, updated_at)
+        VALUES ('OWNER', 'Owner task', 'blocked', 'owner', '[]', ?, ?)
+      `).run(now, now);
+      const message =
+        'Task OWNER is an owner task; close it with agentq task waive OWNER --reason "...".';
+
+      expect(() => retryTask(db, "OWNER")).toThrow(message);
+      expect(() => unblockTask(db, "OWNER")).toThrow(message);
+      expect(db.prepare("SELECT status FROM tasks WHERE id = 'OWNER'").get()).toEqual({
+        status: "blocked",
+      });
+      db.close();
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
   it("refuses to retry a held task whose failure repeated on an unchanged commit unless forced", async () => {
     const repo = await createTestGitRepo("overseer-retry-unchanged-");
     try {

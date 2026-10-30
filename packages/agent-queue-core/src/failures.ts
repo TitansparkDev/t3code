@@ -1,15 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off preferSchemaOverJson:off
-/**
- * Why work stopped, and what may happen next.
- *
- * Every stop is classified. A *transient* failure is worth another attempt. A
- * *deterministic* one (configuration, prerequisite, external) is not: a new worker would
- * meet the same wall, so the task is held with its evidence until something capable of
- * resolving it changes (the repository contract, a guard script, a tool, a capability),
- * and is then released again without spending a retry.
- *
- * @module failures
- */
+/** Failure classification and recovery policy. */
 import type * as NodeSqlite from "node:sqlite";
 import * as NodeCrypto from "node:crypto";
 import { recordEvent } from "./eventStream.ts";
@@ -22,13 +12,15 @@ export type FailureClass =
   | "verification"
   | "scope"
   | "merge-conflict"
-  | "resource";
+  | "resource"
+  | "owner";
 
 /** Classes that cannot be cured by sending another worker. */
 export const DETERMINISTIC_CLASSES: ReadonlySet<FailureClass> = new Set([
   "configuration",
   "prerequisite",
   "external",
+  "owner",
 ]);
 
 const RULES: ReadonlyArray<readonly [RegExp, FailureClass]> = [

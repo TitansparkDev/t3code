@@ -25,6 +25,7 @@ export interface PlanTaskDefinition {
   readonly verification?: VerificationSpec;
   readonly scopePatterns?: ReadonlyArray<string>;
   readonly priority?: number;
+  readonly kind?: "owner";
   /** The plan's own checkbox was already ticked, so the work is done. */
   readonly checked?: boolean;
 }
@@ -227,6 +228,7 @@ export function parsePlanMarkdown(markdown: string): ParsedPlan {
     inChecks: boolean;
     scopePatterns: string[];
     priority: number;
+    kind?: "owner";
   }
   let currentTask: Draft | null = null;
   let finalVerification: string | null = null;
@@ -282,6 +284,7 @@ export function parsePlanMarkdown(markdown: string): ParsedPlan {
         verification,
         scopePatterns: currentTask.scopePatterns,
         priority: currentTask.priority,
+        ...(currentTask.kind ? { kind: currentTask.kind } : {}),
         ...(currentTask.checked ? { checked: true } : {}),
       });
       currentTask = null;
@@ -450,6 +453,14 @@ export function parsePlanMarkdown(markdown: string): ParsedPlan {
         continue;
       }
 
+      const kindMatch = trimmed.match(
+        /^(?:[-*]\s*)?(?:\*\*)?Kind(?:\*\*)?\s*:(?:\*\*)?\s*owner\.?$/i,
+      );
+      if (kindMatch) {
+        currentTask.kind = "owner";
+        continue;
+      }
+
       currentTask.descriptionLines.push(line);
     }
   }
@@ -476,6 +487,7 @@ export function exportPlanMarkdown(plan: ParsedPlan): string {
     if (task.scopePatterns && task.scopePatterns.length > 0) {
       lines.push(`- **Scope:** ${task.scopePatterns.join(", ")}`);
     }
+    if (task.kind === "owner") lines.push("- **Kind:** owner");
     const hasStructuredChecks = task.verification?.checks.some(
       (check) =>
         check.id !== undefined ||
