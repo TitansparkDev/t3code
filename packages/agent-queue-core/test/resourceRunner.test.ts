@@ -15,6 +15,8 @@ import {
   inferResourceDemands,
   inferResources,
   isCompilerCommand,
+  lockFilesFor,
+  requestedAndroidSerial,
   runUnderBroker,
   withBrokerResources,
 } from "../src/resourceRunner.ts";
@@ -42,6 +44,22 @@ const ANDROID_CONFIG: ResourceConfig = {
   reserveMb: 1000,
   resources: { android: { capacity: 1, memoryMb: 0 } },
 };
+
+describe("Android device resource locks", () => {
+  it("locks emulator slots and named serials separately", () => {
+    const home = newHome();
+    expect(lockFilesFor("android", 1)).toEqual([NodePath.join(home, "locks", "devices", "emulator-5556.lock")]);
+    expect(lockFilesFor("device_r58m", 0)).toEqual([NodePath.join(home, "locks", "devices", "r58m.lock")]);
+  });
+
+  it("finds serials from command assignments and environment", () => {
+    expect(requestedAndroidSerial(["env", "A=b", "ANDROID_SERIAL=env-device", "cmd"], {})).toBe("env-device");
+    expect(requestedAndroidSerial(["ANDROID_SERIAL=leading", "cmd"], {})).toBe("leading");
+    expect(requestedAndroidSerial(["bash", "-c", "ANDROID_SERIAL=script-device adb shell"], {})).toBe("script-device");
+    expect(requestedAndroidSerial(["adb", "devices"], { ANDROID_SERIAL: "environment" })).toBe("environment");
+    expect(requestedAndroidSerial(["adb", "devices"], {})).toBeNull();
+  });
+});
 
 function makeBroker(home: string, free = 20_000, config = CONFIG) {
   return new ResourceBroker({

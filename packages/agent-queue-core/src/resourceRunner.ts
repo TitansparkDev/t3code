@@ -248,6 +248,14 @@ const LEGACY_CLASSES = new Set(["android", "browser", "heavy_build", "package_in
 /** The flock files that physically guard one slot of a resource. Empty for broker-only resources. */
 export function lockFilesFor(name: string, slot: number): string[] {
   const files: string[] = [];
+  if (name === "android" || name.startsWith("device_")) {
+    const dir = NodePath.join(lockRoot(), "devices");
+    NodeFS.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const device = name === "android" ? `emulator-${5554 + 2 * slot}` : name.slice("device_".length);
+    const file = NodePath.join(dir, `${device}.lock`);
+    if (!NodeFS.existsSync(file)) NodeFS.closeSync(NodeFS.openSync(file, "a", 0o600));
+    files.push(file);
+  }
   if (LEGACY_CLASSES.has(name)) {
     const dir = NodePath.join(lockRoot(), name);
     NodeFS.mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -267,6 +275,26 @@ export function lockFilesFor(name: string, slot: number): string[] {
     files.push(legacy);
   }
   return files;
+}
+
+/** Finds an explicit Android target in argv before falling back to the caller's environment. */
+export function requestedAndroidSerial(argv: ReadonlyArray<string>, env: NodeJS.ProcessEnv): string | null {
+  const assignment = (token: string) => token.startsWith("ANDROID_SERIAL=") ? token.slice("ANDROID_SERIAL=".length) : null;
+  if (argv[0] === "env") {
+    for (const token of argv.slice(1)) {
+      if (!token.includes("=")) break;
+      const value = assignment(token);
+      if (value !== null) return value || null;
+    }
+  } else {
+    const value = assignment(argv[0] ?? "");
+    if (value !== null) return value || null;
+  }
+  if ((argv[0] === "bash" || argv[0] === "sh") && argv[1] === "-c") {
+    const match = argv[2]?.match(/ANDROID_SERIAL=([^\s;&|]+)/);
+    if (match) return match[1] || null;
+  }
+  return env.ANDROID_SERIAL || null;
 }
 
 let flockProbe: boolean | undefined;

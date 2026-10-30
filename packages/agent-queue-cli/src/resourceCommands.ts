@@ -17,6 +17,7 @@ import {
   DEFAULT_RUN_MS,
   describeJob,
   inferResourceDemands,
+  requestedAndroidSerial,
   isReusableCommand,
   loadContract,
   loadResourceConfig,
@@ -289,6 +290,16 @@ export async function runResourceCommand(
       ...inferResourceDemands(commandLine, repoResources),
       ...(declared?.requires.map((name) => ({ name })) ?? []),
     ];
+    const androidSerial = demands.some((demand) => demand.name === "android")
+      ? requestedAndroidSerial(command, process.env)
+      : null;
+    if (androidSerial !== null) {
+      for (let index = demands.length - 1; index >= 0; index--) {
+        if (demands[index]!.name === "android") demands.splice(index, 1);
+      }
+      demands.push({ name: `device_${androidSerial.replace(/[^A-Za-z0-9_.-]/g, "_")}` });
+      process.stderr.write(`[agentq] using ANDROID_SERIAL=${androidSerial}\n`);
+    }
     const resources = [...new Set(demands.map((demand) => demand.name))];
     const reusableInputs = declared
       ? [...declared.reuseInputs!, ...(declared.consumes ?? [])]
@@ -334,6 +345,7 @@ export async function runResourceCommand(
     const request: RunUnderBrokerOptions = {
       resources: demands,
       argv: command,
+      ...(androidSerial === null ? {} : { env: { ANDROID_SERIAL: androidSerial } }),
       cwd,
       label: typeof flags.label === "string" ? flags.label : commandLine.slice(0, 100),
       ...(owner ? { ownerRef: owner } : {}),
