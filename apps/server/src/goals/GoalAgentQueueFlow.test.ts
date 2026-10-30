@@ -142,6 +142,8 @@ const makeFlow = (
       claims?: boolean;
       release?: boolean;
       locked?: boolean;
+      /** Every operation fails with an outage that is not lock contention. */
+      unavailable?: boolean;
       submitLocked?: boolean;
       reportJobFailures?: number;
     };
@@ -225,7 +227,14 @@ const makeFlow = (
                     ? Effect.fail(
                         new AgentQueueError({ operation: name, message: "database is locked" }),
                       )
-                    : (operation as (...input: Array<unknown>) => unknown)(...args)
+                    : options.queueFaults?.unavailable
+                      ? Effect.fail(
+                          new AgentQueueError({
+                            operation: name,
+                            message: "test queue outage",
+                          }),
+                        )
+                      : (operation as (...input: Array<unknown>) => unknown)(...args)
               : operation,
           ]),
         ) as typeof live;
@@ -1659,14 +1668,14 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
 
         // The suite ends but the worker was woken by it and is writing again: still not done.
         flow.liveness.delete(threadId);
-        flow.scripts.set(threadId, { ...flow.scripts.get(threadId)!, busy: true });
+        yield* flow.sessionEvent(threadId, { status: "running", activeTurnId: "turn-2" });
         yield* tickOnce;
         yield* flow.drain;
         expect((yield* flow.taskRow("T1")).status).toBe("claimed");
         expect(flow.log.filter((c) => c.type === "thread.settle")).toHaveLength(0);
 
         // Genuinely finished: no turn, no background job. Now it is checked, merged and settled.
-        flow.scripts.set(threadId, { ...flow.scripts.get(threadId)!, busy: false });
+        yield* flow.sessionEvent(threadId, { status: "ready", activeTurnId: null });
         yield* tickOnce;
         for (let round = 0; round < 3; round++) yield* tickOnce;
         yield* flow.eventually(
@@ -3256,15 +3265,16 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
     "an outage that really lasts still stops the goal, with the reason, rather than looping forever",
     () =>
       Effect.gen(function* () {
-        const flow = yield* makeFlow(planWith([{ id: "T1" }, { id: "T2", deps: ["T1"] }]));
+        const faults = { unavailable: false };
+        const flow = yield* makeFlow(planWith([{ id: "T1" }, { id: "T2", deps: ["T1"] }]), {
+          queueFaults: faults,
+        });
         const service = yield* flow.startServer;
         yield* Effect.forkScoped(service.loop);
         yield* Effect.yieldNow;
         yield* service.create(settingsFor());
         yield* flow.waitFor("thread.create", 1);
-        const dbFile = NodePath.join(flow.repo.gitCommonDir, "agentqueue", "queue.sqlite");
-        NodeFS.renameSync(dbFile, `${dbFile}.away`);
-        NodeFS.mkdirSync(dbFile);
+        faults.unavailable = true;
         for (let round = 0; round < 3; round++) yield* tickOnce;
         yield* flow.eventually(
           flow.goalOf(service),
@@ -3280,8 +3290,6 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
         );
         expect(goal.status).toBe("failed");
         expect(goal.detail).toContain("kept failing");
-        NodeFS.rmdirSync(dbFile);
-        NodeFS.renameSync(`${dbFile}.away`, dbFile);
       }).pipe(Effect.scoped),
   );
 
