@@ -173,6 +173,7 @@ const makeFlow = (
     const events = yield* PubSub.unbounded<OrchestrationEvent>();
     const subscription = yield* PubSub.subscribe(events);
     let eventCount = 0;
+    let eventSequence = 1;
     const scripts = new Map<string, ThreadScript>();
     /** Background work the registry reports per thread (tests, watchers, subagents). */
     const liveness = new Map<string, "working" | "monitoring">();
@@ -390,7 +391,7 @@ const makeFlow = (
 
     const sessionEvent = (threadId: string, session: Record<string, unknown>) =>
       PubSub.publish(events, {
-        sequence: 2,
+        sequence: ++eventSequence,
         eventId: EventId.make(`e-${threadId}-${++eventCount}`),
         aggregateKind: "thread",
         aggregateId: threadId,
@@ -1052,7 +1053,7 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
         status: "rate-limited",
         activeTurnId: null,
         lastErrorClass: "usage_limit",
-        retryAt: "2026-10-04T17:00:00.000Z",
+        retryAt: new Date(Date.now() + 5 * 60 * 60_000).toISOString(),
       });
       const goal = yield* flow.eventually(
         flow.goalOf(service),
@@ -1077,7 +1078,7 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
         status: "rate-limited",
         activeTurnId: null,
         lastErrorClass: "usage_limit",
-        retryAt: "2026-10-04T12:10:00.000Z",
+        retryAt: new Date(Date.now() + 10 * 60_000).toISOString(),
       });
       const goal = yield* flow.eventually(
         flow.goalOf(service),
