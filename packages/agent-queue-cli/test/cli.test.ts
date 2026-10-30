@@ -2,7 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 import * as NodeOS from "node:os";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
-import { runCli, runCliAsync } from "../src/cli.ts";
+import { parseArgs, runCli, runCliAsync } from "../src/cli.ts";
 import { runResourceCommand } from "../src/resourceCommands.ts";
 import { createTestGitRepo } from "../../agent-queue-core/test/harness/gitHarness.ts";
 
@@ -141,6 +141,77 @@ Verify: vp test src/second
     } finally {
       await repo.cleanup();
     }
+  });
+
+  it("refuses operator commands that would undo a claim or a completion", async () => {
+    const repo = await createTestGitRepo("aq-cli-guard-");
+    try {
+      await NodeFSP.writeFile(
+        NodePath.join(repo.rootDir, "GUARD.md"),
+        "# Guard Plan\n### G-01: Running Task\n### G-02: Done Task\n",
+      );
+      runCli(["plan", "import", "GUARD.md", "--json"], repo.rootDir);
+      const done = JSON.parse(runCli(["task", "claim", "G-02", "--json"], repo.rootDir).output);
+      runCli(
+        ["task", "release", "--token", done.claim.ownerToken, "--status", "completed"],
+        repo.rootDir,
+      );
+      const claim = JSON.parse(runCli(["task", "claim", "G-01", "--json"], repo.rootDir).output);
+      expect(claim.success).toBe(true);
+
+      // A running task is not reset under its worker.
+      expect(runCli(["task", "retry", "G-01", "--json"], repo.rootDir).exitCode).toBe(1);
+
+      // Completed work is neither reopened nor turned into a failure.
+      expect(runCli(["task", "retry", "G-02", "--json"], repo.rootDir).exitCode).toBe(1);
+      expect(runCli(["task", "abort", "G-02", "--json"], repo.rootDir).exitCode).toBe(1);
+      expect(runCli(["task", "abort", "NOPE", "--json"], repo.rootDir).exitCode).toBe(1);
+      const tasks = JSON.parse(runCli(["task", "list", "--json"], repo.rootDir).output).tasks;
+      expect(tasks.map((t: { id: string; status: string }) => [t.id, t.status])).toEqual([
+        ["G-01", "claimed"],
+        ["G-02", "completed"],
+      ]);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it("renews a lease for as long as it was taken, and fails when the lease is gone", async () => {
+    const repo = await createTestGitRepo("aq-cli-lease-");
+    try {
+      await NodeFSP.writeFile(NodePath.join(repo.rootDir, "LEASE.md"), "# Lease\n### L-01: Long\n");
+      runCli(["plan", "import", "LEASE.md"], repo.rootDir);
+      const claim = JSON.parse(
+        runCli(["task", "claim", "L-01", "--lease", "1800", "--json"], repo.rootDir).output,
+      );
+      const token = claim.claim.ownerToken;
+      const renewed = JSON.parse(
+        runCli(["task", "heartbeat", token, "--json"], repo.rootDir).output,
+      );
+      expect(
+        Date.parse(renewed.expiresAt) - Date.parse(claim.claim.expiresAt),
+      ).toBeGreaterThanOrEqual(0);
+
+      runCli(["task", "release", "--token", token, "--status", "pending"], repo.rootDir);
+      const lost = runCli(["task", "heartbeat", token, "--json"], repo.rootDir);
+      expect(lost.exitCode).toBe(3);
+      expect(JSON.parse(lost.output).success).toBe(false);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it("does not take a task id as the value of a boolean flag", () => {
+    expect(parseArgs(["task", "finalize", "--json", "VG1"]).positional).toEqual(["VG1"]);
+    expect(parseArgs(["task", "retry", "--force", "VG1"]).positional).toEqual(["VG1"]);
+  });
+
+  it("kills a command that needs no shared resource at its --timeout", async () => {
+    const result = await runResourceCommand(
+      ["run", "--timeout", "1", "--", "node", "-e", "setTimeout(() => {}, 30000)"],
+      process.cwd(),
+    );
+    expect(result?.exitCode).toBe(124);
   });
 
   it("produces human/agent readable text formatting when --json is omitted (AQ-018)", async () => {
