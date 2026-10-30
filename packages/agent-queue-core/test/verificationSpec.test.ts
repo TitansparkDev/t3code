@@ -13,6 +13,7 @@ import {
   inspectCheckCommand,
   parseStoredSpec,
   runSpec,
+  selectedTestClasses,
   type VerificationSpec,
 } from "../src/verificationSpec.ts";
 import { ResourceWaitError } from "../src/resourceRunner.ts";
@@ -411,6 +412,64 @@ describe("running checks", () => {
     } finally {
       await repo.cleanup();
     }
+  });
+
+  it("requires an executed JUnit case for every class the run selects", async () => {
+    const repo = await createTestGitRepo("aq-spec-junit-classes-");
+    try {
+      const runWithReport = async (xml: string, selection: string) => {
+        const encoded = Buffer.from(xml).toString("base64");
+        return runSpec(
+          "T1",
+          repo.rootDir,
+          spec([
+            check(
+              `node -e 'require("node:fs").writeFileSync("reports/run.xml", Buffer.from("${encoded}", "base64"))'${selection ? ` ${selection}` : ""}`,
+              {
+                id: "tests",
+                junit: { reports: ["reports/**/*.xml"], minTests: 1, maxSkipped: 0 },
+              },
+            ),
+          ]),
+        );
+      };
+      await NodeFSP.mkdir(NodePath.join(repo.rootDir, "reports"));
+      const selection =
+        "android.testInstrumentationRunnerArguments.class=com.example.A,com.example.B";
+      const onlyFirst = await runWithReport(
+        '<testsuite><testcase classname="com.example.A" name="one" /></testsuite>',
+        selection,
+      );
+      expect(onlyFirst.state).toBe("failed");
+      expect(onlyFirst.checks[0]).toMatchObject({
+        passed: false,
+        failureKind: "junit-failed",
+        failureReason: "JUnit report has no executed test for selected class(es): com.example.B",
+      });
+
+      const both = await runWithReport(
+        '<testsuite><testcase classname="com.example.A" name="one" /><testcase classname="com.example.B" name="two" /></testsuite>',
+        selection,
+      );
+      expect(both.state).toBe("passed");
+
+      const unselected = await runWithReport(
+        '<testsuite><testcase classname="com.example.A" name="one" /></testsuite>',
+        "",
+      );
+      expect(unselected.state).toBe("passed");
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it("selects the classes named by an instrumentation run", () => {
+    expect(
+      selectedTestClasses(
+        "./gradlew connectedAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.a.A#testX,com.a.B",
+      ),
+    ).toEqual(["com.a.A", "com.a.B"]);
+    expect(selectedTestClasses("./gradlew test")).toEqual([]);
   });
 
   it("rejects an unchanged stale JUnit report", async () => {

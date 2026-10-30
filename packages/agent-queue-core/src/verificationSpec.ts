@@ -788,6 +788,19 @@ function junitSnapshot(root: string, patterns: ReadonlyArray<string>): ReadonlyM
   return snapshot;
 }
 
+const SELECTED_CLASSES_PATTERN = /android\.testInstrumentationRunnerArguments\.class=([^\s"']+)/g;
+
+export function selectedTestClasses(run: string): string[] {
+  const classes = new Set<string>();
+  for (const match of run.matchAll(SELECTED_CLASSES_PATTERN)) {
+    for (const entry of match[1]!.split(",")) {
+      const testClass = entry.split("#")[0]!.trim();
+      if (testClass) classes.add(testClass);
+    }
+  }
+  return [...classes];
+}
+
 function junitCounts(path: string):
   | {
       readonly counts: {
@@ -795,6 +808,7 @@ function junitCounts(path: string):
         readonly failed: number;
         readonly skipped: number;
       };
+      readonly executedClasses: ReadonlySet<string>;
       readonly failureDetails: ReadonlyArray<string>;
     }
   | { readonly error: string } {
@@ -853,8 +867,15 @@ function junitCounts(path: string):
               : undefined;
         return message ? `${name}: ${message}` : name;
       });
+    const executedClasses = new Set(
+      cases
+        .filter((testCase) => !Object.hasOwn(testCase, "skipped"))
+        .map((testCase) => testCase["@_classname"])
+        .filter((classname): classname is string => typeof classname === "string"),
+    );
     return {
       counts: { executed: cases.length - skipped, failed: failedCases, skipped },
+      executedClasses,
       failureDetails: details,
     };
   } catch (error) {
@@ -867,6 +888,7 @@ function checkJUnitEvidence(
   check: NonNullable<VerificationCheck["junit"]>,
   before: ReadonlyMap<string, string>,
   env: Readonly<Record<string, string>> | undefined,
+  selectedClasses: ReadonlyArray<string>,
 ): {
   readonly failureKind?: CheckFailureKind;
   readonly reason?: string;
@@ -891,6 +913,7 @@ function checkJUnitEvidence(
   let executed = 0;
   let failed = 0;
   let skipped = 0;
+  const executedClasses = new Set<string>();
   const failureDetails: string[] = [];
   for (const path of reports.paths) {
     let signature: string;
@@ -913,6 +936,7 @@ function checkJUnitEvidence(
     executed += parsed.counts.executed;
     failed += parsed.counts.failed;
     skipped += parsed.counts.skipped;
+    for (const classname of parsed.executedClasses) executedClasses.add(classname);
     failureDetails.push(...parsed.failureDetails);
   }
   if (executed === 0 || executed < check.minTests || failed > 0 || skipped > check.maxSkipped) {
@@ -926,6 +950,12 @@ function checkJUnitEvidence(
       ...(diagnosticExcerpt ? { diagnosticExcerpt } : {}),
     };
   }
+  const missingClasses = selectedClasses.filter((testClass) => !executedClasses.has(testClass));
+  if (missingClasses.length > 0)
+    return {
+      failureKind: "junit-failed",
+      reason: `JUnit report has no executed test for selected class(es): ${missingClasses.join(", ")}`,
+    };
   return {};
 }
 
@@ -1332,7 +1362,13 @@ export async function runSpec(
                   }
                 }
                 if (commandPassed && !failureReason && check.junit) {
-                  const junit = checkJUnitEvidence(root, check.junit, beforeReports, env);
+                  const junit = checkJUnitEvidence(
+                    root,
+                    check.junit,
+                    beforeReports,
+                    env,
+                    selectedTestClasses(check.run),
+                  );
                   failureKind = junit.failureKind;
                   failureReason = junit.reason;
                   diagnosticExcerpt = junit.diagnosticExcerpt ?? diagnosticExcerpt;
