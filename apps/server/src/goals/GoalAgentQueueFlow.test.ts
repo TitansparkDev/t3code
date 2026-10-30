@@ -20,6 +20,7 @@ import {
 } from "@t3tools/contracts";
 import type { Goal, GoalSettings } from "@t3tools/contracts/goals";
 import * as Duration from "effect/Duration";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as TestClock from "effect/testing/TestClock";
@@ -1049,11 +1050,14 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
       yield* service.create(settingsFor({ autoResume: true }));
       const [created] = yield* flow.waitFor("thread.create", 1);
       yield* flow.sessionEvent(created!.threadId, { status: "running", activeTurnId: "turn-1" });
+      const retryAt = new Date(
+        DateTime.toEpochMillis(yield* DateTime.now) + 5 * 60 * 60_000,
+      ).toISOString();
       yield* flow.sessionEvent(created!.threadId, {
         status: "rate-limited",
         activeTurnId: null,
         lastErrorClass: "usage_limit",
-        retryAt: new Date(Date.now() + 5 * 60 * 60_000).toISOString(),
+        retryAt,
       });
       const goal = yield* flow.eventually(
         flow.goalOf(service),
@@ -1074,11 +1078,14 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
       yield* service.create(settingsFor({ autoResume: true }));
       const [created] = yield* flow.waitFor("thread.create", 1);
       yield* flow.sessionEvent(created!.threadId, { status: "running", activeTurnId: "turn-1" });
+      const retryAt = new Date(
+        DateTime.toEpochMillis(yield* DateTime.now) + 10 * 60_000,
+      ).toISOString();
       yield* flow.sessionEvent(created!.threadId, {
         status: "rate-limited",
         activeTurnId: null,
         lastErrorClass: "usage_limit",
-        retryAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+        retryAt,
       });
       const goal = yield* flow.eventually(
         flow.goalOf(service),
@@ -1086,7 +1093,7 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
         "the chat to wait for the limit",
       );
       expect(goal.chats[0]?.taskOutcome).toBeUndefined();
-      expect(yield* flow.taskRow("T1")).toMatchObject({ status: "running", retry_count: 0 });
+      expect(yield* flow.taskRow("T1")).toMatchObject({ status: "claimed", retry_count: 0 });
     }).pipe(Effect.scoped),
   );
 
