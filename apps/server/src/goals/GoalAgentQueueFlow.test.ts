@@ -1624,6 +1624,9 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("AgentQueue goals
     yield* Effect.yieldNow;
     yield* TestClock.adjust(Duration.seconds(1));
     yield* Effect.yieldNow;
+    // Effect 4.1's TestClock stops waiting for a woken fiber that is doing real I/O.
+    // oxlint-disable-next-line t3code/no-real-time-wait-in-tests -- the tick's queue read is real I/O with no event to await
+    yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 25)));
   });
 
   it.effect(

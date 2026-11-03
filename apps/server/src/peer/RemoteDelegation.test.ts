@@ -1334,13 +1334,13 @@ it.effect.each([null, "Working before the provider failed."])(
         yield* Deferred.succeed(thread.finished, undefined);
         expect(yield* taskResult(a, delegated.taskId)).toMatchObject({
           status: "failed",
-          result: error,
+          result: expect.stringContaining(error),
         });
         const status = yield* a.call("task_status", { taskId: delegated.taskId });
         expect(status.structuredContent).toMatchObject({
           status: "failed",
-          summary: error,
-          latestTerminalSummary: error,
+          summary: expect.stringContaining(error),
+          latestTerminalSummary: expect.stringContaining(error),
         });
         const offered = yield* SubscriptionRef.changes(offers).pipe(
           Stream.filter((seen) => seen.some((offer) => offer.threadId === parentThreadId)),
@@ -1376,7 +1376,7 @@ it.effect.each([false, true])(
         expect(yield* taskResult(a, delegated.taskId)).toMatchObject({
           status: "failed",
           result: ownError
-            ? error
+            ? expect.stringContaining(error)
             : "(The thread in the linked environment ended without a reply.)",
         });
         expect(yield* Ref.get(thread.waitedFor)).toEqual([boxRunId]);

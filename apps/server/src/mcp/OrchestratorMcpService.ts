@@ -936,7 +936,7 @@ function turnItemText(item: OrchestrationV2TurnItem): string | null {
       return [
         item.failure.message,
         `Failure stage: ${item.failure.stage ?? "unknown"}.`,
-        ...(item.failure.code === null ? [] : [`Reason: ${item.failure.code}.`]),
+        ...(item.failure.code == null ? [] : [`Reason: ${item.failure.code}.`]),
         failureRecoveryGuidance(item.failure),
       ].join("\n");
     case "compaction":
