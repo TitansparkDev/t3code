@@ -5,7 +5,9 @@ import {
   MessageId,
   NodeId,
   ProjectId,
+  ProviderDriverKind,
   ProviderInstanceId,
+  type RuntimeRequestId,
   ProviderSessionId,
   RunAttemptId,
   RunId,
@@ -18,6 +20,7 @@ import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
@@ -30,6 +33,13 @@ import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderS
 import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
 import type * as AcpSessionRuntime from "@t3tools/provider-acp/server/AcpSessionRuntime";
 import { makeAntigravityAcpRuntime } from "../../provider/acp/AntigravityAcpSupport.ts";
+import { readProviderReplayTranscript } from "@t3tools/provider-testing/replayTranscript";
+import { ANTIGRAVITY_DEFAULT_MODEL } from "@t3tools/contracts";
+import {
+  decodeAcpReplayTranscript,
+  makeAcpReplayCompletenessAssertion,
+  makeAcpReplayRuntime,
+} from "./AcpAdapterV2.testkit.ts";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { normalizeAntigravitySessionUpdate } from "../../provider/acp/AntigravityProtocol.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -737,3 +747,160 @@ describe("AntigravityAdapterV2 html_render pages", () => {
     }).pipe(Effect.provide(layerSession), Effect.scoped),
   );
 });
+
+const replayFixtureDir = new URL(
+  "../testkit/fixtures/antigravity_event_completeness/",
+  import.meta.url,
+);
+
+describe("AntigravityAdapterV2 offline event replay", () => {
+  it.effect("dumps the observed T3 events", () =>
+    Effect.gen(function* () {
+      const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const raw = yield* readProviderReplayTranscript(
+        new URL("completeness.ndjson", replayFixtureDir),
+      );
+      const transcript = yield* decodeAcpReplayTranscript(
+        raw,
+        ProviderDriverKind.make("antigravity"),
+      );
+      const statusDir = yield* fileSystem.makeTempDirectory({ prefix: "agy-replay-" });
+      const statusPath = path.join(statusDir, "status.json");
+      const scriptPath = yield* path.fromFileUrl(
+        new URL("../../../scripts/acp-replay-agent.ts", import.meta.url),
+      );
+      const instanceId = ProviderInstanceId.make("antigravity-replay-test");
+      const threadId = ThreadId.make("thread-antigravity-replay");
+      const adapter = yield* makeAntigravityAdapterV2({
+        instanceId,
+        selfInvocation: yield* resolveSelfInvocation(),
+        makeRuntime: (input) =>
+          makeAcpReplayRuntime({
+            transcript,
+            statusPath,
+            scriptPath,
+            childProcessSpawner,
+            fileSystem,
+          })(input as never),
+        withProcess: (_stop, task) => task,
+        // @effect-diagnostics-next-line effectSucceedWithVoid:off - This optional result requires undefined, not the wider void type.
+        defaultModel: Effect.succeed(undefined),
+      });
+      const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+        runtimeMode: "approval-required",
+        interactionMode: "default",
+        cwd: process.cwd(),
+      });
+      const modelSelection = { instanceId, model: ANTIGRAVITY_DEFAULT_MODEL } as const;
+      const session = yield* adapter.openSession({
+        threadId,
+        providerSessionId: ProviderSessionId.make("provider-session-antigravity-replay"),
+        modelSelection,
+        runtimePolicy,
+      });
+      const providerThread = yield* session.ensureThread({
+        threadId,
+        modelSelection,
+        runtimePolicy,
+      });
+      const now = yield* DateTime.now;
+      const pendingRequest = yield* Deferred.make<RuntimeRequestId>();
+      const collected = yield* Effect.forkChild(
+        session.events.pipe(
+          Stream.tap((event) => {
+            console.log("EVENT", JSON.stringify(summarizeReplayEvent(event)));
+            if (
+              event.type === "runtime_request.updated" &&
+              event.runtimeRequest.status === "pending"
+            ) {
+              return Deferred.succeed(pendingRequest, event.runtimeRequest.id).pipe(Effect.ignore);
+            }
+            if (event.type === "turn_item.updated" && event.turnItem.type === "approval_request") {
+              return Deferred.succeed(pendingRequest, event.turnItem.requestId).pipe(Effect.ignore);
+            }
+            return Effect.void;
+          }),
+          Stream.takeUntil((event) => event.type === "turn.terminal"),
+          Stream.runCollect,
+        ),
+      );
+      yield* session.startTurn({
+        appThread: {
+          createdBy: "user",
+          creationSource: "web",
+          id: threadId,
+          projectId: ProjectId.make("project-antigravity-replay"),
+          title: "Antigravity replay",
+          providerInstanceId: instanceId,
+          modelSelection,
+          runtimeMode: "approval-required",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: process.cwd(),
+          activeProviderThreadId: providerThread.id,
+          lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+          forkedFrom: null,
+          createdAt: now,
+          updatedAt: now,
+          archivedAt: null,
+          settledOverride: null,
+          settledAt: null,
+          lastVisitedAt: null,
+          deletedAt: null,
+        },
+        threadId,
+        runId: RunId.make("run-antigravity-replay"),
+        runOrdinal: 1,
+        providerTurnOrdinal: 1,
+        attemptId: RunAttemptId.make("attempt-antigravity-replay"),
+        rootNodeId: NodeId.make("node-antigravity-replay"),
+        providerThread,
+        message: {
+          createdBy: "user",
+          creationSource: "web",
+          messageId: MessageId.make("message-antigravity-replay"),
+          text: "probe the marker",
+          attachments: [],
+        },
+        modelSelection,
+        runtimePolicy,
+      });
+      const requestId = yield* Deferred.await(pendingRequest);
+      yield* session.respondToRuntimeRequest({ requestId, decision: "decline" });
+      const events = Array.from(yield* Fiber.join(collected));
+      console.log(
+        "OBSERVED_T3",
+        JSON.stringify(events.map((event) => summarizeReplayEvent(event))),
+      );
+      yield* makeAcpReplayCompletenessAssertion(fileSystem, statusPath, transcript);
+    }).pipe(Effect.provide(layerSession), Effect.scoped),
+  );
+});
+
+function summarizeReplayEvent(event: { readonly type: string } & Record<string, unknown>) {
+  const record = event as Record<string, any>;
+  switch (event.type) {
+    case "turn_item.updated": {
+      const item = record.turnItem;
+      return {
+        type: event.type,
+        turnItemType: item.type,
+        id: item.id,
+        nativeId: item.nativeItemRef?.nativeId ?? null,
+        status: item.status,
+        textLength: typeof item.text === "string" ? item.text.length : undefined,
+        toolName: item.toolName,
+      };
+    }
+    case "runtime_request.updated":
+      return {
+        type: event.type,
+        status: record.runtimeRequest.status,
+        id: record.runtimeRequest.id,
+      };
+    default:
+      return { type: event.type };
+  }
+}
