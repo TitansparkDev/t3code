@@ -4,6 +4,7 @@ import { ThreadId, TurnItemId, type OrchestrationV2TurnItem } from "@t3tools/con
 import * as DateTime from "effect/DateTime";
 
 import {
+  liveActivityToolStatus,
   resolveWorkEntryToolPresentation,
   toolItemForDisplay,
   type WorkLogPresentationEntry,
@@ -187,5 +188,19 @@ describe("resolveWorkEntryToolPresentation", () => {
         toolData: { server: "another-server", tool: "preview_click" },
       }),
     ).toBeNull();
+  });
+});
+
+describe("liveActivityToolStatus", () => {
+  it.each([
+    [undefined, true, "inProgress"],
+    [undefined, false, "completed"],
+    ["inProgress", false, "inProgress"],
+    // A finished tool on a live row keeps its past tense; present tense is only for unknown status.
+    ["completed", true, "completed"],
+    ["failed", true, "failed"],
+    ["stopped", true, "stopped"],
+  ] as const)("maps status %s (present tense %s) to %s", (status, presentTense, expected) => {
+    expect(liveActivityToolStatus(status, presentTense)).toBe(expected);
   });
 });
