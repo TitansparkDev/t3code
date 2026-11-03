@@ -99,13 +99,13 @@ const make = Effect.gen(function* () {
           ),
           Effect.orDie,
         );
-        yield* Ref.set(state, changed.next);
-        yield* PubSub.publish(changes, undefined);
         yield* fs
           .writeFileString(filePath, contents)
           .pipe(
             Effect.catch((cause) => Effect.logWarning("goals.persist-failed", { filePath, cause })),
           );
+        yield* Ref.set(state, changed.next);
+        yield* PubSub.publish(changes, undefined);
         return changed.value;
       }),
     );

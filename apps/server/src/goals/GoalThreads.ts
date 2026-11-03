@@ -10,7 +10,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -198,8 +198,8 @@ const make = Effect.gen(function* () {
   const launcher = yield* ThreadLaunch.ThreadLaunchService;
   const management = yield* ThreadManagement.ThreadManagementService;
   const projects = yield* ProjectStore.ProjectStoreV2;
-  const crypto = yield* Crypto.Crypto;
-  const uuid = crypto.randomUUIDv4().pipe(Effect.orDie);
+  const crypto = yield* SecureRandom.SecureRandom;
+  const uuid = crypto.uuidV4();
 
   return GoalThreads.of({
     launch: (input) =>

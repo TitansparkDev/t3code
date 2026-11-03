@@ -1,7 +1,8 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import { EventId, ProjectId, ProviderInstanceId, type ServerProvider } from "@t3tools/contracts";
-import type { GoalSettings } from "@t3tools/contracts/goals";
+import type { Goal, GoalSettings } from "@t3tools/contracts/goals";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -235,7 +236,20 @@ const textOf = (command: OrchestrationCommand | undefined) =>
 const threadIdOf = (command: OrchestrationCommand | undefined) =>
   command?.type === "thread.create" ? command.threadId : "";
 
-it.layer(NodeServices.layer)("GoalService", (it) => {
+const waitForGoal = (predicate: (goal: Goal | undefined) => boolean) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const store = yield* GoalStore.GoalStore;
+      const changes = yield* store.subscribeChanges;
+      while (true) {
+        const [goal] = yield* store.list;
+        if (predicate(goal)) return goal;
+        yield* PubSub.take(changes);
+      }
+    }),
+  );
+
+it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("GoalService", (it) => {
   it.effect("starts one chat per lane, spread across the models by their counts", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness;
@@ -300,7 +314,7 @@ it.layer(NodeServices.layer)("GoalService", (it) => {
           turnState: "completed",
         });
         yield* harness.runAndFinish(threadIdOf(second));
-        while ((yield* service.list)[0]?.status === "running") yield* Effect.yieldNow;
+        yield* waitForGoal((goal) => goal?.status !== "running");
         const [goal] = yield* service.list;
         expect(goal?.status).toBe("complete");
         // Chats are settled, never archived, and carry plain titles.
@@ -329,7 +343,7 @@ it.layer(NodeServices.layer)("GoalService", (it) => {
         yield* harness.runAndFinish(threadIdOf(first));
         const [, second] = yield* harness.waitFor("thread.create", 2);
         yield* harness.runAndFinish(threadIdOf(second));
-        while ((yield* service.list)[0]?.status === "running") yield* Effect.yieldNow;
+        yield* waitForGoal((goal) => goal?.status !== "running");
         const [capped] = yield* service.list;
         expect(capped?.status).toBe("failed");
         expect(capped?.detail).toContain("limit of 2 chats");
@@ -355,7 +369,7 @@ it.layer(NodeServices.layer)("GoalService", (it) => {
         yield* service.create(settings({ concurrency: 1 }));
         const [only] = yield* harness.waitFor("thread.create", 1);
         yield* harness.runAndFinish(threadIdOf(only));
-        while ((yield* service.list)[0]?.status === "running") yield* Effect.yieldNow;
+        yield* waitForGoal((goal) => goal?.status !== "running");
         const [goal] = yield* service.list;
         expect(goal?.status).toBe("failed");
         expect(goal?.chats.map((chat) => chat.status)).toEqual(["failed"]);
@@ -382,7 +396,7 @@ it.layer(NodeServices.layer)("GoalService", (it) => {
         yield* service.create(settings({ concurrency: 2, maxChats: null }));
         const [first] = yield* harness.waitFor("thread.create", 2);
         yield* harness.finishStuck(threadIdOf(first));
-        while ((yield* service.list)[0]?.chats[0]?.status === "running") yield* Effect.yieldNow;
+        yield* waitForGoal((goal) => goal?.chats[0]?.status !== "running");
         const [goal] = yield* service.list;
         expect(goal?.status).toBe("running");
         expect(goal?.chats[0]?.status).toBe("attention");
@@ -412,7 +426,7 @@ it.layer(NodeServices.layer)("GoalService", (it) => {
           lastErrorClass: "usage_limit",
           retryAt: "1970-01-01T01:00:00.000Z",
         });
-        while (!(yield* service.list)[0]?.chats[0]?.waitingForLimit) yield* Effect.yieldNow;
+        yield* waitForGoal((goal) => goal?.chats[0]?.waitingForLimit === true);
         expect(
           (yield* harness.drain).filter((command) => command.type === "thread.archive"),
         ).toEqual([]);
@@ -421,7 +435,7 @@ it.layer(NodeServices.layer)("GoalService", (it) => {
         const resumed = yield* harness.waitFor("thread.turn.start", 2);
         expect(textOf(resumed[1])).toContain("Continue where you left off");
         yield* harness.runAndFinish(threadId);
-        while ((yield* service.list)[0]?.chats[0]?.status === "running") yield* Effect.yieldNow;
+        yield* waitForGoal((goal) => goal?.chats[0]?.status !== "running");
         expect((yield* service.list)[0]?.chats[0]?.status).toBe("completed");
         expect(
           (yield* harness.drain).filter((command) => command.type === "thread.archive"),
@@ -447,7 +461,7 @@ it.layer(NodeServices.layer)("GoalService", (it) => {
           lastErrorClass: "usage_limit",
           retryAt: "1970-01-01T01:00:00.000Z",
         });
-        while (!(yield* service.list)[0]?.chats[0]?.waitingForLimit) yield* Effect.yieldNow;
+        yield* waitForGoal((goal) => goal?.chats[0]?.waitingForLimit === true);
         const [goal] = yield* service.list;
         expect(goal?.status).toBe("running");
         expect(goal?.chats[0]).toMatchObject({ status: "running", waitingForLimit: true });
@@ -461,7 +475,7 @@ it.layer(NodeServices.layer)("GoalService", (it) => {
 
         // When the chat picks the work back up it is no longer waiting.
         yield* harness.sessionEvent(threadId, { status: "running", activeTurnId: "turn-2" });
-        while ((yield* service.list)[0]?.chats[0]?.waitingForLimit) yield* Effect.yieldNow;
+        yield* waitForGoal((goal) => !goal?.chats[0]?.waitingForLimit);
       }).pipe(Effect.provide(harness.layer), Effect.scoped);
     }),
   );
@@ -484,7 +498,7 @@ it.layer(NodeServices.layer)("GoalService", (it) => {
             activeTurnId: null,
             lastErrorClass: "usage_limit",
           });
-          while ((yield* service.list)[0]?.chats[0]?.status !== "stopped") yield* Effect.yieldNow;
+          yield* waitForGoal((goal) => goal?.chats[0]?.status === "stopped");
           expect(
             harness.log.filter((command) => command.type === "thread.usage-limit-resume.schedule"),
           ).toHaveLength(0);
@@ -633,7 +647,7 @@ it.layer(NodeServices.layer)("GoalService", (it) => {
         yield* service.create(settings({ concurrency: 2, stopAfterProblems: 5 }));
         const [first] = yield* harness.waitFor("thread.create", 1);
         yield* harness.runAndFinish(threadIdOf(first));
-        while ((yield* service.list)[0]?.chats[0]?.status !== "failed") yield* Effect.yieldNow;
+        yield* waitForGoal((goal) => goal?.chats[0]?.status === "failed");
         const [goal] = yield* service.list;
         expect(goal?.pauses?.[0]).toMatchObject({ instanceId: "codex", reason: "errors" });
         expect(goal?.status).toBe("running");
@@ -676,7 +690,7 @@ it.layer(NodeServices.layer)("GoalService", (it) => {
         const [goal] = yield* service.create(settings({ concurrency: 1, stopAfterProblems: 1 }));
         const [first] = yield* harness.waitFor("thread.create", 1);
         yield* harness.runAndFinish(threadIdOf(first));
-        while ((yield* service.list)[0]?.status !== "failed") yield* Effect.yieldNow;
+        yield* waitForGoal((goal) => goal?.status === "failed");
         expect((yield* service.list)[0]?.pauses).toHaveLength(1);
         yield* TestClock.adjust("1 second");
         yield* service.restart(goal!.id);
@@ -708,7 +722,7 @@ it.layer(NodeServices.layer)("GoalService", (it) => {
         expect((yield* service.list)[0]?.chats[0]?.status).toBe("running");
         // Stuck again: now it is a real problem and keeps its lane closed.
         yield* harness.runAndFinish(threadIdOf(worker));
-        while ((yield* service.list)[0]?.chats[0]?.status === "running") yield* Effect.yieldNow;
+        yield* waitForGoal((goal) => goal?.chats[0]?.status !== "running");
         expect((yield* service.list)[0]?.chats[0]?.status).toBe("attention");
         expect(harness.log.filter((command) => command.type === "thread.turn.start")).toHaveLength(
           2,
@@ -780,7 +794,7 @@ it.layer(NodeServices.layer)("GoalService", (it) => {
           const creates = yield* harness.waitFor("thread.create", 5);
           yield* harness.finishStuck(threadIdOf(creates[0]));
           yield* harness.finishStuck(threadIdOf(creates[1]));
-          while ((yield* service.list)[0]?.status === "running") yield* Effect.yieldNow;
+          yield* waitForGoal((goal) => goal?.status !== "running");
           const [goal] = yield* service.list;
           expect(goal?.detail).toContain("The last 2 workers found no task to run");
           expect(goal?.chats.filter((chat) => chat.status === "running")).toHaveLength(3);
@@ -806,7 +820,7 @@ it.layer(NodeServices.layer)("GoalService", (it) => {
         yield* service.create(settings({ concurrency: 2, maxChats: null }));
         const [first, second] = yield* harness.waitFor("thread.create", 2);
         yield* harness.finishStuck(threadIdOf(first));
-        while (!(yield* service.list)[0]?.holdStarts) yield* Effect.yieldNow;
+        yield* waitForGoal((goal) => goal?.holdStarts === true);
         for (let turn = 0; turn < 20; turn++) yield* Effect.yieldNow;
         const [held] = yield* service.list;
         expect(held?.holdStarts).toBe(true);
@@ -844,7 +858,9 @@ it.layer(NodeServices.layer)("GoalService", (it) => {
         expect(creates[1]?.type === "thread.create" ? creates[1].title : "").toBe("Goal overseer");
         const turns = yield* harness.waitFor("thread.turn.start", 3);
         expect(textOf(turns[2])).toContain("T3-OVERSEER/1");
-        const [goal] = yield* service.list;
+        const goal = yield* waitForGoal(
+          (current) => current?.escalations?.[0]?.status === "reviewing",
+        );
         expect(goal?.escalations?.[0]).toMatchObject({ kind: "blocked", status: "reviewing" });
         expect(goal?.escalations?.[0]?.reason).toContain("BLOCKED TASKS");
         expect(harness.log.filter((command) => command.type === "thread.create")).toHaveLength(2);
@@ -870,7 +886,9 @@ it.layer(NodeServices.layer)("GoalService", (it) => {
           const briefing = textOf((yield* harness.waitFor("thread.turn.start", 2))[1]);
           expect(briefing).toContain("T3-OVERSEER/1");
           expect(briefing).toContain("t3_escalation_list");
-          const [goal] = yield* service.list;
+          const goal = yield* waitForGoal(
+            (current) => current?.escalations?.[0]?.status === "reviewing",
+          );
           expect(goal?.status).toBe("running");
           expect(goal?.escalations?.[0]).toMatchObject({
             kind: "stuck",
@@ -893,7 +911,7 @@ it.layer(NodeServices.layer)("GoalService", (it) => {
           // The overseer's turn ends; the goal carries on and a new worker starts.
           // The failed worker's provider is set aside for its errors, so the goal waits for it.
           yield* harness.runAndFinish(threadIdOf(overseer));
-          while ((yield* service.list)[0]?.waitingUntil === undefined) yield* Effect.yieldNow;
+          yield* waitForGoal((goal) => goal?.waitingUntil !== undefined);
           expect((yield* service.list)[0]?.status).toBe("running");
         }).pipe(Effect.provide(harness.layer), Effect.scoped);
       }),
@@ -926,11 +944,7 @@ it.layer(NodeServices.layer)("GoalService", (it) => {
           });
 
           // The scheduler reaches its decision with the login hold in place: no launch, one note.
-          let goal = (yield* service.list)[0]!;
-          for (let spin = 0; spin < 500 && goal.detail === undefined; spin++) {
-            yield* Effect.yieldNow;
-            goal = (yield* service.list)[0]!;
-          }
+          const goal = (yield* waitForGoal((current) => current?.detail !== undefined))!;
           yield* harness.drain;
           expect(goal.pauses).toEqual([
             expect.objectContaining({ instanceId: "codex", reason: "login" }),
@@ -943,7 +957,7 @@ it.layer(NodeServices.layer)("GoalService", (it) => {
           // Stopping and starting the goal is the operator's retry: one overseer turn on the same provider.
           yield* service.stop(goal.id);
           yield* service.restart(goal.id);
-          for (let spin = 0; spin < 500 && creates().length < 3; spin++) yield* Effect.yieldNow;
+          yield* harness.waitFor("thread.create", 3);
           yield* harness.drain;
           expect(creates()).toHaveLength(3);
           expect(creates()[2]).toMatchObject({ modelSelection: { instanceId: "codex" } });
@@ -1018,13 +1032,13 @@ it.layer(NodeServices.layer)("GoalService", (it) => {
           yield* service.replyEscalation(open!.id, `Attempt ${round}.`, "overseer");
           yield* harness.runAndFinish(threadIdOf(worker));
           // Held means the worker's chat points at the escalation (set just after it is added).
-          while (
-            ((yield* service.list)[0]?.escalations ?? []).length < round + 1 ||
-            (round < 3 && (yield* service.list)[0]?.chats[0]?.escalationId === undefined)
-          )
-            yield* Effect.yieldNow;
+          yield* waitForGoal(
+            (goal) =>
+              (goal?.escalations ?? []).length >= round + 1 &&
+              (round >= 3 || goal?.chats[0]?.escalationId !== undefined),
+          );
         }
-        while ((yield* service.list)[0]?.chats[0]?.status === "running") yield* Effect.yieldNow;
+        yield* waitForGoal((goal) => goal?.chats[0]?.status !== "running");
         const [goal] = yield* service.list;
         expect(goal?.escalations).toHaveLength(4);
         expect(goal?.escalations?.at(-1)).toMatchObject({
@@ -1056,7 +1070,7 @@ it.layer(NodeServices.layer)("GoalService", (it) => {
           "Goal overseer",
         );
         yield* harness.runAndFinish(threadIdOf(secondOverseer));
-        while ((yield* service.list)[0]?.status === "running") yield* Effect.yieldNow;
+        yield* waitForGoal((goal) => goal?.status !== "running");
         const [goal] = yield* service.list;
         expect(goal?.escalations?.[0]).toMatchObject({
           rounds: 2,
@@ -1312,7 +1326,7 @@ it.layer(NodeServices.layer)("GoalService", (it) => {
           (yield* harness.drain).filter((command) => command.type === "thread.turn.interrupt"),
         ).toEqual([]);
         yield* harness.runAndFinish(threadIdOf(first));
-        while ((yield* service.list)[0]?.chats[0]?.status === "running") yield* Effect.yieldNow;
+        yield* waitForGoal((goal) => goal?.chats[0]?.status !== "running");
         const [goal] = yield* service.list;
         expect(goal?.status).toBe("stopped");
         expect(goal?.chats[0]?.status).toBe("completed");

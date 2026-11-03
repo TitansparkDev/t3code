@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off preferSchemaOverJson:off globalConsole:off
 /** Real GoalService, plan and queue; orchestration commands are recorded in a test harness. */
 import * as NodeChildProcess from "node:child_process";
@@ -538,7 +539,7 @@ const makeFlow = (
 const turnsOf = (log: ReadonlyArray<OrchestrationCommand>) =>
   log.filter((c) => c.type === "thread.turn.start");
 
-it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
+it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("AgentQueue goals", (it) => {
   it.effect(
     "ten slots, two ready tasks: reserves before launching, so exactly two workers start",
     () =>
@@ -1855,7 +1856,11 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
           (exists) => !exists,
           "the worktree to be removed after its checkpoint was saved",
         );
-        const goal = yield* flow.goalOf(service);
+        const goal = yield* flow.eventually(
+          flow.goalOf(service),
+          (current) => current.chats[0]?.worktreeRetired === true,
+          "the worktree retirement to be recorded",
+        );
         expect(goal.chats[0]?.worktreeRetired).toBe(true);
       }).pipe(Effect.scoped),
   );
@@ -2566,7 +2571,7 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
           (row) => row.status === "completed",
           "the resumed worker's task to merge",
         );
-      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+      }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.effect(
@@ -2692,7 +2697,7 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
         );
         expect(delivered).toBeDefined();
         expect(flow.log.filter((c) => c.type === "thread.create")).toHaveLength(1);
-      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+      }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.effect(

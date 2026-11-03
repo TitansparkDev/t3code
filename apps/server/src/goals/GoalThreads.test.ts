@@ -5,7 +5,7 @@ import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 
 import { ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
-import * as Crypto from "effect/Crypto";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 
 import * as OrchestratorV2 from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
@@ -112,13 +112,7 @@ it.effect("reuses the command and message ids for a replayed resource delivery",
         } as never),
       ),
       Layer.succeed(ProjectStore.ProjectStoreV2, ProjectStore.ProjectStoreV2.of({} as never)),
-      Layer.succeed(
-        Crypto.Crypto,
-        Crypto.make({
-          randomBytes: (size) => new Uint8Array(size),
-          digest: (_algorithm, data) => Effect.succeed(data),
-        }),
-      ),
+      NodeCrypto.layer,
     );
     const threads = yield* GoalThreads.pipe(
       Effect.provide(goalThreadsLayer.pipe(Layer.provide(dependencies))),
