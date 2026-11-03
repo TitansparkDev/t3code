@@ -23461,6 +23461,7 @@ apps/mobile/src/features/triage/useStartTriage.ts
 apps/mobile/src/features/updates/app-updates.test.ts
 apps/mobile/src/features/updates/app-updates.ts
 apps/mobile/src/features/usage/ChatGptUsageSummary.tsx
+apps/mobile/src/features/usage/UsageBannerSlot.test.tsx
 apps/mobile/src/features/usage/UsageBannerSlot.tsx
 apps/mobile/src/features/usage/UsageDailyChart.ios.tsx
 apps/mobile/src/features/usage/UsageDailyChart.tsx
@@ -23951,6 +23952,7 @@ apps/server/scripts/fetch-expo-schema.ts
 apps/server/scripts/migrate-dev-db.test.ts
 apps/server/scripts/migrate-dev-db.ts
 apps/server/scripts/probe-claude-fork-local-rollback-replay.ts
+apps/server/scripts/record-antigravity-replay-fixture.ts
 apps/server/scripts/record-claude-agent-sdk-replay-fixture.ts
 apps/server/scripts/record-codex-app-server-replay-fixture.ts
 apps/server/scripts/record-cursor-agent-sdk-replay-fixture.ts
@@ -24532,6 +24534,10 @@ apps/server/src/orchestration-v2/testkit/ReplayRuntimeInstructions.ts
 apps/server/src/orchestration-v2/testkit/ThreadFork.integration.test.ts
 apps/server/src/orchestration-v2/testkit/ThreadMergeBack.integration.test.ts
 apps/server/src/orchestration-v2/testkit/fixtures/acp_elicitation/registry_transcript.ndjson
+apps/server/src/orchestration-v2/testkit/fixtures/antigravity_event_completeness/completeness.ndjson
+apps/server/src/orchestration-v2/testkit/fixtures/antigravity_event_completeness/expectations.ts
+apps/server/src/orchestration-v2/testkit/fixtures/antigravity_event_completeness/progress_only.ndjson
+apps/server/src/orchestration-v2/testkit/fixtures/antigravity_interleaved_message_id/interleaved.ndjson
 apps/server/src/orchestration-v2/testkit/fixtures/claude_background_monitor_wake/claude_transcript.ndjson
 apps/server/src/orchestration-v2/testkit/fixtures/claude_background_monitor_wake/input.ts
 apps/server/src/orchestration-v2/testkit/fixtures/claude_background_monitor_wake/output.ts
@@ -28819,6 +28825,7 @@ packages/provider-testing/package.json
 packages/provider-testing/src/TestProviderHost.ts
 packages/provider-testing/src/fakeCli.ts
 packages/provider-testing/src/replayGate.ts
+packages/provider-testing/src/replayTranscript.test.ts
 packages/provider-testing/src/replayTranscript.ts
 packages/provider-testing/src/replayWorkspace.ts
 packages/provider-testing/tsconfig.json

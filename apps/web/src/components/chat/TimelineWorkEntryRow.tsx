@@ -20,6 +20,7 @@ import {
   workEntryViewedImagePath,
 } from "@t3tools/client-runtime/work-log/presentation";
 import {
+  turnItemDetailUnavailableLabel,
   turnItemHasDetail,
   turnItemNeedsDetailFetch,
 } from "@t3tools/client-runtime/work-log/item-detail";
@@ -337,6 +338,10 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
     plainOutput !== undefined &&
     workEntry.projectedItem !== undefined &&
     turnItemNeedsDetailFetch(workEntry.projectedItem.item);
+  const unavailableDetailLabel =
+    workEntry.projectedItem === undefined
+      ? null
+      : turnItemDetailUnavailableLabel(workEntry.projectedItem.item);
   const canExpandProjectedItem =
     plainOutput !== undefined
       ? Boolean(plainOutput || viewedImage || workEntry.questionAnswer || plainOutputFetches)
@@ -347,7 +352,8 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
           : Boolean(
               viewedImage ||
               workEntry.questionAnswer ||
-              turnItemHasDetail(workEntry.projectedItem.item),
+              turnItemHasDetail(workEntry.projectedItem.item) ||
+              unavailableDetailLabel,
             );
   const iconWrapperClass = cn(
     "flex size-4 items-center justify-center",
@@ -531,7 +537,9 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
         plainOutputFetches ||
         (workEntry.projectedItem && plainOutput === undefined)) ? (
         <WorkLogDetails kind="panel">
-          {workEntry.projectedItem && plainOutput === undefined ? (
+          {unavailableDetailLabel ? (
+            <div className="text-muted-foreground italic">{unavailableDetailLabel}</div>
+          ) : workEntry.projectedItem && plainOutput === undefined ? (
             <V2ItemInspector
               projectedItem={workEntry.projectedItem}
               environmentId={ctx.activeThreadEnvironmentId}

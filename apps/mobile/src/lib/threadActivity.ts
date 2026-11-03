@@ -9,6 +9,7 @@ import { isLiveSubagentTurnItem } from "@t3tools/client-runtime/state/subagentRu
 import { extractToolActivityPresentation } from "@t3tools/client-runtime/work-log/tool-presentation";
 import {
   turnItemDetailRevision,
+  turnItemDetailUnavailableLabel,
   turnItemHasDetail,
   turnItemNeedsDetailFetch,
 } from "@t3tools/client-runtime/work-log/item-detail";
@@ -801,14 +802,17 @@ function toFeedActivity(
     item.type === "dynamic_tool" && toolGroupAction(workEntry) === "read"
       ? collectToolFilePaths(item)
       : null;
+  const unavailableDetailLabel = turnItemDetailUnavailableLabel(item);
   const getFullDetail = memoizeValue(() =>
     item.type === "proposed_plan"
       ? item.markdown
-      : readPaths
-        ? readPaths.join("\n") || null
-        : item.type === "notification"
-          ? item.detail?.trim() || null
-          : formatItemFullDetail(row, item),
+      : unavailableDetailLabel
+        ? unavailableDetailLabel
+        : readPaths
+          ? readPaths.join("\n") || null
+          : item.type === "notification"
+            ? item.detail?.trim() || null
+            : formatItemFullDetail(row, item),
   );
   const getCopyText = memoizeValue(() =>
     item.type === "proposed_plan"
@@ -831,7 +835,9 @@ function toFeedActivity(
       !(item.type === "error" && item.status === "failed") &&
       (readPaths
         ? readPaths.length > 0 || turnItemNeedsDetailFetch(item)
-        : turnItemHasDetail(item) || workEntry.questionAnswer !== undefined),
+        : turnItemHasDetail(item) ||
+          unavailableDetailLabel !== null ||
+          workEntry.questionAnswer !== undefined),
     fetchesDetail: turnItemNeedsDetailFetch(item),
     getFullDetail,
     getCopyText,

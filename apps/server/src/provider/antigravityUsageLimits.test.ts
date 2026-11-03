@@ -500,14 +500,18 @@ describe("Antigravity subscription limits", () => {
     }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 
-  it.effect("keeps one endpoint's quotas when the other fails", () =>
+  it.effect("keeps one endpoint's quotas and marks them partial when the other fails", () =>
     Effect.gen(function* () {
       const { probe } = yield* fixture({
         summaryStatusByHost: { "daily-cloudcode-pa.googleapis.com": 503 },
       });
       const limits = yield* probe;
-      expect(limits.unavailable).toBeUndefined();
       expect(limits.windows).toHaveLength(4);
+      expect(limits.unavailable).toEqual({
+        reason: "probeFailed",
+        message:
+          "Some Antigravity quota sources could not be read, so these limits may be incomplete.",
+      });
     }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 
@@ -557,19 +561,29 @@ describe("Antigravity subscription limits", () => {
             "gemini-b": {
               modelProvider: "MODEL_PROVIDER_GOOGLE",
               quotaInfo: { remainingFraction: 0.6, resetTime: "2026-10-10T12:00:00Z" },
+              weeklyQuotaInfo: { remainingFraction: 0.5 },
             },
             "claude-a": { quotaInfo: { remainingFraction: 0.2 } },
           },
         },
       });
       const limits = yield* probe;
-      expect(limits.windows).toHaveLength(2);
-      expect(limits.windows.find((window) => window.id === "gemini-quota")?.usedPercent).toBe(40);
-      expect(
-        limits.windows.every(
-          (window) => window.kind === "other" && window.windowDurationMins === undefined,
-        ),
-      ).toBe(true);
+      expect(limits.windows.map((window) => window.id).toSorted()).toEqual([
+        "claude-quota",
+        "gemini-quota",
+        "gemini-weekly",
+      ]);
+      const byId = new Map(limits.windows.map((window) => [window.id, window]));
+      expect(byId.get("gemini-quota")?.usedPercent).toBe(40);
+      expect(byId.get("gemini-quota")?.label).toBe("Gemini · Reported quota (estimate)");
+      expect(byId.get("gemini-weekly")).toMatchObject({
+        label: "Gemini · Weekly (estimate)",
+        kind: "weekly",
+        windowDurationMins: 10080,
+      });
+      expect(byId.get("gemini-quota")?.windowDurationMins).toBeUndefined();
+      // The summary endpoints failed before the fallback ran, so the estimates are also partial.
+      expect(limits.unavailable?.reason).toBe("probeFailed");
     }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 

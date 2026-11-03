@@ -15,6 +15,7 @@ import type * as EffectAcpSchema from "effect-acp/compat";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import {
+  antigravityPermissionMode,
   applyAntigravityAcpModelSelection,
   antigravitySessionMeta,
   buildAntigravityPrompt,
@@ -796,4 +797,16 @@ it.layer(NodeServices.layer)("buildAntigravityPrompt", (it) => {
       });
     }),
   );
+});
+
+describe("antigravityPermissionMode", () => {
+  // The completeness replay expects the full-access handshake to select native mode "yolo".
+  it.each([
+    ["full-access", "yolo"],
+    ["auto-accept-edits", "auto_edit"],
+    ["auto", "default"],
+    ["approval-required", "default"],
+  ] as const)("maps runtime mode %s to native mode %s", (runtimeMode, nativeMode) => {
+    expect(antigravityPermissionMode(runtimeMode)).toBe(nativeMode);
+  });
 });

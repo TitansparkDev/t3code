@@ -59,6 +59,7 @@ import {
   usageSourceMessages,
 } from "@t3tools/shared/usageFormat";
 import { Button, InlineButton } from "../ui/button";
+import { toastManager } from "../ui/toast";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
 import {
   Menu,
@@ -250,6 +251,7 @@ export function UsagePage() {
     if (nextMetric === "limits") setLimitsNow(Date.now());
     updatePreferences({ metric: nextMetric });
   };
+  // Never rejects: a failed manual refresh is reported as a toast, an automatic one stays quiet.
   const refreshLimits = (automatic = false, afterPending = false) =>
     // Settled so the timestamp still advances when a refresh throws.
     settlePromise(() =>
@@ -268,7 +270,13 @@ export function UsagePage() {
       ),
     ).then((result) => {
       setLimitsNow(Date.now());
-      if (!AsyncResult.isSuccess(result)) throw Cause.squash(result.cause);
+      if (automatic || AsyncResult.isSuccess(result)) return;
+      const error = Cause.squash(result.cause);
+      toastManager.add({
+        type: "error",
+        title: "Couldn't refresh limits",
+        description: error instanceof Error ? error.message : "An error occurred.",
+      });
     });
   const onUsageKeyDown = useEffectEvent((event: KeyboardEvent) => {
     if (

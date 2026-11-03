@@ -24,6 +24,10 @@ const SUMMARY_WINDOW_MINS = new Map([
   ["weekly", 7 * 24 * 60],
 ]);
 const MANUAL_REDIRECT: RequestInit = { redirect: "manual" };
+const PARTIAL_USAGE = {
+  reason: "probeFailed",
+  message: "Some Antigravity quota sources could not be read, so these limits may be incomplete.",
+} as const;
 const TokenFile = Schema.Struct({
   client_id: Schema.NonEmptyString,
   client_secret: Schema.NonEmptyString,
@@ -148,7 +152,10 @@ function summaryWindows(summary: typeof Summary.Type, requestedAt: number) {
   return [...windows.values()];
 }
 
-/** Older accounts expose model quotas without a window length. Do not invent a reset cadence. */
+/**
+ * Older accounts expose model quotas without a window length. Do not invent a reset cadence.
+ * These are estimates from the per-model fallback, so the labels say so.
+ */
 function modelWindows(models: typeof Models.Type) {
   const windows = new Map<string, ServerProviderUsageWindow>();
   for (const [modelId, model] of Object.entries(models.models)) {
@@ -168,7 +175,7 @@ function modelWindows(models: typeof Models.Type) {
       if (!quota) continue;
       const window = quotaWindow(
         `${family.toLowerCase()}-${suffix}`,
-        `${family} · ${suffix === "weekly" ? "Weekly" : "Reported quota"}`,
+        `${family} · ${suffix === "weekly" ? "Weekly (estimate)" : "Reported quota (estimate)"}`,
         quota,
         suffix === "weekly" ? "weekly" : "other",
         suffix === "weekly" ? 7 * 24 * 60 : undefined,
@@ -270,6 +277,7 @@ export const makeAntigravityUsageProbe = Effect.fn("makeAntigravityUsageProbe")(
       account = cached.account;
     }
     // Merge endpoints because quota groups differ; keep each bucket's most-used reading.
+    // `failed` means some endpoint could not be read, so the merged windows may be missing groups.
     const fetchWindows = Effect.fn("AntigravityUsageProbe.fetchWindows")(function* <E>(
       operation: string,
       parse: (
@@ -295,26 +303,34 @@ export const makeAntigravityUsageProbe = Effect.fn("makeAntigravityUsageProbe")(
               ),
             ).pipe(
               Effect.flatMap((response) => parse(response, requestedAt)),
-              Effect.orElseSucceed(() => []),
+              Effect.map((windows) => ({ windows, failed: false })),
+              Effect.orElseSucceed(() => ({
+                windows: [] as ServerProviderUsageWindow[],
+                failed: true,
+              })),
             );
           }),
         { concurrency: "unbounded" },
       );
       const windows = new Map<string, ServerProviderUsageWindow>();
-      for (const window of responses.flat()) {
+      for (const window of responses.flatMap((response) => response.windows)) {
         const previous = windows.get(window.id);
         if (!previous || window.usedPercent > previous.usedPercent) windows.set(window.id, window);
       }
-      return [...windows.values()];
+      return {
+        windows: [...windows.values()],
+        failed: responses.some((response) => response.failed),
+      };
     });
     const summary = yield* fetchWindows("retrieveUserQuotaSummary", (response, requestedAt) =>
       decodeSummary(response).pipe(Effect.map((summary) => summaryWindows(summary, requestedAt))),
     );
-    const windows = summary.length
-      ? summary
+    const fallback = summary.windows.length
+      ? undefined
       : yield* fetchWindows("fetchAvailableModels", (response) =>
           decodeModels(response).pipe(Effect.map(modelWindows)),
         );
+    const windows = (fallback ?? summary).windows;
     if (windows.length === 0) {
       return makeUnavailableUsageLimits({
         checkedAt,
@@ -322,7 +338,12 @@ export const makeAntigravityUsageProbe = Effect.fn("makeAntigravityUsageProbe")(
         message: "Antigravity did not return usable quota information.",
       });
     }
-    return { ...makeUsageLimits({ checkedAt, windows }), credentialFingerprint: account };
+    const incomplete = summary.failed || fallback?.failed === true;
+    return {
+      ...makeUsageLimits({ checkedAt, windows }),
+      ...(incomplete ? { unavailable: PARTIAL_USAGE } : {}),
+      credentialFingerprint: account,
+    };
   });
   const probe = read.pipe(
     Effect.timeout("30 seconds"),

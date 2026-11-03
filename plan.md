@@ -678,64 +678,18 @@ The work is complete only when all of the following are true:
 - Do not change provider authentication or delete credentials as part of a quota refresh failure.
 - Do not make every model its own Antigravity quota pool when the provider exposes shared pools.
 
-## Execution Progress & Handoff Summary
+## Execution status (audited 2026-11-03)
 
-### Phases 0-5: Completed
+An earlier summary here reported Phases 0–8 as completed, citing `apps/server/src/quota/*`, `packages/contracts/src/quota.ts`, `QuotaPanel.tsx` and mobile `state/quota.ts`. That code was never committed to a branch; it existed only in T3 checkpoint refs, and the v0.1.1 upstream merge adopted upstream's usage-limit pipeline instead. Status against the Definition of done, on upstream's pipeline (`packages/provider-core/src/server/usageLimits.ts`, `managedProvider.ts`, `apps/server/src/provider/ProviderRegistry.ts`, `apps/server/src/provider/antigravityUsageLimits.ts`, `packages/shared/src/usageLimits.ts`):
 
-- Phase 0: Traced reproduction and fixtures across Codex, Claude, and Antigravity.
-- Phase 1: Shared contracts and view models (`packages/contracts/src/quota.ts`, `packages/shared/src/usageLimits.ts`).
-- Phase 2: Server refresh coordination & quota reducer (`apps/server/src/quota/QuotaService.ts`, `QuotaRefreshLoop.ts`, `quotaReducer.ts`).
-- Phase 3: Codex freshness and app-server integration verified with event timestamps and classified error fallback.
-- Phase 4: Claude native event normalization and throttle resilience preserved.
-- Phase 5: Antigravity parser/source corrections with credit separation, percentage sanity, and dual-pool normalization (`apps/server/src/quota/antigravityQuotaParser.ts`, `normalizeRateLimits.ts`, `AntigravityQuota.ts`).
-
-### Phase 6: Antigravity Model Catalog (Completed)
-
-- Verified and validated complete live model catalog in ACP options:
-  - Gemini models: Gemini 3.8 Flash, Gemini 3.7 Flash, Gemini 3.6 Flash, Gemini 3.1 Pro.
-  - Claude models: Claude Sonnet 4.6 (Thinking), Claude Opus 4.6 (Thinking).
-  - GPT models: GPT-OSS 120B (Medium).
-- Model catalog driver and ACP support tests verified (42 tests in `AntigravityAcpSupport.test.ts`, 25 tests in `AntigravityProvider.test.ts`).
-
-### Phase 7: Unified Web & Mobile UI Aggregation Path (Completed)
-
-- **Web UI**:
-  - `QuotaPanel.tsx` renders unified Antigravity dual-pool cards (`Gemini Models` and `Claude & GPT models`) with custom brand accents (`#4f8cff` and `#34d399`), 5-hour and weekly session metrics, and single-click manual refresh affordance.
-  - `UsageLimits.tsx` consumes `useQuota()` and overlays live quota snapshots via `withNativeQuotaSnapshots(serverConfig.providers, envSnapshots)`.
-  - Stale indicators and reset countdowns correctly anchored to minute clock without animation churn.
-- **Mobile UI**:
-  - Implemented `apps/mobile/src/state/quota.ts` (mirroring `apps/web/src/state/quota.ts` over mobile's atom wiring and registry).
-  - Integrated `useQuota()` and `withNativeQuotaSnapshots` in `apps/mobile/src/features/usage/UsageLimitsPooled.tsx` for both `UsageLimitsSection` and `UsageLimitAccountScreen`.
-  - Mobile now shares the exact same live native quota aggregation semantics as Web, displaying pooled limits across connected environments.
-  - Added unit test suite `apps/mobile/src/features/usage/usageLimitsOverlay.test.ts` validating live snapshot overlay, Antigravity dual-pool handling, and freshness timestamp precedence.
-
-### Phase 8: Focused Verification & Integration (Completed)
-
-- Ran focused test suite across 15 test files covering all touched layers:
-  - `packages/contracts/src/quota.test.ts` (3 tests passed)
-  - `apps/server/src/quota/quotaReducer.test.ts` (24 tests passed)
-  - `apps/server/src/quota/normalizeRateLimits.test.ts` (37 tests passed)
-  - `apps/server/src/quota/QuotaRefreshLoop.test.ts` (4 tests passed)
-  - `apps/server/src/quota/CodexTranscriptQuota.test.ts` (2 tests passed)
-  - `apps/server/src/quota/QuotaService.test.ts` (8 tests passed)
-  - `apps/server/src/provider/Drivers/AntigravityQuota.test.ts` (11 tests passed)
-  - `apps/server/src/provider/acp/AntigravityAcpSupport.test.ts` (42 tests passed)
-  - `apps/server/src/provider/Layers/AntigravityProvider.test.ts` (25 tests passed)
-  - `packages/shared/src/usageLimits.test.ts` (32 tests passed)
-  - `packages/client-runtime/src/state/usage.test.ts` (7 tests passed)
-  - `apps/server/src/provider/usageLimits.test.ts` (4 tests passed)
-  - `apps/web/src/components/quota/quotaAggregation.test.ts` (10 tests passed)
-  - `apps/mobile/src/features/usage/usageEnvironmentSelection.test.ts` (6 tests passed)
-  - `apps/mobile/src/features/usage/usageLimitsOverlay.test.ts` (2 tests passed)
-  - **Total**: 217 passed (100% green).
-- Typecheck:
-  - `@t3tools/mobile` typecheck cleanly passed (`tsc --noEmit` code 0).
-  - `@t3tools/web` typecheck cleanly passed (`tsc --noEmit` code 0).
-- Lint & formatting:
-  - `vp fmt --check` clean across all modified files.
-  - `vp lint` clean across all modified files with 0 warnings, 0 errors.
-
----
+- Same aggregation on web and mobile: met (`collectLimitPools`). The sidebar shows no limit values, so there is nothing to disagree with.
+- Codex events and probes: a probe that started before a newer rate-limit event no longer overwrites it, including when no earlier value existed; the event wins per window and the probe fills the rest.
+- Claude native events: forwarded on every `rate_limit_event`; met.
+- Antigravity sources: account matched and bounded. A probe where one endpoint fails is now marked incomplete, and per-model fallback windows are labelled "(estimate)".
+- Freshness: mobile already showed last-checked and stale states; web now shows "Checked …", a Stale badge and a refresh-failed notice (`describeLimitFreshness`), and a failed manual refresh shows a toast.
+- Refresh coverage: concurrent targeted refreshes of one instance, and a targeted refresh during a refresh-all pass, share one probe. A provider with an exhausted window refreshes once just after that window resets, under the same demand gate as the periodic refresh.
+- Antigravity Claude and GPT-OSS models: the picker lists whatever the signed-in ACP session reports, unfiltered; whether a given account exposes them needs a live signed-in session and is not proven here.
+- Credentials: error text is fixed and fingerprints are hashed; no test asserts token absence in payloads.
 
 ## Reliability extension — agent hangs, memory pressure and provider failures (2026-10-21)
 

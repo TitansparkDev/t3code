@@ -1789,6 +1789,250 @@ it.layer(
       }),
     );
 
+    const makeCodexSnapshot = (
+      instanceId: ProviderInstanceId,
+      version: string,
+    ): ServerProvider => ({
+      instanceId,
+      driver: ProviderDriverKind.make("codex"),
+      status: "ready",
+      enabled: true,
+      installed: true,
+      auth: { status: "authenticated" },
+      checkedAt: "2026-06-10T00:00:00.000Z",
+      version,
+      models: [],
+      slashCommands: [],
+      skills: [],
+    });
+
+    const makeProbedCodexInstance = (input: {
+      readonly instanceId: ProviderInstanceId;
+      readonly cached: ServerProvider;
+      readonly refresh: Effect.Effect<ServerProvider>;
+    }): ProviderInstance => {
+      const driverKind = ProviderDriverKind.make("codex");
+      return {
+        instanceId: input.instanceId,
+        driverKind,
+        continuationIdentity: {
+          driverKind,
+          continuationKey: `codex:instance:${input.instanceId}`,
+        },
+        displayName: undefined,
+        enabled: true,
+        snapshot: {
+          resolveMaintenance: () =>
+            Effect.succeed(
+              makeManualOnlyProviderMaintenanceCapabilities({
+                provider: driverKind,
+                packageName: null,
+              }),
+            ),
+          getSnapshot: Effect.succeed(input.cached),
+          refresh: input.refresh,
+          streamChanges: Stream.empty,
+          applyUsageLimits: () => Effect.void,
+        },
+        orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
+        textGeneration: {} as ProviderInstance["textGeneration"],
+      };
+    };
+
+    const buildProbedRegistryServices = Effect.fn("buildProbedRegistryServices")(function* (
+      prefix: string,
+      instances: ReadonlyArray<ProviderInstance>,
+    ) {
+      const instanceRegistryLayer = Layer.succeed(
+        ProviderInstanceRegistry.ProviderInstanceRegistry,
+        {
+          getInstance: (requestedId) =>
+            Effect.succeed(instances.find((instance) => instance.instanceId === requestedId)),
+          listInstances: Effect.succeed(instances),
+          listUnavailable: Effect.succeed([]),
+          streamChanges: Stream.empty,
+          subscribeChanges: Effect.flatMap(PubSub.unbounded<void>(), PubSub.subscribe),
+        },
+      );
+      const scope = yield* Scope.make();
+      yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
+      return yield* Layer.build(
+        ProviderRegistry.layer.pipe(
+          Layer.provideMerge(instanceRegistryLayer),
+          Layer.provideMerge(layerUnusedMutator),
+          Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix })),
+          Layer.provideMerge(NodeServices.layer),
+        ),
+      ).pipe(Scope.provide(scope));
+    });
+
+    it.effect("shares one probe between concurrent refreshes of the same instance", () =>
+      Effect.gen(function* () {
+        const instanceId = ProviderInstanceId.make("codex-shared");
+        const cached = makeCodexSnapshot(instanceId, "0.9.0");
+        const fresh = makeCodexSnapshot(instanceId, "1.0.0");
+        const refreshCalls = yield* Ref.make(0);
+        const probeStarted = yield* Deferred.make<void>();
+        const releaseProbe = yield* Deferred.make<void>();
+        const runtimeServices = yield* buildProbedRegistryServices(
+          "t3-provider-registry-instance-shared-",
+          [
+            makeProbedCodexInstance({
+              instanceId,
+              cached,
+              refresh: Effect.gen(function* () {
+                yield* Ref.update(refreshCalls, (count) => count + 1);
+                yield* Deferred.succeed(probeStarted, undefined);
+                yield* Deferred.await(releaseProbe);
+                return fresh;
+              }),
+            }),
+          ],
+        );
+
+        yield* Effect.gen(function* () {
+          const registry = yield* ProviderRegistry.ProviderRegistry;
+          const first = yield* registry.refreshInstance(instanceId).pipe(Effect.forkChild);
+          yield* Deferred.await(probeStarted);
+          const second = yield* registry.refreshInstance(instanceId).pipe(Effect.forkChild);
+          yield* Effect.yieldNow;
+          assert.strictEqual(yield* Ref.get(refreshCalls), 1);
+          yield* Deferred.succeed(releaseProbe, undefined);
+          expect(yield* Fiber.join(first)).toEqual([expect.objectContaining(fresh)]);
+          expect(yield* Fiber.join(second)).toEqual([expect.objectContaining(fresh)]);
+          assert.strictEqual(yield* Ref.get(refreshCalls), 1);
+
+          yield* registry.refreshInstance(instanceId);
+          assert.strictEqual(yield* Ref.get(refreshCalls), 2);
+        }).pipe(Effect.provide(runtimeServices));
+      }),
+    );
+
+    it.effect("shares a refreshAll pass's probe with a targeted refresh of that instance", () =>
+      Effect.gen(function* () {
+        const instanceId = ProviderInstanceId.make("codex-pass");
+        const cached = makeCodexSnapshot(instanceId, "0.9.0");
+        const fresh = makeCodexSnapshot(instanceId, "1.0.0");
+        const refreshCalls = yield* Ref.make(0);
+        const probeStarted = yield* Deferred.make<void>();
+        const releaseProbe = yield* Deferred.make<void>();
+        const runtimeServices = yield* buildProbedRegistryServices(
+          "t3-provider-registry-pass-shared-",
+          [
+            makeProbedCodexInstance({
+              instanceId,
+              cached,
+              refresh: Effect.gen(function* () {
+                yield* Ref.update(refreshCalls, (count) => count + 1);
+                yield* Deferred.succeed(probeStarted, undefined);
+                yield* Deferred.await(releaseProbe);
+                return fresh;
+              }),
+            }),
+          ],
+        );
+
+        yield* Effect.gen(function* () {
+          const registry = yield* ProviderRegistry.ProviderRegistry;
+          const pass = yield* registry.refresh().pipe(Effect.forkChild);
+          yield* Deferred.await(probeStarted);
+          const targeted = yield* registry.refreshInstance(instanceId).pipe(Effect.forkChild);
+          yield* Effect.yieldNow;
+          assert.strictEqual(yield* Ref.get(refreshCalls), 1);
+          yield* Deferred.succeed(releaseProbe, undefined);
+          expect(yield* Fiber.join(pass)).toEqual([expect.objectContaining(fresh)]);
+          expect(yield* Fiber.join(targeted)).toEqual([expect.objectContaining(fresh)]);
+          assert.strictEqual(yield* Ref.get(refreshCalls), 1);
+        }).pipe(Effect.provide(runtimeServices));
+      }),
+    );
+
+    it.effect("probes different instances independently", () =>
+      Effect.gen(function* () {
+        const firstId = ProviderInstanceId.make("codex-first");
+        const secondId = ProviderInstanceId.make("codex-second");
+        const firstCalls = yield* Ref.make(0);
+        const secondCalls = yield* Ref.make(0);
+        const runtimeServices = yield* buildProbedRegistryServices(
+          "t3-provider-registry-instances-",
+          [
+            makeProbedCodexInstance({
+              instanceId: firstId,
+              cached: makeCodexSnapshot(firstId, "0.9.0"),
+              refresh: Ref.update(firstCalls, (count) => count + 1).pipe(
+                Effect.as(makeCodexSnapshot(firstId, "1.0.0")),
+              ),
+            }),
+            makeProbedCodexInstance({
+              instanceId: secondId,
+              cached: makeCodexSnapshot(secondId, "0.9.0"),
+              refresh: Ref.update(secondCalls, (count) => count + 1).pipe(
+                Effect.as(makeCodexSnapshot(secondId, "1.0.0")),
+              ),
+            }),
+          ],
+        );
+
+        yield* Effect.gen(function* () {
+          const registry = yield* ProviderRegistry.ProviderRegistry;
+          yield* Effect.all(
+            [registry.refreshInstance(firstId), registry.refreshInstance(secondId)],
+            { concurrency: "unbounded" },
+          );
+          assert.strictEqual(yield* Ref.get(firstCalls), 1);
+          assert.strictEqual(yield* Ref.get(secondCalls), 1);
+        }).pipe(Effect.provide(runtimeServices));
+      }),
+    );
+
+    it.effect("fails every concurrent caller of a failed shared probe, then probes again", () =>
+      Effect.gen(function* () {
+        const instanceId = ProviderInstanceId.make("codex-failing");
+        const cached = makeCodexSnapshot(instanceId, "0.9.0");
+        const fresh = makeCodexSnapshot(instanceId, "1.0.0");
+        const attempts = yield* Ref.make(0);
+        const probeStarted = yield* Deferred.make<void>();
+        const releaseProbe = yield* Deferred.make<void>();
+        const runtimeServices = yield* buildProbedRegistryServices(
+          "t3-provider-registry-shared-failure-",
+          [
+            makeProbedCodexInstance({
+              instanceId,
+              cached,
+              refresh: Effect.gen(function* () {
+                const attempt = yield* Ref.updateAndGet(attempts, (count) => count + 1);
+                if (attempt > 1) {
+                  return fresh;
+                }
+                yield* Deferred.succeed(probeStarted, undefined);
+                yield* Deferred.await(releaseProbe);
+                return yield* Effect.die(new Error("simulated refresh failure"));
+              }),
+            }),
+          ],
+        );
+
+        yield* Effect.gen(function* () {
+          const registry = yield* ProviderRegistry.ProviderRegistry;
+          const cachedList = yield* registry.getProviders;
+          expect(cachedList).toEqual([expect.objectContaining({ version: "0.9.0" })]);
+          const first = yield* registry.refreshInstance(instanceId).pipe(Effect.forkChild);
+          yield* Deferred.await(probeStarted);
+          const second = yield* registry.refreshInstance(instanceId).pipe(Effect.forkChild);
+          yield* Effect.yieldNow;
+          yield* Deferred.succeed(releaseProbe, undefined);
+          expect(yield* Fiber.join(first)).toEqual(cachedList);
+          expect(yield* Fiber.join(second)).toEqual(cachedList);
+          assert.strictEqual(yield* Ref.get(attempts), 1);
+
+          expect(yield* registry.refreshInstance(instanceId)).toEqual([
+            expect.objectContaining(fresh),
+          ]);
+          assert.strictEqual(yield* Ref.get(attempts), 2);
+        }).pipe(Effect.provide(runtimeServices));
+      }),
+    );
+
     it.effect("persists the merged snapshot when a live update has empty models", () =>
       Effect.gen(function* () {
         const cursorDriver = ProviderDriverKind.make("cursor");

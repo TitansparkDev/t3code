@@ -4,6 +4,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ServerProvider,
+  type ServerProviderUsageLimits,
   type UsageLimitSourceSnapshots,
   UsageLimitSourceId,
 } from "@t3tools/contracts";
@@ -19,6 +20,7 @@ import {
   collectExternalUsageLinks,
   collectLimitNotices,
   collectLimitPools,
+  describeLimitFreshness,
   elapsedShare,
   exhaustedUsageWindow,
   paceOf,
@@ -162,6 +164,63 @@ describe("pace", () => {
     expect(paceOf(window, now)).toBe("under");
     expect(paceOf({ ...window, usedPercent: 62 }, now)).toBe("on");
     expect(paceOf({ ...window, usedPercent: 80 }, now)).toBe("ahead");
+  });
+});
+
+describe("limit freshness", () => {
+  const limits = (
+    overrides: Partial<ServerProviderUsageLimits> = {},
+  ): ServerProviderUsageLimits => ({
+    checkedAt: "2026-09-03T11:50:00.000Z",
+    windows: [window],
+    ...overrides,
+  });
+
+  it("is fresh when checked within 15 minutes and no reset has passed", () => {
+    expect(describeLimitFreshness(limits(), now)).toEqual({
+      checkedAt: Date.parse("2026-09-03T11:50:00.000Z"),
+      stale: false,
+      refreshFailed: false,
+      message: undefined,
+    });
+  });
+
+  it("is stale once the last check is older than 15 minutes", () => {
+    expect(
+      describeLimitFreshness(limits({ checkedAt: "2026-09-03T11:45:00.000Z" }), now).stale,
+    ).toBe(false);
+    expect(
+      describeLimitFreshness(limits({ checkedAt: "2026-09-03T11:44:59.000Z" }), now).stale,
+    ).toBe(true);
+  });
+
+  it("is stale when the check is stamped more than a minute ahead of this clock", () => {
+    expect(
+      describeLimitFreshness(limits({ checkedAt: "2026-09-03T12:02:00.000Z" }), now).stale,
+    ).toBe(true);
+  });
+
+  it("is stale when a window's reset time has passed", () => {
+    const passed = { ...window, resetsAt: "2026-09-03T11:59:00.000Z" };
+    expect(describeLimitFreshness(limits({ windows: [passed] }), now).stale).toBe(true);
+  });
+
+  it("reports a failed refresh with its retained windows and message", () => {
+    expect(
+      describeLimitFreshness(
+        limits({ unavailable: { reason: "probeFailed", message: "Token expired" } }),
+        now,
+      ),
+    ).toMatchObject({ stale: false, refreshFailed: true, message: "Token expired" });
+  });
+
+  it("does not report a failed refresh when no windows were retained", () => {
+    expect(
+      describeLimitFreshness(
+        limits({ windows: [], unavailable: { reason: "probeFailed", message: "Token expired" } }),
+        now,
+      ),
+    ).toMatchObject({ refreshFailed: false, message: undefined });
   });
 });
 

@@ -602,25 +602,32 @@ export const layer = Layer.effect(
       );
     });
 
-    type RefreshAllCompletion = Deferred.Deferred<ReadonlyArray<ServerProvider>>;
-    const refreshAllInFlightRef = yield* Ref.make<Option.Option<RefreshAllCompletion>>(
-      Option.none(),
-    );
+    type RefreshCompletion = Deferred.Deferred<ReadonlyArray<ServerProvider>>;
+    type RefreshAllPass = {
+      readonly completion: RefreshCompletion;
+      readonly instanceIds: ReadonlySet<ProviderInstanceId>;
+    };
+    const refreshAllInFlightRef = yield* Ref.make<Option.Option<RefreshAllPass>>(Option.none());
 
     const refreshAll = Effect.fn("refreshAll")(function* () {
+      const sources = yield* getLiveSources;
       const claimed = yield* Ref.modify(
         refreshAllInFlightRef,
         (
           inFlight,
         ): readonly [
-          { readonly owner: boolean; readonly completion: RefreshAllCompletion },
-          Option.Option<RefreshAllCompletion>,
+          { readonly owner: boolean; readonly completion: RefreshCompletion },
+          Option.Option<RefreshAllPass>,
         ] => {
           if (Option.isSome(inFlight)) {
-            return [{ owner: false, completion: inFlight.value }, inFlight];
+            return [{ owner: false, completion: inFlight.value.completion }, inFlight];
           }
           const completion = Deferred.makeUnsafe<ReadonlyArray<ServerProvider>>();
-          return [{ owner: true, completion }, Option.some(completion)];
+          const pass = {
+            completion,
+            instanceIds: new Set(sources.map((source) => source.instanceId)),
+          };
+          return [{ owner: true, completion }, Option.some(pass)];
         },
       );
       if (claimed.owner) {
@@ -628,8 +635,8 @@ export const layer = Layer.effect(
         // Syncing first keeps a refresh right after a rebuild from probing the replaced instance.
         yield* syncLiveSourcesAndContinue.pipe(
           Effect.andThen(getLiveSources),
-          Effect.flatMap((sources) =>
-            Effect.forEach(sources, (source) => refreshOneSource(source), {
+          Effect.flatMap((liveSources) =>
+            Effect.forEach(liveSources, (source) => refreshOneSource(source), {
               concurrency: "unbounded",
               discard: true,
             }),
@@ -646,6 +653,57 @@ export const layer = Layer.effect(
       return yield* Deferred.await(claimed.completion);
     });
 
+    const instanceRefreshesInFlightRef = yield* Ref.make<
+      ReadonlyMap<ProviderInstanceId, RefreshCompletion>
+    >(new Map());
+
+    // Concurrent targeted refreshes of one instance share its probe. The owner is detached, like refreshAll, so a caller's interruption cannot cancel the others.
+    const refreshSourceShared = Effect.fn("refreshSourceShared")(function* (
+      providerSource: ProviderSnapshotSource,
+    ) {
+      const instanceId = providerSource.instanceId;
+      const claimed = yield* Ref.modify(
+        instanceRefreshesInFlightRef,
+        (
+          inFlight,
+        ): readonly [
+          { readonly owner: boolean; readonly completion: RefreshCompletion },
+          ReadonlyMap<ProviderInstanceId, RefreshCompletion>,
+        ] => {
+          const existing = inFlight.get(instanceId);
+          if (existing) {
+            return [{ owner: false, completion: existing }, inFlight];
+          }
+          const completion = Deferred.makeUnsafe<ReadonlyArray<ServerProvider>>();
+          return [{ owner: true, completion }, new Map(inFlight).set(instanceId, completion)];
+        },
+      );
+      if (claimed.owner) {
+        yield* refreshOneSource(providerSource).pipe(
+          Effect.onExit((exit) =>
+            Ref.update(instanceRefreshesInFlightRef, (inFlight) => {
+              const next = new Map(inFlight);
+              next.delete(instanceId);
+              return next;
+            }).pipe(Effect.andThen(Deferred.done(claimed.completion, exit))),
+          ),
+          Effect.forkDetach,
+        );
+      }
+      return yield* Deferred.await(claimed.completion);
+    });
+
+    // A refreshAll pass that already probes this instance is the refresh; a second probe would only repeat it.
+    const refreshTargetedSource = Effect.fn("refreshTargetedSource")(function* (
+      providerSource: ProviderSnapshotSource,
+    ) {
+      const pass = yield* Ref.get(refreshAllInFlightRef);
+      if (Option.isSome(pass) && pass.value.instanceIds.has(providerSource.instanceId)) {
+        return yield* Deferred.await(pass.value.completion);
+      }
+      return yield* refreshSourceShared(providerSource);
+    });
+
     const refresh = Effect.fn("refresh")(function* (provider?: ProviderDriverKind) {
       if (provider === undefined) {
         return yield* refreshAll();
@@ -658,19 +716,24 @@ export const layer = Layer.effect(
       if (!providerSource) {
         return yield* Ref.get(providersRef);
       }
-      return yield* refreshOneSource(providerSource);
+      return yield* refreshTargetedSource(providerSource);
     });
 
     const refreshInstance = Effect.fn("refreshInstance")(function* (
       instanceId: ProviderInstanceId,
     ) {
+      // A probe already running for this instance started after its own sync, so join it first.
+      const inFlight = (yield* Ref.get(instanceRefreshesInFlightRef)).get(instanceId);
+      if (inFlight) {
+        return yield* Deferred.await(inFlight);
+      }
       yield* syncLiveSourcesAndContinue;
       const sources = yield* getLiveSources;
       const providerSource = sources.find((candidate) => candidate.instanceId === instanceId);
       if (!providerSource) {
         return yield* Ref.get(providersRef);
       }
-      return yield* refreshOneSource(providerSource);
+      return yield* refreshTargetedSource(providerSource);
     });
 
     const reloadSecretsAndRefresh = Effect.fn("reloadSecretsAndRefresh")(function* (
