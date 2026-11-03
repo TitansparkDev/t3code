@@ -1,5 +1,5 @@
-import * as NodeFS from "node:fs";
-import { describe, expect, it } from "vite-plus/test";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import type * as EffectAcpSchema from "effect-acp/compat";
@@ -20,7 +20,7 @@ import {
   mergeToolCallState,
   parseSessionUpdateEvent,
 } from "@t3tools/provider-acp/server/runtimeModel";
-import { decodeProviderReplayNdjson } from "@t3tools/provider-testing/replayTranscript";
+import { readProviderReplayTranscript } from "@t3tools/provider-testing/replayTranscript";
 import {
   COMPLETENESS_NATIVE_TOOL_FRAME_COUNT,
   COMPLETENESS_NATIVE_TOOL_IDS,
@@ -422,72 +422,88 @@ const COMPLETENESS_FIXTURE_DIR = new URL(
   import.meta.url,
 );
 
-function loadNativeNotifications(file: string): ReadonlyArray<EffectAcpSchema.SessionNotification> {
-  const text = NodeFS.readFileSync(new URL(file, COMPLETENESS_FIXTURE_DIR), "utf8");
-  const transcript = Effect.runSync(decodeProviderReplayNdjson(text));
+const loadNativeNotifications = Effect.fn("loadNativeNotifications")(function* (file: string) {
+  const transcript = yield* readProviderReplayTranscript(new URL(file, COMPLETENESS_FIXTURE_DIR));
   return transcript.entries.flatMap((entry) => {
     if (entry.type !== "emit_inbound") return [];
     const frame = entry.frame as { readonly method?: string; readonly params?: unknown };
     if (frame.method !== "session/update") return [];
     return [frame.params as EffectAcpSchema.SessionNotification];
   });
+}, Effect.provide(NodeServices.layer));
+
+function nativeToolCallId(notification: EffectAcpSchema.SessionNotification): string | undefined {
+  const update = notification.update;
+  return update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update"
+    ? update.toolCallId
+    : undefined;
 }
 
 describe("Antigravity completeness fixture at the protocol layer", () => {
-  it("keeps every native tool frame as one parsed tool update with its identity", () => {
-    const native = loadNativeNotifications("completeness.ndjson");
-    const toolFrames = native.filter(
-      (notification) =>
-        notification.update.sessionUpdate === "tool_call" ||
-        notification.update.sessionUpdate === "tool_call_update",
-    );
-    expect(toolFrames).toHaveLength(COMPLETENESS_NATIVE_TOOL_FRAME_COUNT);
-    const parsed = toolFrames.map((notification) => {
-      const result = parseSessionUpdateEvent(normalizeAntigravitySessionUpdate(notification));
-      const events = result.events.filter((event) => event._tag === "ToolCallUpdated");
-      expect(events).toHaveLength(1);
-      return events[0]!.toolCall.toolCallId;
-    });
-    expect(parsed).toEqual(toolFrames.map((notification) => notification.update.toolCallId));
-    expect([...new Set(parsed)]).toEqual(COMPLETENESS_NATIVE_TOOL_IDS);
-  });
+  it.effect("keeps every native tool frame as one parsed tool update with its identity", () =>
+    Effect.gen(function* () {
+      const native = yield* loadNativeNotifications("completeness.ndjson");
+      const toolFrames = native.filter(
+        (notification) =>
+          notification.update.sessionUpdate === "tool_call" ||
+          notification.update.sessionUpdate === "tool_call_update",
+      );
+      expect(toolFrames).toHaveLength(COMPLETENESS_NATIVE_TOOL_FRAME_COUNT);
+      const parsed = toolFrames.map((notification) => {
+        const result = parseSessionUpdateEvent(normalizeAntigravitySessionUpdate(notification));
+        const events = result.events.filter((event) => event._tag === "ToolCallUpdated");
+        expect(events).toHaveLength(1);
+        return events[0]!.toolCall.toolCallId;
+      });
+      expect(parsed).toEqual(toolFrames.map(nativeToolCallId));
+      expect([...new Set(parsed)]).toEqual(COMPLETENESS_NATIVE_TOOL_IDS);
+    }),
+  );
 
-  it("separates the native subagent batch from the delegated T3 MCP call", () => {
-    const native = loadNativeNotifications("completeness.ndjson");
-    const launch = native.find((notification) => notification.update.toolCallId === "trajectory:4");
-    const delegated = native.find((notification) => notification.update.toolCallId === "mcp-1");
-    expect(launch).toBeDefined();
-    expect(delegated).toBeDefined();
-    const launchCall = parseToolUpdate(launch!).toolCall;
-    const delegatedCall = parseToolUpdate(delegated!).toolCall;
-    expect(classifyAntigravitySubagentToolCall(launchCall, launch)).toBe("subagent");
-    expect(classifyAntigravitySubagentToolCall(delegatedCall, delegated)).toBeUndefined();
-  });
+  it.effect("separates the native subagent batch from the delegated T3 MCP call", () =>
+    Effect.gen(function* () {
+      const native = yield* loadNativeNotifications("completeness.ndjson");
+      const launch = native.find(
+        (notification) => nativeToolCallId(notification) === "trajectory:4",
+      );
+      const delegated = native.find((notification) => nativeToolCallId(notification) === "mcp-1");
+      expect(launch).toBeDefined();
+      expect(delegated).toBeDefined();
+      const launchCall = parseToolUpdate(launch!).toolCall;
+      const delegatedCall = parseToolUpdate(delegated!).toolCall;
+      expect(classifyAntigravitySubagentToolCall(launchCall, launch)).toBe("subagent");
+      expect(classifyAntigravitySubagentToolCall(delegatedCall, delegated)).toBeUndefined();
+    }),
+  );
 
-  it("normalizes the command tail to one execute row with its command and exit code", () => {
-    const native = loadNativeNotifications("completeness.ndjson").filter(
-      (notification) => notification.update.toolCallId === "cmd-1",
-    );
-    expect(native).toHaveLength(6);
-    const final = native.reduce<ReturnType<typeof parseToolUpdate>["toolCall"] | undefined>(
-      (merged, notification) => {
-        const next = parseToolUpdate(notification).toolCall;
-        return mergeToolCallState(merged, next);
-      },
-      undefined,
-    );
-    expect(normalizeAntigravityToolCall(final!)).toMatchObject({
-      kind: "execute",
-      status: "completed",
-      command: "sh scripts/check.sh",
-      data: { item: { aggregatedOutput: "check 1 ok\ncheck 2 ok\ncheck 3 ok\n", exitCode: 0 } },
-    });
-  });
+  it.effect("normalizes the command tail to one execute row with its command and exit code", () =>
+    Effect.gen(function* () {
+      const native = (yield* loadNativeNotifications("completeness.ndjson")).filter(
+        (notification) => nativeToolCallId(notification) === "cmd-1",
+      );
+      expect(native).toHaveLength(6);
+      const final = native.reduce<ReturnType<typeof parseToolUpdate>["toolCall"] | undefined>(
+        (merged, notification) => {
+          const next = parseToolUpdate(notification).toolCall;
+          return mergeToolCallState(merged, next);
+        },
+        undefined,
+      );
+      expect(normalizeAntigravityToolCall(final!)).toMatchObject({
+        kind: "execute",
+        status: "completed",
+        command: "sh scripts/check.sh",
+        data: { item: { aggregatedOutput: "check 1 ok\ncheck 2 ok\ncheck 3 ok\n", exitCode: 0 } },
+      });
+    }),
+  );
 
-  it("has no message, reasoning or plan frames in the progress-only negative fixture", () => {
-    const native = loadNativeNotifications("progress_only.ndjson");
-    expect(native.map((notification) => notification.update.sessionUpdate)).toEqual(
-      PROGRESS_ONLY_NATIVE_UPDATE_KINDS,
-    );
-  });
+  it.effect("has no message, reasoning or plan frames in the progress-only negative fixture", () =>
+    Effect.gen(function* () {
+      const native = yield* loadNativeNotifications("progress_only.ndjson");
+      expect(native.map((notification) => notification.update.sessionUpdate)).toEqual(
+        PROGRESS_ONLY_NATIVE_UPDATE_KINDS,
+      );
+    }),
+  );
 });

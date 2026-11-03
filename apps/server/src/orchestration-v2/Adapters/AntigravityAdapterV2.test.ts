@@ -1,5 +1,5 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { assert, describe, it } from "@effect/vitest";
+import { assert, describe, expect, it } from "@effect/vitest";
 import {
   ChatFileAttachment,
   MessageId,
@@ -33,6 +33,7 @@ import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderS
 import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
 import type * as AcpSessionRuntime from "@t3tools/provider-acp/server/AcpSessionRuntime";
 import { makeAntigravityAcpRuntime } from "../../provider/acp/AntigravityAcpSupport.ts";
+import { COMPLETENESS_EXPECTED_TURN_ITEMS } from "../testkit/fixtures/antigravity_event_completeness/expectations.ts";
 import { readProviderReplayTranscript } from "@t3tools/provider-testing/replayTranscript";
 import { ANTIGRAVITY_DEFAULT_MODEL } from "@t3tools/contracts";
 import {
@@ -753,131 +754,208 @@ const replayFixtureDir = new URL(
   import.meta.url,
 );
 
-describe("AntigravityAdapterV2 offline event replay", () => {
-  it.effect("dumps the observed T3 events", () =>
-    Effect.gen(function* () {
-      const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-      const fileSystem = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const raw = yield* readProviderReplayTranscript(
-        new URL("completeness.ndjson", replayFixtureDir),
-      );
-      const transcript = yield* decodeAcpReplayTranscript(
-        raw,
-        ProviderDriverKind.make("antigravity"),
-      );
-      const statusDir = yield* fileSystem.makeTempDirectory({ prefix: "agy-replay-" });
-      const statusPath = path.join(statusDir, "status.json");
-      const scriptPath = yield* path.fromFileUrl(
-        new URL("../../../scripts/acp-replay-agent.ts", import.meta.url),
-      );
-      const instanceId = ProviderInstanceId.make("antigravity-replay-test");
-      const threadId = ThreadId.make("thread-antigravity-replay");
-      const adapter = yield* makeAntigravityAdapterV2({
-        instanceId,
-        selfInvocation: yield* resolveSelfInvocation(),
-        makeRuntime: (input) =>
-          makeAcpReplayRuntime({
-            transcript,
-            statusPath,
-            scriptPath,
-            childProcessSpawner,
-            fileSystem,
-          })(input as never),
-        withProcess: (_stop, task) => task,
-        // @effect-diagnostics-next-line effectSucceedWithVoid:off - This optional result requires undefined, not the wider void type.
-        defaultModel: Effect.succeed(undefined),
-      });
-      const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+const runAntigravityReplayTurn = (
+  fixture: string,
+  options: { readonly declinesPermission: boolean },
+) =>
+  Effect.gen(function* () {
+    const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const raw = yield* readProviderReplayTranscript(new URL(fixture, replayFixtureDir));
+    const transcript = yield* decodeAcpReplayTranscript(
+      raw,
+      ProviderDriverKind.make("antigravity"),
+    );
+    const statusDir = yield* fileSystem.makeTempDirectory({ prefix: "agy-replay-" });
+    const statusPath = path.join(statusDir, "status.json");
+    const scriptPath = yield* path.fromFileUrl(
+      new URL("../../../scripts/acp-replay-agent.ts", import.meta.url),
+    );
+    const instanceId = ProviderInstanceId.make("antigravity-replay-test");
+    const threadId = ThreadId.make("thread-antigravity-replay");
+    const crypto = yield* Crypto.Crypto;
+    const adapter = yield* makeAntigravityAdapterV2({
+      instanceId,
+      selfInvocation: yield* resolveSelfInvocation(),
+      makeRuntime: (input) =>
+        makeAcpReplayRuntime({
+          transcript,
+          statusPath,
+          scriptPath,
+          childProcessSpawner,
+          fileSystem,
+        })(input as never).pipe(Effect.provideService(Crypto.Crypto, crypto)),
+      withProcess: (_stop, task) => task,
+      // @effect-diagnostics-next-line effectSucceedWithVoid:off - This optional result requires undefined, not the wider void type.
+      defaultModel: Effect.succeed(undefined),
+    });
+    const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+      runtimeMode: "approval-required",
+      interactionMode: "default",
+      cwd: process.cwd(),
+    });
+    const modelSelection = { instanceId, model: ANTIGRAVITY_DEFAULT_MODEL } as const;
+    const session = yield* adapter.openSession({
+      threadId,
+      providerSessionId: ProviderSessionId.make("provider-session-antigravity-replay"),
+      modelSelection,
+      runtimePolicy,
+    });
+    const providerThread = yield* session.ensureThread({
+      threadId,
+      modelSelection,
+      runtimePolicy,
+    });
+    const now = yield* DateTime.now;
+    const pendingRequest = yield* Deferred.make<RuntimeRequestId>();
+    const collected = yield* Effect.forkChild(
+      session.events.pipe(
+        Stream.tap((event) => {
+          if (
+            event.type === "runtime_request.updated" &&
+            event.runtimeRequest.status === "pending"
+          ) {
+            return Deferred.succeed(pendingRequest, event.runtimeRequest.id).pipe(Effect.ignore);
+          }
+          if (event.type === "turn_item.updated" && event.turnItem.type === "approval_request") {
+            return Deferred.succeed(pendingRequest, event.turnItem.requestId).pipe(Effect.ignore);
+          }
+          return Effect.void;
+        }),
+        Stream.takeUntil((event) => event.type === "turn.terminal"),
+        Stream.runCollect,
+      ),
+    );
+    yield* session.startTurn({
+      appThread: {
+        createdBy: "user",
+        creationSource: "web",
+        id: threadId,
+        projectId: ProjectId.make("project-antigravity-replay"),
+        title: "Antigravity replay",
+        providerInstanceId: instanceId,
+        modelSelection,
         runtimeMode: "approval-required",
         interactionMode: "default",
-        cwd: process.cwd(),
-      });
-      const modelSelection = { instanceId, model: ANTIGRAVITY_DEFAULT_MODEL } as const;
-      const session = yield* adapter.openSession({
-        threadId,
-        providerSessionId: ProviderSessionId.make("provider-session-antigravity-replay"),
-        modelSelection,
-        runtimePolicy,
-      });
-      const providerThread = yield* session.ensureThread({
-        threadId,
-        modelSelection,
-        runtimePolicy,
-      });
-      const now = yield* DateTime.now;
-      const pendingRequest = yield* Deferred.make<RuntimeRequestId>();
-      const collected = yield* Effect.forkChild(
-        session.events.pipe(
-          Stream.tap((event) => {
-            console.log("EVENT", JSON.stringify(summarizeReplayEvent(event)));
-            if (
-              event.type === "runtime_request.updated" &&
-              event.runtimeRequest.status === "pending"
-            ) {
-              return Deferred.succeed(pendingRequest, event.runtimeRequest.id).pipe(Effect.ignore);
-            }
-            if (event.type === "turn_item.updated" && event.turnItem.type === "approval_request") {
-              return Deferred.succeed(pendingRequest, event.turnItem.requestId).pipe(Effect.ignore);
-            }
-            return Effect.void;
-          }),
-          Stream.takeUntil((event) => event.type === "turn.terminal"),
-          Stream.runCollect,
-        ),
-      );
-      yield* session.startTurn({
-        appThread: {
-          createdBy: "user",
-          creationSource: "web",
-          id: threadId,
-          projectId: ProjectId.make("project-antigravity-replay"),
-          title: "Antigravity replay",
-          providerInstanceId: instanceId,
-          modelSelection,
-          runtimeMode: "approval-required",
-          interactionMode: "default",
-          branch: null,
-          worktreePath: process.cwd(),
-          activeProviderThreadId: providerThread.id,
-          lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
-          forkedFrom: null,
-          createdAt: now,
-          updatedAt: now,
-          archivedAt: null,
-          settledOverride: null,
-          settledAt: null,
-          lastVisitedAt: null,
-          deletedAt: null,
-        },
-        threadId,
-        runId: RunId.make("run-antigravity-replay"),
-        runOrdinal: 1,
-        providerTurnOrdinal: 1,
-        attemptId: RunAttemptId.make("attempt-antigravity-replay"),
-        rootNodeId: NodeId.make("node-antigravity-replay"),
-        providerThread,
-        message: {
-          createdBy: "user",
-          creationSource: "web",
-          messageId: MessageId.make("message-antigravity-replay"),
-          text: "probe the marker",
-          attachments: [],
-        },
-        modelSelection,
-        runtimePolicy,
-      });
+        branch: null,
+        worktreePath: process.cwd(),
+        activeProviderThreadId: providerThread.id,
+        lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+        forkedFrom: null,
+        createdAt: now,
+        updatedAt: now,
+        archivedAt: null,
+        settledOverride: null,
+        settledAt: null,
+        lastVisitedAt: null,
+        deletedAt: null,
+      },
+      threadId,
+      runId: RunId.make("run-antigravity-replay"),
+      runOrdinal: 1,
+      providerTurnOrdinal: 1,
+      attemptId: RunAttemptId.make("attempt-antigravity-replay"),
+      rootNodeId: NodeId.make("node-antigravity-replay"),
+      providerThread,
+      message: {
+        createdBy: "user",
+        creationSource: "web",
+        messageId: MessageId.make("message-antigravity-replay"),
+        text: "probe the marker",
+        attachments: [],
+      },
+      modelSelection,
+      runtimePolicy,
+    });
+    if (options.declinesPermission) {
       const requestId = yield* Deferred.await(pendingRequest);
       yield* session.respondToRuntimeRequest({ requestId, decision: "decline" });
-      const events = Array.from(yield* Fiber.join(collected));
-      console.log(
-        "OBSERVED_T3",
-        JSON.stringify(events.map((event) => summarizeReplayEvent(event))),
+    }
+    const events = Array.from(yield* Fiber.join(collected));
+    yield* makeAcpReplayCompletenessAssertion(fileSystem, statusPath, transcript);
+    return events.map(summarizeReplayEvent);
+  }).pipe(Effect.provide(layerSession), Effect.scoped);
+
+describe("AntigravityAdapterV2 offline event replay", () => {
+  it.effect("emits every completeness-fixture item in chronological order with its identity", () =>
+    Effect.gen(function* () {
+      const events = yield* runAntigravityReplayTurn("completeness.ndjson", {
+        declinesPermission: true,
+      });
+      assertCompletenessItems(events);
+    }),
+  );
+
+  it.effect("keeps text that resumes under its message ID after a tool call", () =>
+    Effect.gen(function* () {
+      const events = yield* runAntigravityReplayTurn(
+        "../antigravity_interleaved_message_id/interleaved.ndjson",
+        { declinesPermission: false },
       );
-      yield* makeAcpReplayCompletenessAssertion(fileSystem, statusPath, transcript);
-    }).pipe(Effect.provide(layerSession), Effect.scoped),
+      const messageId = "agy-session-01:turn:1:assistant:message:msg-a";
+      const messageEvents = events.filter(
+        (event) => event.type === "turn_item.updated" && event.nativeId === messageId,
+      );
+      // Both halves land in one item: the resumed chunks extend the text the tool interrupted.
+      expect(messageEvents.at(-1)).toMatchObject({ status: "completed", textLength: 38 });
+      const toolIndex = events.findIndex((event) => event.nativeId === "view-1");
+      expect(events.findIndex((event) => event.nativeId === messageId)).toBeLessThan(toolIndex);
+    }),
   );
 });
+
+function assertCompletenessItems(events: ReadonlyArray<ReplaySummary>) {
+  const itemEvents = events.flatMap((event) =>
+    event.type === "turn_item.updated" && event.turnItemType !== undefined ? [event] : [],
+  );
+  const firstAppearance = [
+    ...new Set(itemEvents.map((event) => `${event.turnItemType}:${event.nativeId}`)),
+  ];
+  expect(firstAppearance).toEqual(COMPLETENESS_EXPECTED_TURN_ITEMS);
+
+  // The reasoning segment ends when its first tool starts, not when the next message arrives.
+  const thoughtDone = itemEvents.findIndex(
+    (event) =>
+      event.turnItemType === "reasoning" &&
+      event.nativeId === "agy-session-01:turn:1:reasoning:message:agy-thought-1" &&
+      event.status === "completed",
+  );
+  const firstTool = itemEvents.findIndex((event) => event.nativeId === "view-1");
+  expect(thoughtDone).toBeGreaterThanOrEqual(0);
+  expect(thoughtDone).toBeLessThan(firstTool);
+
+  const finalItem = (key: string) =>
+    itemEvents.findLast((event) => `${event.turnItemType}:${event.nativeId}` === key);
+  expect(finalItem("command_execution:cmd-1")).toMatchObject({
+    status: "completed",
+    output: "check 1 ok\ncheck 2 ok\ncheck 3 ok\n",
+    exitCode: 0,
+  });
+  expect(finalItem("command_execution:perm-1")?.status).toBe("failed");
+  expect(finalItem("command_execution:err-1")).toMatchObject({
+    status: "failed",
+    output: "Tool error: exit status 1",
+  });
+  expect(finalItem("dynamic_tool:mcp-1")).toMatchObject({
+    status: "completed",
+    toolName: "t3-code.delegate_task",
+  });
+  expect(finalItem("subagent:trajectory:4")).toMatchObject({
+    prompt: "review package.json\nreview tsconfig.json",
+  });
+}
+
+interface ReplaySummary {
+  readonly type: string;
+  readonly turnItemType?: string;
+  readonly nativeId?: string | null;
+  readonly status?: string;
+  readonly output?: string;
+  readonly exitCode?: number;
+  readonly toolName?: string | null;
+  readonly prompt?: string;
+}
 
 function summarizeReplayEvent(event: { readonly type: string } & Record<string, unknown>) {
   const record = event as Record<string, any>;
@@ -892,6 +970,16 @@ function summarizeReplayEvent(event: { readonly type: string } & Record<string, 
         status: item.status,
         textLength: typeof item.text === "string" ? item.text.length : undefined,
         toolName: item.toolName,
+        input: typeof item.input === "string" ? item.input.slice(0, 80) : undefined,
+        output: typeof item.output === "string" ? item.output.slice(-80) : undefined,
+        exitCode: item.exitCode,
+        steps: Array.isArray(item.steps)
+          ? item.steps.map((step: any) => `${step.status}:${step.step ?? step.title ?? step.text}`)
+          : undefined,
+        prompt: typeof item.prompt === "string" ? item.prompt.slice(0, 60) : undefined,
+        result: typeof item.result === "string" ? item.result.slice(0, 60) : undefined,
+        fileName: item.fileName,
+        diffLength: typeof item.diffStr === "string" ? item.diffStr.length : undefined,
       };
     }
     case "runtime_request.updated":

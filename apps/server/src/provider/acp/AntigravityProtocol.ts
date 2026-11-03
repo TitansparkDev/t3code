@@ -33,6 +33,9 @@ const NativeToolFields = Schema.Struct({
   imagePath: Schema.optional(Schema.String),
 });
 const decodeNativeToolFields = Schema.decodeUnknownOption(NativeToolFields);
+const decodeNativeSubagentInput = Schema.decodeUnknownOption(
+  Schema.Struct({ Tasks: Schema.optional(Schema.Array(Schema.String)) }),
+);
 const decodeSingleAnswer = Schema.decodeUnknownOption(
   Schema.Union([Schema.String, Schema.Tuple([Schema.String])]),
 );
@@ -342,4 +345,14 @@ export function classifyAntigravitySubagentToolCall(
 export function antigravitySubagentOutput(toolCall: AcpToolCallState): string | undefined {
   const output = toolCall.data.rawOutput;
   return typeof output === "string" && output.trim() ? boundText(output.trim()) : undefined;
+}
+
+/** The batch's requested tasks, one per line, from the native `start_subagent` input. */
+export function antigravitySubagentTasks(toolCall: AcpToolCallState): string | undefined {
+  const tasks = Option.getOrUndefined(decodeNativeSubagentInput(toolCall.data.rawInput))?.Tasks;
+  const text = (tasks ?? [])
+    .map((task) => task.trim())
+    .filter((task) => task.length > 0)
+    .join("\n");
+  return text.length > 0 ? boundText(text) : undefined;
 }
