@@ -251,3 +251,13 @@ export function turnItemHasDetail(item: OrchestrationV2TurnItem): boolean {
       return false;
   }
 }
+
+/**
+ * A native subagent batch can run without a child thread. Its row stays expandable and says so,
+ * instead of hiding the disclosure as if no detail existed.
+ */
+export function turnItemDetailUnavailableLabel(item: OrchestrationV2TurnItem): string | null {
+  return item.type === "subagent" && item.childThreadId === null
+    ? "Details unavailable for this subagent."
+    : null;
+}

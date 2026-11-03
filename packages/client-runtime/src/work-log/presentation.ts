@@ -215,11 +215,12 @@ function resolveT3McpToolPresentation(
   };
 }
 
+/** `presentTense` only decides a status that is unknown; a finished tool keeps its past tense on a live row. */
 export function liveActivityToolStatus(status: string | undefined, presentTense: boolean) {
   if (status === "failed" || status === "declined" || status === "stopped" || status === "idle") {
     return status;
   }
-  if (presentTense || status === "inProgress") return "inProgress";
+  if (status === undefined ? presentTense : status === "inProgress") return "inProgress";
   return "completed";
 }
 
