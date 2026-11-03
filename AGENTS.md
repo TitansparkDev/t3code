@@ -215,6 +215,11 @@ Architecture and its constraints: `docs/internals/overview.md`. Glossary: `docs/
 
 ## Recent request log
 
+- 2026-11-03 — v0.1.16: the sidebar's bottom-left usage panel is back ("Limits left": each provider's
+  session and weekly remaining share, from the same pooled limits as the Usage page; click opens Usage).
+  The fork's quota panel was dropped in v0.1.1 for upstream's Usage page. Also ships the usage-limit
+  fixes (late probes, partial Antigravity reads, freshness notices, shared refreshes, refresh at reset)
+  and the mobile experience plan (Antigravity replay fixtures, ordered AGY segments, work-log status).
 - 2026-10-27 — v0.1.12: goal gate stall. A combined Android gate (emulator + Gradle, 13.7 GB declared)
   waited 17 minutes because broker admission counted declared memory and 3 GB parked in swap always
   tripped "active swap I/O"; one request is now admitted on at most half of the usable memory, and swap

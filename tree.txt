@@ -26736,6 +26736,7 @@ apps/web/src/components/sidebar/SidebarUpdateCapsule.tsx
 apps/web/src/components/sidebar/SidebarUpdatePill.browser.test.tsx
 apps/web/src/components/sidebar/SidebarUpdatePill.tsx
 apps/web/src/components/sidebar/SidebarUpdateReleaseNotes.tsx
+apps/web/src/components/sidebar/SidebarUsageLimits.tsx
 apps/web/src/components/sidebar/UpdateEverythingDialog.tsx
 apps/web/src/components/sidebar/mainAppLocation.ts
 apps/web/src/components/sidebar/routeReveal.browser.test.tsx
