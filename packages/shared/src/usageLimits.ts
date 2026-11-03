@@ -218,11 +218,8 @@ export function collectLimitAccountSnapshot(
   const merge = (key: string, next: LimitAccount, reporter: EnvironmentId) => {
     const seen = reporters.get(key) ?? [];
     if (!seen.includes(reporter)) reporters.set(key, [...seen, reporter]);
-    // Redeeming through a hub also clears the routing cooldown that hub holds
-    // for the account. Redeeming natively against the same subscription resets
-    // it upstream but leaves the hub refusing to route to the account until
-    // its own cooldown expires, so a hub target wins the redemption outright
-    // while the displayed balance still follows the freshest read.
+    // A hub redemption also clears the hub's routing cooldown; a native one leaves the hub
+    // refusing the account, so a hub target wins redemption while the balance follows the freshest read.
     const previousHub = hubRedeems.get(key);
     if (
       next.redeem &&

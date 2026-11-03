@@ -7,6 +7,7 @@ import {
 } from "@t3tools/contracts";
 import { createModelCapabilities } from "@t3tools/shared/model";
 import * as Clock from "effect/Clock";
+import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -230,7 +231,9 @@ describe("makeManagedServerProvider", () => {
       Effect.gen(function* () {
         const probes = yield* Queue.unbounded<void>();
         const checkCalls = yield* Ref.make(0);
-        const resetsAt = new Date((yield* Clock.currentTimeMillis) + 10 * 60_000).toISOString();
+        const resetsAt = DateTime.formatIso(
+          DateTime.makeUnsafe((yield* Clock.currentTimeMillis) + 10 * 60_000),
+        );
         yield* makeManagedServerProvider<TestSettings>({
           resolveMaintenance: () => Effect.succeed(maintenanceCapabilities),
           getSettings: Effect.succeed({ enabled: true }),
@@ -267,7 +270,9 @@ describe("makeManagedServerProvider", () => {
       Effect.gen(function* () {
         const probes = yield* Queue.unbounded<void>();
         const checkCalls = yield* Ref.make(0);
-        const resetsAt = new Date((yield* Clock.currentTimeMillis) + 10 * 60_000).toISOString();
+        const resetsAt = DateTime.formatIso(
+          DateTime.makeUnsafe((yield* Clock.currentTimeMillis) + 10 * 60_000),
+        );
         yield* makeManagedServerProvider<TestSettings>({
           resolveMaintenance: () => Effect.succeed(maintenanceCapabilities),
           getSettings: Effect.succeed({ enabled: true }),
@@ -303,7 +308,9 @@ describe("makeManagedServerProvider", () => {
       Effect.gen(function* () {
         const probes = yield* Queue.unbounded<void>();
         const checkCalls = yield* Ref.make(0);
-        const resetsAt = new Date((yield* Clock.currentTimeMillis) + 10 * 60_000).toISOString();
+        const resetsAt = DateTime.formatIso(
+          DateTime.makeUnsafe((yield* Clock.currentTimeMillis) + 10 * 60_000),
+        );
         yield* makeManagedServerProvider<TestSettings>({
           resolveMaintenance: () => Effect.succeed(maintenanceCapabilities),
           getSettings: Effect.succeed({ enabled: true }),
