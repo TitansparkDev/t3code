@@ -312,6 +312,11 @@ export interface AcpAdapterV2Flavor {
     event: AcpSessionRuntime.AcpSessionRuntimeEvent,
   ) => Effect.Effect<void>;
   readonly subagentsIdleOnTurnCompletion?: boolean;
+  /**
+   * A tool call that first appears ends the open assistant and reasoning segments even when the
+   * provider gave them message IDs. A later chunk with the same ID resumes its segment.
+   */
+  readonly closesTextSegmentsAtNewToolCalls?: boolean;
   readonly supportsCompaction?: boolean;
   readonly runtimeHarness?: string;
   readonly registerExtensions?: (
@@ -1028,6 +1033,8 @@ interface ActiveTextSegment {
 interface ActiveTextStream {
   current: ActiveTextSegment | null;
   nextSegment: number;
+  // Set when a tool boundary closed the segment; a chunk with the same message ID resumes it.
+  resumable: ActiveTextSegment | null;
 }
 
 interface AcpNativeBuildConfiguration {
@@ -2467,6 +2474,17 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           stream.current = null;
         });
 
+        const closeTextSegmentAtToolBoundary = Effect.fnUntraced(function* (
+          context: ActiveAcpTurn,
+          kind: "assistant" | "reasoning",
+        ) {
+          const stream = textStreamFor(context, kind);
+          const segment = stream.current;
+          if (segment === null) return;
+          yield* closeTextStream(context, kind);
+          stream.resumable = segment;
+        });
+
         const closeTextStreams = Effect.fnUntraced(function* (context: ActiveAcpTurn) {
           yield* closeTextStream(context, "user");
           yield* closeTextStream(context, "reasoning");
@@ -2494,19 +2512,29 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             yield* closeTextStream(context, kind);
           }
           if (stream.current === null) {
-            const now = yield* DateTime.now;
-            stream.current = {
-              nativeItemId:
-                sourceMessageId === null
-                  ? `${context.nativeTurnId}:${kind}:${stream.nextSegment}`
-                  : `${context.nativeTurnId}:${kind}:message:${sourceMessageId}`,
-              startedAt: now,
-              sourceMessageId,
-              text: "",
-              emitted: false,
-              dirty: false,
-            };
-            stream.nextSegment += 1;
+            const resumable = stream.resumable;
+            stream.resumable = null;
+            if (
+              resumable !== null &&
+              sourceMessageId !== null &&
+              resumable.sourceMessageId === sourceMessageId
+            ) {
+              stream.current = { ...resumable, emitted: false, dirty: false };
+            } else {
+              const now = yield* DateTime.now;
+              stream.current = {
+                nativeItemId:
+                  sourceMessageId === null
+                    ? `${context.nativeTurnId}:${kind}:${stream.nextSegment}`
+                    : `${context.nativeTurnId}:${kind}:message:${sourceMessageId}`,
+                startedAt: now,
+                sourceMessageId,
+                text: "",
+                emitted: false,
+                dirty: false,
+              };
+              stream.nextSegment += 1;
+            }
           } else if (stream.current.sourceMessageId === null && sourceMessageId !== null) {
             // Agents may omit the first messageId; retain projected identity until the first later id.
             stream.current.sourceMessageId = sourceMessageId;
@@ -2527,6 +2555,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           const stream = textStreamFor(context, kind);
           if (stream.current?.sourceMessageId !== messageId) {
             yield* closeTextStream(context, kind);
+            stream.resumable = null;
             const now = yield* DateTime.now;
             stream.current = {
               nativeItemId: `${context.nativeTurnId}:${kind}:message:${messageId}`,
@@ -3401,10 +3430,16 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           incoming: AcpToolCallState,
           projectedStatus?: ProjectedToolStatus,
         ) {
-          if (context.assistant.current?.sourceMessageId == null)
-            yield* closeTextStream(context, "assistant");
-          if (context.reasoning.current?.sourceMessageId == null)
-            yield* closeTextStream(context, "reasoning");
+          const startsTool = !context.tools.has(incoming.toolCallId);
+          if (flavor.closesTextSegmentsAtNewToolCalls === true && startsTool) {
+            yield* closeTextSegmentAtToolBoundary(context, "assistant");
+            yield* closeTextSegmentAtToolBoundary(context, "reasoning");
+          } else {
+            if (context.assistant.current?.sourceMessageId == null)
+              yield* closeTextStream(context, "assistant");
+            if (context.reasoning.current?.sourceMessageId == null)
+              yield* closeTextStream(context, "reasoning");
+          }
           yield* closeTextStream(context, "user");
           const previous = context.tools.get(incoming.toolCallId);
           const merged = mergeToolCallState(previous, incoming);
@@ -7421,9 +7456,9 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               startedAt,
               completed,
               itemOrdinals: new Map(),
-              user: { current: null, nextSegment: 0 },
-              assistant: { current: null, nextSegment: 0 },
-              reasoning: { current: null, nextSegment: 0 },
+              user: { current: null, nextSegment: 0, resumable: null },
+              assistant: { current: null, nextSegment: 0, resumable: null },
+              reasoning: { current: null, nextSegment: 0, resumable: null },
               contextUsage: rememberedContextUsage ?? turnInput.providerThread.contextUsage ?? null,
               nativeMetadata: initialNativeMetadata,
               tools: new Map(),

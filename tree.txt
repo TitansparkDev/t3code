@@ -24472,6 +24472,7 @@ apps/server/src/orchestration-v2/testkit/fixtures/acp_elicitation/registry_trans
 apps/server/src/orchestration-v2/testkit/fixtures/antigravity_event_completeness/completeness.ndjson
 apps/server/src/orchestration-v2/testkit/fixtures/antigravity_event_completeness/expectations.ts
 apps/server/src/orchestration-v2/testkit/fixtures/antigravity_event_completeness/progress_only.ndjson
+apps/server/src/orchestration-v2/testkit/fixtures/antigravity_interleaved_message_id/interleaved.ndjson
 apps/server/src/orchestration-v2/testkit/fixtures/claude_background_monitor_wake/claude_transcript.ndjson
 apps/server/src/orchestration-v2/testkit/fixtures/claude_background_monitor_wake/input.ts
 apps/server/src/orchestration-v2/testkit/fixtures/claude_background_monitor_wake/output.ts

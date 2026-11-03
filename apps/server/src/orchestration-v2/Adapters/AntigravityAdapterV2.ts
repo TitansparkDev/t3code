@@ -30,6 +30,7 @@ import {
 import {
   antigravityApprovalOptions,
   antigravitySubagentOutput,
+  antigravitySubagentTasks,
   classifyAntigravitySubagentToolCall,
   extractAntigravityUserInputQuestion,
   makeAntigravityUserInputResponse,
@@ -94,6 +95,7 @@ const extractAntigravitySubagentUpdate: NonNullable<AcpAdapterV2Flavor["extractS
   return {
     nativeTaskId: toolCall.toolCallId,
     prompt:
+      antigravitySubagentTasks(toolCall) ??
       antigravitySubagentOutput(toolCall) ??
       toolCall.detail ??
       toolCall.title ??
@@ -168,6 +170,8 @@ export function makeAntigravityAcpAdapterFlavor(
       ),
     // Loading history replays tool calls; resume avoids replay.
     subagentsIdleOnTurnCompletion: true,
+    // AGY gives each message its own ID, so a tool call ends the text it interrupted.
+    closesTextSegmentsAtNewToolCalls: true,
     ...(options.onSessionEvent === undefined ? {} : { onSessionEvent: options.onSessionEvent }),
     applyModelSelection: Effect.fn("AntigravityAdapterV2.applyModelSelection")(function* ({
       runtime,
