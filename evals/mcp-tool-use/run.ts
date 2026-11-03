@@ -1453,6 +1453,7 @@ const simulate = Effect.fn("evaluateMcpToolUse.simulate")(function* (
           effort: config.effort,
           codexHome: config.codexHome,
           developerInstructions: SHELL_PROMPT,
+          // @effect-diagnostics-next-line preferSchemaOverJson:off
           input: JSON.stringify(body),
           signal: config.signal,
           tools: [],
@@ -2534,6 +2535,7 @@ const main = Effect.gen(function* () {
     }).trim(),
   ).pipe(Effect.orElseSucceed(() => "unknown"));
   const inFlight = yield* Semaphore.make(flags.concurrency);
+  // @effect-diagnostics-next-line effectFnOpportunity:off
   const runOne = (testCase: McpToolUseCase) => {
     const { id, kind, pattern } = testCase;
     const identity = { id, kind, pattern, role: testCase.setup.role };

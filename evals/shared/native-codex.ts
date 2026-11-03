@@ -1,4 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off
+// @effect-diagnostics nodeBuiltinImport:off globalTimers:off
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -33,11 +33,11 @@ export type NativeCodexOptions = {
   readonly developerInstructions: string;
   readonly input: string;
   readonly tools: ReadonlyArray<NativeCodexTool>;
-  readonly codexHome?: string;
+  readonly codexHome?: string | undefined;
   readonly command?: string;
   readonly timeoutMs?: number;
   readonly maxToolCalls?: number;
-  readonly signal?: AbortSignal;
+  readonly signal?: AbortSignal | undefined;
   readonly onToolCall: (name: string, args: unknown, signal: AbortSignal) => Promise<string>;
 };
 
