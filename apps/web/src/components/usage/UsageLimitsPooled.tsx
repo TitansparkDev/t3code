@@ -5,7 +5,9 @@ import {
   collectLimitNotices,
   collectLimitPools,
   cursorUsageWindowDetails,
+  describeLimitFreshness,
   displayLimitWindows,
+  formatDuration,
   formatResetsIn,
   type LimitAccount,
   type LimitPool,
@@ -37,6 +39,7 @@ import { RedactedSensitiveText } from "../settings/RedactedSensitiveText";
 import { Button } from "../ui/button";
 import { OpenAI } from "../Icons";
 import { Alert, AlertTitle } from "../ui/alert";
+import { Badge } from "../ui/badge";
 import { Popover, PopoverCreateHandle, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import {
   PaceIcon,
@@ -120,6 +123,44 @@ function AccountName({
     <span className={className}>
       {providerClients.get(account.driver)?.label ?? String(account.driver)}
     </span>
+  );
+}
+
+const MINUTE = 60_000;
+
+function checkedAgo(checkedAt: number, now: number): string {
+  const age = now - checkedAt;
+  return age < MINUTE ? "just now" : `${formatDuration(age)} ago`;
+}
+
+function AccountFreshness({
+  account,
+  now,
+}: {
+  readonly account: LimitAccount;
+  readonly now: number;
+}) {
+  const freshness = describeLimitFreshness(account.limits, now);
+  return (
+    <li className="flex flex-col gap-1.5 text-xs text-muted-foreground">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <AccountName account={account} className="font-medium text-foreground" />
+        <span className="tabular-nums">Checked {checkedAgo(freshness.checkedAt, now)}</span>
+        {freshness.stale ? (
+          <Badge variant="warning" size="sm">
+            Stale
+          </Badge>
+        ) : null}
+      </div>
+      {freshness.refreshFailed ? (
+        <Alert variant="warning">
+          <AlertTriangleIcon />
+          <AlertTitle>
+            {freshness.message ?? "Couldn't refresh. Showing last known values."}
+          </AlertTitle>
+        </Alert>
+      ) : null}
+    </li>
   );
 }
 
@@ -597,6 +638,11 @@ function PoolSection({ pool, now }: { readonly pool: LimitPool; readonly now: nu
           />
         );
       })}
+      <ul className="flex flex-col gap-3">
+        {pool.accounts.map((account) => (
+          <AccountFreshness key={account.key} account={account} now={now} />
+        ))}
+      </ul>
     </section>
   );
 }

@@ -4,6 +4,7 @@ import {
   ServerSettingsError,
 } from "@t3tools/contracts";
 import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
+import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
@@ -33,6 +34,27 @@ function withUsageLimits(
   }
   const { usageLimits: _previous, ...rest } = snapshot;
   return usageLimits ? { ...rest, usageLimits } : rest;
+}
+
+// Providers report a reset a little after it happens; the grace lets the refresh see it.
+const EXHAUSTED_WINDOW_REFRESH_GRACE_MS = 5_000;
+
+/** Epoch ms to refresh at: the earliest future reset of an exhausted window, plus grace. */
+function exhaustedWindowRefreshAt(
+  usageLimits: ServerProvider["usageLimits"],
+  nowMs: number,
+): number | undefined {
+  let earliestResetMs: number | undefined;
+  for (const window of usageLimits?.windows ?? []) {
+    if (window.usedPercent < 100 || window.resetsAt === undefined) continue;
+    const resetMs = Date.parse(window.resetsAt);
+    if (resetMs > nowMs && (earliestResetMs === undefined || resetMs < earliestResetMs)) {
+      earliestResetMs = resetMs;
+    }
+  }
+  return earliestResetMs === undefined
+    ? undefined
+    : earliestResetMs + EXHAUSTED_WINDOW_REFRESH_GRACE_MS;
 }
 
 export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(function* <
@@ -148,42 +170,53 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     }
 
     const probedSnapshot = yield* input.checkProvider;
-    const { snapshot: nextSnapshot, generation: nextGeneration } = yield* Ref.modify(
-      snapshotStateRef,
-      (state) => {
-        const generation = input.enrichSnapshot
-          ? state.enrichmentGeneration + 1
-          : state.enrichmentGeneration;
-        // Failed reads retain limits only for the same account and original workspace.
-        const previous = state.snapshot.auth;
-        const differs = (a: string | undefined, b: string | undefined) =>
-          a !== undefined && b !== undefined && a !== b;
-        const switchedAccount =
-          differs(probedSnapshot.auth.email?.toLowerCase(), previous.email?.toLowerCase()) ||
-          (probedSnapshot.auth.workspaceId !== undefined &&
-            probedSnapshot.auth.workspaceId !== previous.workspaceId);
-        const usageLimits = switchedAccount
-          ? probedSnapshot.usageLimits
-          : resolveUsageLimitsAfterProbe({
-              published: state.snapshot.usageLimits,
-              probed: probedSnapshot.usageLimits,
-            });
-        const workspaceId =
-          usageLimits === probedSnapshot.usageLimits ? undefined : state.snapshot.auth.workspaceId;
-        const snapshot = withUsageLimits(
-          workspaceId && !probedSnapshot.auth.workspaceId
-            ? { ...probedSnapshot, auth: { ...probedSnapshot.auth, workspaceId } }
-            : probedSnapshot,
-          usageLimits,
-        );
-        return [
-          { snapshot, generation },
-          { snapshot, enrichmentGeneration: generation },
-        ] as const;
-      },
-    );
+    const nowMs = yield* Clock.currentTimeMillis;
+    const {
+      snapshot: nextSnapshot,
+      generation: nextGeneration,
+      refreshScheduleMoved,
+    } = yield* Ref.modify(snapshotStateRef, (state) => {
+      const generation = input.enrichSnapshot
+        ? state.enrichmentGeneration + 1
+        : state.enrichmentGeneration;
+      // Failed reads retain limits only for the same account and original workspace.
+      const previous = state.snapshot.auth;
+      const differs = (a: string | undefined, b: string | undefined) =>
+        a !== undefined && b !== undefined && a !== b;
+      const switchedAccount =
+        differs(probedSnapshot.auth.email?.toLowerCase(), previous.email?.toLowerCase()) ||
+        (probedSnapshot.auth.workspaceId !== undefined &&
+          probedSnapshot.auth.workspaceId !== previous.workspaceId);
+      const usageLimits = switchedAccount
+        ? probedSnapshot.usageLimits
+        : resolveUsageLimitsAfterProbe({
+            published: state.snapshot.usageLimits,
+            probed: probedSnapshot.usageLimits,
+          });
+      const workspaceId =
+        usageLimits === probedSnapshot.usageLimits ? undefined : state.snapshot.auth.workspaceId;
+      const snapshot = withUsageLimits(
+        workspaceId && !probedSnapshot.auth.workspaceId
+          ? { ...probedSnapshot, auth: { ...probedSnapshot.auth, workspaceId } }
+          : probedSnapshot,
+        usageLimits,
+      );
+      return [
+        {
+          snapshot,
+          generation,
+          refreshScheduleMoved:
+            exhaustedWindowRefreshAt(state.snapshot.usageLimits, nowMs) !==
+            exhaustedWindowRefreshAt(snapshot.usageLimits, nowMs),
+        },
+        { snapshot, enrichmentGeneration: generation },
+      ] as const;
+    });
     yield* Ref.set(settingsRef, nextSettings);
     yield* PubSub.publish(changesPubSub, nextSnapshot);
+    if (refreshScheduleMoved) {
+      yield* Queue.offer(refreshScheduleChanges, undefined);
+    }
     yield* restartSnapshotEnrichment(nextSettings, nextSnapshot, nextGeneration);
     return nextSnapshot;
   });
@@ -193,7 +226,8 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
   // Providers call this on every token-usage tick, usually without changing the snapshot.
   const applyUsageLimits: ManagedServerProvider["applyUsageLimits"] = Effect.fnUntraced(
     function* (update) {
-      const snapshotToPublish = yield* Ref.modify(snapshotStateRef, (state) => {
+      const nowMs = yield* Clock.currentTimeMillis;
+      const change = yield* Ref.modify(snapshotStateRef, (state) => {
         const usageLimits = applyUsageLimitsUpdate({
           previous: state.snapshot.usageLimits,
           update,
@@ -203,10 +237,21 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
           return [null, state] as const;
         }
         const snapshot = withUsageLimits(state.snapshot, usageLimits);
-        return [snapshot, { ...state, snapshot }] as const;
+        return [
+          {
+            snapshot,
+            refreshScheduleMoved:
+              exhaustedWindowRefreshAt(state.snapshot.usageLimits, nowMs) !==
+              exhaustedWindowRefreshAt(usageLimits, nowMs),
+          },
+          { ...state, snapshot },
+        ] as const;
       });
-      if (snapshotToPublish !== null) {
-        yield* PubSub.publish(changesPubSub, snapshotToPublish);
+      if (change !== null) {
+        yield* PubSub.publish(changesPubSub, change.snapshot);
+        if (change.refreshScheduleMoved) {
+          yield* Queue.offer(refreshScheduleChanges, undefined);
+        }
       }
     },
   );
@@ -246,7 +291,8 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
           Effect.orElseSucceed(() => DEFAULT_PROVIDER_HEALTH_REFRESH_INTERVAL),
         );
 
-  const refreshIntervalChanges = yield* Queue.sliding<void>(1);
+  // Restarts the periodic wait when the interval or the exhausted-window refresh time moves.
+  const refreshScheduleChanges = yield* Queue.sliding<void>(1);
   if (input.refreshInterval === undefined) {
     const serverSettingsChanges = yield* host.settings.subscribe;
     yield* serverSettingsChanges.pipe(
@@ -256,7 +302,7 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
         ),
       ),
       Stream.changes,
-      Stream.runForEach(() => Queue.offer(refreshIntervalChanges, undefined).pipe(Effect.asVoid)),
+      Stream.runForEach(() => Queue.offer(refreshScheduleChanges, undefined).pipe(Effect.asVoid)),
       Effect.forkScoped,
     );
   }
@@ -265,20 +311,33 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     Effect.asVoid(applySnapshot(nextSettings)),
   ).pipe(Effect.forkScoped);
 
+  // Sleeps until the earliest exhausted window resets (plus grace); never wakes when none is pending.
+  const waitForExhaustedWindowRefresh = Effect.gen(function* () {
+    const state = yield* Ref.get(snapshotStateRef);
+    const nowMs = yield* Clock.currentTimeMillis;
+    const refreshAt = exhaustedWindowRefreshAt(state.snapshot.usageLimits, nowMs);
+    if (refreshAt === undefined) {
+      return yield* Effect.never;
+    }
+    yield* Effect.sleep(Duration.millis(refreshAt - nowMs));
+  });
+
   yield* Effect.forever(
     getRefreshInterval.pipe(
-      Effect.flatMap((refreshInterval) =>
-        // @effect-diagnostics-next-line raceFirstWithSleepToTimeout:off - races the interval against a settings-change signal, not a timeout
-        Effect.raceFirst(
-          Effect.sleep(
-            Duration.toMillis(Duration.fromInputUnsafe(refreshInterval)) <= 0
-              ? "60 seconds"
-              : refreshInterval,
-          ).pipe(Effect.as(true)),
-          Queue.take(refreshIntervalChanges).pipe(Effect.as(false)),
+      Effect.flatMap((refreshInterval) => {
+        const intervalMs = Duration.toMillis(Duration.fromInputUnsafe(refreshInterval));
+        const intervalElapsed = Effect.sleep(intervalMs <= 0 ? "60 seconds" : refreshInterval).pipe(
+          Effect.as(true),
+        );
+        // A disabled interval disables the exhausted-window refresh too.
+        const exhaustedWindowElapsed =
+          intervalMs > 0 ? waitForExhaustedWindowRefresh.pipe(Effect.as(true)) : Effect.never;
+        return Effect.raceFirst(
+          Effect.raceFirst(intervalElapsed, exhaustedWindowElapsed),
+          Queue.take(refreshScheduleChanges).pipe(Effect.as(false)),
         ).pipe(
-          Effect.flatMap((intervalElapsed) =>
-            intervalElapsed && Duration.toMillis(Duration.fromInputUnsafe(refreshInterval)) > 0
+          Effect.flatMap((refreshDue) =>
+            refreshDue && intervalMs > 0
               ? shouldRefreshOnInterval.pipe(
                   Effect.flatMap((shouldRefresh) =>
                     shouldRefresh ? refreshSnapshot().pipe(Effect.asVoid) : Effect.void,
@@ -286,8 +345,8 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
                 )
               : Effect.void,
           ),
-        ),
-      ),
+        );
+      }),
       Effect.ignoreCause({ log: true }),
     ),
   ).pipe(Effect.forkScoped);

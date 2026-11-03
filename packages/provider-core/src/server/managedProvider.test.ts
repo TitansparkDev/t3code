@@ -6,11 +6,14 @@ import {
   type ServerProvider,
 } from "@t3tools/contracts";
 import { createModelCapabilities } from "@t3tools/shared/model";
+import * as Clock from "effect/Clock";
+import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
+import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
@@ -124,6 +127,13 @@ function layerProviderHost(input: {
 
 const layerAlwaysRunTest = layerProviderHost({ runBackgroundWork: true });
 
+function sessionUsageLimits(usedPercent: number, resetsAt: string): ServerProvider["usageLimits"] {
+  return {
+    checkedAt: "2026-04-10T00:00:00.000Z",
+    windows: [{ id: "session", kind: "session", label: "Session", usedPercent, resetsAt }],
+  };
+}
+
 const enrichedSnapshotSecond: ServerProvider = {
   ...refreshedSnapshotSecond,
   checkedAt: "2026-04-10T00:00:04.000Z",
@@ -207,6 +217,121 @@ describe("makeManagedServerProvider", () => {
         yield* TestClock.adjust("1 second");
         yield* Effect.yieldNow;
 
+        assert.strictEqual(yield* Ref.get(checkCalls), 1);
+      }),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(layerProviderHost({ runBackgroundWork: false }), TestClock.layer()),
+      ),
+    ),
+  );
+
+  it.effect("refreshes usage once shortly after an exhausted window resets", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const probes = yield* Queue.unbounded<void>();
+        const checkCalls = yield* Ref.make(0);
+        const resetsAt = DateTime.formatIso(
+          DateTime.makeUnsafe((yield* Clock.currentTimeMillis) + 10 * 60_000),
+        );
+        yield* makeManagedServerProvider<TestSettings>({
+          resolveMaintenance: () => Effect.succeed(maintenanceCapabilities),
+          getSettings: Effect.succeed({ enabled: true }),
+          streamSettings: Stream.empty,
+          haveSettingsChanged: (previous, next) => previous.enabled !== next.enabled,
+          initialSnapshot: () => Effect.succeed(initialSnapshot),
+          checkProvider: Ref.updateAndGet(checkCalls, (count) => count + 1).pipe(
+            Effect.tap(() => Queue.offer(probes, undefined)),
+            Effect.map((count) =>
+              count === 1
+                ? { ...refreshedSnapshot, usageLimits: sessionUsageLimits(100, resetsAt) }
+                : refreshedSnapshot,
+            ),
+          ),
+          refreshInterval: "30 minutes",
+        });
+
+        yield* Queue.take(probes);
+        yield* TestClock.adjust("10 minutes");
+        yield* TestClock.adjust("5 seconds");
+        yield* Queue.take(probes);
+        assert.strictEqual(yield* Ref.get(checkCalls), 2);
+
+        // The reset refresh does not shorten the periodic cadence.
+        yield* TestClock.adjust("20 minutes");
+        yield* Effect.yieldNow;
+        assert.strictEqual(yield* Ref.get(checkCalls), 2);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(layerAlwaysRunTest, TestClock.layer()))),
+  );
+
+  it.effect("does not refresh usage at a reset time when no window is exhausted", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const probes = yield* Queue.unbounded<void>();
+        const checkCalls = yield* Ref.make(0);
+        const resetsAt = DateTime.formatIso(
+          DateTime.makeUnsafe((yield* Clock.currentTimeMillis) + 10 * 60_000),
+        );
+        yield* makeManagedServerProvider<TestSettings>({
+          resolveMaintenance: () => Effect.succeed(maintenanceCapabilities),
+          getSettings: Effect.succeed({ enabled: true }),
+          streamSettings: Stream.empty,
+          haveSettingsChanged: (previous, next) => previous.enabled !== next.enabled,
+          initialSnapshot: () => Effect.succeed(initialSnapshot),
+          checkProvider: Ref.updateAndGet(checkCalls, (count) => count + 1).pipe(
+            Effect.tap(() => Queue.offer(probes, undefined)),
+            Effect.map((count) =>
+              count === 1
+                ? { ...refreshedSnapshot, usageLimits: sessionUsageLimits(99, resetsAt) }
+                : refreshedSnapshot,
+            ),
+          ),
+          refreshInterval: "30 minutes",
+        });
+
+        yield* Queue.take(probes);
+        yield* TestClock.adjust("10 minutes");
+        yield* TestClock.adjust("5 seconds");
+        yield* Effect.yieldNow;
+        assert.strictEqual(yield* Ref.get(checkCalls), 1);
+
+        yield* TestClock.adjust("20 minutes");
+        yield* Queue.take(probes);
+        assert.strictEqual(yield* Ref.get(checkCalls), 2);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(layerAlwaysRunTest, TestClock.layer()))),
+  );
+
+  it.effect("skips the exhausted-window refresh without foreground provider-status demand", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const probes = yield* Queue.unbounded<void>();
+        const checkCalls = yield* Ref.make(0);
+        const resetsAt = DateTime.formatIso(
+          DateTime.makeUnsafe((yield* Clock.currentTimeMillis) + 10 * 60_000),
+        );
+        yield* makeManagedServerProvider<TestSettings>({
+          resolveMaintenance: () => Effect.succeed(maintenanceCapabilities),
+          getSettings: Effect.succeed({ enabled: true }),
+          streamSettings: Stream.empty,
+          haveSettingsChanged: (previous, next) => previous.enabled !== next.enabled,
+          initialSnapshot: () => Effect.succeed(initialSnapshot),
+          checkProvider: Ref.updateAndGet(checkCalls, (count) => count + 1).pipe(
+            Effect.tap(() => Queue.offer(probes, undefined)),
+            Effect.map((count) =>
+              count === 1
+                ? { ...refreshedSnapshot, usageLimits: sessionUsageLimits(100, resetsAt) }
+                : refreshedSnapshot,
+            ),
+          ),
+          refreshInterval: "30 minutes",
+        });
+
+        yield* Queue.take(probes);
+        yield* TestClock.adjust("10 minutes");
+        yield* TestClock.adjust("5 seconds");
+        yield* Effect.yieldNow;
         assert.strictEqual(yield* Ref.get(checkCalls), 1);
       }),
     ).pipe(
