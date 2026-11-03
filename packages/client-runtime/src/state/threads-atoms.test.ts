@@ -36,7 +36,10 @@ import { createEnvironmentThreadDetailAtoms } from "./threadDetail.ts";
 import { v2Projection, v2ThreadId } from "./orchestrationV2TestFixtures.ts";
 import * as ThreadHistoryController from "./threadHistoryController.ts";
 import { createEnvironmentThreadStateAtoms, type EnvironmentThreadState } from "./threads.ts";
-import { createThreadSnapshotRetention } from "./threadRetention.ts";
+import {
+  createThreadSnapshotRetention,
+  DEFAULT_THREAD_SNAPSHOT_RETENTION,
+} from "./threadRetention.ts";
 import * as ThreadSnapshotLoader from "./threadSnapshotHttp.ts";
 
 const TARGET = new PrimaryConnectionTarget({
@@ -53,6 +56,21 @@ const THREAD: OrchestrationV2ThreadProjection = {
 const SNAPSHOT: OrchestrationV2ThreadDetailSnapshot = { snapshotSequence: 7, projection: THREAD };
 
 describe("thread snapshot retention", () => {
+  it("keeps detached snapshots beyond mobile's count budget under the web and desktop default", () => {
+    const retention = createThreadSnapshotRetention<{ readonly body: string }>(
+      DEFAULT_THREAD_SNAPSHOT_RETENTION,
+    );
+    const caches = Array.from({ length: 10 }, (_, index) =>
+      retention.cache(`environment\u0000thread-${index}`),
+    );
+    caches.forEach((cache, index) => {
+      cache.snapshot = { body: `thread ${index}` };
+    });
+    expect(caches.map((cache) => cache.snapshot)).toEqual(
+      caches.map((_, index) => ({ body: `thread ${index}` })),
+    );
+  });
+
   it("evicts the oldest detached snapshot when the count budget is exceeded", () => {
     const retention = createThreadSnapshotRetention<{ readonly body: string }>({
       idleTtlMs: 1000,
