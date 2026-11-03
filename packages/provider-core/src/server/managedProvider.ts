@@ -332,7 +332,6 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
         // A disabled interval disables the exhausted-window refresh too.
         const exhaustedWindowElapsed =
           intervalMs > 0 ? waitForExhaustedWindowRefresh.pipe(Effect.as(true)) : Effect.never;
-        // @effect-diagnostics-next-line raceFirstWithSleepToTimeout:off - races the refresh timers against a schedule-change signal, not a timeout
         return Effect.raceFirst(
           Effect.raceFirst(intervalElapsed, exhaustedWindowElapsed),
           Queue.take(refreshScheduleChanges).pipe(Effect.as(false)),
