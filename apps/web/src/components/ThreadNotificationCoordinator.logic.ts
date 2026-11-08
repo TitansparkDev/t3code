@@ -1,4 +1,7 @@
-import { WORKING_EXIT_GRACE_MS } from "@t3tools/client-runtime/state/thread-inbox";
+import {
+  BACKGROUND_WAKE_GRACE_MS,
+  WORKING_EXIT_GRACE_MS,
+} from "@t3tools/client-runtime/state/thread-inbox";
 
 export type ThreadNotificationKind = "input" | "completion";
 
@@ -9,12 +12,15 @@ export interface ThreadNotificationObservation {
   readonly settled: boolean;
   /** When the latest run completed, if it did. */
   readonly completedAt: number | null;
+  /** The thread awaits background work, so its continuation may start after the run ends. */
+  readonly awaiting?: boolean;
 }
 
 /**
  * Attention notifies at once. Completion waits out the Working shelf's exit grace,
- * because an orchestrator run can end moments before its continuation starts. Any
- * observation that is not settled during the wait cancels it.
+ * or the longer wake window when the thread was awaiting background work, because an
+ * orchestrator run can end moments before its continuation starts. Any observation that
+ * is not settled during the wait cancels it.
  */
 export function createThreadNotificationGate<Key>(
   notify: (key: Key, kind: ThreadNotificationKind) => void,
@@ -56,11 +62,14 @@ export function createThreadNotificationGate<Key>(
       cancel(key);
       pending.set(key, {
         at,
-        timer: setTimeout(() => {
-          pending.delete(key);
-          handled.set(key, at);
-          notify(key, "completion");
-        }, WORKING_EXIT_GRACE_MS),
+        timer: setTimeout(
+          () => {
+            pending.delete(key);
+            handled.set(key, at);
+            notify(key, "completion");
+          },
+          prior.awaiting === true ? BACKGROUND_WAKE_GRACE_MS : WORKING_EXIT_GRACE_MS,
+        ),
       });
     },
     /** Forgets threads that left the snapshot. */
