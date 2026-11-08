@@ -203,6 +203,9 @@ export function codexProviderTurnTokenUsage(
     cachedInputTokens: Math.max(0, tokenUsage.last.cachedInputTokens),
     outputTokens: Math.max(0, tokenUsage.last.outputTokens),
     reasoningOutputTokens: Math.max(0, tokenUsage.last.reasoningOutputTokens),
+    // Codex compacts itself at its model limit and this adapter never disables that.
+    // Codex does not report the limit, so no threshold is sent.
+    compactsAutomatically: true,
     updatedAt,
   };
 }

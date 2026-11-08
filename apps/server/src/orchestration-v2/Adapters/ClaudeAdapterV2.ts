@@ -278,7 +278,26 @@ export function claudeProviderTurnTokenUsage(
     reasoningOutputTokens: 0,
     ...(promptCacheTtlMs === undefined ? {} : { promptCacheTtlMs }),
     ...claudeAutoCompactThreshold(autoCompactWindow, maxTokens),
+    // Claude Code compacts on its own; this adapter does not turn that off.
+    compactsAutomatically: true,
     ...(promptCacheExpiresAt === undefined ? {} : { promptCacheExpiresAt }),
+    updatedAt,
+  };
+}
+
+// The CLI reports only the post-compaction size, so no input or cache breakdown is claimed.
+export function claudeCompactedTokenUsage(
+  usedTokens: number,
+  modelSelection: ModelSelection,
+  autoCompactWindow: string,
+  updatedAt: string,
+) {
+  const maxTokens = claudeContextWindow(modelSelection);
+  return {
+    usedTokens,
+    maxTokens,
+    compactsAutomatically: true,
+    ...claudeAutoCompactThreshold(autoCompactWindow, maxTokens),
     updatedAt,
   };
 }
@@ -8418,7 +8437,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 ? Math.round(postTokens)
                 : undefined;
             if (afterTokenCount !== undefined) {
-              const maxTokens = claudeContextWindow(context.input.modelSelection);
               yield* emitProviderEvent({
                 type: "provider_turn.updated",
                 driver: CLAUDE_PROVIDER,
@@ -8437,15 +8455,12 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   status: "running",
                   startedAt: context.startedAt,
                   completedAt: null,
-                  tokenUsage: {
-                    usedTokens: afterTokenCount,
-                    maxTokens,
-                    ...claudeAutoCompactThreshold(
-                      adapterOptions.settings.autoCompactWindow,
-                      maxTokens,
-                    ),
-                    updatedAt: DateTime.formatIso(now),
-                  },
+                  tokenUsage: claudeCompactedTokenUsage(
+                    afterTokenCount,
+                    context.input.modelSelection,
+                    adapterOptions.settings.autoCompactWindow,
+                    DateTime.formatIso(now),
+                  ),
                 },
               });
             }

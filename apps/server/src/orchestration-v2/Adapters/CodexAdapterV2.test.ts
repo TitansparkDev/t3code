@@ -107,8 +107,35 @@ describe("CodexAdapterV2 context usage", () => {
       cachedInputTokens: 10_000,
       outputTokens: 5_000,
       reasoningOutputTokens: 1_000,
+      compactsAutomatically: true,
       updatedAt: "2026-08-29T00:00:00.000Z",
     });
+  });
+
+  it("reports an unknown window as null and sends no threshold when Codex omits the window", () => {
+    const usage = CodexAdapterV2.codexProviderTurnTokenUsage(
+      {
+        total: {
+          totalTokens: 9_000,
+          inputTokens: 8_000,
+          cachedInputTokens: 0,
+          outputTokens: 1_000,
+          reasoningOutputTokens: 0,
+        },
+        last: {
+          totalTokens: 9_000,
+          inputTokens: 8_000,
+          cachedInputTokens: 0,
+          outputTokens: 1_000,
+          reasoningOutputTokens: 0,
+        },
+      },
+      "2026-08-29T00:00:00.000Z",
+    );
+
+    assert.strictEqual(usage.maxTokens, null);
+    assert.strictEqual(usage.usedTokens, 9_000);
+    assert.isFalse("autoCompactThreshold" in usage);
   });
 });
 

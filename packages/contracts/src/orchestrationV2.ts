@@ -217,6 +217,8 @@ export const OrchestrationV2ProviderTurnTokenUsage = Schema.Struct({
   reasoningOutputTokens: Schema.optional(NonNegativeInt),
   promptCacheTtlMs: Schema.optional(PositiveInt),
   autoCompactThreshold: Schema.optional(PositiveInt),
+  // Reported by the adapter only; absent means the provider did not say.
+  compactsAutomatically: Schema.optional(Schema.Boolean),
   promptCacheExpiresAt: Schema.optional(Schema.String),
   updatedAt: Schema.String,
 });

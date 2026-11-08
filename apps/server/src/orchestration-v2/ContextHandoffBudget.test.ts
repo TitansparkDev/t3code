@@ -300,6 +300,15 @@ describe("handoff budget", () => {
       }),
       { usedTokens: 30_000, maxTokens: 1_000_000 },
     );
+    assert.deepEqual(
+      contextUsageForHandoff({
+        sameNativeThread: true,
+        sameSelection: false,
+        reuseTelemetry: false,
+        previousUsage: { ...previous, reportedAt: "2026-10-19T12:00:00.000Z" },
+      }),
+      { usedTokens: 37_321, maxTokens: 258_400, reportedAt: "2026-10-19T12:00:00.000Z" },
+    );
 
     const preserved = contextUsageForHandoff({
       sameNativeThread: true,
