@@ -4,7 +4,10 @@ import { useAndroidControlSizing } from "../../components/ui/useAndroidControlSi
 import type { ThreadMoveDestination } from "../threads/threadOrder";
 import type { LegendListRef } from "@legendapp/list/react-native";
 import { AnimatedLegendList } from "@legendapp/list/reanimated";
-import { THREAD_SIDEBAR_ROW_LAYOUT } from "../threads/threadListAnimations";
+import {
+  threadListShelfExpansionKey,
+  useThreadListShelfLayoutAnimation,
+} from "../threads/threadListAnimations";
 import {
   type EnvironmentProject,
   type EnvironmentThreadShell,
@@ -12,7 +15,7 @@ import {
 import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
 import { type EnvironmentId, type SidebarProjectGroupingMode } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
-import { use, useEffect, useRef, useState, type ComponentProps } from "react";
+import { use, useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
 import {
   Platform,
   ScrollView,
@@ -324,7 +327,8 @@ export function HomeScreen(props: HomeScreenProps) {
       animated: false,
     });
   }, [searchMode, insets.top, restoredOffset]);
-  const swipeRowActivation = createSwipeRowActivation();
+  // A fresh store per render would drop every active row until the next activation.
+  const swipeRowActivation = useMemo(() => createSwipeRowActivation(), []);
   const activateVisibleRows = (rows: ReadonlyArray<ThreadListV2ListItem>) => {
     const state = listRef.current?.getState();
     if (state === undefined || !(state.end >= 0)) return;
@@ -367,13 +371,13 @@ export function HomeScreen(props: HomeScreenProps) {
     projectGroupingMode: props.projectGroupingMode,
   });
   const hasSearchQuery = props.searchQuery.trim().length > 0;
-  const projectByKey = (() => {
+  const projectByKey = useMemo(() => {
     const map = new Map<string, EnvironmentProject>();
     for (const project of props.projects) {
       map.set(scopedProjectKey(project.environmentId, project.id), project);
     }
     return map;
-  })();
+  }, [props.projects]);
 
   const v2ProjectScopeKey = props.selectedProjectKey;
   const v2ScopedProjectGroup = findHomeProjectScope(projectScopes, v2ProjectScopeKey);
@@ -385,13 +389,20 @@ export function HomeScreen(props: HomeScreenProps) {
       : { projectIds: v2ScopedProjectGroup.projectRefs.map((ref) => ref.projectId) },
   );
   const threadSearchMatchByKey = useThreadListSearchMatches(props.threads, threadSearch);
-  const v2ProjectTitleByProjectKey = new Map(
-    projectScopes.flatMap((scope) =>
-      scope.projectRefs.map(
-        (projectRef) =>
-          [scopedProjectKey(projectRef.environmentId, projectRef.projectId), scope.title] as const,
+  const v2ProjectTitleByProjectKey = useMemo(
+    () =>
+      new Map(
+        projectScopes.flatMap((scope) =>
+          scope.projectRefs.map(
+            (projectRef) =>
+              [
+                scopedProjectKey(projectRef.environmentId, projectRef.projectId),
+                scope.title,
+              ] as const,
+          ),
+        ),
       ),
-    ),
+    [projectScopes],
   );
   const handleSettleThread = props.onSettleThread;
   const handleSnoozeThread = props.onSnoozeThread;
@@ -425,6 +436,13 @@ export function HomeScreen(props: HomeScreenProps) {
     toggleSnoozedShelf,
     toggleWorkingShelf,
   } = useThreadListV2ShelfPreferences();
+  const shelfLayoutAnimation = useThreadListShelfLayoutAnimation(
+    threadListShelfExpansionKey({
+      workingShelfExpanded,
+      snoozedShelfExpanded,
+      settledShelfExpanded,
+    }),
+  );
   const now = useThreadListNow(props.threads);
   const listEnvironments = useAtomValue(threadListEnvironmentsAtom);
   const {
@@ -630,17 +648,30 @@ export function HomeScreen(props: HomeScreenProps) {
   const v2KeyExtractor = (item: ThreadListV2ListItem) => item.key;
 
   // extraData changes invalidate every visible row; put the minute clock on items to limit updates.
-  const v2ExtraData = {
-    activeNewTask,
-    projectByKey,
-    projectTitleByProjectKey: v2ProjectTitleByProjectKey,
-    listEnvironments,
-    savedConnectionsById: props.savedConnectionsById,
-    searchQuery: props.searchQuery,
-    selectedThreadKey,
-    threadSearchMatchByKey,
-    workingShelfEnabled,
-  };
+  const v2ExtraData = useMemo(
+    () => ({
+      activeNewTask,
+      projectByKey,
+      projectTitleByProjectKey: v2ProjectTitleByProjectKey,
+      listEnvironments,
+      savedConnectionsById: props.savedConnectionsById,
+      searchQuery: props.searchQuery,
+      selectedThreadKey,
+      threadSearchMatchByKey,
+      workingShelfEnabled,
+    }),
+    [
+      activeNewTask,
+      projectByKey,
+      v2ProjectTitleByProjectKey,
+      listEnvironments,
+      props.savedConnectionsById,
+      props.searchQuery,
+      selectedThreadKey,
+      threadSearchMatchByKey,
+      workingShelfEnabled,
+    ],
+  );
 
   const hasAnyThreads =
     props.threads.some((thread) => thread.archivedAt === null) ||
@@ -773,7 +804,7 @@ export function HomeScreen(props: HomeScreenProps) {
         <SwipeableScrollGateProvider enabled={swipeEnabled} activation={swipeRowActivation}>
           <GestureDetector gesture={homeScrollGesture}>
             <AnimatedLegendList
-              itemLayoutAnimation={primaryColumn ? THREAD_SIDEBAR_ROW_LAYOUT : undefined}
+              itemLayoutAnimation={primaryColumn ? shelfLayoutAnimation : undefined}
               ref={listRef}
               onLoad={() => activateVisibleRows(threadListV2Items)}
               onTouchStart={(event) => trackListTouches(event, true)}

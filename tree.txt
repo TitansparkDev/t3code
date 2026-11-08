@@ -23397,6 +23397,7 @@ apps/mobile/src/features/threads/threadContentPresentation.test.ts
 apps/mobile/src/features/threads/threadContentPresentation.ts
 apps/mobile/src/features/threads/threadDragGap.ts
 apps/mobile/src/features/threads/threadForkNavigation.ts
+apps/mobile/src/features/threads/threadListAnimations.test.tsx
 apps/mobile/src/features/threads/threadListAnimations.ts
 apps/mobile/src/features/threads/threadListV2.test.ts
 apps/mobile/src/features/threads/threadListV2.ts

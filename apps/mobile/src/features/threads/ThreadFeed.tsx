@@ -2803,16 +2803,19 @@ export const ThreadFeed = memo(function ThreadFeed({
     }
   };
 
-  // Opening at a message: once the filled list has loaded, the render that sees
-  // the jump unfolds a run hiding the message and stops following the end, so
-  // the committed list holds the target row with end maintenance off.
+  // Opening at a message: once this thread's list has loaded and the target row
+  // exists, unfold a run hiding it and stop following the end so the committed
+  // list holds the row with end maintenance off.
   const [loadedListKey, setLoadedListKey] = useState<string | null>(null);
   const { jumpToMessageId } = props;
-  const jumpReady = !!jumpToMessageId && loadedListKey === `${feedThreadKey}:filled`;
+  // List mounts by thread only (no empty→filled remount); reveal once this thread's list has loaded.
+  const jumpListReady = !!jumpToMessageId && loadedListKey === feedThreadKey;
   const presentedFeed = appendGuestPendingMessages(
     useThreadFeedPresentation(props, expandedTurnIds, expandedWorkGroups),
     guestShare,
   );
+  const feedHasContent = presentedFeed.some((entry) => entry.type !== "thinking");
+  const jumpReady = jumpListReady && feedHasContent;
   const jumpRunId =
     jumpReady &&
     !presentedFeed.some((entry) => entry.type === "message" && entry.id === jumpToMessageId)
@@ -2827,11 +2830,9 @@ export const ThreadFeed = memo(function ThreadFeed({
   const setupAnchorIndex = presentedFeed.findIndex(
     (entry) => entry.type === "message" && entry.message.role === "user",
   );
-  // The empty↔filled key below remounts the list and resets its imperative
-  // content-inset override. Seed each fresh instance as it attaches with the
-  // current overlay height before the scroll integration's next reaction;
-  // on Android the declarative contentInset floor covers this same window.
-  const listMountKey = `${feedThreadKey}:${presentedFeed.some((entry) => entry.type !== "thinking") ? "filled" : "empty"}`;
+  // Thread identity only: empty→filled remounts remeasured the list on every cold open.
+  // Seed overlay inset on attach; Android's declarative contentInset covers the same window.
+  const listMountKey = feedThreadKey;
   const hasLoadedMessages =
     loadedListKey === listMountKey && presentedFeed.some((entry) => entry.type === "message");
   const notifyMessagesLoaded = useEffectEvent(() => props.onMessagesLoad?.());

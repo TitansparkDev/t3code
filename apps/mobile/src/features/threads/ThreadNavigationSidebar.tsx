@@ -12,7 +12,10 @@ import type {
 } from "@t3tools/client-runtime/state/shell";
 import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
 import { AnimatedLegendList } from "@legendapp/list/reanimated";
-import { THREAD_SIDEBAR_ROW_LAYOUT } from "./threadListAnimations";
+import {
+  threadListShelfExpansionKey,
+  useThreadListShelfLayoutAnimation,
+} from "./threadListAnimations";
 import type { MenuAction } from "@react-native-menu/menu";
 import { useAtomValue } from "@effect/atom-react";
 import { useMemo, useRef, useState } from "react";
@@ -274,6 +277,13 @@ function ThreadNavigationSidebarPane(
     toggleSnoozedShelf,
     toggleWorkingShelf,
   } = useThreadListV2ShelfPreferences();
+  const shelfLayoutAnimation = useThreadListShelfLayoutAnimation(
+    threadListShelfExpansionKey({
+      workingShelfExpanded,
+      snoozedShelfExpanded,
+      settledShelfExpanded,
+    }),
+  );
   const now = useThreadListNow(threads);
   const listEnvironments = useAtomValue(threadListEnvironmentsAtom);
   const {
@@ -460,16 +470,28 @@ function ThreadNavigationSidebarPane(
     onScrollBeginDrag: handleScrollBeginDrag,
   });
   // Recycle equality needs project/search data for titles and favicons; keep the minute clock on items to limit updates.
-  const listExtraData = {
-    activeNewTask,
-    selectedThreadKey: props.selectedThreadKey ?? "",
-    projectByKey,
-    projectTitleByProjectKey,
-    savedConnectionsById,
-    listEnvironments,
-    threadSearchMatchByKey,
-    workingShelfEnabled,
-  };
+  const listExtraData = useMemo(
+    () => ({
+      activeNewTask,
+      selectedThreadKey: props.selectedThreadKey ?? "",
+      projectByKey,
+      projectTitleByProjectKey,
+      savedConnectionsById,
+      listEnvironments,
+      threadSearchMatchByKey,
+      workingShelfEnabled,
+    }),
+    [
+      activeNewTask,
+      props.selectedThreadKey,
+      projectByKey,
+      projectTitleByProjectKey,
+      savedConnectionsById,
+      listEnvironments,
+      threadSearchMatchByKey,
+      workingShelfEnabled,
+    ],
+  );
   useThreadJumpShortcuts(listItems, handleSelectThread);
   const sidebarItemsAreEqual = (previous: SidebarListItem, item: SidebarListItem): boolean => {
     if (isThreadListV2ListItem(previous) && isThreadListV2ListItem(item)) {
@@ -730,7 +752,7 @@ function ThreadNavigationSidebarPane(
             <GestureDetector gesture={sidebarScrollGesture}>
               <AnimatedLegendList
                 renderScrollComponent={Platform.OS === "ios" ? NativeScrollView : undefined}
-                itemLayoutAnimation={THREAD_SIDEBAR_ROW_LAYOUT}
+                itemLayoutAnimation={shelfLayoutAnimation}
                 data={listItems}
                 drawDistance={500}
                 estimatedItemSize={64}
@@ -800,7 +822,7 @@ function ThreadNavigationSidebarPane(
             <GestureDetector gesture={sidebarScrollGesture}>
               {/* oxlint-disable-next-line t3code/require-registered-list-scroll -- Only the non-native workspace layout (Android and the fallback) renders this sidebar, which has no native header to register with. */}
               <AnimatedLegendList
-                itemLayoutAnimation={THREAD_SIDEBAR_ROW_LAYOUT}
+                itemLayoutAnimation={shelfLayoutAnimation}
                 data={listItems}
                 drawDistance={500}
                 estimatedItemSize={64}

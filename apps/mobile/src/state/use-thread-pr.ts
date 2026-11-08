@@ -58,7 +58,12 @@ const pullRequestSummaryAtom = createLinkedPullRequestSummaryAtomFamily(
 
 export { type ThreadPr, type ThreadPrPresentation } from "./thread-pr-presentation";
 
-export function useThreadPr(thread: EnvironmentThreadShell): ThreadPrPresentation | null {
+export function useThreadPr(
+  thread: EnvironmentThreadShell,
+  options?: { readonly enabled?: boolean },
+): ThreadPrPresentation | null {
+  // Dormant shelf rows keep the linked presentation but do not fetch the pull request summary.
+  const fetchSummary = options?.enabled !== false;
   const supportsLinks = useAtomValue(
     serverEnvironment.configValueAtom(thread.environmentId),
     (config) => config !== null,
@@ -81,7 +86,7 @@ export function useThreadPr(thread: EnvironmentThreadShell): ThreadPrPresentatio
     key === null ? undefined : current.get(key),
   );
   const pullRequestSummary = useEnvironmentQuery(
-    pullRequestRef === null
+    pullRequestRef === null || !fetchSummary
       ? null
       : pullRequestSummaryAtom({
           environmentId: thread.environmentId,

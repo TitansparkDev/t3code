@@ -29,6 +29,7 @@ const reactTests = [
   "src/state/use-selected-thread-git-actions.test.tsx",
   "src/features/terminal/useTerminalExitNavigation.test.tsx",
   "src/features/threads/use-thread-list-now.test.tsx",
+  "src/features/threads/threadListAnimations.test.tsx",
   "src/features/home/home-list-options.test.tsx",
   "src/features/connection/ConnectionsNewRouteScreen.test.tsx",
 ];
