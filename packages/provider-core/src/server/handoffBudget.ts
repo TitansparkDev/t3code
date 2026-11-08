@@ -56,6 +56,7 @@ export function latestNativeContextUsage(
         ...(turn.tokenUsage.maxTokens != null && turn.tokenUsage.maxTokens > 0
           ? { maxTokens: turn.tokenUsage.maxTokens }
           : {}),
+        reportedAt: turn.tokenUsage.updatedAt,
       },
       modelSelection: run.modelSelection,
       reportedAt: turn.tokenUsage.updatedAt,
@@ -82,6 +83,9 @@ export function contextUsageForHandoff(input: {
   return {
     usedTokens: input.previousUsage.usedTokens,
     ...(maxTokens === undefined ? {} : { maxTokens }),
+    ...(input.previousUsage.reportedAt === undefined
+      ? {}
+      : { reportedAt: input.previousUsage.reportedAt }),
   };
 }
 

@@ -707,6 +707,75 @@ describe("ClaudeAdapterV2 context usage", () => {
     );
     assert.strictEqual(usage.promptCacheExpiresAt, "2026-08-29T00:05:00.000Z");
   });
+
+  it("reports automatic compaction, and a threshold only when it sits below the window", () => {
+    const message = {
+      input_tokens: 1_000,
+      output_tokens: 10,
+      cache_read_input_tokens: 0,
+    };
+    const updatedAt = "2026-08-29T00:00:00.000Z";
+    const unset = ClaudeAdapterV2.claudeProviderTurnTokenUsage(
+      message,
+      CLAUDE_TEST_MODEL_SELECTION,
+      updatedAt,
+    );
+    assert.isNumber(unset.maxTokens);
+    const window = unset.maxTokens as number;
+    assert.strictEqual(unset.compactsAutomatically, true);
+    assert.notProperty(unset, "autoCompactThreshold");
+
+    const below = ClaudeAdapterV2.claudeProviderTurnTokenUsage(
+      message,
+      CLAUDE_TEST_MODEL_SELECTION,
+      updatedAt,
+      String(Math.floor(window / 2)),
+    );
+    assert.strictEqual(below.autoCompactThreshold, Math.floor(window / 2));
+
+    const atWindow = ClaudeAdapterV2.claudeProviderTurnTokenUsage(
+      message,
+      CLAUDE_TEST_MODEL_SELECTION,
+      updatedAt,
+      String(window),
+    );
+    assert.notProperty(atWindow, "autoCompactThreshold");
+  });
+
+  it("reports only the post-compaction size, not an input breakdown", () => {
+    const usage = ClaudeAdapterV2.claudeCompactedTokenUsage(
+      40_000,
+      CLAUDE_TEST_MODEL_SELECTION,
+      "",
+      "2026-08-29T00:00:00.000Z",
+    );
+    assert.deepEqual(usage, {
+      usedTokens: 40_000,
+      maxTokens: ClaudeAdapterV2.claudeProviderTurnTokenUsage(
+        { input_tokens: 1, output_tokens: 1 },
+        CLAUDE_TEST_MODEL_SELECTION,
+        "2026-08-29T00:00:00.000Z",
+      ).maxTokens,
+      compactsAutomatically: true,
+      updatedAt: "2026-08-29T00:00:00.000Z",
+    });
+    assert.notProperty(usage, "inputTokens");
+    assert.notProperty(usage, "promptCacheExpiresAt");
+  });
+
+  it("leaves the window unknown for a model the catalog does not list", () => {
+    const usage = ClaudeAdapterV2.claudeCompactedTokenUsage(
+      12_000,
+      {
+        instanceId: ProviderInstanceId.make(ClaudeAdapterV2.CLAUDE_PROVIDER),
+        model: "claude-not-in-catalog",
+      },
+      "",
+      "2026-08-29T00:00:00.000Z",
+    );
+    assert.strictEqual(usage.usedTokens, 12_000);
+    assert.isNull(usage.maxTokens);
+  });
 });
 
 describe("ClaudeAdapterV2 approval presentation", () => {

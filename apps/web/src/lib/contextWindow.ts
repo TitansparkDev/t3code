@@ -87,7 +87,7 @@ export function deriveLatestContextWindowSnapshot(
       lastReasoningOutputTokens: null,
       toolUses: null,
       durationMs: null,
-      compactsAutomatically: true,
+      compactsAutomatically: liveUsage.compactsAutomatically ?? null,
       autoCompactThreshold: liveUsage.autoCompactThreshold ?? null,
       cost: null,
       updatedAt: liveUsage.updatedAt,
@@ -125,7 +125,7 @@ export function deriveLatestContextWindowSnapshot(
       compactsAutomatically: providerUsage.compactsAutomatically ?? null,
       cost: providerUsage.cost ?? null,
       autoCompactThreshold: providerUsage.autoCompactThreshold ?? null,
-      updatedAt: DateTime.formatIso(providerUsageUpdatedAt),
+      updatedAt: providerUsage.reportedAt ?? DateTime.formatIso(providerUsageUpdatedAt),
     };
   }
   for (let index = entries.length - 1; index >= 0; index -= 1) {
@@ -164,7 +164,8 @@ export function deriveLatestContextWindowSnapshot(
       lastReasoningOutputTokens: null,
       toolUses: null,
       durationMs: null,
-      compactsAutomatically: true,
+      // A compaction item does not say whether the provider compacts on its own.
+      compactsAutomatically: null,
       autoCompactThreshold: null,
       cost: null,
       updatedAt: DateTime.formatIso(payload.startedAt ?? payload.updatedAt),
