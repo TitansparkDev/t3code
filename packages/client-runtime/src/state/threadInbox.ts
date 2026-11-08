@@ -1,4 +1,5 @@
 // @effect-diagnostics globalTimers:off - Shelf placement timers run in web and native clients, outside an Effect runtime.
+import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { threadRuntimeIsActive, type EnvironmentThreadShell } from "./models.ts";
 import { toSortableTimestamp } from "./threadSort.ts";
 import { effectiveSnoozed } from "./threadSettled.ts";
@@ -12,12 +13,30 @@ type WorkingThreadInput = Pick<
   | "interactionMode"
   | "latestRun"
   | "runtime"
->;
+> & {
+  readonly pendingBackgroundTasks?: EnvironmentThreadShell["pendingBackgroundTasks"];
+};
+
+/** Awaited work the thread owns keeps it working, unless its run failed. */
+function waitsOnOwnedWork(thread: WorkingThreadInput): boolean {
+  return (
+    backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? []) &&
+    thread.runtime?.status !== "failed" &&
+    thread.runtime?.lastError == null &&
+    thread.latestRun?.status !== "failed"
+  );
+}
 
 export function isThreadWorking(thread: WorkingThreadInput): boolean {
   if (thread.hasPendingApprovals || thread.hasPendingUserInput) return false;
   if (thread.pendingSubagentRequest != null) return false;
-  if (!threadRuntimeIsActive(thread.runtime) && thread.runtime?.status !== "idle") return false;
+  if (
+    !threadRuntimeIsActive(thread.runtime) &&
+    thread.runtime?.status !== "idle" &&
+    !waitsOnOwnedWork(thread)
+  ) {
+    return false;
+  }
   const run = thread.latestRun;
   const runSettled =
     run !== null &&
@@ -115,6 +134,13 @@ type ThreadKeyInput = Pick<EnvironmentThreadShell, "environmentId" | "id">;
 export const WORKING_EXIT_GRACE_MS = 2_000;
 
 /**
+ * How long a parent keeps reading as working after the awaited work it waited on resolves.
+ * The continuation that work wakes can start well after the short exit grace, so the parent
+ * stays waiting until that continuation starts or this window closes.
+ */
+export const BACKGROUND_WAKE_GRACE_MS = 15_000;
+
+/**
  * Keep one at module scope so placement survives routes that unmount the list. Call
  * `observe` when the shells or the snapshot version change, or with null while the beta
  * is off. Its result stays fixed, so a list built from it can be cached.
@@ -123,7 +149,7 @@ export function createInboxReturnTracker() {
   const keyOf = (thread: ThreadKeyInput) => `${thread.environmentId}:${thread.id}`;
   const states = new Map<
     string,
-    { working: boolean; deadline: number | null; placement: string }
+    { working: boolean; awaiting: boolean; deadline: number | null; placement: string }
   >();
   const returns = new Map<string, number>();
   const listeners = new Set<() => void>();
@@ -211,14 +237,16 @@ export function createInboxReturnTracker() {
           thread.settledOverride === "settled" ||
           effectiveSnoozed(thread, { now: observedAt });
         const actual = isThreadWorking(thread);
+        const awaiting = backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? []);
         // Only shelf placement is held: execution state and attention requests stay authoritative.
         const deadline =
           !actual && previous?.working && !actionable && !moved && !excluded
-            ? (previous.deadline ?? at + WORKING_EXIT_GRACE_MS)
+            ? (previous.deadline ??
+              at + (previous.awaiting ? BACKGROUND_WAKE_GRACE_MS : WORKING_EXIT_GRACE_MS))
             : null;
         const working = actual || (deadline !== null && deadline > at);
         if (previous?.working && !working) returns.set(key, at);
-        states.set(key, { working, deadline: working ? deadline : null, placement });
+        states.set(key, { working, awaiting, deadline: working ? deadline : null, placement });
       }
       for (const key of states.keys()) {
         if (!present.has(key)) {
