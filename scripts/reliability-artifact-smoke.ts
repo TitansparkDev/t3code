@@ -7,7 +7,6 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const NODE_FOR_SEA = "26.8.2";
 const COMMAND_TIMEOUT_MS = 15 * 60_000;
 
 type Candidate = {
@@ -23,6 +22,17 @@ export function sha256(bytes: Uint8Array): string {
 
 export function candidateDirectory(root: string, version: string, revision: string): string {
   return join(root, "candidates", `${version}-${revision}`);
+}
+
+// The CLI build refuses any Node version other than the root engines pin, so the
+// candidate must be built with that exact version.
+export function requiredNodeVersion(rootPackageJson: string): string {
+  const { engines } = JSON.parse(rootPackageJson) as { engines?: { node?: unknown } };
+  const version = engines?.node;
+  if (typeof version !== "string" || !/^\d+\.\d+\.\d+$/.test(version)) {
+    throw new Error(`Root package.json engines.node must be an exact version, got ${version}.`);
+  }
+  return version;
 }
 
 function run(
@@ -101,6 +111,7 @@ async function main() {
     version: string;
   };
   const version = server.version;
+  const nodeVersion = requiredNodeVersion(await readFile(join(ROOT, "package.json"), "utf8"));
   const platform =
     process.platform === "darwin" ? "mac" : process.platform === "win32" ? "win" : "linux";
   const arch = process.arch === "arm64" ? "arm64" : process.arch === "x64" ? "x64" : undefined;
@@ -116,7 +127,7 @@ async function main() {
   const env = {
     ...process.env,
     TMPDIR: tempRoot,
-    VP_NODE_VERSION: NODE_FOR_SEA,
+    VP_NODE_VERSION: nodeVersion,
   };
   await mkdir(candidateDir, { recursive: true });
 

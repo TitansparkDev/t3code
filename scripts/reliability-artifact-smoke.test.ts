@@ -1,6 +1,12 @@
 import { assert, it } from "@effect/vitest";
 
-import { candidateDirectory, sha256 } from "./reliability-artifact-smoke.ts";
+import { candidateDirectory, requiredNodeVersion, sha256 } from "./reliability-artifact-smoke.ts";
+
+it("takes the build Node version from the root engines pin", () => {
+  assert.equal(requiredNodeVersion(JSON.stringify({ engines: { node: "26.12.1" } })), "26.12.1");
+  assert.throws(() => requiredNodeVersion(JSON.stringify({ engines: { node: "^26" } })));
+  assert.throws(() => requiredNodeVersion(JSON.stringify({})));
+});
 
 it("keys retained candidates by exact revision and version", () => {
   assert.equal(
