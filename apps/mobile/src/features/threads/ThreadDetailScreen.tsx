@@ -1032,6 +1032,12 @@ function ThreadDetailBody(props: ThreadDetailScreenProps) {
     },
     [floatingCoverageTarget],
   );
+  // Android has no settle pass after the first landing, which can stop short of the end. When the
+  // pill's room was reserved before load, no coverage animation follows to repin it.
+  const handleMessagesLoad = () => {
+    if (Platform.OS !== "android" || floatingCoverageTarget === 0) return;
+    if (settledFloatingCoverageRef.current === floatingCoverageTarget) scheduleOverlayRepin(50);
+  };
   // Android measures its expanded card in-flow; only iOS needs extra overlay coverage.
   const userInputCoverageApplies = Platform.OS === "ios" && activeUserInputRequestId !== null;
   const combinedContentInsetEndAdjustment = useSharedValue(
@@ -1413,6 +1419,7 @@ function ThreadDetailBody(props: ThreadDetailScreenProps) {
               usesAutomaticContentInsets={props.usesAutomaticContentInsets}
               onHeaderMaterialVisibilityChange={props.onHeaderMaterialVisibilityChange}
               onEndFollowEnabledChange={handleEndFollowEnabledChange}
+              onMessagesLoad={handleMessagesLoad}
               skills={selectedProviderSkills}
               onUseArtifactTemplate={handleUseArtifactTemplate}
             />
