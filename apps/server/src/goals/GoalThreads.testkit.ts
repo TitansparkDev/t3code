@@ -92,6 +92,8 @@ export const layerFromLegacyHarness = (harness: {
   readonly projectRoot: (projectId: ProjectId) => string | undefined;
   /** Whether the next workspace bind should fail before the engine commits it. */
   readonly failBind?: () => boolean;
+  /** Whether this settle should be refused by the engine instead of recorded. */
+  readonly failSettle?: () => boolean;
 }) => {
   /** The newest session each thread's events reported; the detail's own session is the fallback. */
   const sessions = new Map<string, NonNullable<OrchestrationThread["session"]>>();
@@ -213,7 +215,13 @@ export const layerFromLegacyHarness = (harness: {
           .dispatch({ type: "thread.turn.interrupt", threadId: input.threadId })
           .pipe(Effect.asVoid),
       settle: (threadId) =>
-        harness.dispatch({ type: "thread.settle", threadId }).pipe(Effect.asVoid),
+        Effect.suspend(() =>
+          harness.failSettle?.()
+            ? Effect.fail(
+                new GoalThreadsError({ operation: "settle", message: "test settle refused" }),
+              )
+            : harness.dispatch({ type: "thread.settle", threadId }).pipe(Effect.asVoid),
+        ),
       read: (threadId) =>
         harness.detail(threadId).pipe(
           Effect.map((thread) =>
