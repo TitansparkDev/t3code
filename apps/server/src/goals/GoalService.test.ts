@@ -72,6 +72,10 @@ const makeHarnessWith = (spacing: number) =>
     let eventCount = 0;
     const threadState = yield* Ref.make({ reply: "Done.", turnState: "completed" });
     const hasResume = yield* Ref.make(false);
+    /** Threads whose background commands are still running, as the engine's shell reports them. */
+    const liveBackground = new Set<string>();
+    /** Settles the engine refuses next. */
+    let refusedSettles = 0;
     const beadAccesses: string[] = [];
     /** What the provider registry reports; every test provider starts out healthy. */
     const providers = yield* Ref.make<ReadonlyArray<ServerProvider>>([
@@ -127,8 +131,18 @@ const makeHarnessWith = (spacing: number) =>
             events: subscription,
             detail: () =>
               Ref.get(threadState).pipe(Effect.map((state) => Option.some(thread(state)))),
-            shell: () => Effect.succeedNone,
+            shell: (threadId) =>
+              Effect.sync(() =>
+                liveBackground.has(threadId)
+                  ? Option.some({ backgroundLiveness: true })
+                  : Option.none(),
+              ),
             projectRoot: (projectId) => (projectId === PROJECT ? "/work" : undefined),
+            failSettle: () => {
+              if (refusedSettles <= 0) return false;
+              refusedSettles -= 1;
+              return true;
+            },
           }),
           Layer.mock(ProviderRegistry)({ getProviders: Ref.get(providers) }),
           Layer.fresh(ServerConfig.layerTest(process.cwd(), { prefix: "t3code-goals-test-" })),
@@ -212,6 +226,17 @@ const makeHarnessWith = (spacing: number) =>
       hasResume,
       sessionEvent,
       runAndFinish,
+      /** Marks a thread's background commands as still running (or done) for the engine's shell. */
+      setBackgroundWork: (threadId: string, running: boolean) =>
+        Effect.sync(() => {
+          if (running) liveBackground.add(threadId);
+          else liveBackground.delete(threadId);
+        }),
+      /** The engine refuses the next `count` settles. */
+      refuseSettles: (count: number) =>
+        Effect.sync(() => {
+          refusedSettles = count;
+        }),
     };
   });
 
@@ -701,6 +726,96 @@ it.layer(NodeServices.layer)("GoalService", (it) => {
         expect(harness.log.filter((command) => command.type === "thread.turn.start")).toHaveLength(
           2,
         );
+      }).pipe(Effect.provide(harness.layer), Effect.scoped);
+    }),
+  );
+
+  it.effect("settles a finished chat's thread as soon as its turn ends", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      yield* Effect.gen(function* () {
+        const service = yield* GoalService.GoalService;
+        yield* Effect.forkScoped(service.loop);
+        yield* Effect.yieldNow;
+        yield* service.create(settings({ concurrency: 1, maxChats: 10 }));
+        const [only] = yield* harness.waitFor("thread.create", 1);
+        const threadId = threadIdOf(only);
+        yield* harness.waitFor("thread.turn.start", 1);
+        yield* harness.runAndFinish(threadId);
+        const [settle] = yield* harness.waitFor("thread.settle", 1);
+        expect(settle).toEqual({ type: "thread.settle", threadId });
+        expect((yield* service.list)[0]?.chats[0]?.status).toBe("completed");
+        while (!(yield* service.list)[0]?.chats[0]?.settled) yield* Effect.yieldNow;
+      }).pipe(Effect.provide(harness.layer), Effect.scoped);
+    }),
+  );
+
+  it.effect("settles the thread of a chat that finishes after its goal stopped", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      yield* Effect.gen(function* () {
+        const service = yield* GoalService.GoalService;
+        yield* Effect.forkScoped(service.loop);
+        yield* Effect.yieldNow;
+        const [goal] = yield* service.create(settings({ concurrency: 1, maxChats: 10 }));
+        const [only] = yield* harness.waitFor("thread.create", 1);
+        const threadId = threadIdOf(only);
+        yield* harness.waitFor("thread.turn.start", 1);
+        yield* service.stop(goal!.id);
+        yield* harness.runAndFinish(threadId);
+        const [settle] = yield* harness.waitFor("thread.settle", 1);
+        expect(settle).toEqual({ type: "thread.settle", threadId });
+        const [after] = yield* service.list;
+        expect(after).toMatchObject({ status: "stopped", chats: [{ status: "completed" }] });
+      }).pipe(Effect.provide(harness.layer), Effect.scoped);
+    }),
+  );
+
+  it.effect(
+    "leaves a chat unsettled while its background work runs, and settles it once that ends",
+    () =>
+      Effect.gen(function* () {
+        const harness = yield* makeHarness;
+        yield* Effect.gen(function* () {
+          const service = yield* GoalService.GoalService;
+          yield* Effect.forkScoped(service.loop);
+          yield* Effect.yieldNow;
+          yield* service.create(settings({ concurrency: 1, maxChats: 10 }));
+          const [only] = yield* harness.waitFor("thread.create", 1);
+          const threadId = threadIdOf(only);
+          yield* harness.waitFor("thread.turn.start", 1);
+          yield* harness.setBackgroundWork(threadId, true);
+          yield* harness.runAndFinish(threadId);
+          // The turn is over, but its background command still runs: the session is not settled.
+          yield* TestClock.adjust("5 seconds");
+          expect((yield* harness.drain).filter((c) => c.type === "thread.settle")).toEqual([]);
+          expect((yield* service.list)[0]?.chats[0]?.status).toBe("running");
+          yield* harness.setBackgroundWork(threadId, false);
+          yield* TestClock.adjust("5 seconds");
+          const [settle] = yield* harness.waitFor("thread.settle", 1);
+          expect(settle).toEqual({ type: "thread.settle", threadId });
+        }).pipe(Effect.provide(harness.layer), Effect.scoped);
+      }),
+  );
+
+  it.effect("retries a settle the engine refused on the next pass", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      yield* Effect.gen(function* () {
+        const service = yield* GoalService.GoalService;
+        yield* Effect.forkScoped(service.loop);
+        yield* Effect.yieldNow;
+        yield* service.create(settings({ concurrency: 1, maxChats: 10 }));
+        const [only] = yield* harness.waitFor("thread.create", 1);
+        const threadId = threadIdOf(only);
+        yield* harness.waitFor("thread.turn.start", 1);
+        yield* harness.refuseSettles(1);
+        yield* harness.runAndFinish(threadId);
+        // The refused settle left nothing on record, so the next pass sends it again.
+        yield* TestClock.adjust("5 seconds");
+        const [settle] = yield* harness.waitFor("thread.settle", 1);
+        expect(settle).toEqual({ type: "thread.settle", threadId });
+        while (!(yield* service.list)[0]?.chats[0]?.settled) yield* Effect.yieldNow;
       }).pipe(Effect.provide(harness.layer), Effect.scoped);
     }),
   );

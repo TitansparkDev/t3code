@@ -1187,19 +1187,65 @@ export const make = Effect.gen(function* () {
     if (settled) yield* updateChat(goalId, threadId, { settled: true });
   });
 
-  /** Settle any finished worker thread whose settle did not go through yet (blocked or lost). */
-  const settleFinishedChats = Effect.fn("GoalService.settleFinishedChats")(function* (goal: Goal) {
-    for (const chat of goal.chats) {
-      if (chat.settled || chat.overseer) continue;
-      if (chat.taskOutcome !== "submitted" && chat.taskOutcome !== "integrated") continue;
-      yield* settleThread(goal.id, chat.threadId);
-    }
-  });
-
   /** Goals with an integration pass running, so one goal never integrates twice at once. */
   const integrating = new Set<GoalId>();
   /** Submissions being verified, keyed by claim token. */
   const submitting = new Set<string>();
+
+  /**
+   * Whether a finished chat's thread still needs its settle. Only a chat whose conversation is
+   * quiet qualifies: a running, held, resource-waiting or limit-waiting chat keeps its session.
+   */
+  const settlementDue = Effect.fn("GoalService.settlementDue")(function* (
+    goal: Goal,
+    chat: GoalChat,
+  ) {
+    if (chat.settled || chat.waitingForLimit === true || chat.resourceDelivery !== undefined) {
+      return false;
+    }
+    if (chat.taskOutcome === "waiting") return false;
+    if (chat.claimToken !== undefined && submitting.has(chat.claimToken)) return false;
+    // A queue worker's chat is finished by its task's outcome; its status stays running until then.
+    const finished =
+      chat.taskId !== undefined
+        ? chat.taskOutcome === "submitted" ||
+          chat.taskOutcome === "integrated" ||
+          chat.taskOutcome === "returned"
+        : chat.status === "completed" || chat.status === "failed" || chat.status === "stopped";
+    if (!finished) return false;
+    // A held chat is decided by its escalation; settling it would hide what the escalation waits on.
+    if (
+      (goal.escalations ?? []).some(
+        (escalation) => escalation.threadId === chat.threadId && isOpenEscalation(escalation),
+      )
+    ) {
+      return false;
+    }
+    return yield* workerQuiet(chat.threadId);
+  });
+
+  /**
+   * Settle the thread of every finished chat (workers and overseers, in any goal state) whose
+   * settle did not go through yet. A failed settle stays undone, so the next pass retries it. The
+   * caller holds `lock`, so a chat cannot be resumed while it is being settled.
+   */
+  const settleFinishedChats = Effect.fn("GoalService.settleFinishedChats")(function* (
+    goalId: GoalId,
+  ) {
+    const goal = yield* currentGoal(goalId);
+    if (!goal) return;
+    for (const chat of goal.chats) {
+      if (!(yield* settlementDue(goal, chat))) continue;
+      yield* settleThread(goalId, chat.threadId);
+    }
+  });
+
+  /** The scheduler's pass over finished chats, under the goal lock and never failing the tick. */
+  const settleFinished = (goalId: GoalId) =>
+    settleFinishedChats(goalId).pipe(
+      lock.withPermits(1),
+      Effect.catchCause(logFailure("goals.settle-finished-failed")),
+    );
 
   /** Where an AgentQueue goal stands, from the queue's own records. */
   const refreshProgress = Effect.fn("GoalService.refreshProgress")(function* (goal: Goal) {
@@ -2700,11 +2746,13 @@ export const make = Effect.gen(function* () {
       watching.delete(chat.threadId);
       return false;
     }
+    // The engine brings a settled thread back to active with its next turn, so it is settled again.
     yield* updateChat(goal.id, chat.threadId, {
       status: "running",
       completedAt: undefined,
       blockedWork: undefined,
       resumedAt: requestedAt,
+      settled: false,
     });
     return true;
   });
@@ -3248,6 +3296,7 @@ export const make = Effect.gen(function* () {
     }
     if (chat.overseer) {
       yield* finishOverseer(before, thread, threadId);
+      yield* settleFinishedChats(goalId);
       return;
     }
     // The end of a turn requested before this conversation was last continued (the stop that follows
@@ -3351,6 +3400,8 @@ export const make = Effect.gen(function* () {
     } else if (blockedWork) {
       yield* store.update(goalId, (goal) => ({ ...goal, holdStarts: true }));
     }
+    // The finished conversation leaves the active section now, whatever state the goal is in.
+    yield* settleFinishedChats(goalId);
     if (before.status !== "running") return;
 
     if (status === "completed" && !blockedWork && replyReportsGoalComplete(reply)) {
@@ -3615,11 +3666,16 @@ export const make = Effect.gen(function* () {
     for (const goal of yield* store.list) {
       // Landed work's worktrees are removed whatever became of the goal afterwards.
       if (goal.status !== "running" && goal.agentQueue) yield* sweepLandedWorktrees(goal);
-      if (goal.status !== "running") continue;
+      if (goal.status !== "running") {
+        yield* settleFinished(goal.id);
+        continue;
+      }
       if (goal.agentQueue) {
         yield* ensureIntegration(goal.id);
         yield* resumeSubmissions(goal);
-        yield* settleFinishedChats(goal);
+      }
+      yield* settleFinished(goal.id);
+      if (goal.agentQueue) {
         yield* sweepIdleChats(goal.id);
         yield* sweepLandedWorktrees(goal);
         yield* deliverJobResults(goal.id).pipe(
