@@ -11,7 +11,11 @@ import {
   rememberModelOptions,
   withRememberedModelOptions,
 } from "../../state/use-model-option-memory";
-import { canCommitPendingModel, pendingModelAfterPress } from "./thread-settings-sheet-state";
+import {
+  canCommitPendingModel,
+  pendingModelAfterPress,
+  visibleCatalogModels,
+} from "./thread-settings-sheet-state";
 
 function modelOption(
   model: string,
@@ -141,6 +145,28 @@ describe("thread settings sheet state", () => {
         { providerKey: "codex", providerLabel: "Codex", models: [{ ...pending, isHidden: true }] },
       ]),
     ).toBe(false);
+  });
+
+  it("finds legacy models by search without enabling Show legacy models", () => {
+    const legacy = { ...modelOption("gpt-old"), isLegacy: true };
+    const visible = (input: {
+      includeLegacy?: boolean;
+      searchQuery: string;
+      isFavorite?: boolean;
+    }) =>
+      visibleCatalogModels({
+        models: [legacy],
+        includeLegacy: input.includeLegacy ?? false,
+        searchQuery: input.searchQuery,
+        isDisplayed: () => false,
+        isFavorite: () => input.isFavorite ?? false,
+      });
+
+    expect(visible({ searchQuery: "" })).toEqual([]);
+    expect(visible({ searchQuery: "   " })).toEqual([]);
+    expect(visible({ searchQuery: "gpt-old" })).toEqual([legacy]);
+    expect(visible({ searchQuery: "", isFavorite: true })).toEqual([legacy]);
+    expect(visible({ searchQuery: "", includeLegacy: true })).toEqual([legacy]);
   });
 
   it("cannot save a staged model after sign-out removes it from the catalog", () => {

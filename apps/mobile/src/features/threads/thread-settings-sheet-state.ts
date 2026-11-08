@@ -1,8 +1,26 @@
 import type { ModelOption, ProviderGroup } from "../../lib/modelOptions";
 import type { ModelSelection, ProviderInstanceId } from "@t3tools/contracts";
 
+export const FAVORITES_PROVIDER_FILTER = "@favorites";
+
 export function modelFavoriteKey(provider: ProviderInstanceId, model: string): string {
   return `${provider}:${model}`;
+}
+
+/** An explicit search finds legacy models; an empty query keeps them collapsed. */
+export function visibleCatalogModels(input: {
+  readonly models: ReadonlyArray<ModelOption>;
+  readonly includeLegacy: boolean;
+  readonly searchQuery: string;
+  readonly isDisplayed: (model: ModelOption) => boolean;
+  readonly isFavorite: (model: ModelOption) => boolean;
+}): ReadonlyArray<ModelOption> {
+  if (input.includeLegacy || input.searchQuery.trim().length > 0) {
+    return input.models;
+  }
+  return input.models.filter(
+    (model) => !model.isLegacy || input.isDisplayed(model) || input.isFavorite(model),
+  );
 }
 
 export function favoritesFirst(

@@ -114,11 +114,13 @@ import {
 } from "./thread-settings-options";
 import {
   canCommitPendingModel,
+  FAVORITES_PROVIDER_FILTER,
   favoritesFirst,
   modelFavoriteKey,
   modelMatchesCatalogQuery,
   pendingModelAfterPress,
   providerSectionIsCollapsed,
+  visibleCatalogModels,
 } from "./thread-settings-sheet-state";
 import { formatProviderUpdateRequiredNotice } from "@t3tools/client-runtime/providerUpdateRequiredModels";
 
@@ -146,7 +148,6 @@ const EMPTY_MODEL_FAVORITES: ReadonlyArray<{
   readonly provider: ProviderInstanceId;
   readonly model: string;
 }> = [];
-const FAVORITES_PROVIDER_FILTER = "@favorites";
 // Servers that predate `migrateModelPreferences` drop it and keep reporting null favorites.
 const attemptedMigrationGenerations = new Map<EnvironmentId, number>();
 function ProviderHeader(props: {
@@ -746,15 +747,16 @@ function buildThreadSettingsCatalogItems(
       return [];
     }
     const driver = group.models[0]?.providerDriver ?? group.providerKey;
-    const catalogModels =
-      session.manageHidden ||
-      session.showLegacy ||
-      session.providerFilter === FAVORITES_PROVIDER_FILTER
-        ? group.models
-        : group.models.filter(
-            (model) =>
-              !model.isLegacy || session.isDisplayed(model) || session.favoriteKeys.has(model.key),
-          );
+    const catalogModels = visibleCatalogModels({
+      models: group.models,
+      includeLegacy:
+        session.manageHidden ||
+        session.showLegacy ||
+        session.providerFilter === FAVORITES_PROVIDER_FILTER,
+      searchQuery: session.searchQuery,
+      isDisplayed: session.isDisplayed,
+      isFavorite: (model) => session.favoriteKeys.has(model.key),
+    });
     const visibleModels = favoritesFirst(
       catalogModels.filter(
         (model) =>
@@ -1211,9 +1213,13 @@ function ThreadSettingsModelsScreen() {
     if (!session.commitPendingModel()) return;
     presentation.onClose();
   });
+  const favoritesFilter = {
+    id: "favorites",
+    title: "Favorites",
+    value: FAVORITES_PROVIDER_FILTER,
+  };
   const providerFilters = [
     { id: "all-providers", title: "All providers", value: null },
-    { id: "favorites", title: "Favorites", value: FAVORITES_PROVIDER_FILTER },
     ...session.providerGroups.map((group) => ({
       id: `provider:${group.providerKey}`,
       title: group.providerLabel,
@@ -1223,6 +1229,13 @@ function ThreadSettingsModelsScreen() {
   const filterMenu = {
     title: "Model filters",
     items: [
+      {
+        type: "action" as const,
+        title: favoritesFilter.title,
+        state:
+          session.providerFilter === favoritesFilter.value ? ("on" as const) : ("off" as const),
+        onPress: () => session.setProviderFilter(favoritesFilter.value),
+      },
       {
         type: "submenu" as const,
         title: "Provider",
@@ -1256,6 +1269,14 @@ function ThreadSettingsModelsScreen() {
                 title="Model filters"
                 actions={[
                   {
+                    id: favoritesFilter.id,
+                    title: favoritesFilter.title,
+                    state:
+                      session.providerFilter === favoritesFilter.value
+                        ? ("on" as const)
+                        : ("off" as const),
+                  },
+                  {
                     title: "Provider",
                     subactions: providerFilters.map((filter) => ({
                       id: filter.id,
@@ -1277,7 +1298,9 @@ function ThreadSettingsModelsScreen() {
                   if (nativeEvent.event === "show-legacy") {
                     session.setShowLegacy(!session.showLegacy);
                   } else {
-                    const filter = providerFilters.find((item) => item.id === nativeEvent.event);
+                    const filter = [favoritesFilter, ...providerFilters].find(
+                      (item) => item.id === nativeEvent.event,
+                    );
                     if (filter) session.setProviderFilter(filter.value);
                   }
                 }}
@@ -1371,6 +1394,12 @@ function ThreadSettingsModelsScreen() {
             }
             title="Model filters"
           >
+            <Toolbar.MenuAction
+              isOn={session.providerFilter === FAVORITES_PROVIDER_FILTER}
+              onPress={() => session.setProviderFilter(FAVORITES_PROVIDER_FILTER)}
+            >
+              Favorites
+            </Toolbar.MenuAction>
             <Toolbar.Menu title="Provider">
               <Toolbar.Label>Provider</Toolbar.Label>
               <Toolbar.MenuAction
@@ -1378,12 +1407,6 @@ function ThreadSettingsModelsScreen() {
                 onPress={() => session.setProviderFilter(null)}
               >
                 All providers
-              </Toolbar.MenuAction>
-              <Toolbar.MenuAction
-                isOn={session.providerFilter === FAVORITES_PROVIDER_FILTER}
-                onPress={() => session.setProviderFilter(FAVORITES_PROVIDER_FILTER)}
-              >
-                Favorites
               </Toolbar.MenuAction>
               {session.providerGroups.map((group) => (
                 <Toolbar.MenuAction
