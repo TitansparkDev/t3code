@@ -38,9 +38,16 @@ import type { LegendListRef } from "@legendapp/list/react-native";
 import { HeaderHeightContext } from "@react-navigation/elements";
 import { NativeLayoutObserver } from "../../native/NativeLayoutObserver";
 import { deriveBottomControlInsets, type NativeLayoutMetrics } from "../../lib/reserved-regions";
+import { CommandId, MessageId } from "@t3tools/contracts";
+import {
+  deriveLatestContextWindowSnapshot,
+  latestProviderTurnTokenUsage,
+} from "@t3tools/client-runtime/state/contextWindow";
+import { makeQueuedMessageMetadata } from "../../lib/commandMetadata";
+import { enqueueThreadOutboxMessage } from "../../state/thread-outbox";
+import { useQuietThreadStructure } from "../../state/use-thread-detail";
 import type {
   EnvironmentId,
-  MessageId,
   ProviderInteractionMode,
   RuntimeRequestId,
   ScopedThreadRef,
@@ -77,6 +84,7 @@ import {
   useContext,
   useEffect,
   useEffectEvent,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
@@ -376,6 +384,25 @@ function ThreadDetailBody(props: ThreadDetailScreenProps) {
   const openInspector = useOpenThreadInspector();
   const { session: voiceInputSession } = useGlobalVoiceInput();
   const reportedModelSelection = useThreadReportedModelSelection(props.selectedThreadDetailRef);
+  // The quiet structure keeps its value through streamed text, so usage only moves on real changes.
+  const threadStructure = useQuietThreadStructure(props.selectedThreadDetailRef);
+  const contextWindow = useMemo(() => {
+    const projection = threadStructure?.projection;
+    if (!projection) return null;
+    const providerThread = projection.providerThreads.find(
+      (thread) => thread.id === projection.thread.activeProviderThreadId,
+    );
+    const liveUsage = latestProviderTurnTokenUsage(
+      projection.providerTurns,
+      projection,
+      providerThread,
+    );
+    return deriveLatestContextWindowSnapshot(
+      projection.visibleTurnItems,
+      liveUsage,
+      providerThread,
+    );
+  }, [threadStructure]);
   const deviceState = useEnvironmentQuery(
     deviceEnvironment.state({ environmentId: props.environmentId, input: {} }),
   );
@@ -1191,6 +1218,25 @@ function ThreadDetailBody(props: ThreadDetailScreenProps) {
     return messageId;
   };
 
+  // Goes through the outbox like a typed message, so the user's draft is left alone.
+  const compactThreadContext = () => {
+    const metadata = makeQueuedMessageMetadata();
+    void enqueueThreadOutboxMessage({
+      environmentId: props.selectedThread.environmentId,
+      threadId: props.selectedThread.id,
+      messageId: MessageId.make(metadata.messageId),
+      commandId: CommandId.make(metadata.commandId),
+      text: "/compact",
+      attachments: [],
+      createdAt: metadata.createdAt,
+    }).catch((error: unknown) => {
+      Dialog.alert(
+        "Could not compact context",
+        error instanceof Error ? error.message : "Please try again.",
+      );
+    });
+  };
+
   const handleEditPendingMessage = async (message: QueuedThreadMessage) => {
     if (pendingMessageEditBlocked) return;
     const scope = threadScope.current.signal;
@@ -1618,6 +1664,9 @@ function ThreadDetailBody(props: ThreadDetailScreenProps) {
                         environmentLabel={props.environmentLabel}
                         selectedThread={props.selectedThread}
                         hasCompactableConversation={hasCompactableConversation && !isCompacting}
+                        contextWindow={contextWindow}
+                        contextWindowModelName={reportedModelSelection?.model ?? null}
+                        onCompactContext={compactThreadContext}
                         serverConfig={props.serverConfig}
                         queueCount={props.selectedThreadQueueCount}
                         activeThreadBusy={activityIsCurrent && props.activeThreadBusy}

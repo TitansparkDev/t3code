@@ -12,6 +12,7 @@ import { settlePromise, squashAtomCommandFailure } from "@t3tools/client-runtime
 import { AsyncResult } from "effect/reactivity";
 import { useAtomValue } from "@effect/atom-react";
 import { clampFileAttachmentUploadBytes } from "@t3tools/client-runtime/state/attachments";
+import type { ContextWindowSnapshot } from "@t3tools/client-runtime/state/contextWindow";
 import { pastedTextDisposition, replaceTextSelection } from "@t3tools/client-runtime/text-paste";
 import {
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
@@ -72,6 +73,7 @@ import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 
 import { AppText as Text } from "../../components/ui/AppText";
 import { ComposerAttachmentButton } from "./ComposerAttachmentButton";
+import { ContextWindowSheet } from "./ContextWindowSheet";
 import {
   ComposerAttachmentStrip,
   ComposerAttachmentThumbnail,
@@ -80,7 +82,11 @@ import { VideoPreviewModal, type VideoPreviewSource } from "../../components/Vid
 import { GlassSurface } from "../../components/ui/GlassSurface";
 import { ComposerEditor, type ComposerEditorHandle } from "../../components/ComposerEditor";
 import { fileRoutePathSegments } from "../files/filePath";
-import { ComposerActionButton, ComposerToolbarRow } from "../../components/ComposerToolbar";
+import {
+  ComposerActionButton,
+  ComposerContextWindowButton,
+  ComposerToolbarRow,
+} from "../../components/ComposerToolbar";
 import { ComposerModelControl } from "../../components/ComposerModelControl";
 import {
   composerStripAttachments,
@@ -206,6 +212,10 @@ export interface ThreadComposerProps {
   readonly selectedThread: EnvironmentThreadShell;
   readonly reportedModelSelection?: ModelSelection | null;
   readonly hasCompactableConversation: boolean;
+  /** Present once the thread has reported context usage. */
+  readonly contextWindow?: ContextWindowSnapshot | null;
+  readonly contextWindowModelName?: string | null;
+  readonly onCompactContext?: () => void;
   readonly serverConfig: T3ServerConfig | null;
   readonly queueCount: number;
   readonly activeThreadBusy: boolean;
@@ -576,6 +586,19 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     useSidebarWorkspaceTabs() === "picker" || (Platform.OS === "ios" && Platform.isPad);
   const surfacePaddingVertical = usesLargeControls ? 9 : floatingSidebarComposer ? 6 : 2;
   const [compactRowWidth, setCompactRowWidth] = useState(0);
+  const [contextSheetOpen, setContextSheetOpen] = useState(false);
+  const compactSupported =
+    selectedProviderStatus?.slashCommands.some((command) => command.name === "compact") ?? false;
+  const compactDisabledReason = !props.canOperateThread
+    ? "This connection cannot change threads."
+    : !compactSupported
+      ? "Compaction is unavailable for this provider"
+      : props.activeThreadBusy ||
+          isSubmissionLocked ||
+          props.connectionState !== "connected" ||
+          !props.hasCompactableConversation
+        ? "Compacting is unavailable right now"
+        : null;
   const compactAttachmentLimit = compactRowWidth >= 500 ? 3 : 1;
   const compactEditor = useCompactComposerEditor(bodyText, draftMessage);
   const showsCompactDictation = isVoiceInputPresented;
@@ -892,6 +915,12 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
                 onPickMedia={props.onPickDraftMedia}
                 onPickFiles={props.onPickDraftFiles}
               />
+              {props.contextWindow ? (
+                <ComposerContextWindowButton
+                  usage={props.contextWindow}
+                  onPress={() => setContextSheetOpen(true)}
+                />
+              ) : null}
               <Animated.View
                 className="min-w-0 flex-1"
                 onLayout={compactEditor.onEditorLayout}
@@ -1186,6 +1215,15 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
         ) : null}
       </Animated.View>
 
+      {contextSheetOpen && props.contextWindow ? (
+        <ContextWindowSheet
+          usage={props.contextWindow}
+          modelName={props.contextWindowModelName ?? null}
+          compactDisabledReason={compactDisabledReason}
+          onCompact={() => props.onCompactContext?.()}
+          onClose={() => setContextSheetOpen(false)}
+        />
+      ) : null}
       <VideoPreviewModal source={previewVideo} onRequestClose={closePreview} />
       <FilePreviewModal source={previewFile} onRequestClose={closePreview} />
     </Animated.View>

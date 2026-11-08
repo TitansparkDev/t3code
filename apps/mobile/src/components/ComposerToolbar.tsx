@@ -13,11 +13,18 @@ import {
 } from "react-native";
 
 import Animated, { FadeIn } from "react-native-reanimated";
+import Svg, { Circle } from "react-native-svg";
+import {
+  formatContextWindowPercentage,
+  formatContextWindowTokens,
+  type ContextWindowSnapshot,
+} from "@t3tools/client-runtime/state/contextWindow";
 
 import { cn } from "../lib/cn";
 import { AppText as Text } from "./ui/AppText";
 import { SymbolView } from "./ui/AppSymbol";
 import { useAndroidControlSizing } from "./ui/useAndroidControlSizing";
+import { useControlTheme } from "./ui/useControlTheme";
 
 const COMPOSER_TOOLBAR_GAP = 8;
 const COMPOSER_TOOLBAR_FADE_WIDTH = 18;
@@ -392,6 +399,57 @@ export function ComposerToolbarButton(props: {
           type="monochrome"
         />
       )}
+    </Pressable>
+  );
+}
+
+const CONTEXT_RING_RADIUS = 9.75;
+const CONTEXT_RING_CIRCUMFERENCE = 2 * Math.PI * CONTEXT_RING_RADIUS;
+
+/** The web meter's ring, as a touch target that opens the breakdown sheet. */
+export function ComposerContextWindowButton(props: {
+  readonly usage: ContextWindowSnapshot;
+  readonly onPress: () => void;
+}) {
+  const { colors } = useControlTheme();
+  const usedPercentage = formatContextWindowPercentage(props.usage.usedPercentage);
+  const normalizedPercentage = Math.max(0, Math.min(100, props.usage.usedPercentage ?? 0));
+  const dashOffset = CONTEXT_RING_CIRCUMFERENCE * (1 - normalizedPercentage / 100);
+  const fill =
+    normalizedPercentage > 90 ? colors["--color-danger"] : colors["--color-foreground-muted"];
+  return (
+    <Pressable
+      accessibilityLabel={
+        props.usage.maxTokens !== null && usedPercentage
+          ? `Context window ${usedPercentage} used`
+          : `Context window ${formatContextWindowTokens(props.usage.usedTokens)} tokens used`
+      }
+      accessibilityRole="button"
+      accessibilityHint="Shows the context window breakdown"
+      className="size-[44px] shrink-0 items-center justify-center rounded-full active:opacity-70"
+      onPress={props.onPress}
+    >
+      <Svg width={20} height={20} viewBox="0 0 24 24" style={{ transform: [{ rotate: "-90deg" }] }}>
+        <Circle
+          cx={12}
+          cy={12}
+          r={CONTEXT_RING_RADIUS}
+          fill="none"
+          stroke={colors["--color-border"]}
+          strokeWidth={3}
+        />
+        <Circle
+          cx={12}
+          cy={12}
+          r={CONTEXT_RING_RADIUS}
+          fill="none"
+          stroke={fill}
+          strokeWidth={3}
+          strokeLinecap="round"
+          strokeDasharray={[CONTEXT_RING_CIRCUMFERENCE, CONTEXT_RING_CIRCUMFERENCE]}
+          strokeDashoffset={dashOffset}
+        />
+      </Svg>
     </Pressable>
   );
 }
