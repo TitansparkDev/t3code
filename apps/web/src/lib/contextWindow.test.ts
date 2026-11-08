@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import { OrchestrationV2ProviderTurnTokenUsage } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
-import { formatContextWindowCompactionMessage } from "../components/chat/ContextWindowMeter.logic";
 import * as DateTime from "effect/DateTime";
 import {
   ContextTransferId,
@@ -12,7 +11,11 @@ import {
 } from "@t3tools/contracts";
 import { makeThreadProjectionFixture } from "../test-fixtures";
 import { shouldOfferResumeCompaction } from "../components/chat/ContextWindowMeter.logic";
-import { deriveLatestContextWindowSnapshot, latestProviderTurnTokenUsage } from "./contextWindow";
+import {
+  deriveLatestContextWindowSnapshot,
+  formatContextWindowCompactionMessage,
+  latestProviderTurnTokenUsage,
+} from "./contextWindow";
 
 const decodeTokenUsage = Schema.decodeSync(OrchestrationV2ProviderTurnTokenUsage);
 
