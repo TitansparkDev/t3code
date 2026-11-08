@@ -16,10 +16,11 @@ import {
   MAX_GOAL_STOP_AFTER_PROBLEMS,
 } from "@t3tools/contracts/goals";
 import { useNavigate } from "@tanstack/react-router";
-import { PlusIcon, XIcon } from "lucide-react";
+import { ChevronDownIcon, PlusIcon, XIcon } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 
 import { isElectron } from "../../env";
+import { cn } from "~/lib/utils";
 import { deriveProviderInstanceEntries } from "../../providerInstances";
 import { useProjects } from "../../state/entities";
 import { useEnvironmentProviders, useEnvironments } from "../../state/environments";
@@ -27,6 +28,15 @@ import { useGoals } from "../../state/goals";
 import { runtimeModeConfig, runtimeModeOptions } from "../chat/runtimeModeConfig";
 import { ProviderOptionsPicker } from "./ProviderOptionsPicker";
 import { GoalPlanPanel } from "./GoalPlanPanel";
+import {
+  Combobox,
+  ComboboxEmpty,
+  ComboboxItem,
+  ComboboxList,
+  ComboboxPopup,
+  ComboboxSearchInput,
+  ComboboxTrigger,
+} from "../ui/combobox";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Switch } from "../ui/switch";
@@ -41,6 +51,74 @@ function firstAgent(instances: ProviderInstances): Omit<GoalSetupAgent, "count">
   const instance = instances.find((candidate) => candidate.enabled && candidate.models.length > 0);
   const model = instance?.models.find((candidate) => candidate.isDefault) ?? instance?.models[0];
   return instance && model ? { instanceId: instance.instanceId, model: model.slug } : null;
+}
+
+type PickerItem = { readonly key: string; readonly label: string; readonly search: string };
+
+/**
+ * A searchable choice: type to filter the list, arrow keys and Enter to choose. Used for the
+ * provider account and the model, which can both be long lists.
+ */
+function SearchablePicker(props: {
+  readonly label: string;
+  readonly items: ReadonlyArray<PickerItem>;
+  readonly selectedKey: string;
+  readonly onSelect: (key: string) => void;
+  readonly className?: string;
+}) {
+  const [query, setQuery] = useState("");
+  const needle = query.trim().toLowerCase();
+  const filtered = needle
+    ? props.items.filter((item) => item.search.includes(needle))
+    : props.items;
+  const selected = props.items.find((item) => item.key === props.selectedKey) ?? null;
+  return (
+    <span className={cn("flex min-w-0", props.className)}>
+      <Combobox
+        items={props.items}
+        filteredItems={filtered}
+        autoHighlight
+        itemToStringLabel={(item) => item.label}
+        isItemEqualToValue={(a, b) => a.key === b.key}
+        value={selected}
+        onOpenChange={(open) => {
+          if (!open) setQuery("");
+        }}
+        onValueChange={(item) => {
+          if (item && item.key !== props.selectedKey) props.onSelect(item.key);
+        }}
+      >
+        <ComboboxTrigger
+          render={
+            <button
+              aria-label={`${props.label}: ${selected?.label ?? "none chosen"}`}
+              className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md border border-border bg-background px-2 py-1 text-left text-xs"
+              type="button"
+            />
+          }
+        >
+          <span className="min-w-0 flex-1 truncate">{selected?.label ?? "Choose"}</span>
+          <ChevronDownIcon className="size-3.5 shrink-0 opacity-60" />
+        </ComboboxTrigger>
+        <ComboboxPopup align="start" className="min-w-56">
+          <ComboboxSearchInput
+            aria-label={`Search ${props.label.toLowerCase()}s`}
+            placeholder={`Search ${props.label.toLowerCase()}s`}
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+          <ComboboxEmpty>No matches.</ComboboxEmpty>
+          <ComboboxList>
+            {(item: PickerItem) => (
+              <ComboboxItem key={item.key} value={item}>
+                <span className="min-w-0 flex-1 truncate">{item.label}</span>
+              </ComboboxItem>
+            )}
+          </ComboboxList>
+        </ComboboxPopup>
+      </Combobox>
+    </span>
+  );
 }
 
 /** One provider account, model and its options, with room for extra controls such as a count. */
@@ -58,41 +136,39 @@ function GoalModelRow({
   children?: ReactNode;
 }) {
   const instance = instances.find((candidate) => candidate.instanceId === agent.instanceId);
+  const providerItems = instances
+    .filter((candidate) => candidate.enabled || candidate.instanceId === agent.instanceId)
+    .map((candidate) => ({
+      key: candidate.instanceId,
+      label: candidate.displayName,
+      search: candidate.displayName.toLowerCase(),
+    }));
+  const modelItems = (instance?.models ?? []).map((model) => {
+    const label = model.name || model.slug;
+    return { key: model.slug, label, search: `${label} ${model.slug}`.toLowerCase() };
+  });
   return (
     <li className="space-y-2 rounded-md border border-border/60 p-3">
       <div className="flex flex-wrap items-center gap-2">
-        <select
-          aria-label="Provider"
-          className="rounded-md border border-border bg-background px-2 py-1 text-xs"
-          onChange={(event) => {
-            const next = instances.find((candidate) => candidate.instanceId === event.target.value);
+        <SearchablePicker
+          label="Provider"
+          items={providerItems}
+          onSelect={(instanceId) => {
+            const next = instances.find((candidate) => candidate.instanceId === instanceId);
             const model = next?.models.find((candidate) => candidate.isDefault) ?? next?.models[0];
             if (next && model) {
               onChange({ instanceId: next.instanceId, model: model.slug, options: undefined });
             }
           }}
-          value={agent.instanceId}
-        >
-          {instances
-            .filter((candidate) => candidate.enabled)
-            .map((candidate) => (
-              <option key={candidate.instanceId} value={candidate.instanceId}>
-                {candidate.displayName}
-              </option>
-            ))}
-        </select>
-        <select
-          aria-label="Model"
-          className="min-w-0 flex-1 rounded-md border border-border bg-background px-2 py-1 text-xs"
-          onChange={(event) => onChange({ model: event.target.value, options: undefined })}
-          value={agent.model}
-        >
-          {(instance?.models ?? []).map((model) => (
-            <option key={model.slug} value={model.slug}>
-              {model.name || model.slug}
-            </option>
-          ))}
-        </select>
+          selectedKey={agent.instanceId}
+        />
+        <SearchablePicker
+          className="flex-1"
+          label="Model"
+          items={modelItems}
+          onSelect={(model) => onChange({ model, options: undefined })}
+          selectedKey={agent.model}
+        />
         {children}
         {onRemove ? (
           <Button

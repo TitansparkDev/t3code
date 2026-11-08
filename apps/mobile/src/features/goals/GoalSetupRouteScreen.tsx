@@ -18,7 +18,7 @@ import { getProviderOptionCurrentValue, getProviderOptionDescriptors } from "@t3
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Alert, Platform, Pressable, View } from "react-native";
+import { Alert, Platform, Pressable, ScrollView as NestedScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AppText as Text, AppTextInput as TextInput } from "../../components/ui/AppText";
@@ -30,6 +30,7 @@ import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScroll
 import { ThemedSwitch } from "../../components/ui/ThemedSwitch";
 import { cn } from "../../lib/cn";
 import { buildModelOptions, type ModelOption } from "../../lib/modelOptions";
+import { modelMatchesCatalogQuery } from "../threads/thread-settings-sheet-state";
 import { useServerConfigs } from "../../state/entities";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -243,11 +244,17 @@ function AgentCard(props: {
   readonly onRemove: () => void;
 }) {
   const [picking, setPicking] = useState(false);
+  const [query, setQuery] = useState("");
   const current = props.options.find(
     (option) =>
       option.selection.instanceId === props.agent.instanceId &&
       option.selection.model === props.agent.model,
   );
+  const matches = picking
+    ? props.options.filter((option) =>
+        modelMatchesCatalogQuery({ model: option, providerLabel: option.providerLabel, query }),
+      )
+    : [];
   const efforts = current?.capabilities
     ? getProviderOptionDescriptors({
         caps: current.capabilities,
@@ -266,7 +273,10 @@ function AgentCard(props: {
         accessibilityRole="button"
         accessibilityLabel="Change model"
         className="gap-0.5 active:opacity-70"
-        onPress={() => setPicking((open) => !open)}
+        onPress={() => {
+          setPicking((open) => !open);
+          setQuery("");
+        }}
       >
         <Text className="text-base font-t3-medium text-foreground">
           {current?.label ?? props.agent.model}
@@ -276,18 +286,44 @@ function AgentCard(props: {
         </Text>
       </Pressable>
       {picking ? (
-        <View className="overflow-hidden rounded-[20px]">
-          {props.options.map((option) => (
-            <ListRow
-              key={option.key}
-              onPress={() => {
-                props.onChange(agentFromOption(option, props.agent.count));
-                setPicking(false);
-              }}
-              description={option.providerLabel}
-              label={option.label}
-            />
-          ))}
+        <View className="gap-2">
+          <TextInput
+            accessibilityLabel="Find a model"
+            autoCapitalize="none"
+            autoCorrect={false}
+            className="h-12 min-h-12 rounded-[24px] px-4 py-0 text-base leading-snug"
+            onChangeText={setQuery}
+            placeholder="Find a model"
+            value={query}
+          />
+          {/* Bounded so a long catalogue scrolls inside the card instead of stretching the form. */}
+          <NestedScrollView
+            keyboardShouldPersistTaps="handled"
+            nestedScrollEnabled
+            showsVerticalScrollIndicator={false}
+            style={{ maxHeight: 320 }}
+          >
+            <View className="overflow-hidden rounded-[20px]">
+              {matches.length === 0 ? (
+                <Text className="px-4 py-6 text-center text-sm text-foreground-muted">
+                  No matching models
+                </Text>
+              ) : (
+                matches.map((option) => (
+                  <ListRow
+                    key={option.key}
+                    onPress={() => {
+                      props.onChange(agentFromOption(option, props.agent.count));
+                      setPicking(false);
+                      setQuery("");
+                    }}
+                    description={option.providerLabel}
+                    label={option.label}
+                  />
+                ))
+              )}
+            </View>
+          </NestedScrollView>
         </View>
       ) : null}
       {efforts.map((descriptor) => {
