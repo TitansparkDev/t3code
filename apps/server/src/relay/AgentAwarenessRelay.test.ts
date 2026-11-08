@@ -14,6 +14,7 @@ import {
   ThreadId,
   TurnItemId,
 } from "@t3tools/contracts";
+import type { Goal } from "@t3tools/contracts/goals";
 import { RelayAgentActivityState } from "@t3tools/contracts/relay";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -36,6 +37,7 @@ import {
   RELAY_URL_SECRET,
 } from "../cloud/config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as GoalStore from "../goals/GoalStore.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
@@ -144,8 +146,24 @@ const makeTestRelay = Effect.fnUntraced(function* (
     readonly linked?: boolean;
     readonly readShell?: (threadId: ThreadId) => Effect.Effect<OrchestrationV2ThreadShell | null>;
     readonly domainEvents?: Stream.Stream<OrchestrationV2DomainEvent>;
+    readonly goalThreadIds?: ReadonlyArray<ThreadId>;
   } = {},
 ) {
+  // The relay reads only goal chat membership from the goal store.
+  const goalThreadIds = yield* Ref.make<ReadonlyArray<ThreadId>>(options.goalThreadIds ?? []);
+  const goalStore = GoalStore.GoalStore.of({
+    list: Ref.get(goalThreadIds).pipe(
+      Effect.map((threadIds) =>
+        threadIds.length === 0
+          ? []
+          : [{ chats: threadIds.map((threadId) => ({ threadId })) } as unknown as Goal],
+      ),
+    ),
+    add: () => Effect.die("unused goal add"),
+    update: () => Effect.die("unused goal update"),
+    remove: () => Effect.die("unused goal remove"),
+    subscribeChanges: Effect.die("unused goal subscription"),
+  });
   const values = new Map<string, Uint8Array>(
     options.linked === false
       ? []
@@ -262,6 +280,7 @@ const makeTestRelay = Effect.fnUntraced(function* (
       getEnvironmentId: Effect.succeed(EnvironmentId.make("relay-environment")),
       getDescriptor: unused(),
     }),
+    Effect.provideService(GoalStore.GoalStore, goalStore),
     Effect.provideService(ProjectService.ProjectService, {
       create: unused,
       bootstrap: unused,
@@ -287,7 +306,16 @@ const makeTestRelay = Effect.fnUntraced(function* (
     Effect.provideService(FetchHttpClient.Fetch, fetch),
     Effect.provide(NodeCrypto.layer),
   );
-  return { relay, secrets, secretReads, currentShell, shellReads, publications, catchUp };
+  return {
+    relay,
+    secrets,
+    secretReads,
+    currentShell,
+    shellReads,
+    publications,
+    catchUp,
+    goalThreadIds,
+  };
 });
 
 describe("AgentAwarenessRelay", () => {
@@ -706,7 +734,8 @@ describe("AgentAwarenessRelay", () => {
       yield* deliver(
         itemEvent("event:held-item:end", item("item:tool", { ...background, status: "completed" })),
       );
-      yield* TestClock.adjust("5 seconds");
+      // Awaited work holds its completion for the wake window before alerting.
+      yield* TestClock.adjust("15 seconds");
       yield* relay.drain;
       assert.deepEqual(
         publications.map((publication) => publication.state?.phase),
@@ -716,5 +745,88 @@ describe("AgentAwarenessRelay", () => {
       Effect.scoped,
       Effect.provide(ProjectionStore.layer.pipe(Layer.provide(SqlitePersistence.layerMemory))),
     ),
+  );
+
+  it.effect("clears a goal chat's card without alerting when it completes", () =>
+    Effect.gen(function* () {
+      const { relay, currentShell, publications } = yield* makeTestRelay({
+        goalThreadIds: [THREAD_ID],
+      });
+      yield* relay.publishThread(THREAD_ID);
+      yield* Ref.set(currentShell, shell({ status: "completed" }));
+      yield* relay.publishThread(THREAD_ID);
+      yield* TestClock.adjust("5 seconds");
+      yield* relay.drain;
+      assert.deepEqual(
+        publications.map((publication) => publication.state?.phase ?? null),
+        ["running", null],
+      );
+    }),
+  );
+
+  it.effect("publishes nothing for a goal chat that finished without ever showing a card", () =>
+    Effect.gen(function* () {
+      const { relay, currentShell, publications } = yield* makeTestRelay({
+        goalThreadIds: [THREAD_ID],
+      });
+      yield* Ref.set(currentShell, shell({ status: "completed" }));
+      yield* relay.publishThread(THREAD_ID);
+      yield* TestClock.adjust("5 seconds");
+      yield* relay.drain;
+      assert.deepEqual(publications, []);
+    }),
+  );
+
+  it.effect("still alerts a goal chat's failure", () =>
+    Effect.gen(function* () {
+      const { relay, currentShell, publications } = yield* makeTestRelay({
+        goalThreadIds: [THREAD_ID],
+      });
+      yield* relay.publishThread(THREAD_ID);
+      yield* Ref.set(currentShell, shell({ status: "failed" }));
+      yield* relay.publishThread(THREAD_ID);
+      assert.deepEqual(
+        publications.map((publication) => publication.state?.phase ?? null),
+        ["running", "failed"],
+      );
+    }),
+  );
+
+  it.effect("holds a completion through awaited work's wake window, then alerts once", () =>
+    Effect.gen(function* () {
+      const { relay, currentShell, publications } = yield* makeTestRelay();
+      const phases = () => publications.map((publication) => publication.state?.phase ?? null);
+      yield* relay.publishThread(THREAD_ID);
+      yield* Ref.set(
+        currentShell,
+        shell({
+          status: "completed",
+          pendingBackgroundTasks: [{ taskId: "watch", kind: "monitor", awaited: true }],
+        }),
+      );
+      yield* relay.publishThread(THREAD_ID);
+      // The awaited monitor ends, but its continuation has not started yet.
+      yield* Ref.set(currentShell, shell({ status: "completed" }));
+      yield* relay.publishThread(THREAD_ID);
+      yield* TestClock.adjust("5 seconds");
+      yield* relay.drain;
+      assert.deepEqual(phases(), ["running"]);
+
+      // The continuation starts within the wake window and its completion is alerted once.
+      yield* Ref.set(currentShell, shell({ status: "running" }));
+      yield* relay.publishThread(THREAD_ID);
+      yield* TestClock.adjust("15 seconds");
+      yield* relay.drain;
+      assert.deepEqual(phases(), ["running"]);
+
+      yield* Ref.set(currentShell, shell({ status: "completed" }));
+      yield* relay.publishThread(THREAD_ID);
+      yield* TestClock.adjust("14 seconds");
+      yield* relay.drain;
+      assert.deepEqual(phases(), ["running"]);
+      yield* TestClock.adjust("1 second");
+      yield* relay.drain;
+      assert.deepEqual(phases(), ["running", "completed"]);
+    }),
   );
 });

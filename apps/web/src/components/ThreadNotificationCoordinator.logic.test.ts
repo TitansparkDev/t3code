@@ -1,4 +1,7 @@
-import { WORKING_EXIT_GRACE_MS } from "@t3tools/client-runtime/state/thread-inbox";
+import {
+  BACKGROUND_WAKE_GRACE_MS,
+  WORKING_EXIT_GRACE_MS,
+} from "@t3tools/client-runtime/state/thread-inbox";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
@@ -189,5 +192,26 @@ describe("createThreadNotificationGate", () => {
     observe(completed(2), { ...visible, quiet: true });
     vi.advanceTimersByTime(WORKING_EXIT_GRACE_MS * 2);
     expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("waits the wake window after awaited work ends, and drops the completion if the continuation starts", () => {
+    const { notify, observe } = harness();
+    observe({ ...working, awaiting: true });
+    observe({ ...completed(1), awaiting: false });
+    vi.advanceTimersByTime(WORKING_EXIT_GRACE_MS * 2);
+    expect(notify).not.toHaveBeenCalled();
+    observe({ ...working, awaiting: false });
+    vi.advanceTimersByTime(BACKGROUND_WAKE_GRACE_MS * 2);
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("notifies an awaited completion once when no continuation starts in the wake window", () => {
+    const { notify, observe } = harness();
+    observe({ ...working, awaiting: true });
+    observe({ ...completed(1), awaiting: false });
+    vi.advanceTimersByTime(BACKGROUND_WAKE_GRACE_MS - 1);
+    expect(notify).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(notify.mock.calls).toEqual([["thread", "completion"]]);
   });
 });

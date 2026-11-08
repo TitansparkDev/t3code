@@ -7,6 +7,7 @@ import { isShownUnderParent } from "@t3tools/client-runtime/state/threads";
 import type { AnyRouter } from "@tanstack/react-router";
 import type { EnvironmentId, OrchestrationV2ThreadShell, ThreadId } from "@t3tools/contracts";
 import type { ClientSettings } from "@t3tools/contracts/settings";
+import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import * as Option from "effect/Option";
 import type { AtomRegistry } from "effect/reactivity";
 import {
@@ -217,6 +218,7 @@ export function startThreadNotifications(
         attention,
         settled,
         completedAt: settled && Number.isFinite(completedAt) ? completedAt : null,
+        awaiting: backgroundWorkHoldsCompletion(rawThread.pendingBackgroundTasks ?? []),
       };
       next.set(thread.id, state);
       changed.push([prior, state]);

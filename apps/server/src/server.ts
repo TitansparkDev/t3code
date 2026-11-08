@@ -657,6 +657,8 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
 );
 
 const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
+  // One store for goals and the relay, so both read the same goal membership.
+  Layer.provideMerge(GoalStore.layer),
   Layer.provideMerge(layerPtyAdapter),
   Layer.provideMerge(AcpRegistrySupport.layerFromHost.pipe(Layer.provide(ProviderHostLive.layer))),
   Layer.provideMerge(
@@ -702,7 +704,6 @@ const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
 /** Goals start worker chats through the engine and read plans through AgentQueue. */
 const layerGoals = GoalService.layer.pipe(
   Layer.provideMerge(GoalThreads.layer),
-  Layer.provideMerge(GoalStore.layer),
   Layer.provideMerge(GoalBeads.layer),
   Layer.provideMerge(AgentQueueServiceLive),
 );

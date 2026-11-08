@@ -12,7 +12,10 @@ import {
   type RelayAgentActivityState,
 } from "@t3tools/contracts/relay";
 import { projectThreadAwarenessV2 } from "@t3tools/shared/agentAwareness";
-import { turnItemUpdateCanEndBackgroundWork } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
+import {
+  backgroundWorkHoldsCompletion,
+  turnItemUpdateCanEndBackgroundWork,
+} from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import { withRelayClientTracing } from "@t3tools/shared/relayTracing";
 import {
@@ -47,6 +50,7 @@ import {
 } from "../cloud/config.ts";
 import { getOrCreateEnvironmentKeyPairFromSecretStore } from "../cloud/environmentKeys.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as GoalStore from "../goals/GoalStore.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import { forkParked } from "../serverActivation.ts";
@@ -176,6 +180,10 @@ function resolveAgentActivityPublishingStartupState(input: {
 const RELAY_AGENT_ACTIVITY_DETAIL_MAX_LENGTH = 160;
 const REDACTED_RELAY_AGENT_FAILURE_DETAIL = "The agent run failed.";
 const RELAY_AGENT_ACTIVITY_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 16_000] as const;
+// A run can end before its continuation starts, and the relay alerts on every move into completed.
+const RELAY_COMPLETION_CONFIRM_MS = 5_000;
+// Awaited work wakes a continuation that can start later; matches the client's wake window.
+const RELAY_AWAITED_WORK_WAKE_MS = 15_000;
 
 function sanitizeRelayAgentActivityState(
   state: RelayAgentActivityState | null,
@@ -364,6 +372,7 @@ export const make = Effect.gen(function* () {
   const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
   const threads = yield* ThreadManagement.ThreadManagementService;
   const projects = yield* ProjectService.ProjectService;
+  const goals = yield* GoalStore.GoalStore;
   const crypto = yield* Crypto.Crypto;
   const scope = yield* Effect.scope;
   const cloudLinkKeyPair = yield* getOrCreateEnvironmentKeyPairFromSecretStore(secrets);
@@ -371,6 +380,15 @@ export const make = Effect.gen(function* () {
   const activeSnapshotPublishedRef = yield* Ref.make(false);
   const catchUpRequests = yield* Queue.dropping<void>(1);
   const publishedStateByThreadRef = yield* Ref.make(new Map<ThreadId, string>());
+  // Threads whose latest observed state awaited background work, so their completion waits longer.
+  const awaitedWorkThreads = new Set<ThreadId>();
+
+  const isGoalThread = (threadId: ThreadId) =>
+    goals.list.pipe(
+      Effect.map((list) =>
+        list.some((goal) => goal.chats.some((chat) => chat.threadId === threadId)),
+      ),
+    );
 
   const readSecretString = (name: string) =>
     secrets
@@ -412,7 +430,8 @@ export const make = Effect.gen(function* () {
   const publishConfirmDeadlines = new Map<ThreadId, number>();
   // Threads whose confirmation holds a completion, so a thread that settles during the hold still alerts.
   const heldCompletions = new Set<ThreadId>();
-  let schedulePublishConfirm: (threadId: ThreadId) => Effect.Effect<void> = () => Effect.void;
+  let schedulePublishConfirm: (threadId: ThreadId, delayMs: number) => Effect.Effect<void> = () =>
+    Effect.void;
   const publishRetries = new Map<
     ThreadId,
     { readonly attempts: number; timer: Fiber.Fiber<void> | undefined }
@@ -527,13 +546,30 @@ export const make = Effect.gen(function* () {
     const project = Option.isSome(thread)
       ? yield* projects.getById(thread.value.projectId)
       : Option.none<Project>();
-    const snapshot = resolveAgentAwarenessRelayPublishSnapshot({
+    const resolvedSnapshot = resolveAgentAwarenessRelayPublishSnapshot({
       environmentId,
       thread,
       project,
     });
+    if (
+      Option.isSome(thread) &&
+      backgroundWorkHoldsCompletion(thread.value.pendingBackgroundTasks ?? [])
+    ) {
+      awaitedWorkThreads.add(threadId);
+    }
+    // Goal workers and overseers finish without an alert: a card they showed is cleared instead.
+    const goalCompletion =
+      resolvedSnapshot.state?.phase === "completed" && (yield* isGoalThread(threadId));
+    const snapshot = goalCompletion ? { ...resolvedSnapshot, state: null } : resolvedSnapshot;
     const publishIdentity = agentAwarenessPublishIdentity(snapshot.state);
     const publishedStateByThread = yield* Ref.get(publishedStateByThreadRef);
+    if (goalCompletion && !publishedStateByThread.has(threadId)) {
+      yield* Effect.logDebug("agent activity completion skipped; goal chat finished", {
+        environmentId,
+        threadId,
+      });
+      return;
+    }
     if (
       (snapshot.state?.phase === "completed" || snapshot.state?.phase === "failed") &&
       !publishedStateByThread.has(threadId)
@@ -564,7 +600,11 @@ export const make = Effect.gen(function* () {
       const nowMs = (yield* DateTime.now).epochMilliseconds;
       const deadline = publishConfirmDeadlines.get(threadId);
       if (deadline === undefined) {
-        publishConfirmDeadlines.set(threadId, nowMs + 5_000);
+        const holdMs =
+          snapshot.state?.phase === "completed" && awaitedWorkThreads.has(threadId)
+            ? RELAY_AWAITED_WORK_WAKE_MS
+            : RELAY_COMPLETION_CONFIRM_MS;
+        publishConfirmDeadlines.set(threadId, nowMs + holdMs);
         yield* Effect.logInfo("agent activity publish deferred pending confirmation", {
           environmentId,
           threadId,
@@ -572,7 +612,7 @@ export const make = Effect.gen(function* () {
           statePhase: snapshot.state?.phase ?? null,
           shell: describeThreadShellForAwareness(thread),
         });
-        yield* schedulePublishConfirm(threadId);
+        yield* schedulePublishConfirm(threadId, holdMs);
         return;
       }
       if (nowMs < deadline) {
@@ -606,11 +646,12 @@ export const make = Effect.gen(function* () {
           reason: unsettled.reason,
         }).pipe(withRelayClientTracing);
         heldCompletions.delete(threadId);
-        publishConfirmDeadlines.set(threadId, nowMs + 5_000);
+        awaitedWorkThreads.delete(threadId);
+        publishConfirmDeadlines.set(threadId, nowMs + RELAY_COMPLETION_CONFIRM_MS);
         yield* Ref.update(publishedStateByThreadRef, (publishedStates) =>
           new Map(publishedStates).set(threadId, agentAwarenessPublishIdentity(completion)),
         );
-        yield* schedulePublishConfirm(threadId);
+        yield* schedulePublishConfirm(threadId, RELAY_COMPLETION_CONFIRM_MS);
         return;
       }
     } else {
@@ -638,6 +679,7 @@ export const make = Effect.gen(function* () {
     }).pipe(withRelayClientTracing);
     publishConfirmDeadlines.delete(threadId);
     heldCompletions.delete(threadId);
+    if (snapshot.state?.phase === "completed") awaitedWorkThreads.delete(threadId);
     yield* Ref.update(publishedStateByThreadRef, (publishedStates) => {
       const nextPublishedStates = new Map(publishedStates);
       if (snapshot.state === null) {
@@ -778,9 +820,9 @@ export const make = Effect.gen(function* () {
     }
   });
 
-  schedulePublishConfirm = (threadId) =>
+  schedulePublishConfirm = (threadId, delayMs) =>
     Effect.forkIn(
-      Effect.sleep("5 seconds").pipe(
+      Effect.sleep(delayMs).pipe(
         Effect.andThen(worker.enqueue(threadId)),
         Effect.catchCause((cause) =>
           Effect.logWarning("deferred agent activity confirmation failed", {
