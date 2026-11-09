@@ -61,6 +61,7 @@
     "@shadcn/lint": "0.1.5",
     "@types/node": "catalog:",
     "knip": "6.34.0",
+    "tsc-rs": "catalog:",
     "typescript": "catalog:",
     "vite-plus": "catalog:"
   },
