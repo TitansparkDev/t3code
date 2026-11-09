@@ -21916,7 +21916,6 @@ CONTRIBUTING.md
 HANDOFF.md
 LICENSE
 OMNI.md
-PLAN.md
 README.md
 SPEC.md
 apps/desktop/gnome-extension/bundle.json
@@ -27166,7 +27165,6 @@ docs/agentqueue/ADR-0008-verification-contract-and-worker-settlement.md
 docs/agentqueue/ADR-0009-execution-contract-and-failure-ledger.md
 docs/agentqueue/ADR-0010-owned-tasks-and-shared-resources.md
 docs/agentqueue/ADR-0011-stall-recovery-and-resolved-follow-ups.md
-docs/agentqueue/PLAN.md
 docs/agentqueue/README.md
 docs/internals/adding-a-provider.md
 docs/internals/assistant-citations.md
@@ -27554,7 +27552,6 @@ native/resource-monitor/Cargo.lock
 native/resource-monitor/Cargo.toml
 native/resource-monitor/src/main.rs
 omni/CONVERSION.md
-omni/PLAN.md
 omni/TOOLCHAIN.md
 omni/salvage/OLD-FORK-SPEC.md
 omni/salvage/OLD-FORK_NOTES.md
