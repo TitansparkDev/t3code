@@ -215,6 +215,15 @@ Architecture and its constraints: `docs/internals/overview.md`. Glossary: `docs/
 
 ## Recent request log
 
+- 2026-11-09 — v0.1.17: finished the chat, goals and mobile usability plan (the web composer's context
+  ring is back after upstream moved usage into Thread details) and merged upstream/main (1,644 commits, 68
+  conflicts). Upstream's context-window module now holds the fork's freshness and compaction additions;
+  Antigravity follows upstream's runtime 1.4 model handling; goal services use `SecureRandom`; Claude Stop
+  gives the query close its own window and leaves the turn open for Force stop. The root `typescript` and
+  `tsc-rs` devDependencies are gone: they gave `vite-plus` a second peer variant, so `@effect/vitest` loaded a
+  second vitest and every suite using it failed to start. `GoalAgentQueueFlow` "an outage that really lasts"
+  also fails on the pre-merge commit. Desktop completion alerts for goal chats still lack a durable goal
+  identity in the thread shell (relay alerts have it).
 - 2026-10-27 — v0.1.12: goal gate stall. A combined Android gate (emulator + Gradle, 13.7 GB declared)
   waited 17 minutes because broker admission counted declared memory and 3 GB parked in swap always
   tripped "active swap I/O"; one request is now admitted on at most half of the usable memory, and swap
