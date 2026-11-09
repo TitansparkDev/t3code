@@ -322,6 +322,7 @@ export function jobEnvironment(source: NodeJS.ProcessEnv = process.env): Record<
   return env;
 }
 
+// @effect-diagnostics-next-line extendsNativeError:off - agent-queue-core is plain TypeScript shared with the CLI, outside Effect
 export class ResourceWaitError extends Error {
   readonly outcome: "exhausted" | "unavailable" | "cancelled";
   readonly ticket?: Ticket;
@@ -337,6 +338,7 @@ export class ResourceWaitError extends Error {
   }
 }
 
+// @effect-diagnostics-next-line extendsNativeError:off - agent-queue-core is plain TypeScript shared with the CLI, outside Effect
 export class EmulatorPrerequisiteError extends Error {
   constructor(note: string) {
     super(note);

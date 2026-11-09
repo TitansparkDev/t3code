@@ -88,9 +88,10 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const current = yield* Ref.get(state);
         const changed = change(current);
-        const contents = yield* Effect.try(
-          () => `${encodeGoalFile({ goals: changed.next })}\n`,
-        ).pipe(
+        const contents = yield* Effect.try({
+          try: () => `${encodeGoalFile({ goals: changed.next })}\n`,
+          catch: (cause) => (cause instanceof Error ? cause.message : String(cause)),
+        }).pipe(
           Effect.tapError((cause) =>
             Effect.logError("goals.write-rejected", {
               filePath,

@@ -202,7 +202,9 @@ it.effect("recovers one lost start from SQLite without losing the queued message
           resources: { heavy_build: { capacity: 2, memoryMb: 3_500 } },
         }),
       });
+      // @effect-diagnostics-next-line processEnvInEffect:off - subprocess fixture needs the ambient environment
       const lockRoot = process.env.AGENTQUEUE_LOCK_ROOT;
+      // @effect-diagnostics-next-line processEnvInEffect:off - subprocess fixture needs the ambient environment
       process.env.AGENTQUEUE_LOCK_ROOT = path.join(directory, "resource-locks");
       try {
         const demand = inferResourceDemands("tsc --noEmit");
@@ -237,7 +239,9 @@ it.effect("recovers one lost start from SQLite without losing the queued message
           0,
         );
       } finally {
+        // @effect-diagnostics-next-line processEnvInEffect:off - subprocess fixture needs the ambient environment
         if (lockRoot === undefined) delete process.env.AGENTQUEUE_LOCK_ROOT;
+        // @effect-diagnostics-next-line processEnvInEffect:off - subprocess fixture needs the ambient environment
         else process.env.AGENTQUEUE_LOCK_ROOT = lockRoot;
         broker.close();
       }

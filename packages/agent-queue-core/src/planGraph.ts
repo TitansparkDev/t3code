@@ -36,6 +36,7 @@ export interface ParsedPlan {
   readonly finalVerification?: string | null;
 }
 
+// @effect-diagnostics-next-line extendsNativeError:off - agent-queue-core is plain TypeScript shared with the CLI, outside Effect
 export class DependencyCycleError extends Error {
   public readonly cycle: ReadonlyArray<string>;
   constructor(cycle: ReadonlyArray<string>) {
@@ -45,6 +46,7 @@ export class DependencyCycleError extends Error {
   }
 }
 
+// @effect-diagnostics-next-line extendsNativeError:off - agent-queue-core is plain TypeScript shared with the CLI, outside Effect
 export class MissingDependencyError extends Error {
   public readonly taskId: string;
   public readonly missingDependency: string;

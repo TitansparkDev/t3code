@@ -10,6 +10,7 @@ export type QueueTaskStatus =
   | "failed"
   | "blocked";
 
+// @effect-diagnostics-next-line extendsNativeError:off - agent-queue-core is plain TypeScript shared with the CLI, outside Effect
 export class InvalidStateTransitionError extends Error {
   public readonly taskId: string;
   public readonly fromStatus: string;

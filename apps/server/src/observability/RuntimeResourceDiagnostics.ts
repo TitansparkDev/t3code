@@ -154,16 +154,20 @@ export const layerWith = (filePath: string, makeSample: typeof sampleProcess = s
       const recentlyCancelled: Array<RuntimeActivity & { readonly finishedAt: number }> = [];
       const samples: Array<RuntimeResourceSample> = [];
       let lastPrunedAt = Date.now();
-      yield* Effect.tryPromise(() => pruneExpiredFiles(filePath)).pipe(Effect.ignore);
-      let sink: RotatingFileSink | undefined = yield* Effect.try(
-        () =>
+      yield* Effect.tryPromise({
+        try: () => pruneExpiredFiles(filePath),
+        catch: (cause) => (cause instanceof Error ? cause.message : String(cause)),
+      }).pipe(Effect.ignore);
+      let sink: RotatingFileSink | undefined = yield* Effect.try({
+        try: () =>
           new RotatingFileSink({
             filePath,
             maxBytes: FILE_MAX_BYTES,
             maxFiles: FILE_COUNT,
             throwOnError: true,
           }),
-      ).pipe(
+        catch: (cause) => (cause instanceof Error ? cause.message : String(cause)),
+      }).pipe(
         Effect.catch(() =>
           Effect.logWarning("runtime resource diagnostic log unavailable").pipe(
             Effect.as(undefined),
@@ -216,12 +220,16 @@ export const layerWith = (filePath: string, makeSample: typeof sampleProcess = s
       });
       const tick = Effect.gen(function* () {
         if (Date.now() - lastPrunedAt > 24 * 60 * 60 * 1000) {
-          yield* Effect.tryPromise(() => pruneExpiredFiles(filePath)).pipe(Effect.ignore);
+          yield* Effect.tryPromise({
+            try: () => pruneExpiredFiles(filePath),
+            catch: (cause) => (cause instanceof Error ? cause.message : String(cause)),
+          }).pipe(Effect.ignore);
           lastPrunedAt = Date.now();
         }
-        const result = yield* Effect.tryPromise(() =>
-          makeSample([...active.values()], recentlyCancelled.slice()),
-        );
+        const result = yield* Effect.tryPromise({
+          try: () => makeSample([...active.values()], recentlyCancelled.slice()),
+          catch: (cause) => (cause instanceof Error ? cause.message : String(cause)),
+        });
         const previous = samples.at(-1);
         const pressureEvent =
           previous !== undefined &&
@@ -236,7 +244,10 @@ export const layerWith = (filePath: string, makeSample: typeof sampleProcess = s
         yield* increment(runtimeResourceSamplesTotal, { stage: attributed.stage });
         if (sink) {
           const line = yield* encodeLine(attributed).pipe(Effect.orElseSucceed(() => "{}"));
-          yield* Effect.try(() => sink!.write(`${line}\n`)).pipe(Effect.ignore);
+          yield* Effect.try({
+            try: () => sink!.write(`${line}\n`),
+            catch: (cause) => (cause instanceof Error ? cause.message : String(cause)),
+          }).pipe(Effect.ignore);
         }
       });
       yield* Effect.forever(Effect.sleep(SAMPLE_INTERVAL).pipe(Effect.andThen(tick))).pipe(

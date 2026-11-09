@@ -39,9 +39,13 @@ const ref: ScopedThreadRef = {
 
 function threadState(
   partial: Pick<EnvironmentThreadState, "data" | "status" | "error"> &
-    Partial<Pick<EnvironmentThreadState, "history">>,
+    Partial<Pick<EnvironmentThreadState, "history" | "sequence">>,
 ): EnvironmentThreadState {
-  return { ...partial, history: partial.history ?? EMPTY_THREAD_HISTORY_META };
+  return {
+    ...partial,
+    history: partial.history ?? EMPTY_THREAD_HISTORY_META,
+    sequence: partial.sequence ?? 0,
+  };
 }
 
 describe("createEnvironmentThreadDetailAtoms", () => {

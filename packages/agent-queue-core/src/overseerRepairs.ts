@@ -14,6 +14,7 @@ export interface OverseerRepairResult {
   readonly updatedDependencies?: ReadonlyArray<string>;
 }
 
+// @effect-diagnostics-next-line extendsNativeError:off - agent-queue-core is plain TypeScript shared with the CLI, outside Effect
 export class RetryBudgetExceededError extends Error {
   public readonly taskId: string;
   public readonly attempts: number;

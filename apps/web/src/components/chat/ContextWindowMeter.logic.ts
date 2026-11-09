@@ -13,7 +13,7 @@ import { getDisplayModelName, type ModelEsque } from "./providerIconUtils";
 // Fallback TTL: Claude's 1h cache plus slack.
 const CLAUDE_RESUME_COMPACTION_FALLBACK_MS = 70 * 60_000;
 
-export function providerSupportsManualCompaction(
+function providerSupportsManualCompaction(
   provider: ProviderInstanceEntry | null | undefined,
 ): boolean {
   return provider?.snapshot.slashCommands.some((command) => command.name === "compact") ?? false;
@@ -97,18 +97,4 @@ export function resolveContextWindowModelDisplayName(
     ?.find((model) => model.slug === selection.model);
 
   return selectedModel ? getDisplayModelName(selectedModel) : selection.model;
-}
-
-export function shouldReserveContextWindowMeter(input: {
-  readonly meterEnabled: boolean;
-  readonly detailLoading: boolean;
-  readonly threadStarted: boolean;
-  readonly providerReportsContextWindow: boolean | null;
-}): boolean {
-  return (
-    input.meterEnabled &&
-    input.detailLoading &&
-    input.threadStarted &&
-    input.providerReportsContextWindow !== false
-  );
 }

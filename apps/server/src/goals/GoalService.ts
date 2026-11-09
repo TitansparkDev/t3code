@@ -53,7 +53,7 @@ import {
 } from "@t3tools/contracts/goals";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -288,8 +288,8 @@ const isQueueContention = (error: AgentQueueError) =>
 export const make = Effect.gen(function* () {
   const threads = yield* GoalThreads;
   const store = yield* GoalStore;
-  const crypto = yield* Crypto.Crypto;
-  const randomUUID = crypto.randomUUIDv4().pipe(Effect.orDie);
+  const random = yield* SecureRandom.SecureRandom;
+  const randomUUID = random.uuidV4();
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
   /** Chats still working, and whether their turn has been seen running yet. */
   const watching = new Map<ThreadId, { goalId: GoalId; seenRunning: boolean }>();
@@ -1447,6 +1447,7 @@ export const make = Effect.gen(function* () {
     const previous = goal.queueProgress;
     const same =
       previous &&
+      // @effect-diagnostics-next-line globalJsonInEffect:off - structural comparison of two plain progress objects, which cannot fail.
       JSON.stringify({ ...previous, checkedAt: "" }) === JSON.stringify({ ...next, checkedAt: "" });
     if (same) {
       const lastCheckedAt = Date.parse(previous.checkedAt);

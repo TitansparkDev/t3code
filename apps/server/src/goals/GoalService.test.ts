@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import { EventId, ProjectId, ProviderInstanceId, type ServerProvider } from "@t3tools/contracts";
@@ -248,7 +249,7 @@ const textOf = (command: OrchestrationCommand | undefined) =>
 const threadIdOf = (command: OrchestrationCommand | undefined) =>
   command?.type === "thread.create" ? command.threadId : "";
 
-it.layer(NodeServices.layer)("GoalService", (it) => {
+it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("GoalService", (it) => {
   it.effect("starts one chat per lane, spread across the models by their counts", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness;
@@ -811,7 +812,9 @@ it.layer(NodeServices.layer)("GoalService", (it) => {
         yield* harness.waitFor("thread.turn.start", 1);
         yield* harness.refuseSettles(1);
         yield* harness.runAndFinish(threadId);
-        // The refused settle left nothing on record, so the next pass sends it again.
+        // The refused settle left nothing on record, so the next pass sends it again. Goal state
+        // lives in a file, so give the first pass scheduler turns to finish before the clock moves.
+        for (let turn = 0; turn < 100; turn += 1) yield* Effect.yieldNow;
         yield* TestClock.adjust("5 seconds");
         const [settle] = yield* harness.waitFor("thread.settle", 1);
         expect(settle).toEqual({ type: "thread.settle", threadId });

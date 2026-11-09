@@ -5,6 +5,7 @@ import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it, it as liveIt } from "@effect/vitest";
 import {
@@ -527,7 +528,7 @@ const makeFlow = (
 const turnsOf = (log: ReadonlyArray<OrchestrationCommand>) =>
   log.filter((c) => c.type === "thread.turn.start");
 
-it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
+it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("AgentQueue goals", (it) => {
   it.effect(
     "ten slots, two ready tasks: reserves before launching, so exactly two workers start",
     () =>
@@ -1468,11 +1469,15 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
   );
 
   /** Let the scheduler's slow tick run once (queue events every second, reconcile every five). */
+  // Goal and queue state live in files, so real I/O needs scheduler turns between clock steps.
+  const settleIo = Effect.gen(function* () {
+    for (let turn = 0; turn < 100; turn += 1) yield* Effect.yieldNow;
+  });
   const tickOnce = Effect.gen(function* () {
     yield* TestClock.adjust(Duration.seconds(5));
-    yield* Effect.yieldNow;
+    yield* settleIo;
     yield* TestClock.adjust(Duration.seconds(1));
-    yield* Effect.yieldNow;
+    yield* settleIo;
   });
 
   it.effect(
@@ -2416,7 +2421,7 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
           (row) => row.status === "completed",
           "the resumed worker's task to merge",
         );
-      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+      }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.effect(
@@ -2542,7 +2547,7 @@ it.layer(NodeServices.layer)("AgentQueue goals", (it) => {
         );
         expect(delivered).toBeDefined();
         expect(flow.log.filter((c) => c.type === "thread.create")).toHaveLength(1);
-      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+      }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.effect(

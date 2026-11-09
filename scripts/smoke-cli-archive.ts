@@ -103,10 +103,12 @@ const smokeCliArchive = Effect.fn("smokeCliArchive")(function* (input: {
     "resource-monitor",
     platform === "win32" ? "t3-resource-monitor.exe" : "t3-resource-monitor",
   );
+  const bundledLibatomic = path.join(contentDir, "lib/libatomic.so.1");
   for (const required of [
     executable,
     path.join(contentDir, "client/index.html"),
     resourceMonitor,
+    ...(platform === "linux" ? [bundledLibatomic, `${bundledLibatomic}.LICENSE`] : []),
   ]) {
     if (!(yield* fs.exists(required))) {
       return yield* new CliArchiveSmokeError({
@@ -116,11 +118,36 @@ const smokeCliArchive = Effect.fn("smokeCliArchive")(function* (input: {
     }
   }
 
+  // The runner has libatomic installed; fresh Ubuntu servers do not.
+  if (platform === "linux") {
+    const ldd = yield* spawner.string(ChildProcess.make("ldd", [executable]));
+    // Older glibc prints the path as given, newer prints it resolved; compare both resolved.
+    const loaded = /libatomic\.so\.1 => (\/.*) \(0x[0-9a-f]+\)/.exec(ldd)?.[1];
+    if (
+      loaded === undefined ||
+      (yield* fs.realPath(loaded)) !== (yield* fs.realPath(bundledLibatomic))
+    ) {
+      return yield* new CliArchiveSmokeError({
+        step: "checking that t3 loads the bundled libatomic",
+        detail: ldd,
+      });
+    }
+  }
+
   const version = yield* runExecutable(executable, ["--version"], contentDir);
   if (version.exitCode !== 0 || !version.stdout.includes(input.expectVersion)) {
     return yield* new CliArchiveSmokeError({
       step: "running --version",
       detail: `exit ${String(version.exitCode)}\n${version.stdout}${version.stderr}`,
+    });
+  }
+
+  // The service launcher loads outside the embedded CLI; without T3CODE_HOME it exits right away.
+  const launcher = yield* runExecutable(executable, ["__service-launcher"], contentDir);
+  if (launcher.exitCode !== 1 || !launcher.stderr.includes("T3CODE_HOME is required")) {
+    return yield* new CliArchiveSmokeError({
+      step: "running __service-launcher",
+      detail: `exit ${String(launcher.exitCode)}\n${launcher.stdout}${launcher.stderr}`,
     });
   }
 
@@ -197,7 +224,9 @@ const smokeCliArchive = Effect.fn("smokeCliArchive")(function* (input: {
         : `process exited with ${String(shutdown.value)}`,
     });
   }
-  yield* Effect.log(`[cli-smoke] ${root}: --version passed and serve answered on ${String(port)}.`);
+  yield* Effect.log(
+    `[cli-smoke] ${root}: --version and __service-launcher passed, and serve answered on ${String(port)}.`,
+  );
 });
 
 const command = Command.make(

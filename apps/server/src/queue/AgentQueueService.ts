@@ -64,6 +64,7 @@ import {
   type TicketState,
 } from "../../../../packages/agent-queue-core/src/index.ts";
 
+// @effect-diagnostics-next-line preferSchemaTaggedError:off - queue errors are plain tagged data shared with the CLI
 export class AgentQueueError extends Data.TaggedError("AgentQueueError")<{
   readonly operation: string;
   readonly message: string;
