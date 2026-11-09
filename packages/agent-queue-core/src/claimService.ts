@@ -60,12 +60,18 @@ export function claimTask(db: NodeSqlite.DatabaseSync, req: ClaimRequest): Claim
           dependencies: string;
           scope_patterns: string;
           integration_state: string | null;
+          failure_class: string | null;
         }
       | undefined;
 
     if (!task) {
       db.exec("ROLLBACK;");
       return { success: false, reason: "TASK_NOT_FOUND" };
+    }
+
+    if (task.failure_class === "owner") {
+      db.exec("ROLLBACK;");
+      return { success: false, reason: "OWNER_TASK" };
     }
 
     const repairing = req.repair === true;

@@ -215,10 +215,23 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
       `);
     },
   },
+  {
+    version: 7,
+    name: "task_waivers",
+    up: (db) => {
+      // A dropped task stays 'completed' and records why it was waived; dependants treat it as settled.
+      db.exec(`
+        ALTER TABLE tasks ADD COLUMN waived_reason TEXT;
+        ALTER TABLE tasks ADD COLUMN waived_at TEXT;
+      `);
+    },
+  },
 ];
 
 /**
  * Runs all pending migrations within an immediate transaction and records PRAGMA user_version.
+ * Several processes may open the same database at once: each migration is applied only if
+ * the version is still behind once that process holds the write lock.
  */
 export function runMigrations(db: NodeSqlite.DatabaseSync): void {
   const row = db.prepare("PRAGMA user_version").get() as { user_version: number } | undefined;
@@ -228,6 +241,11 @@ export function runMigrations(db: NodeSqlite.DatabaseSync): void {
     if (migration.version > currentVersion) {
       db.exec("BEGIN IMMEDIATE;");
       try {
+        const locked = db.prepare("PRAGMA user_version").get() as { user_version: number };
+        if (locked.user_version >= migration.version) {
+          db.exec("COMMIT;");
+          continue;
+        }
         migration.up(db);
         db.exec(`PRAGMA user_version = ${migration.version};`);
         db.exec("COMMIT;");

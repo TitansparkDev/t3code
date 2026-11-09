@@ -168,3 +168,184 @@ export const readProviderReplayTranscript = Effect.fn("readProviderReplayTranscr
   const text = yield* fs.readFileString(yield* path.fromFileUrl(file));
   return yield* decodeProviderReplayNdjson(text);
 });
+
+export interface ProtocolCaptureRecord {
+  readonly direction: "incoming" | "outgoing";
+  readonly payload: string;
+}
+
+export interface ReplaySanitizerOptions {
+  /** Replaced with the `<workspace>` placeholder that replay agents expand. */
+  readonly workspace?: string;
+  /** Exact credential or account values that must never reach a fixture. */
+  readonly secrets?: ReadonlyArray<string>;
+}
+
+const REDACTED_SECRET_KEYS =
+  /^(?:access[_-]?token|refresh[_-]?token|id[_-]?token|api[_-]?key|apikey|authorization|cookie|set-cookie|password|passwd|secret|client[_-]?secret|token|credentials?)$/iu;
+const REDACTED_ACCOUNT_KEYS =
+  /^(?:email|account[_-]?id|user[_-]?id|user[_-]?email|subject|login[_-]?hint|organization[_-]?id|project[_-]?id)$/iu;
+const ATTACHMENT_TYPES = new Set(["image", "audio", "resource", "blob"]);
+
+const REPLAY_REDACTION_PATTERNS: ReadonlyArray<readonly [RegExp, string]> = [
+  [/\bBearer\s+[A-Za-z0-9._~+/=-]+/giu, "Bearer <redacted-token>"],
+  [/\b(?:sk-|gho_|ghp_|xai-|ya29\.|AIza|vercel_)[A-Za-z0-9._-]{8,}/gu, "<redacted-token>"],
+  [
+    /https?:\/\/\S*(?:accounts\.google\.com|\/oauth2?\/|client_id=|redirect_uri=|code_challenge=)\S*/giu,
+    "<redacted-login-url>",
+  ],
+  [/data:[a-z]+\/[a-z0-9.+-]+(?:;[a-z0-9=.+-]+)*;base64,[A-Za-z0-9+/=]+/giu, "<redacted-data-uri>"],
+  [/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/giu, "<redacted-email>"],
+];
+
+function redactReplayText(text: string, options: ReplaySanitizerOptions): string {
+  let result = text;
+  if (options.workspace) {
+    result = result.split(options.workspace).join(REPLAY_TRANSCRIPT_WORKSPACE_PLACEHOLDER);
+  }
+  for (const secret of options.secrets ?? []) {
+    if (secret.length > 0) result = result.split(secret).join("<redacted>");
+  }
+  for (const [pattern, replacement] of REPLAY_REDACTION_PATTERNS) {
+    result = result.replace(pattern, replacement);
+  }
+  return result;
+}
+
+/** Redacts credentials, login URLs, account identifiers and attachment bytes before a value is written. */
+export function sanitizeReplayValue(value: unknown, options: ReplaySanitizerOptions = {}): unknown {
+  if (typeof value === "string") {
+    return redactReplayText(value, options);
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => sanitizeReplayValue(entry, options));
+  }
+  if (typeof value !== "object" || value === null) {
+    return value;
+  }
+  const record = value as Record<string, unknown>;
+  const attachment = typeof record.type === "string" && ATTACHMENT_TYPES.has(record.type);
+  return Object.fromEntries(
+    Object.entries(record).map(([key, entry]) => {
+      if (REDACTED_SECRET_KEYS.test(key)) return [key, "<redacted>"];
+      if (REDACTED_ACCOUNT_KEYS.test(key)) return [key, "<redacted-account>"];
+      if (attachment && (key === "data" || key === "blob" || key === "uri")) {
+        return [key, "<redacted-attachment>"];
+      }
+      return [key, sanitizeReplayValue(entry, options)];
+    }),
+  );
+}
+
+/**
+ * Converts raw ACP stdio chunks (as the protocol logger reports them) into replay
+ * entries. T3-owned outbound params are replaced with `<any>` because prompts,
+ * MCP server lists and client metadata vary per run.
+ */
+export function replayEntriesFromProtocolCapture(
+  records: ReadonlyArray<ProtocolCaptureRecord>,
+  options: ReplaySanitizerOptions = {},
+): { readonly entries: Array<ProviderReplayEntry>; readonly unparsedLines: number } {
+  const lines: Array<{ readonly direction: "incoming" | "outgoing"; readonly line: string }> = [];
+  let incomingBuffer = "";
+  for (const record of records) {
+    if (record.direction === "outgoing") {
+      for (const line of record.payload.split("\n")) {
+        if (line.trim().length > 0) lines.push({ direction: "outgoing", line });
+      }
+      continue;
+    }
+    incomingBuffer += record.payload;
+    const parts = incomingBuffer.split("\n");
+    incomingBuffer = parts.pop() ?? "";
+    for (const line of parts) {
+      if (line.trim().length > 0) lines.push({ direction: "incoming", line });
+    }
+  }
+  if (incomingBuffer.trim().length > 0) lines.push({ direction: "incoming", line: incomingBuffer });
+
+  const requestMethods = {
+    outgoing: new Map<string, string>(),
+    incoming: new Map<string, string>(),
+  };
+  const entries: Array<ProviderReplayEntry> = [];
+  let unparsedLines = 0;
+  for (const { direction, line } of lines) {
+    let message: {
+      readonly id?: string | number | null;
+      readonly method?: string;
+      readonly params?: unknown;
+      readonly result?: unknown;
+      readonly error?: unknown;
+    };
+    try {
+      message = JSON.parse(line) as typeof message;
+    } catch {
+      unparsedLines += 1;
+      continue;
+    }
+    const hasId = message.id !== undefined && message.id !== null;
+    const id = hasId ? String(message.id) : undefined;
+    // Outbound requests from T3 are matched by the replay agent only through their method and params.
+    const outbound = direction === "outgoing";
+    if (typeof message.method === "string") {
+      const update =
+        message.method === "session/update" && isReplayRecord(message.params)
+          ? message.params.update
+          : undefined;
+      const sessionUpdate =
+        isReplayRecord(update) && typeof update.sessionUpdate === "string"
+          ? `:${update.sessionUpdate}`
+          : "";
+      const kind = hasId ? "request" : "notification";
+      if (hasId && id !== undefined) requestMethods[direction].set(id, message.method);
+      const frame = {
+        kind,
+        method: message.method,
+        params: outbound ? REPLAY_ANY : message.params,
+      };
+      const sanitized = sanitizeReplayValue(frame, options);
+      entries.push(
+        outbound
+          ? { type: "expect_outbound", label: `${kind}:${message.method}`, frame: sanitized }
+          : {
+              type: "emit_inbound",
+              label: `${kind}:${message.method}${sessionUpdate}`,
+              frame: sanitized,
+            },
+      );
+      continue;
+    }
+    if (id === undefined) continue;
+    // A response answers a request sent in the opposite direction.
+    const method = requestMethods[outbound ? "incoming" : "outgoing"].get(id);
+    if (method === undefined) continue;
+    requestMethods[outbound ? "incoming" : "outgoing"].delete(id);
+    const frame = {
+      kind: "response",
+      method,
+      ...(message.result === undefined ? {} : { result: message.result }),
+      ...(message.error === undefined ? {} : { error: message.error }),
+    };
+    entries.push(
+      outbound
+        ? {
+            type: "expect_outbound",
+            label: `response:${method}`,
+            frame: sanitizeReplayValue(frame, options),
+          }
+        : {
+            type: "emit_inbound",
+            label: `response:${method}`,
+            frame: sanitizeReplayValue(frame, options),
+          },
+    );
+  }
+  return { entries, unparsedLines };
+}
+
+const REPLAY_ANY = "<any>";
+
+function isReplayRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}

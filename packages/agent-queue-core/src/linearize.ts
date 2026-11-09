@@ -18,11 +18,12 @@ const git = (cwd: string, args: ReadonlyArray<string>) => {
   };
 };
 
-export type LinearizeOutcome = "linear" | "rebased" | "skipped" | "failed";
+export type LinearizeOutcome = "linear" | "rebased" | "squashed" | "skipped" | "failed";
 
 /**
- * Rebases the worktree's branch onto `base` when it contains merge commits. Never touches a
- * dirty worktree or a detached HEAD, and leaves the branch exactly as it was if the replay conflicts.
+ * Rebases the worktree's branch onto `base` when it contains merge commits; if that conflicts and
+ * the branch already contains `base`, squashes it into one commit on `base` instead. Never touches
+ * a dirty worktree or a detached HEAD, and otherwise leaves the branch exactly as it was.
  */
 export function linearizeBranch(
   worktree: string,
@@ -42,5 +43,23 @@ export function linearizeBranch(
     return { outcome: "rebased", note: `replayed onto ${base}, dropping its merge commits` };
   }
   git(worktree, ["rebase", "--abort"]);
-  return { outcome: "failed", note: rebased.stderr.slice(-300) };
+  // Replaying drops the conflict resolutions the merges made. When the branch already contains
+  // the whole base, its tree is exactly base plus the task's work: one commit of that tree on
+  // top of the base is linear and needs no resolution.
+  if (git(worktree, ["merge-base", "--is-ancestor", base, "HEAD"]).code === 0) {
+    const subjects = git(worktree, ["log", "--no-merges", "--format=%s", `${base}..HEAD`]).stdout;
+    const message = `${subjects.split("\n")[0] || "Task work"}\n\nSquashed onto ${base}; the branch merged it in with resolved conflicts.\n\n${subjects}`;
+    const commit = git(worktree, ["commit-tree", "HEAD^{tree}", "-p", base, "-m", message]);
+    if (commit.code === 0 && commit.stdout !== "") {
+      const moved = git(worktree, ["reset", "-q", "--keep", commit.stdout]);
+      if (moved.code === 0) {
+        return {
+          outcome: "squashed",
+          note: `replaying conflicted, so the branch became one commit on ${base} with the same content`,
+        };
+      }
+    }
+  }
+  const conflicted = /CONFLICT[^\n]*/.exec(rebased.stdout + "\n" + rebased.stderr)?.[0];
+  return { outcome: "failed", note: (conflicted ?? rebased.stderr).slice(-300) };
 }

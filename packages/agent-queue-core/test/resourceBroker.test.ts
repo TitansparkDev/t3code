@@ -64,6 +64,7 @@ function makeBroker(
       load1: 1,
     }),
     config: () => CONFIG,
+    emulatorRunning: () => false,
     killGroup: (pgid) => killed.push(pgid),
     ...extra,
   });
@@ -86,6 +87,17 @@ describe("resource broker queue", () => {
     expect(broker.pump().map((t) => t.label)).toEqual(["c"]);
     expect(broker.get(c!.id)!.slots.heavy_build).toEqual([0]);
     expect(broker.get(b!.id)!.state).toBe("granted");
+  });
+
+  it("says who holds and who waits for a resource, and why a waiter waits", () => {
+    const { broker } = makeBroker();
+    broker.enqueue({ resources: [{ name: "db" }], pid: process.pid, label: "a", ownerRef: "VG1" });
+    broker.enqueue({ resources: [{ name: "db" }], pid: process.pid, label: "b", ownerRef: "FX2" });
+    broker.pump();
+    const db = broker.status().resources.find((resource) => resource.name === "db")!;
+    expect(db.holders[0]).toMatchObject({ owner: "VG1" });
+    expect(db.queue[0]).toMatchObject({ owner: "FX2", pid: process.pid });
+    expect(db.queue[0]!.note).toBeTruthy();
   });
 
   it("takes several resources atomically, so two multi-resource requests cannot deadlock", () => {
@@ -241,6 +253,49 @@ describe("resource broker queue", () => {
     free.mb = 9_000;
     broker.pump();
     expect(broker.get(c.id)!.state).toBe("granted");
+  });
+
+  it("counts a running emulator's memory as already gone, and holds an android request when none runs", () => {
+    let emulatorOn = true;
+    const { broker } = makeBroker({
+      free: { mb: 3_000 },
+      emulatorRunning: (port) => emulatorOn && port === 5554,
+    });
+    const running = broker.enqueue({
+      resources: [{ name: "android" }],
+      pid: process.pid,
+      label: "a",
+    });
+    broker.pump();
+    expect(broker.get(running.id)!.state).toBe("granted");
+    broker.finish(running.id, { outcome: "ok" });
+    emulatorOn = false;
+    const cold = broker.enqueue({ resources: [{ name: "android" }], pid: process.pid, label: "b" });
+    broker.pump();
+    expect(broker.get(cold.id)!.state).toBe("waiting");
+    expect(broker.get(cold.id)!.note).toMatch(/waiting for memory/);
+  });
+
+  it("does not ramp a fresh android grant whose emulator was already running", () => {
+    const { broker } = makeBroker({
+      free: { mb: 7_000 },
+      emulatorRunning: (port) => port === 5554,
+    });
+    const first = broker.enqueue({
+      resources: [{ name: "android" }],
+      pid: process.pid,
+      label: "a",
+    });
+    broker.pump();
+    expect(broker.get(first.id)!.state).toBe("granted");
+    // Slot 1 has no emulator: its 5000 MB must fit the 6000 MB headroom, with no ramp for slot 0.
+    const second = broker.enqueue({
+      resources: [{ name: "android" }],
+      pid: process.pid,
+      label: "b",
+    });
+    broker.pump();
+    expect(broker.get(second.id)!.state).toBe("granted");
   });
 
   it("admits on what earlier commands actually needed, and lets one outlier fade", () => {

@@ -11599,31 +11599,38 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               yield* Fiber.interrupt(deadlineFiber);
               return;
             }
-            // The turn stays open: the CLI may still be working, and the user decides
-            // whether to Force stop it.
+            const completedAt = yield* DateTime.now;
             yield* Effect.logWarning("orchestration-v2.claude-query-interrupt-timeout", {
               providerSessionId: input.providerSessionId,
               providerThreadId: turnInput.providerThread.id,
               providerTurnId: turnInput.providerTurnId,
             });
-            return yield* new ProviderAdapter.ProviderAdapterInterruptTimeoutError({
-              driver: CLAUDE_PROVIDER,
-              providerThreadId: turnInput.providerThread.id,
-              providerTurnId: turnInput.providerTurnId,
-              timeoutMs: CLAUDE_STOP_CONFIRM_TIMEOUT_MS,
-            });
+            const ownedLiveQuery = yield* Ref.modify(queryContext, (current) =>
+              current?.query === existing.query ? [true, null] : [false, current],
+            );
+            if (ownedLiveQuery) {
+              existing.stopping = true;
+              yield* finalizeActiveTurnAfterQueryExit(existing);
+              yield* endSubagentCallsOfClosedQuery(existing.nativeThreadId, "interrupted");
+            } else {
+              yield* finalizeActiveTurn({
+                context: currentTurn,
+                status: "interrupted",
+                completedAt,
+              });
+            }
+            yield* Deferred.succeed(existing.closed, undefined);
           },
           (effect, turnInput) =>
             effect.pipe(
-              Effect.mapError((cause) =>
-                cause._tag === "ProviderAdapterInterruptTimeoutError"
-                  ? cause
-                  : new ProviderAdapter.ProviderAdapterInterruptError({
-                      driver: CLAUDE_PROVIDER,
-                      providerThreadId: turnInput.providerThread.id,
-                      providerTurnId: turnInput.providerTurnId,
-                      cause,
-                    }),
+              Effect.mapError(
+                (cause) =>
+                  new ProviderAdapter.ProviderAdapterInterruptError({
+                    driver: CLAUDE_PROVIDER,
+                    providerThreadId: turnInput.providerThread.id,
+                    providerTurnId: turnInput.providerTurnId,
+                    cause,
+                  }),
               ),
             ),
         );
@@ -11788,9 +11795,15 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         const closeSession = Effect.fnUntraced(function* () {
           const existing = yield* Ref.get(queryContext);
           if (existing !== null) {
-            yield* existing.query.close.pipe(Effect.ignore);
+            const closing = yield* existing.query.close.pipe(
+              Effect.ignore,
+              Effect.forkDetach({ startImmediately: true }),
+            );
+            yield* Fiber.await(closing).pipe(
+              Effect.timeoutOption(Duration.millis(CLAUDE_STOP_DEADLINE_MS)),
+              Effect.ensuring(Fiber.interrupt(closing).pipe(Effect.forkDetach, Effect.asVoid)),
+            );
           }
-          yield* Effect.yieldNow;
           yield* queryRunner.assertComplete.pipe(
             Effect.catchCause((cause) =>
               Effect.logWarning("orchestration-v2.claude-query-runner-incomplete", {

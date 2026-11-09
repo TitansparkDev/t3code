@@ -17,6 +17,7 @@ import {
   DEFAULT_RUN_MS,
   describeJob,
   inferResourceDemands,
+  requestedAndroidSerial,
   isReusableCommand,
   loadContract,
   loadResourceConfig,
@@ -216,13 +217,15 @@ function statusText(broker: ResourceBroker): string {
     lines.push(
       `${resource.name}: ${resource.active}/${resource.capacity} in use, ${resource.waiting} waiting`,
     );
+    const who = (entry: { owner: string | null; pid: number | null }) =>
+      `${entry.owner ?? "no owner"}, pid ${entry.pid ?? "?"}`;
     for (const holder of resource.holders)
       lines.push(
-        `    holding ${holder.ticket} slot ${holder.slots.join(",")} for ${fmtMs(holder.sinceMs)}: ${holder.label}`,
+        `    holding ${holder.ticket} slot ${holder.slots.join(",")} for ${fmtMs(holder.sinceMs)} (${who(holder)}): ${holder.label}`,
       );
     for (const waiter of resource.queue)
       lines.push(
-        `    #${waiter.position} ${waiter.ticket} waiting ${fmtMs(waiter.waitingMs)}: ${waiter.label}`,
+        `    #${waiter.position} ${waiter.ticket} waiting ${fmtMs(waiter.waitingMs)} (${who(waiter)}${waiter.note ? `; ${waiter.note}` : ""}): ${waiter.label}`,
       );
   }
   return lines.join("\n");
@@ -287,6 +290,16 @@ export async function runResourceCommand(
       ...inferResourceDemands(commandLine, repoResources),
       ...(declared?.requires.map((name) => ({ name })) ?? []),
     ];
+    const androidSerial = demands.some((demand) => demand.name === "android")
+      ? requestedAndroidSerial(command, process.env)
+      : null;
+    if (androidSerial !== null) {
+      for (let index = demands.length - 1; index >= 0; index--) {
+        if (demands[index]!.name === "android") demands.splice(index, 1);
+      }
+      demands.push({ name: `device_${androidSerial.replace(/[^A-Za-z0-9_.-]/g, "_")}` });
+      process.stderr.write(`[agentq] using ANDROID_SERIAL=${androidSerial}\n`);
+    }
     const resources = [...new Set(demands.map((demand) => demand.name))];
     const reusableInputs = declared
       ? [...declared.reuseInputs!, ...(declared.consumes ?? [])]
@@ -314,11 +327,16 @@ export async function runResourceCommand(
       }
     }
     if (resources.length === 0 && !reusable) {
-      // Nothing shared is involved: run it straight away, as if the prefix were not there.
+      // Nothing shared is involved: run it straight away, as if the prefix were not there,
+      // but still under the deadline the caller asked for.
       const child = NodeChildProcess.spawnSync(command[0]!, command.slice(1), {
         cwd,
         stdio: "inherit",
+        ...(typeof flags.timeout === "string" && runMs > 0 ? { timeout: runMs } : {}),
       });
+      if (child.error && (child.error as NodeJS.ErrnoException).code === "ETIMEDOUT") {
+        return { exitCode: 124, stdout: "", stderr: "[agentq] killed at its time limit." };
+      }
       return { exitCode: child.status ?? 1, stdout: "", stderr: "" };
     }
     const hints = Object.fromEntries(
@@ -327,6 +345,7 @@ export async function runResourceCommand(
     const request: RunUnderBrokerOptions = {
       resources: demands,
       argv: command,
+      ...(androidSerial === null ? {} : { env: { ANDROID_SERIAL: androidSerial } }),
       cwd,
       label: typeof flags.label === "string" ? flags.label : commandLine.slice(0, 100),
       ...(owner ? { ownerRef: owner } : {}),

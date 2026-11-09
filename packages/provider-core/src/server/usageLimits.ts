@@ -110,11 +110,39 @@ export function resolveUsageLimitsAfterProbe(input: {
   if (
     published &&
     probed &&
-    !published.unavailable &&
     !probed.unavailable &&
     Date.parse(published.checkedAt) > Date.parse(probed.checkedAt)
   ) {
-    return { ...probed, checkedAt: published.checkedAt, windows: published.windows };
+    return {
+      ...probed,
+      checkedAt: published.checkedAt,
+      windows: mergeWindowsById(probed.windows, published.windows),
+    };
   }
   return probed;
+}
+
+// A newer published window wins per id; the probe supplies windows the event did not carry.
+function mergeWindowsById(
+  probed: ReadonlyArray<ServerProviderUsageWindow>,
+  published: ReadonlyArray<ServerProviderUsageWindow>,
+): ReadonlyArray<ServerProviderUsageWindow> {
+  const publishedById = new Map(published.map((window) => [window.id, window] as const));
+  const probedIds = new Set(probed.map((window) => window.id));
+  return [
+    ...probed.map((window) => {
+      const newer = publishedById.get(window.id);
+      if (!newer) return window;
+      return {
+        ...newer,
+        ...(newer.resetsAt === undefined && window.resetsAt !== undefined
+          ? { resetsAt: window.resetsAt }
+          : {}),
+        ...(newer.windowDurationMins === undefined && window.windowDurationMins !== undefined
+          ? { windowDurationMins: window.windowDurationMins }
+          : {}),
+      };
+    }),
+    ...published.filter((window) => !probedIds.has(window.id)),
+  ];
 }

@@ -15,6 +15,9 @@ import {
   retryTaskCommand,
   blockTaskCommand,
   unblockTaskCommand,
+  waiveTaskCommand,
+  unwaiveTaskCommand,
+  reconcileTasksCommand,
   noteTaskCommand,
   repoInitCommand,
   repoDoctorCommand,
@@ -27,6 +30,9 @@ export interface ParsedArgs {
   readonly positional: string[];
   readonly flags: Record<string, string | boolean>;
 }
+
+/** Flags that never take a value, so `--json VG1` keeps VG1 as the task id. */
+const BOOLEAN_FLAGS = new Set(["json", "strict", "force", "help"]);
 
 export function parseArgs(rawArgs: string[]): ParsedArgs {
   const flags: Record<string, string | boolean> = {};
@@ -41,7 +47,7 @@ export function parseArgs(rawArgs: string[]): ParsedArgs {
         flags[arg.slice(2, eqIdx)] = arg.slice(eqIdx + 1);
       } else {
         const next = rawArgs[i + 1];
-        if (next && !next.startsWith("-")) {
+        if (next && !next.startsWith("-") && !BOOLEAN_FLAGS.has(arg.slice(2))) {
           flags[arg.slice(2)] = next;
           i++;
         } else {
@@ -70,7 +76,7 @@ const USAGE = `Usage: agentq <command> [args] [--json]
   resource status       show shared resources and who holds them
   repo init|doctor      set up or check the repository's queue contract
   plan import|validate|lint [--baseline] <PLAN.md>
-  task list|claim|heartbeat|release|finalize|abort|retry|block|unblock|note
+  task list|claim|heartbeat|release|reconcile|finalize|abort|retry|block|unblock|waive|unwaive|note
   status                queue status (the default command)
   events                recent queue events
 `;
@@ -191,22 +197,65 @@ export function runCli(
 
           case "heartbeat": {
             const token = (args.flags.token as string) || args.positional[0];
-            if (!token) throw new Error("Usage: agentqueue task heartbeat --token <token>");
-            result = heartbeatCommand(token, 120, { cwd, json: jsonMode });
+            if (!token)
+              throw new Error("Usage: agentqueue task heartbeat --token <token> [--lease SECONDS]");
+            const lease =
+              typeof args.flags.lease === "string" ? parseInt(args.flags.lease, 10) : NaN;
+            result = heartbeatCommand(token, Number.isNaN(lease) ? undefined : lease, {
+              cwd,
+              json: jsonMode,
+            });
+            // A lost lease means another worker may now own the task: say so in the exit status.
+            if (result.success === false) {
+              return {
+                exitCode: 3,
+                output: jsonMode
+                  ? JSON.stringify(result, null, 2)
+                  : `Lease not renewed: ${token} no longer holds its task. Stop work on it.`,
+              };
+            }
             break;
           }
 
           case "release": {
             const token = (args.flags.token as string) || args.positional[0];
-            const status = (args.flags.status as "completed" | "failed" | "pending") || "completed";
+            const status = args.flags.status;
             const reason = (args.flags.reason as string) || undefined;
-            if (!token)
+            if (
+              !token ||
+              typeof status !== "string" ||
+              !["pending", "failed", "completed"].includes(status)
+            ) {
               throw new Error(
-                "Usage: agentqueue task release --token <token> [--status completed|failed]",
+                "Usage: agentqueue task release --token <token> --status pending|failed|completed",
               );
-            result = releaseCommand(token, status, reason, { cwd, json: jsonMode });
+            }
+            result = releaseCommand(token, status as "completed" | "failed" | "pending", reason, {
+              cwd,
+              json: jsonMode,
+            });
             break;
           }
+
+          case "waive": {
+            const taskId = args.positional[0] || (args.flags.id as string);
+            const reason = args.flags.reason;
+            if (!taskId || typeof reason !== "string")
+              throw new Error('Usage: agentq task waive <id> --reason "<text>"');
+            result = waiveTaskCommand(taskId, reason, { cwd, json: jsonMode });
+            break;
+          }
+
+          case "unwaive": {
+            const taskId = args.positional[0] || (args.flags.id as string);
+            if (!taskId) throw new Error("Usage: agentq task unwaive <id>");
+            result = unwaiveTaskCommand(taskId, { cwd, json: jsonMode });
+            break;
+          }
+
+          case "reconcile":
+            result = reconcileTasksCommand({ cwd, json: jsonMode });
+            break;
 
           case "abort": {
             const taskId = args.positional[0] || (args.flags.id as string);
@@ -220,7 +269,7 @@ export function runCli(
             const taskId = args.positional[0] || (args.flags.id as string);
             if (!taskId)
               throw new Error(
-                'Usage: agentq task finalize <task-id> [--request "SCOPE-REQUEST: path — reason"]',
+                'Usage: agentq task finalize <task-id> [--request "SCOPE-REQUEST: path: reason"]',
               );
             result = finalizeTaskCommand(
               taskId,
@@ -273,7 +322,9 @@ export function runCli(
           }
 
           default:
-            throw new Error(`Unknown task subcommand: ${args.subcommand}`);
+            throw new Error(
+              `Unknown task subcommand: ${args.subcommand}. Use list|claim|heartbeat|release|reconcile|finalize|abort|retry|block|unblock|waive|unwaive|note.`,
+            );
         }
         break;
 
@@ -317,7 +368,7 @@ function formatHumanOutput(
     const dl = data.deadlock;
     return [
       `=== AgentQueue Status ===`,
-      `Tasks: ${snap.counts.total} (Pending: ${snap.counts.pending}, Claimed: ${snap.counts.claimed}, Running: ${snap.counts.running}, Completed: ${snap.counts.completed}, Failed: ${snap.counts.failed}, Blocked: ${snap.counts.blocked})`,
+      `Tasks: ${snap.counts.total} (Pending: ${snap.counts.pending}, Claimed: ${snap.counts.claimed}, Running: ${snap.counts.running}, Completed: ${snap.counts.completed}, Waived: ${snap.counts.waived}, Failed: ${snap.counts.failed}, Blocked: ${snap.counts.blocked})`,
       `Active Leases: ${snap.activeLeases.length}`,
       dl.isDeadlocked ? `DEADLOCK DETECTED: ${dl.reason}` : `Queue Healthy (no deadlock)`,
     ].join("\n");
@@ -330,7 +381,10 @@ function formatHumanOutput(
   if (command === "task" && subcommand === "finalize") return String(data.message);
 
   if (command === "plan" && subcommand === "import") {
-    return `Imported plan '${data.title}' (${data.planId}) with ${data.taskCount} tasks.`;
+    const imported = `Imported plan '${data.title}' (${data.planId}) with ${data.taskCount} tasks.`;
+    return data.orphaned?.length
+      ? `${imported}\nNot in the plan file any more: ${data.orphaned.join(", ")} (waive with agentq task waive <id> --reason "...").`
+      : imported;
   }
 
   if (command === "task" && subcommand === "list") {

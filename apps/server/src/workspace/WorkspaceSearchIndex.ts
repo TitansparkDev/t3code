@@ -27,12 +27,8 @@ import type {
 } from "@t3tools/contracts";
 import { isProjectFaviconPath } from "@t3tools/shared/projectFavicon";
 
-// fff-node stays external to the CLI bundle because it dlopens a native
-// library. A static `import` of an external package is a hard error inside a
-// Node single-executable (only built-ins resolve there), so load it through
-// `require`, which reads from the real filesystem in every runtime.
-// Lazy-load FileFinder so eagerly evaluated commands like --version do not
-// attempt to load platform native binaries during bundle self-checks.
+// Node single-executables cannot statically import external native modules.
+// Load fff lazily from the filesystem so commands such as --version need no native binary.
 let cachedFileFinder: typeof FileFinderType | undefined;
 function getFileFinder(): typeof FileFinderType {
   if (cachedFileFinder === undefined) {

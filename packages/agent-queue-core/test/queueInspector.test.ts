@@ -39,6 +39,15 @@ describe("AgentQueue Diagnostics & Deadlock Evaluator (AQ-014)", () => {
       expect(snapshot.activeLeases).toHaveLength(1);
       expect(snapshot.activeLeases[0].taskId).toBe("T-3");
       expect(snapshot.activeLeases[0]).not.toHaveProperty("ownerToken");
+      expect(snapshot.counts.waived).toBe(0);
+
+      db.prepare(
+        "UPDATE tasks SET waived_reason = 'Dropped from the plan', waived_at = ? WHERE id = 'T-4'",
+      ).run(now);
+      const waivedSnapshot = getQueueSnapshot(db);
+      expect(waivedSnapshot.counts.waived).toBe(1);
+      expect(waivedSnapshot.counts.completed).toBe(1);
+      expect(waivedSnapshot.counts.failed).toBe(0);
 
       db.close();
     } finally {
@@ -98,6 +107,29 @@ describe("AgentQueue Diagnostics & Deadlock Evaluator (AQ-014)", () => {
       expect(evaluation.blockedTaskIds).toContain("T-BLOCKED");
       expect(evaluation.reason).toContain("unsatisfied or failed dependencies");
 
+      db.close();
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it("reports an owner task as awaiting the owner instead of deadlocked", async () => {
+    const repo = await createTestGitRepo("aq-inspector-owner-");
+    try {
+      const db = openQueueDatabase({ gitCommonDir: repo.gitCommonDir });
+      const now = "2026-01-01T00:00:00.000Z";
+      db.prepare(`
+        INSERT INTO tasks (id, title, status, failure_class, version, dependencies, created_at, updated_at)
+        VALUES
+          ('OWNER', 'Verify handset', 'pending', 'owner', 1, '[]', ?, ?),
+          ('CHILD', 'Continue work', 'pending', NULL, 1, '["OWNER"]', ?, ?)
+      `).run(now, now, now, now);
+
+      expect(evaluateDeadlock(db)).toMatchObject({
+        isDeadlocked: false,
+        awaitingOwner: true,
+        ownerTaskIds: ["OWNER"],
+      });
       db.close();
     } finally {
       await repo.cleanup();

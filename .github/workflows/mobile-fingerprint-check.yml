@@ -1,6 +1,5 @@
-# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
-# Compare the Expo native fingerprint against the latest production release.
-#
+name: Mobile Fingerprint Check
+
 # Detects whether a PR changes the native fingerprint — i.e. whether merging
 # it would leave main un-OTA-able until a new store build ships. Native-change
 # PRs get the "📱 Native Change" label (applied by mobile-fingerprint-label.yml,
@@ -14,7 +13,6 @@
 # fingerprints are computed in this one job (same OS, same corepack-pinned
 # pnpm), so the comparison is self-consistent; no EXPO_TOKEN needed.
 on:
-  workflow_dispatch:
   pull_request:
     # Run even when a rebase or base change removes every native input from the
     # diff, so the label can be cleared without installing Expo dependencies.

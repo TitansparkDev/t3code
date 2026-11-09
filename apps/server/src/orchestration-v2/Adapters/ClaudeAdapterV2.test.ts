@@ -10853,7 +10853,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       ),
   );
 
-  it.effect("leaves the turn open for Force stop when Claude never acknowledges query close", () =>
+  it.effect("forces an interrupted result when Claude never acknowledges query close", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const harness = yield* makeWakeHarnessWithOptions({
@@ -10881,12 +10881,38 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         const stopping = yield* harness.runtime
           .interruptTurn({ providerThread: harness.providerThread, providerTurnId })
           .pipe(Effect.forkScoped);
-        yield* TestClock.adjust("20 seconds");
+        yield* TestClock.adjust("10 seconds");
         const stopExit = yield* Fiber.await(stopping);
-        // Stop is bounded, but the CLI may still be working: the turn stays open for Force stop.
-        assert.isTrue(Exit.isFailure(stopExit));
-        assert.deepEqual(harness.terminalEvents(), []);
+        assert.isTrue(Exit.isSuccess(stopExit));
+        assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "interrupted");
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make("attempt-claude-stop-replacement"),
+            text: "Continue after Stop.",
+            attachments: [],
+            providerTurnOrdinal: 2,
+          }),
+        );
+        yield* harness.offerAndWait(
+          makeResultFrame({ uuid: "late-success-after-stop", result: "Done after Stop." }),
+        );
+        assert.deepEqual(
+          harness.terminalEvents().map((event) => event.status),
+          ["interrupted"],
+        );
+        const replacementMessages = harness.processQueues[1];
+        assert.isDefined(replacementMessages);
+        yield* Queue.offer(
+          replacementMessages!,
+          makeResultFrame({ uuid: "replacement-success", result: "Replacement completed." }),
+        );
+        yield* harness.until(() => harness.terminalEvents().length === 2);
+        assert.equal(harness.terminalEvents()[1]?.status, "completed");
         yield* Queue.shutdown(harness.sdkMessages);
+        yield* Queue.shutdown(replacementMessages!);
       }).pipe(
         Effect.provide(
           Layer.mergeAll(

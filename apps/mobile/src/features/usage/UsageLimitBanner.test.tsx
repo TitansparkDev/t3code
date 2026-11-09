@@ -147,15 +147,6 @@ describe("mobile usage banner geometry", () => {
     expect(usageBannerCollapsedContentWidth(320, 6)).toBeGreaterThan(320);
   });
 
-  it.each(FONT_SCALES)(
-    "keeps AGY expansion at the same row height for font scale %s",
-    (fontScale) => {
-      const collapsedHeight = usageBannerHeight(fontScale);
-      const expandedHeight = usageBannerHeight(fontScale);
-      expect(expandedHeight).toBe(collapsedHeight);
-    },
-  );
-
   it.each(WIDTHS)(
     "expands five and twenty AGY accounts beyond the viewport horizontally at %i dp",
     (width) => {
@@ -167,12 +158,6 @@ describe("mobile usage banner geometry", () => {
       expect(expandedWidth(20)).toBeGreaterThan(width);
     },
   );
-
-  it("keeps column geometry fixed when countdown text changes", () => {
-    const widthBefore = usageBannerCellWidth(320, 5);
-    const values = ["1min", "48min", "4:25", "23:59", "35h", "6d", ">99d", "now"];
-    for (const _countdown of values) expect(usageBannerCellWidth(320, 5)).toBe(widthBefore);
-  });
 });
 
 describe("workspace quota banner navigation and expansion lifecycle", () => {
@@ -251,41 +236,36 @@ describe("workspace quota banner navigation and expansion lifecycle", () => {
     expect(store.getSnapshot()).toBe(false);
   });
 
-  it("close and Back collapse without changing route, feed position or composer state", () => {
+  it("collapses once per transition and ignores repeated Close presses", () => {
     const store = createUsageBannerExpansionStore();
     store.syncAccounts(["agy-1", "agy-2"], ["agy-1", "agy-2"]);
-    const route = routeState("Thread");
-    const feedPosition = 734;
-    const composerState = { text: "draft", keyboardOpen: true };
+    const notify = vi.fn();
+    const unsubscribe = store.subscribe(notify);
 
     store.setExpanded(true);
-    store.setExpanded(false);
-    expect(store.getSnapshot()).toBe(false);
-    expect(route.routes[0]?.name).toBe("Thread");
-    expect(feedPosition).toBe(734);
-    expect(composerState).toEqual({ text: "draft", keyboardOpen: true });
+    store.syncNavigation(routeState("Thread"));
+    expect(store.getSnapshot()).toBe(true);
+    expect(notify).toHaveBeenCalledTimes(1);
 
-    store.setExpanded(true);
+    store.setExpanded(false);
     store.setExpanded(false);
     expect(store.getSnapshot()).toBe(false);
-    expect(feedPosition).toBe(734);
+    expect(notify).toHaveBeenCalledTimes(2);
+    unsubscribe();
   });
 
-  it("preserves expansion, logical focus target and scroll offset across live quota refreshes", () => {
+  it("keeps expansion and the Close focus target across an unchanged live quota refresh", () => {
     const store = createUsageBannerExpansionStore();
     store.syncAccounts(["agy-1", "agy-2", "agy-3"], ["agy-1", "agy-2", "agy-3"]);
     store.setExpanded(true);
     const notify = vi.fn();
     const unsubscribe = store.subscribe(notify);
-    const scrollOffset = 146;
-    const focusTarget = usageBannerFocusTarget(store.getSnapshot());
 
     store.syncAccounts(["agy-1", "agy-2", "agy-3"], ["agy-1", "agy-2", "agy-3"]);
 
     expect(store.getSnapshot()).toBe(true);
     expect(notify).not.toHaveBeenCalled();
-    expect(scrollOffset).toBe(146);
-    expect(focusTarget).toBe("close");
+    expect(usageBannerFocusTarget(store.getSnapshot())).toBe("close");
     unsubscribe();
   });
 });
@@ -314,7 +294,10 @@ describe("account interactions and presentation", () => {
       },
       rows: [row("short", null, "—"), row("weekly", 25, "6d")],
     });
-    expect(usageBannerAccountRouteTarget(tapped, 99).params.accountKey).toBe("removed-stable-key");
+    expect(usageBannerAccountRouteTarget(tapped, 99).params).toMatchObject({
+      accountKey: "removed-stable-key",
+      environmentIds: ["removed-env"],
+    });
   });
 
   it("gives expanded AGY accounts stable compact labels", () => {
@@ -378,20 +361,17 @@ describe("shared foreground-only minute clock", () => {
     expect(setInterval).toHaveBeenCalledTimes(1);
   });
 
-  it("minute ticks update banner subscribers only and cannot move columns or rerender conversation state", () => {
+  it("notifies only the clock's own subscribers on each minute tick", () => {
     const { clock, advance } = createClockHarness();
     const bannerTick = vi.fn();
-    let conversationRenderCount = 1;
-    const width = usageBannerCellWidth(390, 5);
     const unsubscribe = clock.subscribe(bannerTick);
     clock.setVisible("workspace", true);
     bannerTick.mockClear();
 
     advance(60_000);
+    advance(60_000);
 
-    expect(bannerTick).toHaveBeenCalledTimes(1);
-    expect(usageBannerCellWidth(390, 5)).toBe(width);
-    expect(conversationRenderCount).toBe(1);
+    expect(bannerTick).toHaveBeenCalledTimes(2);
     unsubscribe();
   });
 

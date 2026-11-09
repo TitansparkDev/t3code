@@ -53,24 +53,6 @@ const results = (state: SupervisorConnectionState, via?: "relay" | "direct") =>
   diagnose(state, via)?.hops.map((hop) => `${hop.hop}:${hop.result}`);
 
 describe("presentConnectionDiagnosis", () => {
-  it("attributes a pending cloud sign-in to the phone, never the host", () => {
-    // Legacy client errors had no hop; classify from the reason as well.
-    const pending = new ConnectionTransientError({
-      reason: "session-pending",
-      detail: "Waiting for the T3 Connect sign-in to load.",
-    });
-    const diagnosis = diagnose(backoff(pending));
-    expect(diagnosis?.headline).toBe("This device is still loading its T3 Connect sign-in");
-    expect(results(backoff(pending))).toEqual([
-      "device:failed",
-      "relay:unchecked",
-      "tunnel:unchecked",
-      "server:unchecked",
-    ]);
-    expect(diagnosis?.steps.join(" ")).not.toContain("Mac mini");
-    expect(diagnosis?.moreInfoUrl).toContain("sign-in-account-or-link-problems");
-  });
-
   it("attributes a changed cloud sign-in to this device", () => {
     const changed = new ConnectionBlockedError({
       reason: "authentication",
@@ -176,6 +158,12 @@ describe("presentConnectionDiagnosis", () => {
     const diagnosis = diagnose(backoff(failure));
     expect(diagnosis?.headline).not.toContain("did not answer");
     expect(diagnosis?.hops.find((hop) => hop.result === "failed")?.hop).toBe("device");
+    expect(results(backoff(failure))).toEqual([
+      "device:failed",
+      "relay:unchecked",
+      "tunnel:unchecked",
+      "server:unchecked",
+    ]);
     expect(diagnosis?.steps.join(" ")).not.toContain("Mac mini");
     expect(diagnosis?.moreInfoUrl).toContain("sign-in-account-or-link-problems");
     // A host with a LAN route as well uses the direct route, still authorized through T3 Connect.

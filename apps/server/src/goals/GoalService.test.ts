@@ -2,7 +2,7 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import { EventId, ProjectId, ProviderInstanceId, type ServerProvider } from "@t3tools/contracts";
-import type { GoalSettings } from "@t3tools/contracts/goals";
+import type { Goal, GoalSettings } from "@t3tools/contracts/goals";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -10,8 +10,13 @@ import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import { TestClock } from "effect/testing";
+import { Tool } from "effect/ai";
 
 import * as ServerConfig from "../config.ts";
+import { EscalationToolkit } from "../mcp/toolkits/escalation/tools.ts";
+import { GoalToolkit } from "../mcp/toolkits/goal/tools.ts";
+import { OrchestratorToolkit } from "../mcp/toolkits/orchestrator/tools.ts";
+import { RepoToolkit } from "../mcp/toolkits/repo/tools.ts";
 import { ProviderRegistry } from "../provider/ProviderRegistry.ts";
 import {
   layerFromLegacyHarness,
@@ -71,6 +76,7 @@ const makeHarnessWith = (spacing: number) =>
     // Subscribed up front so an event published before the loop listens is kept.
     const subscription = yield* PubSub.subscribe(events);
     let eventCount = 0;
+    const modelSelections = new Map<string, unknown>();
     const threadState = yield* Ref.make({ reply: "Done.", turnState: "completed" });
     const hasResume = yield* Ref.make(false);
     /** Threads whose background commands are still running, as the engine's shell reports them. */
@@ -84,10 +90,10 @@ const makeHarnessWith = (spacing: number) =>
       providerSnapshot("claudeAgent"),
     ]);
 
-    const thread = (state: { reply: string; turnState: string }) =>
+    const thread = (state: { reply: string; turnState: string }, threadId?: string) =>
       ({
         latestTurn: { state: state.turnState },
-        modelSelection: CODEX,
+        modelSelection: (threadId && modelSelections.get(threadId)) ?? CODEX,
         messages: state.reply === "" ? [] : [{ role: "assistant", text: state.reply }],
         activities: [],
       }) as unknown as OrchestrationThread;
@@ -128,10 +134,16 @@ const makeHarnessWith = (spacing: number) =>
       Layer.provideMerge(
         Layer.mergeAll(
           layerFromLegacyHarness({
-            dispatch: (command) => Queue.offer(commands, command),
+            dispatch: (command) => {
+              if (command.type === "thread.create")
+                modelSelections.set(command.threadId, command.modelSelection);
+              return Queue.offer(commands, command);
+            },
             events: subscription,
-            detail: () =>
-              Ref.get(threadState).pipe(Effect.map((state) => Option.some(thread(state)))),
+            detail: (threadId) =>
+              Ref.get(threadState).pipe(
+                Effect.map((state) => Option.some(thread(state, threadId))),
+              ),
             shell: (threadId) =>
               Effect.sync(() =>
                 liveBackground.has(threadId)
@@ -249,6 +261,19 @@ const textOf = (command: OrchestrationCommand | undefined) =>
 const threadIdOf = (command: OrchestrationCommand | undefined) =>
   command?.type === "thread.create" ? command.threadId : "";
 
+const waitForGoal = (predicate: (goal: Goal | undefined) => boolean) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const store = yield* GoalStore.GoalStore;
+      const changes = yield* store.subscribeChanges;
+      while (true) {
+        const [goal] = yield* store.list;
+        if (predicate(goal)) return goal;
+        yield* PubSub.take(changes);
+      }
+    }),
+  );
+
 it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("GoalService", (it) => {
   it.effect("starts one chat per lane, spread across the models by their counts", () =>
     Effect.gen(function* () {
@@ -314,7 +339,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("GoalService", (i
           turnState: "completed",
         });
         yield* harness.runAndFinish(threadIdOf(second));
-        while ((yield* service.list)[0]?.status === "running") yield* Effect.yieldNow;
+        yield* waitForGoal((goal) => goal?.status !== "running");
         const [goal] = yield* service.list;
         expect(goal?.status).toBe("complete");
         // Chats are settled, never archived, and carry plain titles.
@@ -343,7 +368,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("GoalService", (i
         yield* harness.runAndFinish(threadIdOf(first));
         const [, second] = yield* harness.waitFor("thread.create", 2);
         yield* harness.runAndFinish(threadIdOf(second));
-        while ((yield* service.list)[0]?.status === "running") yield* Effect.yieldNow;
+        yield* waitForGoal((goal) => goal?.status !== "running");
         const [capped] = yield* service.list;
         expect(capped?.status).toBe("failed");
         expect(capped?.detail).toContain("limit of 2 chats");
@@ -369,7 +394,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("GoalService", (i
         yield* service.create(settings({ concurrency: 1 }));
         const [only] = yield* harness.waitFor("thread.create", 1);
         yield* harness.runAndFinish(threadIdOf(only));
-        while ((yield* service.list)[0]?.status === "running") yield* Effect.yieldNow;
+        yield* waitForGoal((goal) => goal?.status !== "running");
         const [goal] = yield* service.list;
         expect(goal?.status).toBe("failed");
         expect(goal?.chats.map((chat) => chat.status)).toEqual(["failed"]);
@@ -396,7 +421,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("GoalService", (i
         yield* service.create(settings({ concurrency: 2, maxChats: null }));
         const [first] = yield* harness.waitFor("thread.create", 2);
         yield* harness.finishStuck(threadIdOf(first));
-        while ((yield* service.list)[0]?.chats[0]?.status === "running") yield* Effect.yieldNow;
+        yield* waitForGoal((goal) => goal?.chats[0]?.status !== "running");
         const [goal] = yield* service.list;
         expect(goal?.status).toBe("running");
         expect(goal?.chats[0]?.status).toBe("attention");
@@ -426,7 +451,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("GoalService", (i
           lastErrorClass: "usage_limit",
           retryAt: "1970-01-01T01:00:00.000Z",
         });
-        while (!(yield* service.list)[0]?.chats[0]?.waitingForLimit) yield* Effect.yieldNow;
+        yield* waitForGoal((goal) => goal?.chats[0]?.waitingForLimit === true);
         expect(
           (yield* harness.drain).filter((command) => command.type === "thread.archive"),
         ).toEqual([]);
@@ -435,7 +460,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("GoalService", (i
         const resumed = yield* harness.waitFor("thread.turn.start", 2);
         expect(textOf(resumed[1])).toContain("Continue where you left off");
         yield* harness.runAndFinish(threadId);
-        while ((yield* service.list)[0]?.chats[0]?.status === "running") yield* Effect.yieldNow;
+        yield* waitForGoal((goal) => goal?.chats[0]?.status !== "running");
         expect((yield* service.list)[0]?.chats[0]?.status).toBe("completed");
         expect(
           (yield* harness.drain).filter((command) => command.type === "thread.archive"),
@@ -461,7 +486,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("GoalService", (i
           lastErrorClass: "usage_limit",
           retryAt: "1970-01-01T01:00:00.000Z",
         });
-        while (!(yield* service.list)[0]?.chats[0]?.waitingForLimit) yield* Effect.yieldNow;
+        yield* waitForGoal((goal) => goal?.chats[0]?.waitingForLimit === true);
         const [goal] = yield* service.list;
         expect(goal?.status).toBe("running");
         expect(goal?.chats[0]).toMatchObject({ status: "running", waitingForLimit: true });
@@ -475,7 +500,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("GoalService", (i
 
         // When the chat picks the work back up it is no longer waiting.
         yield* harness.sessionEvent(threadId, { status: "running", activeTurnId: "turn-2" });
-        while ((yield* service.list)[0]?.chats[0]?.waitingForLimit) yield* Effect.yieldNow;
+        yield* waitForGoal((goal) => !goal?.chats[0]?.waitingForLimit);
       }).pipe(Effect.provide(harness.layer), Effect.scoped);
     }),
   );
@@ -498,7 +523,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("GoalService", (i
             activeTurnId: null,
             lastErrorClass: "usage_limit",
           });
-          while ((yield* service.list)[0]?.chats[0]?.status !== "stopped") yield* Effect.yieldNow;
+          yield* waitForGoal((goal) => goal?.chats[0]?.status === "stopped");
           expect(
             harness.log.filter((command) => command.type === "thread.usage-limit-resume.schedule"),
           ).toHaveLength(0);
@@ -647,7 +672,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("GoalService", (i
         yield* service.create(settings({ concurrency: 2, stopAfterProblems: 5 }));
         const [first] = yield* harness.waitFor("thread.create", 1);
         yield* harness.runAndFinish(threadIdOf(first));
-        while ((yield* service.list)[0]?.chats[0]?.status !== "failed") yield* Effect.yieldNow;
+        yield* waitForGoal((goal) => goal?.chats[0]?.status === "failed");
         const [goal] = yield* service.list;
         expect(goal?.pauses?.[0]).toMatchObject({ instanceId: "codex", reason: "errors" });
         expect(goal?.status).toBe("running");
@@ -690,7 +715,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("GoalService", (i
         const [goal] = yield* service.create(settings({ concurrency: 1, stopAfterProblems: 1 }));
         const [first] = yield* harness.waitFor("thread.create", 1);
         yield* harness.runAndFinish(threadIdOf(first));
-        while ((yield* service.list)[0]?.status !== "failed") yield* Effect.yieldNow;
+        yield* waitForGoal((goal) => goal?.status === "failed");
         expect((yield* service.list)[0]?.pauses).toHaveLength(1);
         yield* TestClock.adjust("1 second");
         yield* service.restart(goal!.id);
@@ -722,7 +747,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("GoalService", (i
         expect((yield* service.list)[0]?.chats[0]?.status).toBe("running");
         // Stuck again: now it is a real problem and keeps its lane closed.
         yield* harness.runAndFinish(threadIdOf(worker));
-        while ((yield* service.list)[0]?.chats[0]?.status === "running") yield* Effect.yieldNow;
+        yield* waitForGoal((goal) => goal?.chats[0]?.status !== "running");
         expect((yield* service.list)[0]?.chats[0]?.status).toBe("attention");
         expect(harness.log.filter((command) => command.type === "thread.turn.start")).toHaveLength(
           2,
@@ -886,9 +911,9 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("GoalService", (i
           const creates = yield* harness.waitFor("thread.create", 5);
           yield* harness.finishStuck(threadIdOf(creates[0]));
           yield* harness.finishStuck(threadIdOf(creates[1]));
-          while ((yield* service.list)[0]?.status === "running") yield* Effect.yieldNow;
+          yield* waitForGoal((goal) => goal?.status !== "running");
           const [goal] = yield* service.list;
-          expect(goal?.detail).toContain("protect your usage");
+          expect(goal?.detail).toContain("The last 2 workers found no task to run");
           expect(goal?.chats.filter((chat) => chat.status === "running")).toHaveLength(3);
           expect(
             (yield* harness.drain).filter((command) => command.type === "thread.turn.interrupt"),
@@ -912,7 +937,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("GoalService", (i
         yield* service.create(settings({ concurrency: 2, maxChats: null }));
         const [first, second] = yield* harness.waitFor("thread.create", 2);
         yield* harness.finishStuck(threadIdOf(first));
-        while (!(yield* service.list)[0]?.holdStarts) yield* Effect.yieldNow;
+        yield* waitForGoal((goal) => goal?.holdStarts === true);
         for (let turn = 0; turn < 20; turn++) yield* Effect.yieldNow;
         const [held] = yield* service.list;
         expect(held?.holdStarts).toBe(true);
@@ -950,7 +975,9 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("GoalService", (i
         expect(creates[1]?.type === "thread.create" ? creates[1].title : "").toBe("Goal overseer");
         const turns = yield* harness.waitFor("thread.turn.start", 3);
         expect(textOf(turns[2])).toContain("T3-OVERSEER/1");
-        const [goal] = yield* service.list;
+        const goal = yield* waitForGoal(
+          (current) => current?.escalations?.[0]?.status === "reviewing",
+        );
         expect(goal?.escalations?.[0]).toMatchObject({ kind: "blocked", status: "reviewing" });
         expect(goal?.escalations?.[0]?.reason).toContain("BLOCKED TASKS");
         expect(harness.log.filter((command) => command.type === "thread.create")).toHaveLength(2);
@@ -976,7 +1003,9 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("GoalService", (i
           const briefing = textOf((yield* harness.waitFor("thread.turn.start", 2))[1]);
           expect(briefing).toContain("T3-OVERSEER/1");
           expect(briefing).toContain("t3_escalation_list");
-          const [goal] = yield* service.list;
+          const goal = yield* waitForGoal(
+            (current) => current?.escalations?.[0]?.status === "reviewing",
+          );
           expect(goal?.status).toBe("running");
           expect(goal?.escalations?.[0]).toMatchObject({
             kind: "stuck",
@@ -999,7 +1028,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("GoalService", (i
           // The overseer's turn ends; the goal carries on and a new worker starts.
           // The failed worker's provider is set aside for its errors, so the goal waits for it.
           yield* harness.runAndFinish(threadIdOf(overseer));
-          while ((yield* service.list)[0]?.waitingUntil === undefined) yield* Effect.yieldNow;
+          yield* waitForGoal((goal) => goal?.waitingUntil !== undefined);
           expect((yield* service.list)[0]?.status).toBe("running");
         }).pipe(Effect.provide(harness.layer), Effect.scoped);
       }),
@@ -1032,11 +1061,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("GoalService", (i
           });
 
           // The scheduler reaches its decision with the login hold in place: no launch, one note.
-          let goal = (yield* service.list)[0]!;
-          for (let spin = 0; spin < 500 && goal.detail === undefined; spin++) {
-            yield* Effect.yieldNow;
-            goal = (yield* service.list)[0]!;
-          }
+          const goal = (yield* waitForGoal((current) => current?.detail !== undefined))!;
           yield* harness.drain;
           expect(goal.pauses).toEqual([
             expect.objectContaining({ instanceId: "codex", reason: "login" }),
@@ -1049,7 +1074,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("GoalService", (i
           // Stopping and starting the goal is the operator's retry: one overseer turn on the same provider.
           yield* service.stop(goal.id);
           yield* service.restart(goal.id);
-          for (let spin = 0; spin < 500 && creates().length < 3; spin++) yield* Effect.yieldNow;
+          yield* harness.waitFor("thread.create", 3);
           yield* harness.drain;
           expect(creates()).toHaveLength(3);
           expect(creates()[2]).toMatchObject({ modelSelection: { instanceId: "codex" } });
@@ -1124,13 +1149,13 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("GoalService", (i
           yield* service.replyEscalation(open!.id, `Attempt ${round}.`, "overseer");
           yield* harness.runAndFinish(threadIdOf(worker));
           // Held means the worker's chat points at the escalation (set just after it is added).
-          while (
-            ((yield* service.list)[0]?.escalations ?? []).length < round + 1 ||
-            (round < 3 && (yield* service.list)[0]?.chats[0]?.escalationId === undefined)
-          )
-            yield* Effect.yieldNow;
+          yield* waitForGoal(
+            (goal) =>
+              (goal?.escalations ?? []).length >= round + 1 &&
+              (round >= 3 || goal?.chats[0]?.escalationId !== undefined),
+          );
         }
-        while ((yield* service.list)[0]?.chats[0]?.status === "running") yield* Effect.yieldNow;
+        yield* waitForGoal((goal) => goal?.chats[0]?.status !== "running");
         const [goal] = yield* service.list;
         expect(goal?.escalations).toHaveLength(4);
         expect(goal?.escalations?.at(-1)).toMatchObject({
@@ -1162,7 +1187,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("GoalService", (i
           "Goal overseer",
         );
         yield* harness.runAndFinish(threadIdOf(secondOverseer));
-        while ((yield* service.list)[0]?.status === "running") yield* Effect.yieldNow;
+        yield* waitForGoal((goal) => goal?.status !== "running");
         const [goal] = yield* service.list;
         expect(goal?.escalations?.[0]).toMatchObject({
           rounds: 2,
@@ -1222,6 +1247,136 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("GoalService", (i
         yield* harness.runAndFinish(threadIdOf(firstOverseer));
         const [, , secondOverseer] = yield* harness.waitFor("thread.create", 3);
         expect(secondOverseer).toMatchObject({ modelSelection: gemini("agy4") });
+      }).pipe(Effect.provide(harness.layer), Effect.scoped);
+    }),
+  );
+
+  it.effect("overseer model fallback skips an unavailable Gemini model for the hour", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const models = [
+        "gemini-3.8-flash-high",
+        "gemini-3.8-flash",
+        "gemini-3.8-flash-medium",
+        "gemini-3.8-flash-low",
+      ].map((slug) => ({ slug }));
+      const agy = providerSnapshot("antigravity", { driver: "antigravity", models });
+      const selection = (model: string) => ({ instanceId: "antigravity", model });
+      yield* Ref.set(harness.providers, [providerSnapshot("codex"), agy]);
+      yield* Ref.set(harness.threadState, { reply: "boom", turnState: "error" });
+      yield* Effect.gen(function* () {
+        const service = yield* GoalService.GoalService;
+        yield* Effect.forkScoped(service.loop);
+        yield* Effect.yieldNow;
+        yield* service.create(settings({ concurrency: 1, stopAfterProblems: 1, overseer: true }));
+        const [worker] = yield* harness.waitFor("thread.create", 1);
+        yield* harness.runAndFinish(threadIdOf(worker));
+        const [, first] = yield* harness.waitFor("thread.create", 2);
+        expect(first).toMatchObject({ modelSelection: selection("gemini-3.8-flash-high") });
+
+        yield* Ref.set(harness.threadState, { reply: "", turnState: "error" });
+        yield* harness.sessionEvent(threadIdOf(first), {
+          status: "running",
+          activeTurnId: "turn-2",
+        });
+        yield* harness.sessionEvent(threadIdOf(first), {
+          status: "error",
+          activeTurnId: null,
+          lastError: 'The agent did not accept the model "gemini-3.8-flash-high"',
+        });
+        const [, , second] = yield* harness.waitFor("thread.create", 3);
+        expect(second).toMatchObject({ modelSelection: selection("gemini-3.8-flash") });
+
+        yield* Ref.set(harness.threadState, { reply: "Reviewed.", turnState: "completed" });
+        yield* harness.runAndFinish(threadIdOf(second));
+        const [, , , third] = yield* harness.waitFor("thread.create", 4);
+        expect(third).toMatchObject({ modelSelection: selection("gemini-3.8-flash") });
+        expect(third).not.toMatchObject({ modelSelection: selection("gemini-3.8-flash-high") });
+        const [goal] = yield* service.list;
+        expect(goal?.pauses).toContainEqual(
+          expect.objectContaining({ instanceId: "antigravity", model: "gemini-3.8-flash-high" }),
+        );
+      }).pipe(Effect.provide(harness.layer), Effect.scoped);
+    }),
+  );
+
+  it.effect("overseer model failure leaves another Antigravity account available", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const unavailable = "gemini-3.8-flash-high";
+      const agy = (instanceId: string) =>
+        providerSnapshot(instanceId, {
+          driver: "antigravity",
+          models: [{ slug: unavailable }, { slug: "gemini-3.8-flash" }],
+        });
+      yield* Ref.set(harness.providers, [providerSnapshot("codex"), agy("agy2"), agy("agy3")]);
+      yield* Ref.set(harness.threadState, { reply: "boom", turnState: "error" });
+      yield* Effect.gen(function* () {
+        const service = yield* GoalService.GoalService;
+        yield* Effect.forkScoped(service.loop);
+        yield* Effect.yieldNow;
+        yield* service.create(settings({ concurrency: 1, stopAfterProblems: 1, overseer: true }));
+        const [worker] = yield* harness.waitFor("thread.create", 1);
+        yield* harness.runAndFinish(threadIdOf(worker));
+        const [, first] = yield* harness.waitFor("thread.create", 2);
+        if (!first || first.type !== "thread.create") {
+          throw new Error("Expected an overseer thread.create command");
+        }
+        expect(first.modelSelection).toMatchObject({ instanceId: "agy2", model: unavailable });
+
+        yield* Ref.set(harness.threadState, { reply: "", turnState: "error" });
+        yield* harness.sessionEvent(threadIdOf(first), {
+          status: "running",
+          activeTurnId: "turn-2",
+        });
+        yield* harness.sessionEvent(threadIdOf(first), {
+          status: "error",
+          activeTurnId: null,
+          lastError: `The agent did not accept the model "${unavailable}"`,
+        });
+        const [, , second] = yield* harness.waitFor("thread.create", 3);
+        if (!second || second.type !== "thread.create") {
+          throw new Error("Expected the fallback overseer thread.create command");
+        }
+        expect(second.modelSelection).toMatchObject({ instanceId: "agy3", model: unavailable });
+        const [goal] = yield* service.list;
+        expect(goal?.pauses).toContainEqual(
+          expect.objectContaining({ instanceId: "agy2", model: unavailable }),
+        );
+      }).pipe(Effect.provide(harness.layer), Effect.scoped);
+    }),
+  );
+
+  it.effect("overseer model guidance names the exact tool arguments and plan recovery step", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      yield* Ref.set(harness.threadState, { reply: "boom", turnState: "error" });
+      yield* Effect.gen(function* () {
+        const service = yield* GoalService.GoalService;
+        yield* Effect.forkScoped(service.loop);
+        yield* Effect.yieldNow;
+        yield* service.create(settings({ concurrency: 1, stopAfterProblems: 1, overseer: true }));
+        const [worker] = yield* harness.waitFor("thread.create", 1);
+        yield* harness.runAndFinish(threadIdOf(worker));
+        const turns = yield* harness.waitFor("thread.turn.start", 2);
+        const prompt = textOf(turns[1]);
+        const calls = [
+          ["t3_escalation_list", EscalationToolkit.tools.t3_escalation_list, ["goalId"]],
+          ["t3_escalation_read", EscalationToolkit.tools.t3_escalation_read, ["id"]],
+          ["t3_thread_read", OrchestratorToolkit.tools.t3_thread_read, ["threadId"]],
+          ["t3_goal_read", GoalToolkit.tools.t3_goal_read, ["goalId"]],
+          ["t3_repo_git", RepoToolkit.tools.t3_repo_git, ["projectId", "view"]],
+        ] as const;
+        for (const [name, tool, keys] of calls) {
+          const schema = Tool.getJsonSchema(tool) as {
+            readonly properties: Readonly<Record<string, unknown>>;
+          };
+          for (const key of keys) expect(schema.properties).toHaveProperty(key);
+          expect(prompt).toContain(`${name} {${keys.join(", ")}}`);
+        }
+        expect(prompt).toContain("t3_goal_preview_plan");
+        expect(prompt).toContain("exact plan path");
+        expect(prompt.length).toBeLessThan(2000);
       }).pipe(Effect.provide(harness.layer), Effect.scoped);
     }),
   );
@@ -1288,7 +1443,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("GoalService", (i
           (yield* harness.drain).filter((command) => command.type === "thread.turn.interrupt"),
         ).toEqual([]);
         yield* harness.runAndFinish(threadIdOf(first));
-        while ((yield* service.list)[0]?.chats[0]?.status === "running") yield* Effect.yieldNow;
+        yield* waitForGoal((goal) => goal?.chats[0]?.status !== "running");
         const [goal] = yield* service.list;
         expect(goal?.status).toBe("stopped");
         expect(goal?.chats[0]?.status).toBe("completed");

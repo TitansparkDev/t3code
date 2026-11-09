@@ -23,12 +23,18 @@ the totals for Codex or Claude Code 2.0.63 and newer, because those runs save no
 
 Detailed logs show per-turn consumption: prompt tokens, completion tokens, cached tokens, and reasoning tokens when reported.
 
-Cursor reads account usage from Cursor's API for the account you signed in with in T3 or set as
-`CURSOR_API_KEY`. This includes headless T3 sessions and desktop usage across machines; the same
-account counts once across connected environments. T3 does not estimate missing tokens from
-conversation text.
+OpenCode reads its SQLite database and older JSON history. Antigravity reads local conversation
+databases, including T3-managed profiles. Set `OPENCODE_DATA_DIR` or `ANTIGRAVITY_DATA_DIR` on the
+server to read a different data directory; comma-separated paths read multiple directories.
 
-## Subscription rate limits
+Cursor reads account usage from Cursor's API for the account you signed in with in T3 or set as
+`CURSOR_API_KEY`, or otherwise the CLI login saved on the server.
+This includes headless T3 sessions and desktop usage across machines; the same account counts
+once across connected environments. Without any of these, T3 shows a
+notice instead of incomplete local totals. T3 does not estimate missing tokens from conversation text.
+On macOS without a T3 sign-in, choose **Enable Cursor usage** on Usage to allow T3 to read your
+existing CLI login from Keychain. You can turn it off in **Settings → Providers → Usage providers**. macOS may ask
+you to allow access on the server Mac.
 
 Usage includes each configured account's history, including disabled accounts. Custom homes follow
 the account's home setting or its `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, or `GROK_HOME` environment

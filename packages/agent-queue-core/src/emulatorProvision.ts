@@ -107,6 +107,30 @@ export interface EmulatorProvisionResult {
   readonly note: string;
 }
 
+/**
+ * Whether an emulator already runs on this console port. Reads `/proc` only and never signals a process.
+ */
+export function emulatorRunning(port: number): boolean {
+  let pids: string[];
+  try {
+    pids = NodeFS.readdirSync("/proc").filter((name) => /^\d+$/.test(name));
+  } catch {
+    return false;
+  }
+  for (const pid of pids) {
+    let argv: string[];
+    try {
+      argv = NodeFS.readFileSync(NodePath.join("/proc", pid, "cmdline"), "utf8").split("\0");
+    } catch {
+      continue; // exited while listing, or not readable
+    }
+    const program = NodePath.basename(argv[0] ?? "");
+    if (!program.startsWith("qemu-system") && !program.startsWith("emulator")) continue;
+    if (argv.some((arg, index) => arg === "-port" && argv[index + 1] === String(port))) return true;
+  }
+  return false;
+}
+
 const booted = (adb: string, serial: string, env: NodeJS.ProcessEnv) =>
   run(adb, ["-s", serial, "shell", "getprop", "sys.boot_completed"], env, 8_000).stdout?.trim() ===
   "1";

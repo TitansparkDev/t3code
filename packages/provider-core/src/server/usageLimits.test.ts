@@ -119,4 +119,51 @@ describe("resolveUsageLimitsAfterProbe", () => {
     expect(resolveUsageLimitsAfterProbe({ published, probed: unsupported })).toBe(unsupported);
     expect(resolveUsageLimitsAfterProbe({ published: undefined, probed: failed })).toBe(failed);
   });
+
+  it("lets a newer sparse rate-limit event win over a probe that started before it", () => {
+    const event = applyUsageLimitsUpdate({
+      previous: undefined,
+      checkedAt: "2026-09-03T12:00:05.000Z",
+      update: {
+        windows: [{ id: "five_hour", kind: "session", label: "Session", usedPercent: 90 }],
+      },
+    });
+    const probed = {
+      checkedAt,
+      windows: [
+        { ...session, usedPercent: 50 },
+        { ...weekly, usedPercent: 20 },
+      ],
+    };
+
+    expect(resolveUsageLimitsAfterProbe({ published: event, probed })).toEqual({
+      checkedAt: "2026-09-03T12:00:05.000Z",
+      windows: [
+        { ...session, usedPercent: 90 },
+        { ...weekly, usedPercent: 20 },
+      ],
+    });
+  });
+
+  it("keeps a probe window that a newer published snapshot does not carry", () => {
+    const newer = {
+      checkedAt: "2026-09-03T12:00:05.000Z",
+      windows: [{ ...session, usedPercent: 90 }],
+    };
+    const probed = {
+      checkedAt,
+      windows: [
+        { ...session, usedPercent: 50 },
+        { ...weekly, usedPercent: 20 },
+      ],
+    };
+
+    expect(resolveUsageLimitsAfterProbe({ published: newer, probed })).toEqual({
+      checkedAt: newer.checkedAt,
+      windows: [
+        { ...session, usedPercent: 90 },
+        { ...weekly, usedPercent: 20 },
+      ],
+    });
+  });
 });

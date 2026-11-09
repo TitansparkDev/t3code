@@ -82,6 +82,45 @@ const PLAN = [
 ].join("\n");
 
 describe("plan lint finds what stops small agents before any of them starts", () => {
+  it("warns for owner tasks without flagging the human step as an error", async () => {
+    const repo = await createTestGitRepo("aq-lint-owner-");
+    try {
+      await NodeFSP.writeFile(
+        NodePath.join(repo.rootDir, "PLAN.md"),
+        [
+          "# Plan",
+          "",
+          "- [ ] **OWNER — Verify the app on a physical handset.**",
+          "  - Kind: owner",
+          "  - Verify: none — owner task.",
+          "- [ ] **OWNER2 — Run an executable check.**",
+          "  - Kind: owner",
+          '  - Checks: `node -e "process.exit(0)"` (cwd: ., timeout: 1m)',
+          "",
+        ].join("\n"),
+      );
+      await execCommand("git", ["add", "PLAN.md"], repo.rootDir);
+      await execCommand("git", ["commit", "-m", "owner task"], repo.rootDir);
+
+      const { findings } = lintPlanFile(repo.rootDir, "PLAN.md");
+      expect(findings).toContainEqual(
+        expect.objectContaining({ code: "owner-task", taskId: "OWNER", level: "warning" }),
+      );
+      expect(findings).not.toContainEqual(
+        expect.objectContaining({ code: "physical-device", taskId: "OWNER" }),
+      );
+      expect(findings).toContainEqual(
+        expect.objectContaining({
+          code: "owner-task-has-checks",
+          taskId: "OWNER2",
+          level: "error",
+        }),
+      );
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
   it("flags a missing database scope, production work, contradictions, protected files, broad checks, soaks and human steps", async () => {
     const repo = await createTestGitRepo("aq-lint-");
     try {
@@ -241,6 +280,13 @@ describe("plan lint finds what stops small agents before any of them starts", ()
           "./gradlew :missing:connectedDebugAndroidTest --tests com.example.Smoke (cwd: android, timeout: 5m, id: wrong-target, junit: android/app/build/reports/android/TEST.xml, min-tests: 1)",
         ),
         ...task(
+          "MULTI",
+          "Run two instrumentation classes",
+          "BUILD",
+          "android/app/src/androidTest/",
+          "./gradlew :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.example.Smoke,com.example.Other (cwd: android, timeout: 5m, id: multi, consumes: android/app/build/outputs/apk/debug/app-debug.apk, junit: android/app/build/reports/android/TEST-*.xml, min-tests: 1, max-skipped: 0)",
+        ),
+        ...task(
           "COMBINED",
           "Keep two gates separate",
           "none",
@@ -258,6 +304,7 @@ describe("plan lint finds what stops small agents before any of them starts", ()
       const files: Record<string, string> = {
         "android/settings.gradle": 'include ":app"\n',
         "android/app/src/androidTest/java/com/example/Smoke.kt": "class Smoke\n",
+        "android/app/src/androidTest/java/com/example/Other.kt": "class Other\n",
         "android/app/src/test/java/com/example/Unit.kt": "class Unit\n",
         "android/app/build.gradle": "plugins { }\n",
         ".bridge/verify.json": "{}\n",
@@ -283,6 +330,8 @@ describe("plan lint finds what stops small agents before any of them starts", ()
       expect(
         findings.find((finding) => finding.code === "check-gradle-project-missing")?.level,
       ).toBe("warning");
+      expect(has("check-selection-undercounted", "MULTI")).toBe(true);
+      expect(has("check-selection-undercounted", "TEST")).toBe(false);
       expect(has("combined-gate", "COMBINED")).toBe(true);
       expect(has("repair-scope-protected", "REPAIR")).toBe(true);
       expect(

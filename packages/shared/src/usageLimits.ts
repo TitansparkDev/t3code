@@ -305,8 +305,7 @@ export function collectLimitAccountSnapshot(
   const merge = (key: string, next: LimitAccount, reporter: EnvironmentId) => {
     const seen = reporters.get(key) ?? [];
     if (!seen.includes(reporter)) reporters.set(key, [...seen, reporter]);
-    // A hub redemption also clears the hub's routing cooldown, which a native one leaves in place,
-    // so a hub target wins; the displayed balance still follows the freshest read.
+    // Hub redemption also clears its routing cooldown; a native reset does not.
     const previousHub = hubRedeems.get(key);
     if (
       next.redeem &&
@@ -724,6 +723,40 @@ export function limitsNotice(limits: ServerProviderUsageLimits): string | null {
     return limits.unavailable.message ?? "Could not read limits.";
   }
   return limits.windows.length === 0 ? "No limits reported." : null;
+}
+
+const FRESH_SAMPLE_MS = 15 * MINUTE;
+// A sample stamped later than this device's clock is a clock problem, not a fresh reading.
+const CLOCK_SKEW_MS = MINUTE;
+
+export interface LimitFreshness {
+  readonly checkedAt: number;
+  /** Older than 15 minutes, stamped ahead of this clock, or a window's reset time has passed. */
+  readonly stale: boolean;
+  /** The last probe failed and the windows shown are the last known values. */
+  readonly refreshFailed: boolean;
+  readonly message?: string | undefined;
+}
+
+export function describeLimitFreshness(
+  limits: ServerProviderUsageLimits,
+  now: number,
+): LimitFreshness {
+  const checkedAt = Date.parse(limits.checkedAt);
+  const refreshFailed = limits.unavailable?.reason === "probeFailed" && limits.windows.length > 0;
+  const stale =
+    now - checkedAt > FRESH_SAMPLE_MS ||
+    checkedAt - now > CLOCK_SKEW_MS ||
+    limits.windows.some((window) => {
+      const resetAt = resetMillis(window);
+      return resetAt !== null && resetAt <= now;
+    });
+  return {
+    checkedAt,
+    stale,
+    refreshFailed,
+    message: refreshFailed ? limits.unavailable?.message : undefined,
+  };
 }
 
 export function remainingPercent(window: ServerProviderUsageWindow): number {

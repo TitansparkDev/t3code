@@ -9,6 +9,8 @@ export interface QueueStatusCounts {
   readonly completed: number;
   readonly failed: number;
   readonly blocked: number;
+  /** Completed tasks dropped with a recorded reason (a subset of `completed`). */
+  readonly waived: number;
   readonly total: number;
   /** Submitted work waiting to be merged or repaired (a subset of `verifying`). */
   readonly awaitingIntegration?: number;
@@ -66,6 +68,8 @@ export interface DeadlockEvaluation {
    */
   readonly awaitingEnvironment?: boolean;
   readonly environmentTaskIds?: ReadonlyArray<string>;
+  readonly awaitingOwner?: boolean;
+  readonly ownerTaskIds?: ReadonlyArray<string>;
 }
 
 /**
@@ -100,6 +104,20 @@ export function getQueueSnapshot(
   for (const row of countRows) {
     counts[row.status] = row.cnt;
     total += row.cnt;
+  }
+
+  let waivedCount = 0;
+  try {
+    const waived = db
+      .prepare(
+        `SELECT count(*) AS cnt FROM tasks WHERE status = 'completed' AND waived_reason IS NOT NULL ${planId === undefined ? "" : "AND plan_id = ?"}`,
+      )
+      .get(...(planId === undefined ? [] : [planId])) as { cnt: number };
+    waivedCount = waived.cnt;
+  } catch (error) {
+    if (!(error instanceof Error) || !error.message.includes("no such column: waived_reason")) {
+      throw error;
+    }
   }
 
   const leaseRows = db
@@ -149,6 +167,7 @@ export function getQueueSnapshot(
       completed: counts.completed ?? 0,
       failed: counts.failed ?? 0,
       blocked: counts.blocked ?? 0,
+      waived: waivedCount,
       total,
     },
     activeLeases,
@@ -319,12 +338,14 @@ export function evaluateDeadlock(db: NodeSqlite.DatabaseSync, planId?: string): 
 
   const tasks = db
     .prepare(
-      `SELECT id, status, dependencies FROM tasks ${planId === undefined ? "" : "WHERE plan_id = ?"}`,
+      `SELECT id, status, dependencies, failure_class
+       FROM tasks ${planId === undefined ? "" : "WHERE plan_id = ?"}`,
     )
     .all(...(planId === undefined ? [] : [planId])) as Array<{
     id: string;
     status: string;
     dependencies: string;
+    failure_class: string | null;
   }>;
 
   const completedSet = new Set(tasks.filter((t) => t.status === "completed").map((t) => t.id));
@@ -338,7 +359,7 @@ export function evaluateDeadlock(db: NodeSqlite.DatabaseSync, planId?: string): 
     const deps: string[] = JSON.parse(t.dependencies || "[]");
     const unmet = deps.filter((d) => !completedSet.has(d));
 
-    if (unmet.length === 0 && t.status === "pending") {
+    if (unmet.length === 0 && t.status === "pending" && t.failure_class !== "owner") {
       runnablePendingTasks.push(t.id);
     } else {
       permanentlyBlockedTasks.push(t.id);
@@ -352,31 +373,33 @@ export function evaluateDeadlock(db: NodeSqlite.DatabaseSync, planId?: string): 
 
   // Which tasks are the actual stuck points: blocked with every dependency done.
   const roots = tasks.filter((t) => {
-    if (t.status !== "blocked") return false;
+    if (t.status !== "blocked" && !(t.status === "pending" && t.failure_class === "owner"))
+      return false;
     const deps: string[] = JSON.parse(t.dependencies || "[]");
     return deps.every((d) => completedSet.has(d));
   });
-  const classes = new Map(
-    (
-      db
-        .prepare(
-          `SELECT id, failure_class FROM tasks ${planId === undefined ? "" : "WHERE plan_id = ?"}`,
-        )
-        .all(...(planId === undefined ? [] : [planId])) as Array<{
-        id: string;
-        failure_class: string | null;
-      }>
-    ).map((row) => [row.id, row.failure_class]),
-  );
   const environmentRoots = roots
-    .filter((t) => ENVIRONMENT_CLASSES.has(classes.get(t.id) ?? ""))
+    .filter((t) => ENVIRONMENT_CLASSES.has(t.failure_class ?? ""))
     .map((t) => t.id);
   const awaitingEnvironment = roots.length > 0 && environmentRoots.length === roots.length;
+  const ownerTaskIds = roots.filter((t) => t.failure_class === "owner").map((t) => t.id);
+  const awaitingOwner = roots.length > 0 && ownerTaskIds.length === roots.length;
+
+  if (awaitingOwner) {
+    return {
+      isDeadlocked: false,
+      blockedTaskIds: permanentlyBlockedTasks,
+      awaitingOwner,
+      ownerTaskIds,
+    };
+  }
 
   // 0 active workers and 0 runnable tasks while uncompleted tasks remain -> Deadlock!
   return {
     awaitingEnvironment,
     environmentTaskIds: environmentRoots,
+    awaitingOwner,
+    ownerTaskIds,
     isDeadlocked: true,
     reason: `All ${permanentlyBlockedTasks.length} waiting tasks have unsatisfied or failed dependencies with 0 active workers`,
     blockedTaskIds: permanentlyBlockedTasks,

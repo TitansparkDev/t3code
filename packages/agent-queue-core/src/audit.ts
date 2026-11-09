@@ -108,7 +108,7 @@ export async function auditUnverifiedTasks(
   const tasks = db
     .prepare(
       `SELECT id, receipt_json, verification_spec, verification_command FROM tasks
-       WHERE plan_id = ? AND status = 'completed'`,
+       WHERE plan_id = ? AND status = 'completed' AND waived_reason IS NULL`,
     )
     .all(input.planId) as Array<{
     id: string;

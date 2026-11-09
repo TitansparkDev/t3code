@@ -101,6 +101,9 @@ export interface QueueStatus {
   /** Everything stuck waits on the environment (a capability, tool, guard or credential); no one needs to be asked. */
   readonly awaitingEnvironment: boolean;
   readonly environmentTaskIds: ReadonlyArray<string>;
+  /** The blocking tasks need an owner's action before queue work can continue. */
+  readonly awaitingOwner: boolean;
+  readonly ownerTaskIds: ReadonlyArray<string>;
   readonly candidates: ReadonlyArray<CandidateInfo>;
   readonly publication: PublicationStatus;
   readonly progressFacts: QueueProgressFacts;
@@ -667,6 +670,8 @@ const make = AgentQueueService.of({
           deadlockReason: deadlock.reason ?? null,
           awaitingEnvironment: deadlock.awaitingEnvironment === true,
           environmentTaskIds: deadlock.environmentTaskIds ?? [],
+          awaitingOwner: deadlock.awaitingOwner === true,
+          ownerTaskIds: deadlock.ownerTaskIds ?? [],
           candidates: listCandidates(db, binding.planId),
           progressFacts,
           resourceProgress: resourceInspection,

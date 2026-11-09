@@ -369,9 +369,19 @@ export function lintPlan(input: PlanLintInput): PlanFinding[] {
     const scope = task.scopePatterns ?? [];
     const checks = task.verification?.checks ?? [];
     const release = isRelease(task);
+    const ownerTask = task.kind === "owner";
+
+    if (ownerTask) {
+      add({
+        level: "warning",
+        code: "owner-task",
+        taskId: task.id,
+        message: `${task.id} is an owner task: no worker runs it, and the plan finishes only after it is waived.`,
+      });
+    }
 
     // 1. Agents cannot do it.
-    for (const rule of [...HUMAN_RULES, ...UNDECIDED_RULES]) {
+    for (const rule of ownerTask ? [] : [...HUMAN_RULES, ...UNDECIDED_RULES]) {
       const hit = sentences.find((sentence) => affirmed(sentence, rule.pattern));
       if (hit) {
         add({
@@ -573,6 +583,15 @@ export function lintPlan(input: PlanLintInput): PlanFinding[] {
     }
 
     // 6. Checks.
+    if (ownerTask && checks.length > 0) {
+      add({
+        level: "error",
+        code: "owner-task-has-checks",
+        taskId: task.id,
+        message: `${task.id} is an owner task and cannot have executable checks.`,
+        fix: "Remove Checks and mark this as `Verify: none` with an owner-task reason.",
+      });
+    }
     if (
       task.verification?.source === "none" ||
       (checks.length === 0 && task.verification?.source !== "exempt")
@@ -678,6 +697,21 @@ export function lintPlan(input: PlanLintInput): PlanFinding[] {
             taskId: task.id,
             message: `${task.id}'s connected instrumentation check does not select a test class or method.`,
             fix: "Name the focused instrumentation test with --tests or android.testInstrumentationRunnerArguments.class; keep the full matrix for final verification.",
+          });
+        }
+        // A report with one passing test proves one class ran, not every class in the list.
+        const classes =
+          /android\.testInstrumentationRunnerArguments\.class\s*=\s*['"]?([^\s'"]+)/i
+            .exec(check.run)?.[1]
+            ?.split(",")
+            .filter(Boolean).length ?? 0;
+        if (classes > 1 && check.junit && check.junit.minTests < classes) {
+          add({
+            level: "warning",
+            code: "check-selection-undercounted",
+            taskId: task.id,
+            message: `${task.id}'s instrumentation check selects ${classes} classes but accepts a report with ${check.junit.minTests} test(s), so a run of only the first class would pass.`,
+            fix: `Set min-tests to at least ${classes} (one per class), or give each class its own check.`,
           });
         }
         if (!check.junit || check.junit.minTests < 1) {

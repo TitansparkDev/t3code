@@ -17,6 +17,7 @@ import {
   readHost,
   type HostSnapshot,
 } from "./hostCapacity.ts";
+import { emulatorRunning as emulatorRunningOnPort } from "./emulatorProvision.ts";
 
 export interface ResourceDefinition {
   /** Tickets that may hold this resource at once. 0 means this machine does not have it. */
@@ -543,6 +544,8 @@ export interface BrokerOptions {
   /** Replace the clock and host readings (tests). */
   readonly now?: () => number;
   readonly host?: () => HostSnapshot;
+  /** Whether an emulator already runs on a console port; its memory is already gone from the host reading. */
+  readonly emulatorRunning?: (port: number) => boolean;
   readonly config?: () => ResourceConfig;
   /** Called to tear down a process group of a holder that stopped heartbeating. */
   readonly killGroup?: (pgid: number) => void;
@@ -556,6 +559,7 @@ export interface ResourceStatus {
   readonly holders: ReadonlyArray<{
     ticket: string;
     label: string;
+    owner: string | null;
     pid: number | null;
     sinceMs: number;
     slots: ReadonlyArray<number>;
@@ -563,6 +567,10 @@ export interface ResourceStatus {
   readonly queue: ReadonlyArray<{
     ticket: string;
     label: string;
+    owner: string | null;
+    pid: number | null;
+    /** Why it is still waiting: no free slot, or not enough memory headroom. */
+    note: string | null;
     waitingMs: number;
     position: number;
   }>;
@@ -572,6 +580,7 @@ export class ResourceBroker {
   readonly db: NodeSqlite.DatabaseSync;
   private readonly now: () => number;
   private readonly host: () => HostSnapshot;
+  private readonly emulatorRunning: (port: number) => boolean;
   private readonly config: () => ResourceConfig;
   private readonly killGroup: (pgid: number) => void;
 
@@ -618,6 +627,7 @@ export class ResourceBroker {
     this.db = db;
     this.now = options.now ?? Date.now;
     this.host = options.host ?? hostSnapshot;
+    this.emulatorRunning = options.emulatorRunning ?? emulatorRunningOnPort;
     this.config = options.config ?? loadResourceConfig;
     this.killGroup =
       options.killGroup ??
@@ -1069,9 +1079,14 @@ export class ResourceBroker {
       };
       let rampingMb = 0;
       for (const row of active) {
-        useSlots(parse(row.slots_json, {}));
+        const slots = parse<Record<string, number[]>>(row.slots_json, {});
+        useSlots(slots);
         if (row.granted_at !== null && now - row.granted_at < RAMP_MS) {
-          rampingMb += this.memoryOf(parse(row.resources_json, []), config);
+          rampingMb += Math.max(
+            0,
+            this.memoryOf(parse(row.resources_json, []), config) -
+              this.runningEmulatorMb(slots.android ?? [], config),
+          );
         }
       }
       const runners = this.db
@@ -1129,9 +1144,12 @@ export class ResourceBroker {
           }
           slotsFor[item.name] = free.slice(0, item.units);
         }
-        const memoryMb = Math.min(
-          this.memoryOf(needs, config),
-          Math.floor((host.totalMb - config.reserveMb) * MAX_ADMISSION_SHARE),
+        const memoryMb = Math.max(
+          0,
+          Math.min(
+            this.memoryOf(needs, config),
+            Math.floor((host.totalMb - config.reserveMb) * MAX_ADMISSION_SHARE),
+          ) - this.runningEmulatorMb(slotsFor.android ?? [], config),
         );
         const pressure = (host.memoryPressure ?? 0) >= 10 || host.swapPressure === true;
         const memoryFits = memoryMb === 0 || (!pressure && freeMb >= memoryMb);
@@ -1180,6 +1198,13 @@ export class ResourceBroker {
       }
     }
     return granted.map((id) => this.get(id)!).filter(Boolean);
+  }
+
+  /** An android slot whose emulator already runs adds no demand: its memory is already gone from MemAvailable. */
+  private runningEmulatorMb(androidSlots: ReadonlyArray<number>, config: ResourceConfig): number {
+    const perEmulator = this.definitionOf("android", config).memoryMb;
+    const running = androidSlots.filter((slot) => this.emulatorRunning(5554 + 2 * slot)).length;
+    return running * perEmulator;
   }
 
   private memoryOf(needs: Ticket["resources"], config: ResourceConfig): number {
@@ -1283,6 +1308,7 @@ export class ResourceBroker {
         holders: holders.map((ticket) => ({
           ticket: ticket.id,
           label: ticket.label,
+          owner: ticket.ownerRef,
           pid: ticket.pid,
           sinceMs: now - (ticket.grantedAt ?? now),
           slots: ticket.slots[name] ?? [],
@@ -1290,6 +1316,9 @@ export class ResourceBroker {
         queue: queue.map((ticket, index) => ({
           ticket: ticket.id,
           label: ticket.label,
+          owner: ticket.ownerRef,
+          pid: ticket.pid,
+          note: ticket.note,
           waitingMs: now - ticket.enqueuedAt,
           position: index + 1,
         })),

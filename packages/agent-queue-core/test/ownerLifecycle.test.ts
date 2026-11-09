@@ -211,7 +211,7 @@ describe("whose failure is it", () => {
       contract: CONTRACT,
       files: {
         "tests/check.js":
-          "const fs=require('fs');if(fs.existsSync('src/a/broken')){console.error('FAILED test_a');process.exit(1)}\n",
+          "import * as fs from 'node:fs';if(fs.existsSync('src/a/broken')){console.error('FAILED test_a');process.exit(1)}\n",
       },
     });
     try {
@@ -240,8 +240,9 @@ describe("change-impact audit", () => {
       contract: { ...CONTRACT, scopeEnforcement: "report" },
       files: {
         "tests/a.js":
-          "const fs=require('fs');fs.appendFileSync(process.env.RUNLOG,'a\\n');if(fs.readFileSync('src/a/value.txt','utf8').trim()!=='1')process.exit(1);\n",
-        "tests/c.js": "const fs=require('fs');fs.appendFileSync(process.env.RUNLOG,'c\\n');\n",
+          "import * as fs from 'node:fs';fs.appendFileSync(process.env.RUNLOG,'a\\n');if(fs.readFileSync('src/a/value.txt','utf8').trim()!=='1')process.exit(1);\n",
+        "tests/c.js":
+          "import * as fs from 'node:fs';fs.appendFileSync(process.env.RUNLOG,'c\\n');\n",
         "src/a/value.txt": "0\n",
       },
     });
@@ -295,7 +296,7 @@ describe("what the worker runs before finishing agrees with the server", () => {
   it("approves a necessary extra file now, runs the repository's finalizer with the real allowed paths, and refuses protected files", async () => {
     const { finalizeTask } = await import("../src/finalize.ts");
     const guard = [
-      'const { execFileSync } = require("node:child_process");',
+      'import { execFileSync } from "node:child_process";',
       "const allowed = process.argv.slice(2);",
       "const base = process.env.BASE;",
       'const changed = execFileSync("git", ["diff", "--name-only", base + "...HEAD"]).toString().split("\\n").filter(Boolean);',
@@ -354,6 +355,47 @@ describe("what the worker runs before finishing agrees with the server", () => {
       } finally {
         await b.repo.cleanup();
       }
+    } finally {
+      await r.repo.cleanup();
+    }
+  }, 60_000);
+
+  it("widens a task to a requested directory, beyond the automatic limit, but not to a sensitive file in it", async () => {
+    const { finalizeTask } = await import("../src/finalize.ts");
+    const { parseScopeRequests } = await import("../src/scopeAudit.ts");
+    const r = await makeRepo({ plan: plan([{ id: "A", scope: "src/a/" }]), contract: CONTRACT });
+    try {
+      const a = await r.reserve();
+      if (a.kind !== "reserved") throw new Error("A should start");
+      const cwd = a.task.worktreePath;
+      NodeFS.mkdirSync(NodePath.join(cwd, "src/ui"), { recursive: true });
+      for (let i = 0; i < 110; i++) {
+        NodeFS.writeFileSync(NodePath.join(cwd, `src/ui/screen${i}.kt`), `${i}\n`);
+      }
+      NodeFS.writeFileSync(NodePath.join(cwd, "src/ui/.env"), "TOKEN=x\n");
+      await execCommand("git", ["add", "-A"], cwd);
+      await execCommand("git", ["commit", "-qm", "gate repairs"], cwd);
+      const finalize = (text: string) =>
+        finalizeTask(r.db, {
+          taskId: "A",
+          worktree: cwd,
+          repoRoot: r.repo.rootDir,
+          gitCommonDir: r.repo.gitCommonDir,
+          requests: parseScopeRequests(text),
+        });
+
+      const widened = finalize(
+        "SCOPE-REQUEST: src/ui/** — the gate found real defects in these screens",
+      );
+      expect(widened.ok).toBe(false);
+      expect(widened.problems).toHaveLength(1);
+      expect(widened.problems[0]).toContain("src/ui/.env");
+      expect(widened.approved).toContain("src/ui/screen109.kt");
+
+      const named = finalize(
+        "SCOPE-REQUEST: src/ui/.env — the screens read their endpoint from this file",
+      );
+      expect(named.ok).toBe(true);
     } finally {
       await r.repo.cleanup();
     }

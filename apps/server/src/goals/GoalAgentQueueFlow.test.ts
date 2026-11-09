@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off preferSchemaOverJson:off globalConsole:off
 /** Real GoalService, plan and queue; orchestration commands are recorded in a test harness. */
 import * as NodeChildProcess from "node:child_process";
@@ -5,7 +6,6 @@ import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
-import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it, it as liveIt } from "@effect/vitest";
 import {
@@ -21,6 +21,7 @@ import {
 } from "@t3tools/contracts";
 import type { Goal, GoalSettings } from "@t3tools/contracts/goals";
 import * as Duration from "effect/Duration";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as TestClock from "effect/testing/TestClock";
@@ -142,6 +143,8 @@ const makeFlow = (
       claims?: boolean;
       release?: boolean;
       locked?: boolean;
+      /** Every operation fails with an outage that is not lock contention. */
+      unavailable?: boolean;
       submitLocked?: boolean;
       reportJobFailures?: number;
     };
@@ -174,6 +177,7 @@ const makeFlow = (
     const events = yield* PubSub.unbounded<OrchestrationEvent>();
     const subscription = yield* PubSub.subscribe(events);
     let eventCount = 0;
+    let eventSequence = 1;
     const scripts = new Map<string, ThreadScript>();
     /** Background work the registry reports per thread (tests, watchers, subagents). */
     const liveness = new Map<string, "working" | "monitoring">();
@@ -224,7 +228,14 @@ const makeFlow = (
                     ? Effect.fail(
                         new AgentQueueError({ operation: name, message: "database is locked" }),
                       )
-                    : (operation as (...input: Array<unknown>) => unknown)(...args)
+                    : options.queueFaults?.unavailable
+                      ? Effect.fail(
+                          new AgentQueueError({
+                            operation: name,
+                            message: "test queue outage",
+                          }),
+                        )
+                      : (operation as (...input: Array<unknown>) => unknown)(...args)
               : operation,
           ]),
         ) as typeof live;
@@ -391,7 +402,7 @@ const makeFlow = (
 
     const sessionEvent = (threadId: string, session: Record<string, unknown>) =>
       PubSub.publish(events, {
-        sequence: 2,
+        sequence: ++eventSequence,
         eventId: EventId.make(`e-${threadId}-${++eventCount}`),
         aggregateKind: "thread",
         aggregateId: threadId,
@@ -790,7 +801,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("AgentQueue goals
         const service = yield* flow.startServer;
         yield* Effect.forkScoped(service.loop);
         yield* Effect.yieldNow;
-        yield* service.create(settingsFor());
+        yield* service.create(settingsFor({ autoResume: true }));
         yield* flow.waitFor("thread.create", 2);
         yield* Effect.all([flow.work("T1"), flow.work("T2")], { concurrency: 2 });
         yield* flow.waitFor("thread.create", 3);
@@ -1023,7 +1034,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("AgentQueue goals
         const service = yield* flow.startServer;
         yield* Effect.forkScoped(service.loop);
         yield* Effect.yieldNow;
-        yield* service.create(settingsFor());
+        yield* service.create(settingsFor({ autoResume: true }));
         yield* flow.waitFor("thread.create", 2);
         const t1 = yield* flow.work("T1", { reply: "Merged. NEEDS ATTENTION\n\nNEEDS ATTENTION" });
         yield* flow.eventually(
@@ -1038,6 +1049,60 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("AgentQueue goals
         );
         expect(goal.chats.find((chat) => chat.threadId === t1)?.status).toBe("completed");
       }).pipe(Effect.scoped),
+  );
+
+  it.effect("hands back a usage-limited queue task when the limit lasts long", () =>
+    Effect.gen(function* () {
+      const flow = yield* makeFlow(planWith([{ id: "T1" }]));
+      const service = yield* flow.startServer;
+      yield* Effect.forkScoped(service.loop);
+      yield* Effect.yieldNow;
+      yield* service.create(settingsFor({ autoResume: true }));
+      const [created] = yield* flow.waitFor("thread.create", 1);
+      yield* flow.sessionEvent(created!.threadId, { status: "running", activeTurnId: "turn-1" });
+      const now = yield* DateTime.now;
+      const retryAt = DateTime.formatIso(DateTime.add(now, { hours: 5 }));
+      yield* flow.sessionEvent(created!.threadId, {
+        status: "rate-limited",
+        activeTurnId: null,
+        lastErrorClass: "usage_limit",
+        retryAt,
+      });
+      const goal = yield* flow.eventually(
+        flow.goalOf(service),
+        (g) => g.chats[0]?.taskOutcome === "returned",
+        "the chat to be returned",
+      );
+      expect(goal.chats[0]?.status).toBe("stopped");
+      expect(yield* flow.taskRow("T1")).toMatchObject({ status: "pending", retry_count: 0 });
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("keeps a usage-limited queue task when the limit ends soon", () =>
+    Effect.gen(function* () {
+      const flow = yield* makeFlow(planWith([{ id: "T1" }]));
+      const service = yield* flow.startServer;
+      yield* Effect.forkScoped(service.loop);
+      yield* Effect.yieldNow;
+      yield* service.create(settingsFor({ autoResume: true }));
+      const [created] = yield* flow.waitFor("thread.create", 1);
+      yield* flow.sessionEvent(created!.threadId, { status: "running", activeTurnId: "turn-1" });
+      const now = yield* DateTime.now;
+      const retryAt = DateTime.formatIso(DateTime.add(now, { minutes: 10 }));
+      yield* flow.sessionEvent(created!.threadId, {
+        status: "rate-limited",
+        activeTurnId: null,
+        lastErrorClass: "usage_limit",
+        retryAt,
+      });
+      const goal = yield* flow.eventually(
+        flow.goalOf(service),
+        (g) => g.chats[0]?.waitingForLimit === true,
+        "the chat to wait for the limit",
+      );
+      expect(goal.chats[0]?.taskOutcome).toBeUndefined();
+      expect(yield* flow.taskRow("T1")).toMatchObject({ status: "claimed", retry_count: 0 });
+    }).pipe(Effect.scoped),
   );
 
   it.effect(
@@ -1099,6 +1164,90 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("AgentQueue goals
         const [create] = yield* flow.waitFor("thread.create", 1);
         expect(create?.worktreePath).toBeNull();
       }).pipe(Effect.scoped),
+  );
+
+  it.effect("plan choice blocks auto mode when multiple plans have unfinished tasks", () =>
+    Effect.gen(function* () {
+      const flow = yield* makeFlow("# Plan\n", {
+        extraFiles: {
+          ".plans/one/ONE_PLAN.md": planWith([{ id: "T1" }]),
+          ".plans/two/TWO_PLAN.md": planWith([{ id: "T2" }]),
+        },
+      });
+      const service = yield* flow.startServer;
+      const preview = yield* service.previewPlan({ projectId: PROJECT, queueMode: "auto" });
+      expect(preview.readiness).toBe("ambiguous");
+      expect(preview.blocked).toBe(true);
+      expect(preview.summary).toContain("AgentQueue cannot start:");
+      expect(preview.summary).toContain(".plans/one/ONE_PLAN.md");
+      expect(preview.summary).toContain(".plans/two/TWO_PLAN.md");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("plan choice says when every discovered plan is already complete", () =>
+    Effect.gen(function* () {
+      const completePlan = planWith([{ id: "T1" }]).replace("- [ ]", "- [x]");
+      const flow = yield* makeFlow(completePlan);
+      const service = yield* flow.startServer;
+      const preview = yield* service.previewPlan({ projectId: PROJECT, queueMode: "auto" });
+      expect(preview.summary).toContain("already complete");
+      expect(preview.summary).not.toContain("No plan with tasks");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("plan choice gives a useful stall reason when standard workers have no task ids", () =>
+    Effect.gen(function* () {
+      const flow = yield* makeFlow(planWith([{ id: "T1" }]));
+      const service = yield* flow.startServer;
+      yield* Effect.forkScoped(service.loop);
+      yield* Effect.yieldNow;
+      yield* service.create(
+        settingsFor({
+          queueMode: "standard",
+          concurrency: 1,
+          maxChats: null,
+          stopAfterProblems: 1,
+        }),
+      );
+      const [worker] = yield* flow.waitFor("thread.create", 1);
+      flow.scripts.set(worker!.threadId, {
+        reply: "The provider stopped before doing any work.",
+        turnState: "error",
+        progress: false,
+        lastError: null,
+      });
+      yield* flow.sessionEvent(worker!.threadId, { status: "running", activeTurnId: "turn-1" });
+      yield* flow.sessionEvent(worker!.threadId, { status: "ready", activeTurnId: null });
+      const goal = yield* flow.eventually(
+        flow.goalOf(service),
+        (current) => current.status === "failed",
+        "the goal to stop after its first problem",
+      );
+      expect(goal.detail).toContain("found no task to run");
+      expect(goal.detail).toContain("names a plan with ready tasks");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("server queue status exposes owner tasks as an owner wait", () =>
+    Effect.gen(function* () {
+      const flow = yield* makeFlow(
+        [
+          "# Owner plan",
+          "",
+          "- [ ] **OWNER — Verify the physical handset.**",
+          "  - Kind: owner",
+          "  - Verify: none — owner task.",
+          "",
+        ].join("\n"),
+      );
+      const queue = yield* AgentQueueService.pipe(Effect.provideContext(flow.deps));
+      const binding = yield* queue.bind(flow.repo.rootDir, "PLAN.md");
+      expect(yield* queue.status(binding)).toMatchObject({
+        deadlocked: false,
+        awaitingOwner: true,
+        ownerTaskIds: ["OWNER"],
+      });
+    }).pipe(Effect.scoped),
   );
 
   it.effect("never takes over tasks a legacy plan-work worker still owns", () =>
@@ -1318,60 +1467,61 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("AgentQueue goals
       }).pipe(Effect.scoped),
   );
 
-  it.effect(
-    "a check that keeps failing holds the worker for the overseer, and give-up hands its task back",
-    () =>
-      Effect.gen(function* () {
-        const flow = yield* makeFlow(
-          planWith([
-            {
-              id: "T1",
-              verify: "node -e \"process.exit(require('fs').existsSync('T1.txt') ? 3 : 0)\"",
-            },
-          ]),
-        );
-        const service = yield* flow.startServer;
-        yield* Effect.forkScoped(service.loop);
-        yield* Effect.yieldNow;
-        yield* service.create(settingsFor({ overseer: true }));
-        yield* flow.waitFor("thread.create", 1);
-        const threadId = yield* flow.work("T1");
-        yield* flow.waitFor("thread.turn.start", 2);
-        yield* flow.work("T1", { content: "second\n" });
-        yield* flow.waitFor("thread.turn.start", 3);
-        yield* flow.work("T1", { content: "third\n" });
-        // Two retries are spent; the third failure goes to an overseer instead of giving up.
-        yield* flow.waitFor("thread.create", 2);
-        const [held] = yield* service.list;
-        const escalation = held?.escalations?.[0];
-        expect(escalation).toMatchObject({
-          kind: "repeated-failure",
-          taskId: "T1",
-          threadId,
-        });
-        expect(held?.chats.find((chat) => chat.threadId === threadId)).toMatchObject({
-          status: "running",
-          escalationId: escalation?.id,
-        });
-        expect((yield* flow.taskRow("T1")).status).toBe("claimed");
+  it.effect("plan choice keeps the task failure reason when give-up hands its task back", () =>
+    Effect.gen(function* () {
+      const flow = yield* makeFlow(
+        planWith([
+          {
+            id: "T1",
+            verify: "node -e \"process.exit(require('fs').existsSync('T1.txt') ? 3 : 0)\"",
+          },
+        ]),
+      );
+      const service = yield* flow.startServer;
+      yield* Effect.forkScoped(service.loop);
+      yield* Effect.yieldNow;
+      yield* service.create(settingsFor({ overseer: true, stopAfterProblems: 1 }));
+      yield* flow.waitFor("thread.create", 1);
+      const threadId = yield* flow.work("T1");
+      yield* flow.waitFor("thread.turn.start", 2);
+      yield* flow.work("T1", { content: "second\n" });
+      yield* flow.waitFor("thread.turn.start", 3);
+      yield* flow.work("T1", { content: "third\n" });
+      // Two retries are spent; the third failure goes to an overseer instead of giving up.
+      yield* flow.waitFor("thread.create", 2);
+      const [held] = yield* service.list;
+      const escalation = held?.escalations?.[0];
+      expect(escalation).toMatchObject({
+        kind: "repeated-failure",
+        taskId: "T1",
+        threadId,
+      });
+      expect(held?.chats.find((chat) => chat.threadId === threadId)).toMatchObject({
+        status: "running",
+        escalationId: escalation?.id,
+      });
+      expect((yield* flow.taskRow("T1")).status).toBe("claimed");
 
-        yield* service.resolveEscalation(
-          escalation!.id,
-          { action: "give-up", note: "Stop here." },
-          "person",
-        );
-        const [after] = yield* service.list;
-        expect(after?.escalations?.[0]).toMatchObject({
-          status: "resolved",
-          resolution: { action: "give-up", by: "person" },
-        });
-        // The original hand-back: the claim is given back, the task is no longer held.
-        expect((yield* flow.taskRow("T1")).status).not.toBe("claimed");
-        expect(after?.chats.find((chat) => chat.threadId === threadId)).toMatchObject({
-          status: "failed",
-          taskOutcome: "retry",
-        });
-      }).pipe(Effect.scoped),
+      yield* service.resolveEscalation(
+        escalation!.id,
+        { action: "give-up", note: "Stop here." },
+        "person",
+      );
+      const [after] = yield* service.list;
+      expect(after?.escalations?.[0]).toMatchObject({
+        status: "resolved",
+        resolution: { action: "give-up", by: "person" },
+      });
+      // The original hand-back: the claim is given back, the task is no longer held.
+      expect((yield* flow.taskRow("T1")).status).not.toBe("claimed");
+      expect(after?.chats.find((chat) => chat.threadId === threadId)).toMatchObject({
+        status: "failed",
+        taskOutcome: "retry",
+      });
+      expect(after?.escalations?.at(-1)?.reason).toContain(
+        "The last 1 workers in a row could not get their task verified and merged.",
+      );
+    }).pipe(Effect.scoped),
   );
 
   it.effect("a failing check sends the worker back with the failure, not a generic nudge", () =>
@@ -1523,14 +1673,14 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("AgentQueue goals
 
         // The suite ends but the worker was woken by it and is writing again: still not done.
         flow.liveness.delete(threadId);
-        flow.scripts.set(threadId, { ...flow.scripts.get(threadId)!, busy: true });
+        yield* flow.sessionEvent(threadId, { status: "running", activeTurnId: "turn-2" });
         yield* tickOnce;
         yield* flow.drain;
         expect((yield* flow.taskRow("T1")).status).toBe("claimed");
         expect(flow.log.filter((c) => c.type === "thread.settle")).toHaveLength(0);
 
         // Genuinely finished: no turn, no background job. Now it is checked, merged and settled.
-        flow.scripts.set(threadId, { ...flow.scripts.get(threadId)!, busy: false });
+        yield* flow.sessionEvent(threadId, { status: "ready", activeTurnId: null });
         yield* tickOnce;
         for (let round = 0; round < 3; round++) yield* tickOnce;
         yield* flow.eventually(
@@ -1710,7 +1860,11 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("AgentQueue goals
           (exists) => !exists,
           "the worktree to be removed after its checkpoint was saved",
         );
-        const goal = yield* flow.goalOf(service);
+        const goal = yield* flow.eventually(
+          flow.goalOf(service),
+          (current) => current.chats[0]?.worktreeRetired === true,
+          "the worktree retirement to be recorded",
+        );
         expect(goal.chats[0]?.worktreeRetired).toBe(true);
       }).pipe(Effect.scoped),
   );
@@ -3120,15 +3274,16 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("AgentQueue goals
     "an outage that really lasts still stops the goal, with the reason, rather than looping forever",
     () =>
       Effect.gen(function* () {
-        const flow = yield* makeFlow(planWith([{ id: "T1" }, { id: "T2", deps: ["T1"] }]));
+        const faults = { unavailable: false };
+        const flow = yield* makeFlow(planWith([{ id: "T1" }, { id: "T2", deps: ["T1"] }]), {
+          queueFaults: faults,
+        });
         const service = yield* flow.startServer;
         yield* Effect.forkScoped(service.loop);
         yield* Effect.yieldNow;
         yield* service.create(settingsFor());
         yield* flow.waitFor("thread.create", 1);
-        const dbFile = NodePath.join(flow.repo.gitCommonDir, "agentqueue", "queue.sqlite");
-        NodeFS.renameSync(dbFile, `${dbFile}.away`);
-        NodeFS.mkdirSync(dbFile);
+        faults.unavailable = true;
         for (let round = 0; round < 3; round++) yield* tickOnce;
         yield* flow.eventually(
           flow.goalOf(service),
@@ -3144,8 +3299,6 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("AgentQueue goals
         );
         expect(goal.status).toBe("failed");
         expect(goal.detail).toContain("kept failing");
-        NodeFS.rmdirSync(dbFile);
-        NodeFS.renameSync(`${dbFile}.away`, dbFile);
       }).pipe(Effect.scoped),
   );
 

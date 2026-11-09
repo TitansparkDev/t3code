@@ -8,7 +8,8 @@ import { parsePlanMarkdown } from "../src/planGraph.ts";
 import { reserveNextTask } from "../src/reservation.ts";
 import { provisionWorktree } from "../src/worktreeManager.ts";
 import { reconcileExpiredLeases } from "../src/leaseRecovery.ts";
-import { releaseClaim } from "../src/claimService.ts";
+import { claimTask, releaseClaim } from "../src/claimService.ts";
+import { unwaiveTask, waiveTask } from "../src/stateMachine.ts";
 import { createTestGitRepo, execCommand } from "./harness/gitHarness.ts";
 
 const PLAN_WORK_PLAN = `# Repair plan
@@ -45,6 +46,18 @@ async function seedRepo(plan = PLAN_WORK_PLAN) {
   await NodeFSP.writeFile(NodePath.join(repo.rootDir, "PLAN.md"), plan);
   await execCommand("git", ["add", "PLAN.md"], repo.rootDir);
   await execCommand("git", ["commit", "-m", "plan"], repo.rootDir);
+  return repo;
+}
+
+async function seedPlanFiles(files: Record<string, string>) {
+  const repo = await createTestGitRepo("aq-plan-discovery-");
+  for (const [path, content] of Object.entries(files)) {
+    const fullPath = NodePath.join(repo.rootDir, path);
+    await NodeFSP.mkdir(NodePath.dirname(fullPath), { recursive: true });
+    await NodeFSP.writeFile(fullPath, content);
+  }
+  await execCommand("git", ["add", ...Object.keys(files)], repo.rootDir);
+  await execCommand("git", ["commit", "-m", "plans"], repo.rootDir);
   return repo;
 }
 
@@ -152,9 +165,167 @@ describe("previewPlan and importPlanFile", () => {
       await repo.cleanup();
     }
   });
+
+  it("finds the only unfinished plan in a .plans subdirectory", async () => {
+    const repo = await seedPlanFiles({
+      "PLAN.md": "# Plan\n",
+      ".plans/a/A_PLAN.md": "# A\n\n- [ ] **A1 — a**\n",
+    });
+    try {
+      expect(previewPlan(repo.rootDir)).toMatchObject({
+        planPath: ".plans/a/A_PLAN.md",
+        readiness: "ready",
+      });
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it("reports ambiguous plans in .plans subdirectories", async () => {
+    const repo = await seedPlanFiles({
+      ".plans/a/A_PLAN.md": "# A\n\n- [ ] **A1 — a**\n",
+      ".plans/b/B_PLAN.md": "# B\n\n- [ ] **B1 — b**\n",
+    });
+    try {
+      const preview = previewPlan(repo.rootDir);
+      expect(preview.readiness).toBe("ambiguous");
+      expect(preview.errors.join(" ")).toContain(".plans/a/A_PLAN.md");
+      expect(preview.errors.join(" ")).toContain(".plans/b/B_PLAN.md");
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it("filters non-plan markdown from .plans and imports its plan by file stem", async () => {
+    const repo = await seedPlanFiles({
+      ".plans/a/A_PLAN.md": "# A\n\n- [ ] **A1 — a**\n",
+      ".plans/a/notes.md": "# Notes\n",
+    });
+    try {
+      const preview = previewPlan(repo.rootDir);
+      expect(preview.candidates.map((candidate) => candidate.path)).toEqual([".plans/a/A_PLAN.md"]);
+      expect(importPlanFile(repo.rootDir, ".plans/a/A_PLAN.md").planId).toBe("plan_A_PLAN");
+    } finally {
+      await repo.cleanup();
+    }
+  });
 });
 
 describe("reserveNextTask", () => {
+  it("marks reimported owner tasks without changing their existing status", async () => {
+    const repo = await seedRepo("# Plan\n\n- [ ] **OWNER — Verify the physical handset.**\n");
+    const { planId } = importPlanFile(repo.rootDir, "PLAN.md");
+    const db = openQueueDatabase({ gitCommonDir: repo.gitCommonDir });
+    try {
+      await NodeFSP.writeFile(
+        NodePath.join(repo.rootDir, "PLAN.md"),
+        [
+          "# Plan",
+          "",
+          "- [ ] **OWNER — Verify the physical handset.**",
+          "  - Kind: owner",
+          "  - Verify: none — owner task.",
+          "",
+        ].join("\n"),
+      );
+      await execCommand("git", ["add", "PLAN.md"], repo.rootDir);
+      await execCommand("git", ["commit", "-m", "mark task as owner"], repo.rootDir);
+      importPlanFile(repo.rootDir, "PLAN.md");
+
+      expect(
+        db.prepare("SELECT status, failure_class FROM tasks WHERE id = 'OWNER'").get(),
+      ).toEqual({ status: "pending", failure_class: "owner" });
+      expect(
+        await reserveNextTask(db, {
+          repoRoot: repo.rootDir,
+          baseBranch: "main",
+          planId,
+          workerSessionId: "owner-reimport",
+        }),
+      ).toMatchObject({ kind: "none" });
+      expect(
+        claimTask(db, {
+          taskId: "OWNER",
+          workerPid: process.pid,
+          worktreePath: repo.rootDir,
+          branch: "owner-reimport",
+        }),
+      ).toMatchObject({ success: false, reason: "OWNER_TASK" });
+    } finally {
+      db.close();
+      await repo.cleanup();
+    }
+  });
+
+  it("holds owner tasks until waived, then schedules their dependants", async () => {
+    const repo = await seedRepo(
+      [
+        "# Plan",
+        "",
+        "- [ ] **OWNER — Verify the physical handset.**",
+        "  - Kind: owner",
+        "  - Verify: none — owner task.",
+        "- [ ] **CHILD — Continue after the owner task.**",
+        "  - Depends on: OWNER.",
+        "  - Verify: none — docs only.",
+        "",
+      ].join("\n"),
+    );
+    const { planId } = importPlanFile(repo.rootDir, "PLAN.md");
+    const db = openQueueDatabase({ gitCommonDir: repo.gitCommonDir });
+    try {
+      expect(
+        db.prepare("SELECT status, failure_class FROM tasks WHERE id = 'OWNER'").get(),
+      ).toEqual({ status: "blocked", failure_class: "owner" });
+      const changedPlan = [
+        "# Plan",
+        "",
+        "- [x] **OWNER — Verify the physical handset.**",
+        "  - Kind: owner",
+        "  - Verify: none — owner task.",
+        "- [ ] **CHILD — Continue after the owner task.**",
+        "  - Depends on: OWNER.",
+        "  - Verify: none — docs only.",
+        "",
+      ].join("\n");
+      await NodeFSP.writeFile(NodePath.join(repo.rootDir, "PLAN.md"), changedPlan);
+      await execCommand("git", ["add", "PLAN.md"], repo.rootDir);
+      await execCommand("git", ["commit", "-m", "tick owner task"], repo.rootDir);
+      importPlanFile(repo.rootDir, "PLAN.md");
+      expect(db.prepare("SELECT status FROM tasks WHERE id = 'OWNER'").get()).toEqual({
+        status: "blocked",
+      });
+      const reserve = (workerSessionId: string) =>
+        reserveNextTask(db, {
+          repoRoot: repo.rootDir,
+          baseBranch: "main",
+          planId,
+          workerSessionId,
+        });
+      expect(await reserve("before-waiver")).toMatchObject({ kind: "none" });
+
+      waiveTask(db, { taskId: "OWNER", reason: "Physical verification was completed manually" });
+      const next = await reserve("after-waiver");
+      expect(next.kind === "reserved" && next.task.taskId).toBe("CHILD");
+      if (next.kind === "reserved") {
+        releaseClaim(db, { ownerToken: next.task.claimToken, finalStatus: "pending" });
+      }
+      unwaiveTask(db, "OWNER");
+      expect(await reserve("after-unwaive")).toMatchObject({ kind: "none" });
+      expect(
+        claimTask(db, {
+          taskId: "OWNER",
+          workerPid: process.pid,
+          worktreePath: repo.rootDir,
+          branch: "owner-claim",
+        }),
+      ).toMatchObject({ success: false, reason: "OWNER_TASK" });
+    } finally {
+      db.close();
+      await repo.cleanup();
+    }
+  });
+
   it("reserves only ready tasks, one claim each, even for concurrent callers", async () => {
     const repo = await seedRepo();
     try {
