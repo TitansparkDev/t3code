@@ -50,6 +50,20 @@ describe("V2 context window presentation", () => {
   });
 });
 
+describe("thread-level usage freshness", () => {
+  it("dates a thread-level snapshot by when the provider measured it, not the thread update", () => {
+    const snapshot = deriveLatestContextWindowSnapshot([], null, {
+      contextUsage: {
+        usedTokens: 42_000,
+        maxTokens: 200_000,
+        reportedAt: "2026-10-19T12:10:00.000Z",
+      },
+      updatedAt: DateTime.makeUnsafe("2026-10-19T12:30:00.000Z"),
+    });
+    expect(snapshot?.updatedAt).toBe("2026-10-19T12:10:00.000Z");
+  });
+});
+
 describe("live provider-turn usage (#8144)", () => {
   it("prefers the provider's live report over compaction items", () => {
     const usage = decodeTokenUsage({
@@ -70,6 +84,19 @@ describe("live provider-turn usage (#8144)", () => {
     expect(
       formatContextWindowCompactionMessage("Claude Sonnet 4.6", snapshot?.autoCompactThreshold),
     ).toBe("Compacts automatically at about 150,000 tokens.");
+  });
+
+  it("claims automatic compaction only when the provider reported it", () => {
+    const base = { usedTokens: 42_000, maxTokens: 200_000, updatedAt: "2026-08-27T00:00:00.000Z" };
+    expect(
+      deriveLatestContextWindowSnapshot([], decodeTokenUsage(base))?.compactsAutomatically,
+    ).toBe(null);
+    expect(
+      deriveLatestContextWindowSnapshot(
+        [],
+        decodeTokenUsage({ ...base, compactsAutomatically: true }),
+      )?.compactsAutomatically,
+    ).toBe(true);
   });
 });
 

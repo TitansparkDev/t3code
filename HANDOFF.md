@@ -2,7 +2,7 @@
 
 ## Final Completion & Acceptance Sign-off (Gates G0 – G8)
 
-All gates from G0 through G8 in [`docs/agentqueue/PLAN.md`](file:///home/ajay/repos/Titanspark21/t3code/docs/agentqueue/PLAN.md) have been implemented and verified:
+All AgentQueue gates from G0 through G8 were recorded as implemented and verified:
 
 1. **Gate G4: Native T3 Code Goal & Engine Gate (AQ-029 – AQ-038):**
    - Verified 10-task dependency DAG in [`GoalAgentQueueLifecycle.test.ts`](file:///home/ajay/repos/Titanspark21/t3code/apps/server/src/goals/GoalAgentQueueLifecycle.test.ts).
