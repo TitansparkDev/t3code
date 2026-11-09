@@ -59,7 +59,7 @@ android() {
     --no-daemon --console=plain -Dorg.gradle.jvmargs="-Xmx512m -XX:MaxMetaspaceSize=256m"
   CMAKE_BUILD_PARALLEL_LEVEL=3 ./gradlew :app:assembleRelease --no-daemon --console=plain \
     -Dorg.gradle.workers.max=3 -Dorg.gradle.parallel=false \
-    -Dorg.gradle.jvmargs="-Xmx3g -XX:MaxMetaspaceSize=512m" \
+    -Dorg.gradle.jvmargs="-Xmx5g -XX:MaxMetaspaceSize=768m" \
     -Pkotlin.compiler.execution.strategy=in-process
   cp app/build/outputs/apk/release/app-release.apk "$root/release/t3code-android-$version-production.apk"
 }
