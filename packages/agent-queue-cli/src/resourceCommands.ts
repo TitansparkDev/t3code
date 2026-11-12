@@ -17,6 +17,7 @@ import {
   DEFAULT_RUN_MS,
   describeJob,
   inferResourceDemands,
+  jobEnvironment,
   requestedAndroidSerial,
   isReusableCommand,
   loadContract,
@@ -30,6 +31,7 @@ import {
   parseStoredSpec,
   readHost,
   releaseCheck,
+  ResourceBroker,
   runningCheck,
   waitForCheck,
   writeReceipt,
@@ -37,7 +39,6 @@ import {
   type CheckIdentity,
   type CheckReceipt,
   type VerificationCheck,
-  type ResourceBroker,
   type RunUnderBrokerOptions,
   type Ticket,
 } from "../../agent-queue-core/src/index.ts";
@@ -195,10 +196,16 @@ export interface ResourceCliResult {
   readonly stderr: string;
 }
 
+/** Foreground window for a thread job before the caller is told to wait for it in the background. */
+const THREAD_FOREGROUND_DEFAULT_S = 100;
+
 const RUN_USAGE = `Usage: agentq run [--resource a,b] [--owner TASK [--check ID]] [--defer-after SECONDS] [--timeout SECONDS] [--wait SECONDS] -- <command> [args]
   --timeout   kill the command after SECONDS once it holds the resource (default ${DEFAULT_RUN_MS / 1000})
   --defer-after  with --owner: store the command as a job after waiting this long (exit 75)
   --wait      give up waiting for the resource after SECONDS (default 10800)
+  In a T3 thread (T3CODE_THREAD_ID set) a command that needs a shared resource is run by the server:
+  its output is shown for up to AGENTQUEUE_FOREGROUND_SECONDS (default ${THREAD_FOREGROUND_DEFAULT_S}), then exit 75 "STILL RUNNING";
+  the result is posted into the thread when it finishes. \`agentq wait <id>\` blocks on it instead.
 `;
 
 const fmtMs = (ms: number) =>
@@ -234,6 +241,193 @@ function statusText(broker: ResourceBroker): string {
 const jobLine = (ticket: Ticket) =>
   `${ticket.id} ${ticket.state}${ticket.outcome ? `/${ticket.outcome}` : ""} [${ticket.resources.map((r) => r.name).join(",")}] ${ticket.job?.command ?? ticket.label}`;
 
+const WAIT_USAGE = `Usage: agentq wait <job-id> [--timeout SECONDS]
+  --timeout  give up after SECONDS and exit 75 while the job is still running (default 14400)
+`;
+
+const threadOwnerRef = (threadId: string) => `thread:${threadId}`;
+
+/** The job's command runs as `bash -c`, so each argument is quoted the way a shell reads it. */
+const shellWord = (value: string): string =>
+  /^[\w@%+=:,./-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
+
+/** The exit status a finished job reports to whoever is waiting on it. */
+function exitCodeOfJob(ticket: Ticket): number {
+  if (ticket.state === "cancelled" || ticket.state === "expired") return 76;
+  if (ticket.outcome === "ok") return 0;
+  if (ticket.outcome === "timed-out") return 124;
+  if (ticket.outcome === "unavailable") return 77;
+  if (ticket.outcome === "exhausted" || ticket.outcome === "cancelled") return 76;
+  return ticket.exitCode !== null && ticket.exitCode > 0 ? ticket.exitCode : 1;
+}
+
+const isFinishedJob = (ticket: Ticket) =>
+  ticket.state === "done" || ticket.state === "cancelled" || ticket.state === "expired";
+
+interface FollowDeps {
+  readonly broker: ResourceBroker;
+  readonly now?: () => number;
+  readonly sleep?: (ms: number) => Promise<void>;
+  readonly write?: (text: string) => void;
+}
+
+/** Write whatever the job's log gained since `offset`; returns the new offset. */
+function streamAppended(file: string, offset: number, write: (text: string) => void): number {
+  let size: number;
+  try {
+    size = NodeFS.statSync(file).size;
+  } catch {
+    return offset;
+  }
+  if (size <= offset) return offset;
+  const fd = NodeFS.openSync(file, "r");
+  try {
+    const buffer = Buffer.alloc(size - offset);
+    const read = NodeFS.readSync(fd, buffer, 0, buffer.length, offset);
+    write(buffer.subarray(0, read).toString("utf8"));
+    return offset + read;
+  } finally {
+    NodeFS.closeSync(fd);
+  }
+}
+
+/**
+ * Stream a stored job's output to `write` until it finishes (returns its ticket) or `deadlineMs`
+ * passes (returns null). Any waiter pumps the broker, so a dead runner's job is noticed here too.
+ */
+async function followJob(id: string, deps: FollowDeps & { readonly deadlineMs: number }) {
+  const now = deps.now ?? Date.now;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const write = deps.write ?? ((text: string) => void process.stdout.write(text));
+  const logFile = NodePath.join(brokerHome(), "logs", `${id}.log`);
+  let offset = 0;
+  while (true) {
+    offset = streamAppended(logFile, offset, write);
+    deps.broker.pump();
+    const ticket = deps.broker.get(id);
+    if (!ticket) throw new Error(`Job ${id} disappeared.`);
+    if (isFinishedJob(ticket)) {
+      offset = streamAppended(logFile, offset, write);
+      if (offset === 0 && ticket.tail)
+        write(ticket.tail.endsWith("\n") ? ticket.tail : `${ticket.tail}\n`);
+      return ticket;
+    }
+    if (now() >= deps.deadlineMs) return null;
+    await sleep(1000);
+  }
+}
+
+export interface ThreadJobRequest {
+  readonly threadId: string;
+  readonly demands: ReadonlyArray<{ readonly name: string }>;
+  readonly hints: Readonly<Record<string, { readonly capacity: number }>>;
+  readonly command: ReadonlyArray<string>;
+  readonly cwd: string;
+  readonly label: string;
+  readonly env: Record<string, string>;
+  readonly waitMs: number;
+  readonly runMs: number;
+  readonly foregroundMs: number;
+}
+
+/**
+ * A command an agent runs from a T3 thread is stored as a job for the server's thread-job runner,
+ * which posts the result back into that thread. The agent waits here only for the foreground window.
+ */
+export async function runThreadJob(
+  request: ThreadJobRequest,
+  deps: Partial<FollowDeps> = {},
+): Promise<ResourceCliResult> {
+  const broker = deps.broker ?? openBroker();
+  const owned = deps.broker === undefined;
+  try {
+    const ticket = broker.enqueue({
+      resources: request.demands,
+      label: request.label,
+      ownerRef: threadOwnerRef(request.threadId),
+      repo: ResourceBroker.THREAD_JOBS_REPO,
+      hints: request.hints,
+      waitMs: request.waitMs,
+      runMs: request.runMs,
+      job: {
+        command: request.command.map(shellWord).join(" "),
+        cwd: request.cwd,
+        env: jobEnvironment({ ...process.env, ...request.env }),
+      },
+    });
+    if (ticket.state === "done") {
+      broker.markReported(ticket.id);
+      return {
+        exitCode: 77,
+        stdout: "",
+        stderr: `[agentq] ${ticket.note ?? "required prerequisite unavailable"} Nothing ran.`,
+      };
+    }
+    const now = deps.now ?? Date.now;
+    const finished = await followJob(ticket.id, {
+      ...deps,
+      broker,
+      deadlineMs: now() + request.foregroundMs,
+    });
+    if (finished) {
+      broker.markReported(ticket.id);
+      const code = exitCodeOfJob(finished);
+      return {
+        exitCode: code,
+        stdout: "",
+        stderr: code === 0 ? "" : `[agentq] ${ticket.id} ended with exit ${code}.`,
+      };
+    }
+    const resources = request.demands.map((demand) => demand.name).join(", ");
+    return {
+      exitCode: 75,
+      stdout: "",
+      stderr: `[agentq] STILL RUNNING as ${ticket.id} (${resources}). Do not rerun or poll it. Keep working on something that does not need the result, or end your turn: the result is posted into this conversation when it finishes and you continue from there. To block on it instead, run \`agentq wait ${ticket.id}\` (Claude Code: as a background command).`,
+    };
+  } finally {
+    if (owned) broker.close();
+  }
+}
+
+/** `agentq wait <id>`: block on a stored job, streaming its output, and exit with its status. */
+async function waitForJob(args: ReadonlyArray<string>): Promise<ResourceCliResult> {
+  const { flags, positional } = parseHead(args);
+  const id = positional[0];
+  if (!id) return { exitCode: 2, stdout: "", stderr: WAIT_USAGE };
+  const broker = openBroker();
+  try {
+    const job = broker.get(id);
+    if (!job || job.kind !== "job")
+      return { exitCode: 2, stdout: "", stderr: `Unknown job ${id}.` };
+    const finished = await followJob(id, {
+      broker,
+      deadlineMs: Date.now() + num(flags.timeout, 4 * 3600) * 1000,
+    });
+    if (!finished) {
+      const current = broker.get(id);
+      return {
+        exitCode: 75,
+        stdout: "",
+        stderr: `[agentq] still ${current?.state ?? "unknown"}; run agentq wait ${id} again to keep waiting.`,
+      };
+    }
+    broker.markReported(id);
+    return { exitCode: exitCodeOfJob(finished), stdout: `${describeJob(finished)}\n`, stderr: "" };
+  } finally {
+    broker.close();
+  }
+}
+
+/** Whether a runner that takes thread jobs is alive on this machine. */
+function threadRunnerLive(): boolean {
+  const broker = openBroker();
+  try {
+    return broker.hasLiveRunner(ResourceBroker.THREAD_JOBS_REPO);
+  } finally {
+    broker.close();
+  }
+}
+
 /**
  * Handles `run` and `resource <sub>`. Returns null when `argv` is not one of them, so the
  * synchronous CLI can take over.
@@ -243,6 +437,7 @@ export async function runResourceCommand(
   cwd: string = process.cwd(),
 ): Promise<ResourceCliResult | null> {
   const [first, second] = argv;
+  if (first === "wait") return waitForJob(argv.slice(1));
   if (first !== "run" && first !== "resource") return null;
   const sub = first === "run" ? "run" : second;
   const rest = argv.slice(first === "run" ? 1 : 2);
@@ -342,6 +537,28 @@ export async function runResourceCommand(
     const hints = Object.fromEntries(
       repoResources.map((resource) => [resource.name, { capacity: resource.limit }]),
     );
+    const threadId = process.env.T3CODE_THREAD_ID;
+    if (
+      threadId &&
+      !owner &&
+      !process.env.AGENTQUEUE_RESOURCE_TICKET &&
+      resources.length > 0 &&
+      threadRunnerLive()
+    ) {
+      return runThreadJob({
+        threadId,
+        demands,
+        hints,
+        command,
+        cwd,
+        label: typeof flags.label === "string" ? flags.label : commandLine.slice(0, 100),
+        env: androidSerial === null ? {} : { ANDROID_SERIAL: androidSerial },
+        waitMs: num(flags.wait, 3 * 3600) * 1000,
+        runMs,
+        foregroundMs:
+          num(process.env.AGENTQUEUE_FOREGROUND_SECONDS, THREAD_FOREGROUND_DEFAULT_S) * 1000,
+      });
+    }
     const request: RunUnderBrokerOptions = {
       resources: demands,
       argv: command,

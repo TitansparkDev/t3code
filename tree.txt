@@ -27762,6 +27762,8 @@ apps/server/src/pullRequest/pullRequestSyncKey.test.ts
 apps/server/src/pullRequest/pullRequestSyncKey.ts
 apps/server/src/pullRequest/pullRequestViewedFiles.ts
 apps/server/src/queue/AgentQueueService.ts
+apps/server/src/queue/ThreadResourceJobs.test.ts
+apps/server/src/queue/ThreadResourceJobs.ts
 apps/server/src/relay/AgentAwarenessRelay.test.ts
 apps/server/src/relay/AgentAwarenessRelay.ts
 apps/server/src/relay/HeldHooksWaker.ts
@@ -30469,6 +30471,7 @@ packages/agent-queue-cli/src/gitContext.ts
 packages/agent-queue-cli/src/index.ts
 packages/agent-queue-cli/src/resourceCommands.ts
 packages/agent-queue-cli/test/cli.test.ts
+packages/agent-queue-cli/test/threadJobs.test.ts
 packages/agent-queue-cli/tsconfig.json
 packages/agent-queue-core/package.json
 packages/agent-queue-core/src/artifactPaths.ts

@@ -22,7 +22,7 @@ job that never started is never a failure.
 ]
 ```
 
-`AGENTQUEUE_REMOTE=off` (or `agentq run --local`) keeps a command on the VM. Tests see no remotes
+`AGENTQUEUE_REMOTE=off` keeps a command on the VM. Tests see no remotes
 unless they set `AGENTQUEUE_RESOURCE_CONFIG`.
 
 ## Client protocol
@@ -30,10 +30,18 @@ unless they set `AGENTQUEUE_RESOURCE_CONFIG`.
 `<client> status --json` prints one JSON object and exits 0, or exits 255 when unreachable:
 
 ```json
-{ "host": "legion", "accepting": true, "wakeable": false, "reason": null,
-  "slots": { "heavy_build": { "used": 0, "total": 1 }, "android": { "used": 0, "total": 1 },
-             "job": { "used": 0, "total": 4 } },
-  "mem_available_mb": 20900 }
+{
+  "host": "legion",
+  "accepting": true,
+  "wakeable": false,
+  "reason": null,
+  "slots": {
+    "heavy_build": { "used": 0, "total": 1 },
+    "android": { "used": 0, "total": 1 },
+    "job": { "used": 0, "total": 4 }
+  },
+  "mem_available_mb": 20900
+}
 ```
 
 `<client> run --ws KEY --dir DIR [--cwd REL] --resource CLASS --timeout S [--wait S] --label L -- argv...`

@@ -73,6 +73,8 @@ export function parseArgs(rawArgs: string[]): ParsedArgs {
 const USAGE = `Usage: agentq <command> [args] [--json]
   run [--resource a,b] [--owner TASK] [--defer-after S] [--timeout S] [--wait S] -- <command>
                         run a command through the machine's resource queue (see agentq run --help)
+  wait <job-id> [--timeout S]
+                        block until a queued job finishes and exit with its status
   resource status       show shared resources and who holds them
   repo init|doctor      set up or check the repository's queue contract
   plan import|validate|lint [--baseline] <PLAN.md>

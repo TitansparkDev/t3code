@@ -42,6 +42,7 @@ import * as ThreadManagement from "./orchestration-v2/ThreadManagementService.ts
 import * as ProjectService from "./project/ProjectService.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 import * as GoalService from "./goals/GoalService.ts";
+import * as ThreadResourceJobs from "./queue/ThreadResourceJobs.ts";
 import * as ProjectStore from "./orchestration-v2/ProjectStore.ts";
 import * as AgentAwarenessRelay from "./relay/AgentAwarenessRelay.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
@@ -491,6 +492,7 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
 
   // Optional so the narrower contexts used by integration tests still build a startup.
   const goalService = yield* Effect.serviceOption(GoalService.GoalService);
+  const threadResourceJobs = yield* Effect.serviceOption(ThreadResourceJobs.ThreadResourceJobs);
 
   const startup = Effect.gen(function* () {
     yield* Effect.logDebug("startup phase: starting keybindings runtime");
@@ -589,6 +591,9 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
 
     if (Option.isSome(goalService)) {
       yield* forkParked(goalService.value.loop);
+    }
+    if (Option.isSome(threadResourceJobs)) {
+      yield* forkParked(threadResourceJobs.value.loop);
     }
 
     const importPendingTranscripts = legacyV1ThreadImporter.importPendingTranscripts.pipe(

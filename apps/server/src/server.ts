@@ -203,6 +203,7 @@ import * as GoalService from "./goals/GoalService.ts";
 import * as GoalStore from "./goals/GoalStore.ts";
 import * as GoalThreads from "./goals/GoalThreads.ts";
 import { AgentQueueServiceLive } from "./queue/AgentQueueService.ts";
+import * as ThreadResourceJobs from "./queue/ThreadResourceJobs.ts";
 import * as CodexUsageHistory from "./usage/CodexUsageHistory.ts";
 import * as RuntimeLayer from "./orchestration-v2/runtimeLayer.ts";
 import * as ProjectStore from "./orchestration-v2/ProjectStore.ts";
@@ -768,6 +769,7 @@ const layerGoals = GoalService.layer.pipe(
   Layer.provideMerge(GoalThreads.layer),
   Layer.provideMerge(GoalBeads.layer),
   Layer.provideMerge(AgentQueueServiceLive),
+  Layer.provideMerge(ThreadResourceJobs.layer),
 );
 
 const layerRuntimeDependenciesBase = layerRuntimeCoreDependencies.pipe(

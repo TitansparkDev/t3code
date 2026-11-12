@@ -953,6 +953,18 @@ export class ResourceBroker {
 
   // ── runners ──────────────────────────────────────────────────────────────
 
+  /** Runner `repo` for jobs an agent queued from a T3 thread; the server's thread-job loop registers it. */
+  static readonly THREAD_JOBS_REPO = "thread-jobs";
+
+  /** Whether a runner for `repo` is registered, its process is alive and it heartbeat within the lease. */
+  hasLiveRunner(repo: string): boolean {
+    const cutoff = this.now() - LEASE_MS;
+    const rows = this.db
+      .prepare("SELECT pid, pid_start, heartbeat_at FROM runners WHERE repo IS ?")
+      .all(repo) as Array<{ pid: number; pid_start: number | null; heartbeat_at: number }>;
+    return rows.some((row) => row.heartbeat_at >= cutoff && processIsLive(row.pid, row.pid_start));
+  }
+
   registerRunner(pid: number, repo: string | null): void {
     this.db
       .prepare(
