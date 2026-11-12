@@ -216,6 +216,14 @@ Architecture and its constraints: `docs/internals/overview.md`. Glossary: `docs/
 
 ## Recent request log
 
+- 2026-11-12 — v0.1.18: Antigravity runtime 1.4.x streams no thought summaries, so AGY turns showed
+  only tool calls until the final answer; sessions now get a progress-update instruction in the
+  runtime 1.4.5 system prompt append, which makes the agent write short updates between tool calls.
+  Mobile chat settings open the effort list right after a model with efforts is picked. Merged
+  upstream/main (639 commits): upstream's Legend List 3.7 replaces the fork's mobile scroll repins,
+  Claude boot gets upstream's 5 minute deadline (the fork's bounded Stop stays), and web completion
+  alerts take upstream's background-wake grace. Android is 2.3.1 (versionCode 18), above upstream's
+  2.3.0. Lint debt remains in fork-only files the merge did not touch (goals, usage banner, Chat Agents).
 - 2026-11-09 — v0.1.17: finished the chat, goals and mobile usability plan (the web composer's context
   ring is back after upstream moved usage into Thread details) and merged upstream/main (1,644 commits, 68
   conflicts). Upstream's context-window module now holds the fork's freshness and compaction additions;
