@@ -294,6 +294,8 @@ export interface Ticket {
   readonly tail: string | null;
   /** Set once the ticket's result was returned or delivered to its owner. */
   readonly reportedAt: number | null;
+  /** The remote machine that ran or is running this ticket; null when it runs or ran on this machine. */
+  readonly host: string | null;
 }
 
 export interface TicketAccounting {
@@ -367,6 +369,7 @@ interface TicketRow {
   log_path: string | null;
   tail: string | null;
   reported_at: number | null;
+  host: string | null;
 }
 
 const parse = <A>(text: string | null, fallback: A): A => {
@@ -405,6 +408,7 @@ const toTicket = (row: TicketRow): Ticket => ({
   logPath: row.log_path,
   tail: row.tail,
   reportedAt: row.reported_at,
+  host: row.host,
 });
 
 const duration = (start: number | null, end: number | null): number | null =>
@@ -613,6 +617,7 @@ export class ResourceBroker {
         };
         ensureColumn("check_id", "TEXT");
         ensureColumn("started_at", "INTEGER");
+        ensureColumn("host", "TEXT");
         break;
       } catch (error) {
         try {
@@ -1014,7 +1019,7 @@ export class ResourceBroker {
           } else {
             this.db
               .prepare(
-                `UPDATE tickets SET state = 'waiting', attempts = ?, pid = NULL, pid_start = NULL, pgid = NULL,
+                `UPDATE tickets SET state = 'waiting', attempts = ?, pid = NULL, pid_start = NULL, pgid = NULL, host = NULL,
                    slots_json = '{}', granted_at = NULL, started_at = NULL, heartbeat_at = NULL, note = ? WHERE id = ?`,
               )
               .run(attempts, "Its runner disappeared; waiting again.", row.id);
@@ -1066,8 +1071,9 @@ export class ResourceBroker {
       }
 
       // 3. Grant in order.
+      // A remote run holds no slot or memory on this machine; its lease is still checked above.
       const active = this.db
-        .prepare("SELECT * FROM tickets WHERE state IN ('granted','running')")
+        .prepare("SELECT * FROM tickets WHERE state IN ('granted','running') AND host IS NULL")
         .all() as unknown as TicketRow[];
       const used = new Map<string, Set<number>>();
       const useSlots = (slots: Record<string, number[]>) => {
@@ -1156,7 +1162,7 @@ export class ResourceBroker {
         if (fits && memoryFits) {
           this.db
             .prepare(
-              `UPDATE tickets SET state = 'granted', slots_json = ?, granted_at = ?, heartbeat_at = ?, ${
+              `UPDATE tickets SET state = 'granted', host = NULL, slots_json = ?, granted_at = ?, heartbeat_at = ?, ${
                 runner ? "pid = ?, pid_start = ?," : ""
               } note = NULL WHERE id = ?`,
             )
@@ -1254,7 +1260,7 @@ export class ResourceBroker {
     if (!row || row.kind !== "job" || row.attempts + 1 >= MAX_JOB_ATTEMPTS) return false;
     const result = this.db
       .prepare(
-        `UPDATE tickets SET state = 'waiting', attempts = ?, pid = NULL, pid_start = NULL, pgid = NULL,
+        `UPDATE tickets SET state = 'waiting', attempts = ?, pid = NULL, pid_start = NULL, pgid = NULL, host = NULL,
            slots_json = '{}', granted_at = NULL, started_at = NULL, heartbeat_at = NULL, note = ?
          WHERE id = ? AND state IN ('granted','running')`,
       )
@@ -1274,6 +1280,58 @@ export class ResourceBroker {
     return Number(count.n);
   }
 
+  /** Waiting stored jobs, oldest first. */
+  waitingJobs(): Ticket[] {
+    return (
+      this.db
+        .prepare("SELECT * FROM tickets WHERE kind = 'job' AND state = 'waiting' ORDER BY seq")
+        .all() as unknown as TicketRow[]
+    ).map(toTicket);
+  }
+
+  /** Waiting tickets ahead of this one in line that want `resource`. */
+  waitingAhead(id: string, resource: string): number {
+    const row = this.db.prepare("SELECT seq FROM tickets WHERE id = ?").get(id) as
+      | { seq: number }
+      | undefined;
+    if (!row) return 0;
+    const wanted = normalizeResource(resource);
+    const ahead = this.db
+      .prepare("SELECT resources_json FROM tickets WHERE state = 'waiting' AND seq < ?")
+      .all(row.seq) as Array<{ resources_json: string }>;
+    return ahead.filter((item) =>
+      parse<Ticket["resources"]>(item.resources_json, []).some((need) => need.name === wanted),
+    ).length;
+  }
+
+  /**
+   * Mark a waiting ticket as running on a remote host, so this machine's pump gives it no slot. The
+   * driver's pid (this process) keeps the lease: if it dies, the ticket is retired like any holder.
+   */
+  startRemote(id: string, host: string): boolean {
+    const now = this.now();
+    const result = this.db
+      .prepare(
+        `UPDATE tickets SET state = 'running', host = ?, slots_json = '{}', granted_at = ?,
+           started_at = ?, heartbeat_at = ?, pid = COALESCE(pid, ?), pid_start = COALESCE(pid_start, ?)
+         WHERE id = ? AND state = 'waiting'`,
+      )
+      .run(host, now, now, now, process.pid, processStartTicks(process.pid), id);
+    return Number(result.changes) > 0;
+  }
+
+  /** Give a remote run that never happened (or was lost) back its place in line: same seq, no host. */
+  returnToWaiting(id: string): boolean {
+    const result = this.db
+      .prepare(
+        `UPDATE tickets SET state = 'waiting', host = NULL, slots_json = '{}', granted_at = NULL,
+           started_at = NULL, heartbeat_at = NULL
+         WHERE id = ? AND state = 'running' AND host IS NOT NULL`,
+      )
+      .run(id);
+    return Number(result.changes) > 0;
+  }
+
   status(): { resources: ResourceStatus[]; host: HostSnapshot; reserveMb: number } {
     const config = this.config();
     const now = this.now();
@@ -1291,6 +1349,7 @@ export class ResourceBroker {
       const holders = rows.filter(
         (ticket) =>
           (ticket.state === "granted" || ticket.state === "running") &&
+          ticket.host === null &&
           ticket.resources.some((item) => item.name === name),
       );
       const queue = rows.filter(

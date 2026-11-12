@@ -18,6 +18,15 @@ import {
   type Ticket,
   type TicketOutcome,
 } from "./resourceBroker.ts";
+import {
+  REAL_REMOTE,
+  pickHost,
+  type RemoteDeps,
+  type RemoteHostConfig,
+  type RemoteHostStatus,
+  type RemotePlan,
+  type RemoteRunResult,
+} from "./remoteHosts.ts";
 
 /** Resources a command needs, inferred from the command line. Repository rules add to these. */
 const COMMAND_RULES: ReadonlyArray<readonly [RegExp, ReadonlyArray<string>]> = [
@@ -251,7 +260,8 @@ export function lockFilesFor(name: string, slot: number): string[] {
   if (name === "android" || name.startsWith("device_")) {
     const dir = NodePath.join(lockRoot(), "devices");
     NodeFS.mkdirSync(dir, { recursive: true, mode: 0o700 });
-    const device = name === "android" ? `emulator-${5554 + 2 * slot}` : name.slice("device_".length);
+    const device =
+      name === "android" ? `emulator-${5554 + 2 * slot}` : name.slice("device_".length);
     const file = NodePath.join(dir, `${device}.lock`);
     if (!NodeFS.existsSync(file)) NodeFS.closeSync(NodeFS.openSync(file, "a", 0o600));
     files.push(file);
@@ -278,8 +288,12 @@ export function lockFilesFor(name: string, slot: number): string[] {
 }
 
 /** Finds an explicit Android target in argv before falling back to the caller's environment. */
-export function requestedAndroidSerial(argv: ReadonlyArray<string>, env: NodeJS.ProcessEnv): string | null {
-  const assignment = (token: string) => token.startsWith("ANDROID_SERIAL=") ? token.slice("ANDROID_SERIAL=".length) : null;
+export function requestedAndroidSerial(
+  argv: ReadonlyArray<string>,
+  env: NodeJS.ProcessEnv,
+): string | null {
+  const assignment = (token: string) =>
+    token.startsWith("ANDROID_SERIAL=") ? token.slice("ANDROID_SERIAL=".length) : null;
   if (argv[0] === "env") {
     for (const token of argv.slice(1)) {
       if (!token.includes("=")) break;
@@ -391,15 +405,30 @@ export async function waitForGrant(
     readonly signal?: AbortSignal;
     /** Polled while waiting: true withdraws the ticket and resolves `"superseded"` (the same work finished meanwhile). */
     readonly shouldStop?: () => boolean;
+    /**
+     * Asked before this machine's slot is granted, at most every `REMOTE_RETRY_MS`. A run it places is
+     * awaited here, and its result is returned as `{ ran }`.
+     */
+    readonly tryRemote?: () => Promise<RemoteAttempt | null>;
   } = {},
-): Promise<Ticket | "defer" | "superseded"> {
+): Promise<Ticket | "defer" | "superseded" | { readonly ran: CommandResult }> {
   const started = Date.now();
   let lastReport = 0;
   let delay = 150;
+  let nextRemote = 0;
+  let remoteWanted = options.tryRemote !== undefined;
+  const remoteAttempt = options.tryRemote;
   while (true) {
     if (options.shouldStop && broker.get(ticketId)?.state === "waiting" && options.shouldStop()) {
       broker.cancel(ticketId, "superseded by an identical check");
       return "superseded";
+    }
+    if (remoteAttempt && remoteWanted && Date.now() >= nextRemote) {
+      nextRemote = Date.now() + REMOTE_RETRY_MS;
+      const attempt = await remoteAttempt();
+      if (attempt && "ran" in attempt) return { ran: attempt.ran };
+      if (attempt && "superseded" in attempt) return "superseded";
+      if (attempt && "localOnly" in attempt) remoteWanted = false;
     }
     broker.pump();
     const ticket = broker.get(ticketId);
@@ -429,6 +458,190 @@ export async function waitForGrant(
     await sleep(delay);
     delay = Math.min(Math.round(delay * 1.4), 1000);
   }
+}
+
+// ── remote hosts ───────────────────────────────────────────────────────────
+
+/** How often a waiting request asks the remote machines for a free slot. */
+const REMOTE_RETRY_MS = 5_000;
+const REMOTE_COOLDOWN_MS = 60_000;
+const REMOTE_HEARTBEAT_MS = 10_000;
+
+/** What one attempt to run a waiting ticket remotely did. */
+type RemoteAttempt =
+  /** It never started there; the ticket waits again in the same place in line. */
+  | { readonly retry: true }
+  /** The remote lacks something this machine has; this ticket now runs only here. */
+  | { readonly localOnly: true }
+  /** The caller no longer wants the work (its `beforeRun` said no); the ticket is cancelled. */
+  | { readonly superseded: true }
+  /** It ran remotely and the ticket is finished. */
+  | { readonly ran: CommandResult };
+
+export interface RemoteInput {
+  readonly argv: ReadonlyArray<string>;
+  readonly cwd: string;
+  readonly env?: Readonly<Record<string, string>>;
+  readonly stdio?: "inherit" | "pipe";
+  readonly logFile?: string;
+}
+
+/** Lost connections per ticket in this process: the first is retried, the second fails the ticket. */
+const remoteLosses = new Map<string, number>();
+
+interface RemotePlacement {
+  readonly host: RemoteHostConfig;
+  readonly plan: RemotePlan;
+}
+
+/**
+ * Claim a remote host for a waiting ticket. The ticket becomes `running` there and holds nothing on
+ * this machine. Null when the request stays here: no remote, none free, a waiter ahead of it, or a
+ * ticket this machine already granted.
+ */
+async function placeRemote(
+  broker: ResourceBroker,
+  ticket: Ticket,
+  input: RemoteInput,
+  deps: RemoteDeps,
+): Promise<RemotePlacement | null> {
+  if (process.env.AGENTQUEUE_RESOURCE_TICKET || process.env.AGENTQUEUE_REMOTE === "off")
+    return null;
+  const hosts = deps.hosts();
+  if (hosts.length === 0) return null;
+  const plan = deps.plan({
+    argv: input.argv,
+    cwd: input.cwd,
+    resources: ticket.resources.map((item) => item.name),
+    ...(input.env ? { env: input.env } : {}),
+  });
+  if ("local" in plan) return null;
+  let statuses: ReadonlyArray<RemoteHostStatus>;
+  try {
+    statuses = await deps.statuses(hosts);
+  } catch {
+    return null; // a remote that cannot say what is free is not free
+  }
+  const host = pickHost(statuses, plan.class);
+  if (!host) return null;
+  const config = hosts.find((candidate) => candidate.name === host.name);
+  if (!config) return null;
+  // Waiters ahead in line take the free slots first, so a later request does not jump them.
+  const free = statuses.reduce(
+    (sum, status) => (status.reachable && status.accepting ? sum + status.free[plan.class] : sum),
+    0,
+  );
+  if (broker.waitingAhead(ticket.id, plan.class) >= free) return null;
+  return broker.startRemote(ticket.id, host.name) ? { host: config, plan } : null;
+}
+
+/** The first tail line that says the remote lacks something, else its exit code. */
+function remoteAvoidReason(run: RemoteRunResult): string {
+  const line = run.tail
+    .split("\n")
+    .find((text) => /not found|no such file|missing|keystore|\/home\/ajay/i.test(text));
+  return line?.trim() || `exit ${run.code}`;
+}
+
+/** Run a placed ticket on its host and record how it ended: finished, or back in line. */
+async function runPlaced(
+  broker: ResourceBroker,
+  ticket: Ticket,
+  placement: RemotePlacement,
+  input: RemoteInput,
+  deps: RemoteDeps,
+): Promise<RemoteAttempt> {
+  const { host, plan } = placement;
+  const runMs = ticket.runMs ?? DEFAULT_RUN_MS;
+  const logPath = input.logFile ?? null;
+  const beat = () => broker.heartbeat(ticket.id);
+  const timer = setInterval(beat, REMOTE_HEARTBEAT_MS);
+  let run: RemoteRunResult;
+  try {
+    run = await deps.run(host, plan, {
+      timeoutSec: Math.ceil(runMs / 1000),
+      label: ticket.label,
+      ...(input.stdio ? { stdio: input.stdio } : {}),
+      ...(input.logFile ? { logFile: input.logFile } : {}),
+      onBeat: beat,
+    });
+  } catch (error) {
+    const note = `Remote run on ${host.name} failed: ${String(error)}`;
+    broker.finish(ticket.id, { outcome: "failed", exitCode: 127, note, logPath });
+    return {
+      ran: {
+        outcome: "failed",
+        exitCode: 127,
+        tail: note,
+        logPath,
+        peakRssKb: 0,
+        oomKilled: false,
+      },
+    };
+  } finally {
+    clearInterval(timer);
+  }
+  if (!run.placed) {
+    deps.coolDown(host.name, REMOTE_COOLDOWN_MS);
+    broker.returnToWaiting(ticket.id);
+    return { retry: true };
+  }
+  if (run.lost) {
+    const losses = (remoteLosses.get(ticket.id) ?? 0) + 1;
+    if (losses < 2) {
+      remoteLosses.set(ticket.id, losses);
+      broker.returnToWaiting(ticket.id);
+      return { retry: true };
+    }
+    remoteLosses.delete(ticket.id);
+    const note = `lost contact with ${host.name} twice`;
+    broker.finish(ticket.id, { outcome: "failed", exitCode: 255, tail: run.tail, logPath, note });
+    return {
+      ran: {
+        outcome: "failed",
+        exitCode: 255,
+        tail: run.tail,
+        logPath,
+        peakRssKb: 0,
+        oomKilled: false,
+      },
+    };
+  }
+  if (run.envFailure) {
+    deps.recordAvoid(plan.avoidKey, remoteAvoidReason(run));
+    broker.returnToWaiting(ticket.id);
+    return { localOnly: true };
+  }
+  remoteLosses.delete(ticket.id);
+  const outcome: TicketOutcome = run.code === 0 ? "ok" : run.code === 124 ? "timed-out" : "failed";
+  const note =
+    outcome === "timed-out"
+      ? `Killed at its time limit (${Math.ceil(runMs / 1000)} s) on ${host.name}.`
+      : `Ran on ${host.name} in ${Math.round(run.runMs / 1000)} s.`;
+  broker.finish(ticket.id, { outcome, exitCode: run.code, tail: run.tail, logPath, note });
+  return {
+    ran: { outcome, exitCode: run.code, tail: run.tail, logPath, peakRssKb: 0, oomKilled: false },
+  };
+}
+
+/**
+ * One attempt to run a waiting ticket on a free remote host, awaited until it has settled. Null leaves
+ * the ticket waiting on this machine. `beforeRun` is asked once a host is claimed, as for a local grant.
+ */
+export async function tryRemote(
+  broker: ResourceBroker,
+  ticket: Ticket,
+  input: RemoteInput,
+  deps: RemoteDeps,
+  hooks: { readonly beforeRun?: () => boolean } = {},
+): Promise<RemoteAttempt | null> {
+  const placement = await placeRemote(broker, ticket, input, deps);
+  if (!placement) return null;
+  if (hooks.beforeRun && !hooks.beforeRun()) {
+    broker.cancel(ticket.id, "superseded by an identical check");
+    return { superseded: true };
+  }
+  return runPlaced(broker, ticket, placement, input, deps);
 }
 
 function flockPrefix(files: ReadonlyArray<string>, waitSeconds: number): string[] {
@@ -546,6 +759,14 @@ async function runTree(
     stdio: ["ignore", "pipe", "pipe"],
   });
   const pgid = child.pid ?? null;
+  // Under memory pressure the kernel takes local builds before agents and the server; children inherit it.
+  if (child.pid !== undefined) {
+    try {
+      NodeFS.writeFileSync(`/proc/${child.pid}/oom_score_adj`, "800");
+    } catch {
+      // Not Linux, or the child already exited.
+    }
+  }
   hooks.onStart?.(pgid);
   child.stdout!.on("data", (chunk: Buffer) => {
     if (command.stdio === "inherit") process.stdout.write(chunk);
@@ -786,6 +1007,8 @@ export interface RunUnderBrokerOptions extends Omit<ResourceRequest, "job"> {
   readonly probes?: MemoryProbes;
   readonly broker?: ResourceBroker;
   readonly brokerOptions?: BrokerOptions;
+  /** Remote machines that may take the command before this machine's slot (default: the configured hosts). */
+  readonly remote?: RemoteDeps;
 }
 
 export type RunUnderBrokerResult =
@@ -864,12 +1087,30 @@ async function runUnderBrokerOnce(options: RunUnderBrokerOptions): Promise<RunUn
       };
     }
     try {
+      const remoteInput: RemoteInput = {
+        argv: options.argv,
+        cwd: options.cwd,
+        ...(options.env ? { env: options.env } : {}),
+        ...(options.stdio ? { stdio: options.stdio } : {}),
+        ...(options.logFile ? { logFile: options.logFile } : {}),
+      };
+      const remote = options.remote ?? REAL_REMOTE;
       const granted = await waitForGrant(broker, ticket.id, {
         ...(options.onWaiting ? { onWaiting: options.onWaiting } : {}),
         ...(options.deferAfterMs !== undefined ? { deferAfterMs: options.deferAfterMs } : {}),
         ...(options.shouldStop ? { shouldStop: options.shouldStop } : {}),
+        tryRemote: () =>
+          tryRemote(
+            broker,
+            ticket,
+            remoteInput,
+            remote,
+            options.beforeRun ? { beforeRun: options.beforeRun } : {},
+          ),
       });
       if (granted === "superseded") return { kind: "superseded", ticket: broker.get(ticket.id)! };
+      if (typeof granted === "object" && "ran" in granted)
+        return { kind: "ran", result: granted.ran, ticket: broker.get(ticket.id)! };
       if (granted === "defer") {
         const converted = broker.convertToJob(ticket.id, {
           command: options.argv.map(shQuote).join(" "),
@@ -1092,6 +1333,7 @@ export function describeJob(ticket: Ticket): string {
                 : `failed (exit ${ticket.exitCode})`;
   return [
     `Resource job ${ticket.id} \`${ticket.job?.command ?? ticket.label}\` ${how}.`,
+    ...(ticket.host ? [`Ran on: ${ticket.host}`] : []),
     ...(ticket.tail ? ["Last output:", "```", ticket.tail.slice(-2500), "```"] : []),
     ...(ticket.logPath ? [`Full log: ${ticket.logPath}`] : []),
   ].join("\n");
@@ -1115,10 +1357,73 @@ export function createJobRunner(options: {
   readonly broker?: ResourceBroker;
   readonly brokerOptions?: BrokerOptions;
   readonly onFinished?: (ticket: Ticket) => void;
+  readonly remote?: RemoteDeps;
 }): JobRunner {
   const broker = options.broker ?? openBroker(options.brokerOptions);
+  const remote = options.remote ?? REAL_REMOTE;
   const running = new Set<string>();
+  /** When each waiting job last asked for a remote host. */
+  const remoteTriedAt = new Map<string, number>();
+  /** Waiting jobs that a remote refused for a reason only this machine can satisfy. */
+  const localOnly = new Set<string>();
   let stopped = false;
+
+  /**
+   * Waiting jobs get a remote host before this machine's pump grants them a slot. A placed job runs in
+   * the background and counts as running here until it has finished.
+   */
+  const placeWaitingJobs = async (): Promise<void> => {
+    const waiting = broker
+      .waitingJobs()
+      .filter((ticket) => options.repo === null || ticket.repo === options.repo);
+    const waitingIds = new Set(waiting.map((ticket) => ticket.id));
+    for (const id of [...remoteTriedAt.keys(), ...localOnly]) {
+      if (!waitingIds.has(id)) {
+        remoteTriedAt.delete(id);
+        localOnly.delete(id);
+      }
+    }
+    for (const ticket of waiting) {
+      const job = ticket.job;
+      if (!job || stopped) continue;
+      if (running.has(ticket.id) || localOnly.has(ticket.id)) continue;
+      const last = remoteTriedAt.get(ticket.id);
+      const now = Date.now();
+      if (last !== undefined && now - last < REMOTE_RETRY_MS) continue;
+      remoteTriedAt.set(ticket.id, now);
+      const input: RemoteInput = {
+        argv: ["bash", "-c", job.command],
+        cwd: job.cwd,
+        env: job.env,
+        logFile: NodePath.join(brokerHome(), "logs", `${ticket.id}.log`),
+      };
+      const placement = await placeRemote(broker, ticket, input, remote);
+      if (!placement) continue;
+      if (stopped) {
+        broker.returnToWaiting(ticket.id);
+        return;
+      }
+      running.add(ticket.id);
+      void runPlaced(broker, ticket, placement, input, remote)
+        .then((attempt) => {
+          if ("localOnly" in attempt) localOnly.add(ticket.id);
+        })
+        .catch((error) => {
+          broker.finish(ticket.id, {
+            outcome: "failed",
+            exitCode: 127,
+            note: String(error),
+            logPath: input.logFile ?? null,
+          });
+        })
+        .finally(() => {
+          running.delete(ticket.id);
+          const done = broker.get(ticket.id);
+          if (done?.state === "done") options.onFinished?.(done);
+        });
+    }
+  };
+
   return {
     running,
     stop: () => {
@@ -1128,6 +1433,7 @@ export function createJobRunner(options: {
     async tick() {
       if (stopped) return [];
       broker.registerRunner(process.pid, options.repo);
+      await placeWaitingJobs();
       broker.pump();
       const started: string[] = [];
       for (const ticket of broker.grantedJobsFor(process.pid)) {

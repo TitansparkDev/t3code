@@ -29971,6 +29971,7 @@ docs/agentqueue/ADR-0009-execution-contract-and-failure-ledger.md
 docs/agentqueue/ADR-0010-owned-tasks-and-shared-resources.md
 docs/agentqueue/ADR-0011-stall-recovery-and-resolved-follow-ups.md
 docs/agentqueue/README.md
+docs/agentqueue/remote-hosts.md
 docs/internals/adding-a-provider.md
 docs/internals/assistant-citations.md
 docs/internals/composer-context-references.md
@@ -30498,6 +30499,7 @@ packages/agent-queue-core/src/planLint.ts
 packages/agent-queue-core/src/preflight.ts
 packages/agent-queue-core/src/publication.ts
 packages/agent-queue-core/src/queueInspector.ts
+packages/agent-queue-core/src/remoteHosts.ts
 packages/agent-queue-core/src/repoManager.ts
 packages/agent-queue-core/src/reservation.ts
 packages/agent-queue-core/src/resourceBroker.ts

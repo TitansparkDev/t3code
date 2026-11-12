@@ -882,3 +882,104 @@ describe("stored jobs", () => {
     expect(stored[0]!.job!.command).toBe("echo later");
   });
 });
+
+describe("remote runs", () => {
+  it("runs a waiting ticket on a remote host without a local slot, and returns it to the same place in line", () => {
+    const { broker } = makeBroker();
+    const first = broker.enqueue({ resources: [{ name: "db" }], pid: process.pid, label: "first" });
+    const second = broker.enqueue({
+      resources: [{ name: "db" }],
+      pid: process.pid,
+      label: "second",
+    });
+    expect(broker.startRemote(first.id, "legion")).toBe(true);
+    const remote = broker.get(first.id)!;
+    expect(remote.state).toBe("running");
+    expect(remote.host).toBe("legion");
+    expect(remote.slots).toEqual({});
+    expect(broker.waitingAhead(second.id, "db")).toBe(0);
+
+    // A remote run holds no unit here, so the next waiter gets the only local slot at once.
+    expect(broker.pump().map((ticket) => ticket.id)).toEqual([second.id]);
+    expect(broker.status().resources.find((r) => r.name === "db")!.active).toBe(1);
+
+    expect(broker.returnToWaiting(first.id)).toBe(true);
+    const back = broker.get(first.id)!;
+    expect(back.state).toBe("waiting");
+    expect(back.host).toBeNull();
+    expect(back.seq).toBe(first.seq);
+    expect(broker.returnToWaiting(second.id)).toBe(false);
+  });
+
+  it("refuses a remote start for a ticket this machine already granted", () => {
+    const { broker } = makeBroker();
+    const ticket = broker.enqueue({ resources: [{ name: "db" }], pid: process.pid });
+    broker.pump();
+    expect(broker.get(ticket.id)!.state).toBe("granted");
+    expect(broker.startRemote(ticket.id, "legion")).toBe(false);
+    expect(broker.returnToWaiting(ticket.id)).toBe(false);
+  });
+
+  it("counts waiters ahead of a ticket per resource", () => {
+    const { broker } = makeBroker();
+    const first = broker.enqueue({ resources: [{ name: "db" }], pid: process.pid });
+    const second = broker.enqueue({ resources: [{ name: "db" }], pid: process.pid });
+    const build = broker.enqueue({ resources: [{ name: "heavy_build" }], pid: process.pid });
+    expect(broker.waitingAhead(first.id, "db")).toBe(0);
+    expect(broker.waitingAhead(second.id, "db")).toBe(1);
+    expect(broker.waitingAhead(build.id, "db")).toBe(2);
+    expect(broker.waitingAhead(build.id, "heavy_build")).toBe(0);
+  });
+
+  it("retires a remote run whose driving process vanished, as it would a local holder", async () => {
+    const { broker } = makeBroker();
+    const child = NodeChildProcess.spawn("sleep", ["30"], { stdio: "ignore" });
+    const exited = Promise.withResolvers<void>();
+    child.on("exit", () => exited.resolve());
+    const remote = broker.enqueue({
+      resources: [{ name: "db" }],
+      pid: child.pid!,
+      label: "remote",
+    });
+    const next = broker.enqueue({ resources: [{ name: "db" }], pid: process.pid, label: "next" });
+    expect(broker.startRemote(remote.id, "legion")).toBe(true);
+    broker.pump();
+    expect(broker.get(next.id)!.state).toBe("granted");
+    expect(broker.get(remote.id)!.state).toBe("running");
+
+    child.kill("SIGKILL");
+    await exited.promise;
+    broker.pump();
+    expect(broker.get(remote.id)!.state).toBe("expired");
+    expect(broker.get(next.id)!.state).toBe("granted");
+  });
+
+  it("puts a remote job back in line with no host when its runner dies", async () => {
+    const { broker } = makeBroker();
+    const child = NodeChildProcess.spawn("sleep", ["30"], { stdio: "ignore" });
+    const exited = Promise.withResolvers<void>();
+    child.on("exit", () => exited.resolve());
+    const job = broker.enqueue({
+      resources: [{ name: "db" }],
+      pid: child.pid!,
+      ownerRef: "T4",
+      job: { command: "true", cwd: "/tmp" },
+    });
+    expect(broker.startRemote(job.id, "legion")).toBe(true);
+    child.kill("SIGKILL");
+    await exited.promise;
+    broker.pump();
+    const requeued = broker.get(job.id)!;
+    expect(requeued.state).toBe("waiting");
+    expect(requeued.host).toBeNull();
+    expect(requeued.attempts).toBe(1);
+
+    // Back in line, it is granted to a live runner here like any other waiting job.
+    const runner = NodeChildProcess.spawn("sleep", ["30"], { stdio: "ignore" });
+    broker.registerRunner(runner.pid!, null);
+    broker.pump();
+    expect(broker.get(job.id)!.state).toBe("granted");
+    expect(broker.get(job.id)!.host).toBeNull();
+    runner.kill("SIGKILL");
+  });
+});
