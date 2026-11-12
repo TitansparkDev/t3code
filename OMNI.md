@@ -39,43 +39,52 @@ they now sit on top of upstream's provider rather than a private one.
 
 ## Releasing from this machine
 
-`.github/workflows/release.yml` does not run on this fork — it wants Blacksmith
-runners and a Mac, and there are no Actions minutes. Releases are built here:
+`.github/workflows/release.yml` does not run on this fork (Blacksmith runners, a Mac, no Actions
+minutes), and neither does `fork-desktop-release.yml`. Releases are built and published here.
+
+**Finish the release. Do not stop at a blocker that is not on the list below.** A release is done
+only when `gh release view v<version>` shows it published with every asset. The gate is the source
+checks, not the packaged-app checks:
+
+- **Blocks the release:** `vp run check:changed` (run through `agentq run --resource heavy_build`),
+  and a failing build of any asset.
+- **Advisory — report the result in your final message, then publish:** the Android emulator
+  and device-panel checks (the emulator's startup timeouts and the device hub's shutdown error are
+  host problems, not app regressions), and a Linux desktop smoke that fails only on this VM.
 
 ```bash
+# 1. Bump, commit "chore(release): prepare v<version>" (apps/*/package.json, packages/contracts,
+#    apps/mobile/app.config.ts: Android version and versionCode).
 node scripts/update-release-package-versions.ts <version>
 
-T3CODE_DESKTOP_UPDATE_REPOSITORY=TitansparkDev/t3code \
-T3CODE_DESKTOP_REUSE_RESOURCE_MONITOR=true \
-  node scripts/build-desktop-artifact.ts \
-    --platform linux --target AppImage --arch x64 --build-version <version>
+# 2. Build each stage under the shared build slot (see the script header).
+agentq run --resource heavy_build --timeout 3000 -- scripts/fork-local-release.sh <version> cli
+agentq run --resource heavy_build --timeout 3000 -- scripts/fork-local-release.sh <version> desktop
+agentq run --resource heavy_build --timeout 3000 -- scripts/fork-local-release.sh <version> windows
+agentq run --resource android     --timeout 3000 -- scripts/fork-local-release.sh <version> android
 
-WINEPREFIX=/home/ajay/.cache/t3code-wine \
-T3CODE_DESKTOP_UPDATE_REPOSITORY=TitansparkDev/t3code \
-T3CODE_DESKTOP_REUSE_RESOURCE_MONITOR=true \
-  node scripts/build-desktop-artifact.ts \
-    --platform win --target nsis --arch x64 --build-version <version>
+# 3. Smoke the packaged Linux app (the script starts its own private D-Bus session).
+APPIMAGE_EXTRACT_AND_RUN=1 xvfb-run -a node scripts/smoke-desktop-app.ts \
+  --executable "$PWD/release/T3-Code-<version>-x86_64.AppImage"
 
-git tag -a "v<version>-omni.$(date -u +%Y%m%d.%H%M)" -m "T3 Code <version> Omni"
-gh release create <tag> release/T3-Code-* release/latest*.yml
+# 4. Publish. gh only works with HOME=/home/ajay. SHA256SUMS lists the CLI archive, .deb, .exe,
+#    AppImage and APK; the CLI archive lives in release-cli/.
+git push origin omni/main
+HOME=/home/ajay gh release create v<version> --repo TitansparkDev/t3code --target omni/main \
+  --title "T3 Code v<version>" --notes-file <notes.md> \
+  release/T3-Code-<version>-* release/latest.yml release/latest-linux.yml \
+  release/t3code-android-<version>-production.apk release-cli/t3-<version>-linux-x64.tar.gz SHA256SUMS
 ```
 
-Then restore the four `package.json` versions — the bump is never committed.
+Traps that have each cost an afternoon:
 
-Three traps, each of which has already cost an afternoon:
-
-- **Without `T3CODE_DESKTOP_UPDATE_REPOSITORY`** electron-builder writes no
-  `latest*.yml`, and the in-app updater then sees nothing.
-- **There is no Rust toolchain here**, so `T3CODE_DESKTOP_REUSE_RESOURCE_MONITOR`
-  is mandatory; it reuses `native/resource-monitor/target/*/release/`.
-- **The default `~/.wine` prefix is broken** (`could not load kernel32.dll`).
-  The Windows target needs the separate prefix above.
-
-The server package is not part of that build. Pack it from `apps/server` with
-the version bumped and `devDependencies`/`scripts` stripped, drop the Linux
-`t3-resource-monitor` into `dist/resource-monitor/linux-x64/` first, then
-install the tarball into `~/.t3/runtime/versions/<version>` and point
-`service-state.json` at it.
+- **Without `T3CODE_DESKTOP_UPDATE_REPOSITORY`** electron-builder writes no `latest*.yml` and the
+  in-app updater sees nothing (the script sets it).
+- **There is no MSVC linker here**; the Windows stage cross-builds the resource monitor with mingw.
+- **The default `~/.wine` prefix is broken**; the Windows target needs `WINEPREFIX=/home/ajay/.cache/t3code-wine`.
+- **The desktop smoke hangs at the splash on this VM** unless Electron gets a private D-Bus session:
+  the real session bus blocks Electron's main process (probably the locked keyring behind
+  `safeStorage`; a private bus fixes it). The smoke script now starts its own `dbus-daemon`; do not run Electron here against the real bus.
 
 ---
 

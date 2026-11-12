@@ -2,6 +2,7 @@
 // Launches a packaged desktop app against a seeded T3 home, opens a thread, and checks its
 // messages render. Release jobs run it so a build whose backend or bundle cannot start fails
 // before it is published.
+import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -61,6 +62,32 @@ for (const name of [
   "DBUS_SESSION_BUS_ADDRESS",
 ]) {
   if (process.env[name] !== undefined) appEnvironment[name] = process.env[name];
+}
+// A host's real session bus can hold the main process forever (a locked keyring waiting for an
+// unlock prompt), so Linux gets a private bus with no secret service, like a bare CI runner.
+let privateBus: NodeChildProcess.ChildProcess | undefined;
+// oxlint-disable-next-line t3code/no-global-process-runtime -- Top-level release script, no Effect runtime.
+if (NodeOS.platform() === "linux") {
+  const bus = NodeChildProcess.spawn(
+    "dbus-daemon",
+    ["--session", "--nofork", "--nopidfile", "--print-address=1"],
+    { stdio: ["ignore", "pipe", "ignore"] },
+  );
+  const printed = new Promise<string | undefined>((resolve) => {
+    bus.on("error", () => resolve(undefined));
+    bus.on("exit", () => resolve(undefined));
+    bus.stdout.once("data", (chunk) => resolve(String(chunk).trim()));
+  });
+  const address = await Promise.race([
+    printed,
+    NodeTimersPromises.setTimeout(5_000, undefined, { ref: false }),
+  ]);
+  if (address) {
+    privateBus = bus;
+    appEnvironment.DBUS_SESSION_BUS_ADDRESS = address;
+  } else {
+    bus.kill();
+  }
 }
 appEnvironment.CODEX_HOME = NodePath.join(home, "codex");
 appEnvironment.CLAUDE_CONFIG_DIR = NodePath.join(home, "claude");
@@ -128,5 +155,6 @@ try {
     await Promise.race([closed, NodeTimersPromises.setTimeout(10_000, undefined, { ref: false })]);
     child.kill("SIGKILL");
   }
+  privateBus?.kill();
   NodeFS.rmSync(home, { recursive: true, force: true, maxRetries: 5 });
 }
