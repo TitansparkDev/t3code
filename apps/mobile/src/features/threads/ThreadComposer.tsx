@@ -87,7 +87,7 @@ import {
   ComposerContextWindowButton,
   ComposerToolbarRow,
 } from "../../components/ComposerToolbar";
-import { ComposerModelControl } from "../../components/ComposerModelControl";
+import { ComposerEffortControl, ComposerModelControl } from "../../components/ComposerModelControl";
 import {
   composerStripAttachments,
   type DraftComposerFileAttachment,
@@ -435,6 +435,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
   const pendingNativeImagePasteCountRef = useRef(0);
   const [pendingPastedTextAttachmentCount, setPendingPastedTextAttachmentCount] = useState(0);
   const settingsRoutePresentedRef = useRef(false);
+  const settingsEffortIdRef = useRef<string | undefined>(undefined);
   const settingsSheetPresentation = useThreadSettingsSheetPresentation({
     editorRef: inputRef,
     onPresent: () => {
@@ -443,11 +444,16 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
       // The draft composer edits the new-task flow, which owns its own settings route.
       navigation.dispatch(
         props.isDraft
-          ? StackActions.push("NewTaskThreadSettings")
+          ? StackActions.push("NewTaskThreadSettings", {
+              initialEffortId: settingsEffortIdRef.current,
+            })
           : StackActions.push("ThreadSettingsSheet", {
               environmentId: props.environmentId,
               threadId: props.selectedThread.id,
               draftKey: composerDraftKey,
+              ...(settingsEffortIdRef.current
+                ? { initialEffortId: settingsEffortIdRef.current }
+                : {}),
             } satisfies ExistingThreadSettingsRouteParams),
       );
     },
@@ -751,6 +757,11 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
         option.selection.model === currentModelSelection.model,
     ) ?? null;
   const openSettings = () => {
+    settingsEffortIdRef.current = undefined;
+    settingsSheetPresentation.open();
+  };
+  const openEffort = (descriptorId: string) => {
+    settingsEffortIdRef.current = descriptorId;
     settingsSheetPresentation.open();
   };
 
@@ -826,12 +837,23 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
         size={usesLargeControls ? "large" : "regular"}
         modelOption={currentModelOption}
         selection={currentModelSelection}
-        provider={selectedProviderStatus?.driver}
-        reportedSelection={props.reportedModelSelection}
-        prompt={draftMessage}
         surfaceColor={composerPanel}
         iconOnly={!compactEditor.isExpanded}
         onPress={openSettings}
+      />
+    </View>
+  );
+  const effortControl = (
+    <View className="shrink">
+      <ComposerEffortControl
+        size={usesLargeControls ? "large" : "regular"}
+        modelOption={currentModelOption}
+        selection={currentModelSelection}
+        reportedSelection={props.reportedModelSelection}
+        prompt={draftMessage}
+        iconOnly={!compactEditor.isExpanded}
+        disabled={isSubmissionLocked}
+        onPress={openEffort}
       />
     </View>
   );
@@ -1123,6 +1145,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
                 }
               >
                 {modelControl}
+                {effortControl}
                 <ComposerDictationStartAction
                   size={usesLargeControls ? "large" : "regular"}
                   state={voiceInput.state}

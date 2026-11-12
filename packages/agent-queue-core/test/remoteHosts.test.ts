@@ -253,6 +253,18 @@ describe("planRemote", () => {
     expect(plan.cwdRel).toBe(NodePath.join("apps", "mobile"));
   });
 
+  it("keeps a request requiring both Android and build slots on the VM", () => {
+    const fx = fixture();
+    configure(fx, [{ name: "legion", client: fx.client }]);
+    const result = planRemote({
+      argv: ["./gradlew", "connectedDebugAndroidTest"],
+      cwd: fx.repo,
+      resources: ["android", "heavy_build"],
+      env: {},
+    });
+    expect(localReason(result)).toMatch(/only one resource class/);
+  });
+
   it.each([
     ["no remotable resource", { argv: ["vp", "test"], resources: [] }, /no remotable resource/],
     [

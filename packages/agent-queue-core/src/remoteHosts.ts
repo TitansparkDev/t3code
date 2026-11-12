@@ -488,6 +488,8 @@ function workspaceKey(dir: string): string {
 export function planRemote(input: RemotePlanInput): RemotePlan | { readonly local: string } {
   const env = input.env ?? process.env;
   const resources = input.resources;
+  if (resources.includes("android") && resources.includes("heavy_build"))
+    return localOnly("remote client can reserve only one resource class");
   const cls: RemoteClass | null = resources.includes("android")
     ? "android"
     : resources.includes("heavy_build") || resources.includes("typecheck")

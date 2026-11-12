@@ -25811,6 +25811,8 @@ apps/mobile/src/features/threads/checkout-new-task-branch.test.ts
 apps/mobile/src/features/threads/checkout-new-task-branch.ts
 apps/mobile/src/features/threads/compactEditorInsets.test.ts
 apps/mobile/src/features/threads/compactEditorInsets.ts
+apps/mobile/src/features/threads/composerEffort.test.ts
+apps/mobile/src/features/threads/composerEffort.ts
 apps/mobile/src/features/threads/composerSendPresentation.test.ts
 apps/mobile/src/features/threads/composerSendPresentation.ts
 apps/mobile/src/features/threads/composerSlashSkillSearch.ts

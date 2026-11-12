@@ -1,10 +1,7 @@
-import type { ModelSelection, ProviderDriverKind } from "@t3tools/contracts";
-import {
-  buildTraitsTriggerDisplay,
-  getPromptControlledTraits,
-} from "@t3tools/client-runtime/model-traits";
+import type { ModelSelection } from "@t3tools/contracts";
+import { getProviderOptionCurrentLabel } from "@t3tools/shared/model";
 import type { ModelOption } from "../lib/modelOptions";
-import { resolveProviderOptionDescriptors } from "../lib/providerOptions";
+import { composerEffortDescriptor } from "../features/threads/composerEffort";
 import { AppText as Text } from "./ui/AppText";
 import { ComposerInlineControl } from "./ComposerToolbar";
 import { ProviderIcon, ProviderInstanceIcon, providerInstanceNameLabel } from "./ProviderIcon";
@@ -12,29 +9,12 @@ import { ProviderIcon, ProviderInstanceIcon, providerInstanceNameLabel } from ".
 export function ComposerModelControl(props: {
   readonly modelOption: ModelOption | null;
   readonly selection: ModelSelection | null;
-  readonly provider: ProviderDriverKind | undefined;
-  readonly reportedSelection?: ModelSelection | null | undefined;
-  readonly prompt: string;
   readonly surfaceColor: string;
   readonly disabled?: boolean;
   readonly size?: "regular" | "large";
   readonly iconOnly?: boolean;
   readonly onPress: () => void;
 }) {
-  const descriptors = resolveProviderOptionDescriptors({
-    capabilities: props.modelOption?.capabilities,
-    selections: props.selection?.options,
-  });
-  const promptTraits = getPromptControlledTraits(descriptors, props.prompt);
-  const summary = props.provider
-    ? buildTraitsTriggerDisplay({
-        descriptors,
-        primarySelectDescriptorId: promptTraits.primarySelectDescriptor?.id ?? null,
-        ultrathinkPromptControlled: promptTraits.ultrathinkPromptControlled,
-        modelSelection: props.selection,
-        reportedModelSelection: props.reportedSelection,
-      }).label
-    : "";
   const badge = props.modelOption?.providerBadge;
   const label = props.modelOption?.label ?? props.selection?.model ?? "Choose model";
   const providerNameLabel = badge
@@ -48,12 +28,7 @@ export function ComposerModelControl(props: {
   const shortLabel = props.modelOption?.shortName ?? label;
   return (
     <ComposerInlineControl
-      accessibilityLabel={[
-        "Model and reasoning settings",
-        label,
-        badge?.showBadge ? badge.displayName : null,
-        summary,
-      ]
+      accessibilityLabel={["Model", label, badge?.showBadge ? badge.displayName : null]
         .filter(Boolean)
         .join(", ")}
       size={props.size}
@@ -84,32 +59,42 @@ export function ComposerModelControl(props: {
       suffixWidth={providerNameLabel ? 96 : undefined}
       suffix={
         providerNameLabel ? (
-          <Text
-            className={
-              props.size === "large"
-                ? "text-sm text-foreground-muted"
-                : "text-xs text-foreground-muted"
-            }
-            numberOfLines={1}
-          >
+          <Text className="text-xs text-foreground-muted" numberOfLines={1}>
             {shortLabel}
-            {summary ? ` · ${summary}` : ""}
-          </Text>
-        ) : summary ? (
-          <Text
-            className={
-              props.size === "large"
-                ? "text-sm text-foreground-muted"
-                : "text-xs text-foreground-muted"
-            }
-            numberOfLines={1}
-          >
-            {summary}
           </Text>
         ) : undefined
       }
       maxWidth="100%"
       onPress={props.onPress}
+    />
+  );
+}
+
+export function ComposerEffortControl(props: {
+  readonly modelOption: ModelOption | null;
+  readonly selection: ModelSelection | null;
+  readonly reportedSelection?: ModelSelection | null | undefined;
+  readonly prompt: string;
+  readonly disabled?: boolean;
+  readonly size?: "regular" | "large";
+  readonly iconOnly?: boolean;
+  readonly onPress: (descriptorId: string) => void;
+}) {
+  const descriptor = composerEffortDescriptor(props.modelOption, props.selection, props.prompt);
+  if (!descriptor) return null;
+  const value =
+    getProviderOptionCurrentLabel(descriptor, props.selection, props.reportedSelection) ??
+    "Default";
+  return (
+    <ComposerInlineControl
+      accessibilityLabel={`${descriptor.label}: ${value}`}
+      size={props.size}
+      disabled={props.disabled}
+      icon="slider.horizontal.3"
+      label={value}
+      iconOnly={props.iconOnly}
+      maxWidth={120}
+      onPress={() => props.onPress(descriptor.id)}
     />
   );
 }

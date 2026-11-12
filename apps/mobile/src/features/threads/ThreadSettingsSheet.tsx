@@ -27,7 +27,6 @@ import { AnimatedLegendList } from "@legendapp/list/reanimated";
 import {
   getProviderOptionCurrentLabel,
   getProviderOptionCurrentValue,
-  getProviderOptionDescriptors,
 } from "@t3tools/shared/model";
 import {
   useNavigation,
@@ -253,24 +252,12 @@ function SwitchRow(props: {
 }
 
 type ThreadSettingsSubmenuPage =
-  /** `afterModelPick`: the step right after choosing a model; picking a value saves and closes. */
-  | { readonly kind: "descriptor"; readonly id: string; readonly afterModelPick?: boolean }
+  | {
+      readonly kind: "descriptor";
+      readonly id: string;
+      readonly closeSheetAfterSelection?: boolean;
+    }
   | { readonly kind: "runtime" };
-
-/** The effort-style choice a model offers right after it is picked, if it has more than one value. */
-function modelPickStepDescriptor(option: ModelOption) {
-  if (!option.capabilities || option.isUnavailable) return null;
-  const descriptor = getPromptControlledTraits(
-    getProviderOptionDescriptors({
-      caps: option.capabilities,
-      selections: option.selection.options,
-    }),
-    "",
-  ).primarySelectDescriptor;
-  return descriptor?.type === "select" && selectableChoices(descriptor).length > 1
-    ? descriptor
-    : null;
-}
 
 type ThreadSettingsSessionProps = {
   readonly environmentId: EnvironmentId | null;
@@ -295,6 +282,7 @@ export type ExistingThreadSettingsRouteParams = {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
   readonly draftKey: string;
+  readonly initialEffortId?: string;
 };
 
 type ThreadSettingsSessionValue = {
@@ -322,8 +310,6 @@ type ThreadSettingsSessionValue = {
   readonly searchQuery: string;
   readonly showLegacy: boolean;
   readonly applyOptionChange: (id: string, value: string | boolean) => void;
-  /** Applies a choice and saves the shown model with it; false when the model can't be saved. */
-  readonly applyOptionChangeAndCommit: (id: string, value: string) => boolean;
   readonly commitPendingModel: () => boolean;
   readonly isApplied: (option: ModelOption) => boolean;
   readonly isDisplayed: (option: ModelOption) => boolean;
@@ -591,26 +577,6 @@ function ThreadSettingsSessionProvider(
     }
   };
 
-  const applyOptionChangeAndCommit = (id: string, value: string) => {
-    if (!pendingModel) {
-      applyOptionChange(id, value);
-      return true;
-    }
-    const resolved = resolveOptionChange(id, value);
-    if (!resolved) return false;
-    const next = resolved.options;
-    if (next) {
-      rememberModelOptions(pendingModel.selection.instanceId, pendingModel.selection.model, next);
-    }
-    const model = next
-      ? { ...pendingModel, selection: { ...pendingModel.selection, options: next } }
-      : pendingModel;
-    setPendingModel(model);
-    const prompt = resolved.prompt ?? pendingPrompt;
-    setPendingPrompt(prompt);
-    return commitModel(model, prompt);
-  };
-
   const toggleProvider = (providerKey: string) => {
     setProviderExpansionOverrides((current) => {
       const next = new Set(current);
@@ -660,7 +626,6 @@ function ThreadSettingsSessionProvider(
     searchQuery,
     showLegacy: showLegacyToggle,
     applyOptionChange,
-    applyOptionChangeAndCommit,
     commitPendingModel,
     isApplied,
     isDisplayed,
@@ -731,19 +696,8 @@ function ThreadSettingsModelListRow(props: {
   readonly isLast: boolean;
 }) {
   const session = useThreadSettingsSession();
-  const navigation = useNavigation<NativeStackNavigationProp<ThreadSettingsPickerStackParams>>();
   const onPress = () => {
     session.pressModel(props.option);
-    if (session.manageHidden) return;
-    const descriptor = modelPickStepDescriptor(props.option);
-    if (descriptor) {
-      navigation.navigate("ThreadSettingsChoice", {
-        kind: "descriptor",
-        id: descriptor.id,
-        afterModelPick: true,
-        title: descriptor.label,
-      });
-    }
   };
 
   return (
@@ -1095,7 +1049,6 @@ function ThreadSettingsMainContent(props: {
 function ThreadSettingsChoiceContent(props: {
   readonly submenu: ThreadSettingsSubmenuPage;
   readonly onSelected: () => void;
-  readonly onCommitted: () => void;
 }) {
   const insets = useSafeAreaInsets();
   const session = useThreadSettingsSession();
@@ -1153,12 +1106,6 @@ function ThreadSettingsChoiceContent(props: {
                   );
                   return;
                 }
-                if (props.submenu.kind === "descriptor" && props.submenu.afterModelPick) {
-                  if (session.applyOptionChangeAndCommit(activeDescriptor.id, choice.id)) {
-                    props.onCommitted();
-                  }
-                  return;
-                }
                 session.applyOptionChange(activeDescriptor.id, choice.id);
                 props.onSelected();
               },
@@ -1211,6 +1158,8 @@ type ThreadSettingsPickerStackParams = {
 type ThreadSettingsPickerPresentation = {
   readonly onClose: () => void;
 };
+
+type InitialEffortChoice = { readonly id: string; readonly title: string } | undefined;
 
 const ThreadSettingsPickerStack = createNativeStackNavigator<ThreadSettingsPickerStackParams>();
 const ThreadSettingsPickerPresentationContext =
@@ -1330,22 +1279,27 @@ function ThreadSettingsChoiceScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<ThreadSettingsPickerStackParams>>();
   const route = useRoute<RouteProp<ThreadSettingsPickerStackParams, "ThreadSettingsChoice">>();
   const presentation = useThreadSettingsPickerPresentation();
+  const onSelected = () => {
+    if (route.params.kind === "descriptor" && route.params.closeSheetAfterSelection) {
+      presentation.onClose();
+    } else {
+      navigation.goBack();
+    }
+  };
 
   return (
     <>
       <AppBar title={route.params.title} onBack={() => navigation.goBack()} hideBottomBorder />
       <ScreenContent>
-        <ThreadSettingsChoiceContent
-          submenu={route.params}
-          onSelected={() => navigation.goBack()}
-          onCommitted={presentation.onClose}
-        />
+        <ThreadSettingsChoiceContent submenu={route.params} onSelected={onSelected} />
       </ScreenContent>
     </>
   );
 }
 
-function ThreadSettingsPickerNavigator(props: ThreadSettingsPickerPresentation) {
+function ThreadSettingsPickerNavigator(
+  props: ThreadSettingsPickerPresentation & { readonly initialEffort?: InitialEffortChoice },
+) {
   const screenOptions = useSheetStackOptions();
   const presentation = {
     onClose: props.onClose,
@@ -1354,7 +1308,7 @@ function ThreadSettingsPickerNavigator(props: ThreadSettingsPickerPresentation) 
   return (
     <ThreadSettingsPickerPresentationContext.Provider value={presentation}>
       <ThreadSettingsPickerStack.Navigator
-        initialRouteName="ThreadSettingsModels"
+        initialRouteName={props.initialEffort ? "ThreadSettingsChoice" : "ThreadSettingsModels"}
         screenOptions={screenOptions}
       >
         <ThreadSettingsPickerStack.Screen
@@ -1365,6 +1319,11 @@ function ThreadSettingsPickerNavigator(props: ThreadSettingsPickerPresentation) 
         <ThreadSettingsPickerStack.Screen
           name="ThreadSettingsChoice"
           component={ThreadSettingsChoiceScreen}
+          initialParams={
+            props.initialEffort
+              ? { kind: "descriptor", ...props.initialEffort, closeSheetAfterSelection: true }
+              : undefined
+          }
           options={({ route }) => ({ title: route.params.title })}
         />
       </ThreadSettingsPickerStack.Navigator>
@@ -1373,11 +1332,24 @@ function ThreadSettingsPickerNavigator(props: ThreadSettingsPickerPresentation) 
 }
 
 export function ThreadSettingsPickerScreen(
-  props: ThreadSettingsSessionProps & { readonly onClose: () => void },
+  props: ThreadSettingsSessionProps & {
+    readonly onClose: () => void;
+    readonly initialEffortId?: string;
+  },
 ) {
+  const effortDescriptor = props.optionDescriptors.find(
+    (descriptor) => descriptor.type === "select" && descriptor.id === props.initialEffortId,
+  );
   return (
     <ThreadSettingsSessionProvider {...props}>
-      <ThreadSettingsPickerNavigator onClose={props.onClose} />
+      <ThreadSettingsPickerNavigator
+        onClose={props.onClose}
+        initialEffort={
+          effortDescriptor?.type === "select"
+            ? { id: effortDescriptor.id, title: effortDescriptor.label }
+            : undefined
+        }
+      />
     </ThreadSettingsSessionProvider>
   );
 }
@@ -1443,6 +1415,7 @@ export function ExistingThreadSettingsRouteScreen({
         capabilities: currentModelOption?.capabilities,
         selections: modelSelection.options,
       })}
+      initialEffortId={route.params.initialEffortId}
       onUpdateOptionSelections={(options) => {
         rememberModelOptions(modelSelection.instanceId, modelSelection.model, options ?? []);
         updateModelSelection({ ...modelSelection, options });
@@ -1458,6 +1431,9 @@ export function ExistingThreadSettingsRouteScreen({
 export function NewTaskThreadSettingsRouteScreen() {
   const flow = useNewTaskFlow();
   const navigation = useNavigation<NativeStackNavigationProp<Record<string, object | undefined>>>();
+  const route = useRoute();
+  const initialEffortId = (route.params as { readonly initialEffortId?: string } | undefined)
+    ?.initialEffortId;
   const optionDescriptors = resolveProviderOptionDescriptors({
     capabilities: flow.selectedModelOption?.capabilities,
     selections: flow.selectedModel?.options,
@@ -1475,6 +1451,7 @@ export function NewTaskThreadSettingsRouteScreen() {
       onSelectModel={(option) => flow.setSelectedModelKey(option.key, option.selection.options)}
       restoreSelection={withRememberedModelOptions}
       optionDescriptors={optionDescriptors}
+      initialEffortId={initialEffortId}
       onUpdateOptionSelections={flow.setSelectedModelOptions}
       runtimeMode={flow.runtimeMode}
       onUpdateRuntimeMode={flow.setRuntimeMode}
