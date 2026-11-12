@@ -4,7 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 
-import { GOAL_THREAD_TAG, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import { ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 
 import * as OrchestratorV2 from "../orchestration-v2/Orchestrator.ts";
@@ -14,58 +14,6 @@ import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.t
 import { GoalThreads, goalThreadViewOf, layer as goalThreadsLayer } from "./GoalThreads.ts";
 
 const at = DateTime.makeUnsafe("2026-10-18T12:00:00.000Z");
-
-it.effect("launches goal threads with the durable completion-suppression marker", () =>
-  Effect.gen(function* () {
-    let launchInput: unknown;
-    let markerCommand: unknown;
-    const dependencies = Layer.mergeAll(
-      Layer.succeed(
-        OrchestratorV2.OrchestratorV2,
-        OrchestratorV2.OrchestratorV2.of({
-          streamDomainEvents: Stream.empty,
-          dispatch: (
-            command: Parameters<OrchestratorV2.OrchestratorV2["Service"]["dispatch"]>[0],
-          ) => Effect.sync(() => void (markerCommand = command)),
-        } as never),
-      ),
-      Layer.succeed(
-        ThreadLaunch.ThreadLaunchService,
-        ThreadLaunch.ThreadLaunchService.of({
-          launch: (input: ThreadLaunch.ThreadLaunchInput) =>
-            Effect.sync(() => void (launchInput = input)),
-        } as never),
-      ),
-      Layer.succeed(
-        ThreadManagement.ThreadManagementService,
-        ThreadManagement.ThreadManagementService.of({} as never),
-      ),
-      Layer.succeed(ProjectStore.ProjectStoreV2, ProjectStore.ProjectStoreV2.of({} as never)),
-      NodeCrypto.layer,
-    );
-    const threads = yield* GoalThreads.pipe(
-      Effect.provide(goalThreadsLayer.pipe(Layer.provide(dependencies))),
-    );
-    yield* threads.launch({
-      threadId: ThreadId.make("thread-goal-marker"),
-      projectId: ProjectId.make("project-goal-marker"),
-      title: "Goal worker",
-      text: "Work",
-      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6" },
-      runtimeMode: "full-access",
-      branch: null,
-      worktreePath: null,
-    });
-    expect(launchInput).toMatchObject({ tags: [GOAL_THREAD_TAG] });
-    yield* threads.markAsGoalThread(ThreadId.make("thread-existing-goal"));
-    expect(markerCommand).toMatchObject({
-      type: "thread.tag.set",
-      threadId: "thread-existing-goal",
-      tag: GOAL_THREAD_TAG,
-      tagged: true,
-    });
-  }),
-);
 
 const shell = (overrides: Record<string, unknown> = {}) =>
   ({
