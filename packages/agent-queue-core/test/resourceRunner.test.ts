@@ -8,9 +8,12 @@ import {
   ResourceBroker,
   TYPECHECK_DEMAND_MB,
   type ResourceConfig,
+  type Ticket,
 } from "../src/resourceBroker.ts";
 import {
+  createJobRunner,
   DEFAULT_RUN_MS,
+  describeJob,
   EmulatorPrerequisiteError,
   inferResourceDemands,
   inferResources,
@@ -18,8 +21,16 @@ import {
   lockFilesFor,
   requestedAndroidSerial,
   runUnderBroker,
+  tryRemote,
   withBrokerResources,
+  type RemoteInput,
 } from "../src/resourceRunner.ts";
+import type {
+  RemoteDeps,
+  RemoteHostConfig,
+  RemoteHostStatus,
+  RemoteRunResult,
+} from "../src/remoteHosts.ts";
 
 const homes: string[] = [];
 const newHome = () => {
@@ -30,6 +41,7 @@ const newHome = () => {
 };
 afterEach(() => {
   delete process.env.AGENTQUEUE_RESOURCE_TICKET;
+  delete process.env.AGENTQUEUE_REMOTE;
   for (const home of homes.splice(0)) NodeFS.rmSync(home, { recursive: true, force: true });
 });
 
@@ -395,6 +407,268 @@ describe("running under the broker", () => {
     expect(result.kind).toBe("superseded");
     expect(NodeFS.existsSync(marker)).toBe(false);
     expect(broker.status().resources.find((r) => r.name === "heavy_build")!.active).toBe(0);
+    broker.close();
+  });
+});
+
+const LEGION: RemoteHostConfig = {
+  name: "legion",
+  client: "/nonexistent/legion",
+  enabled: true,
+  pathMap: {},
+};
+
+/** Remote hosts that answer from `script` in order (the last answer repeats). Nothing leaves this process. */
+function fakeRemote(
+  script: ReadonlyArray<Partial<RemoteRunResult>> = [],
+  options: { readonly free?: number; readonly onRun?: () => void } = {},
+) {
+  const steps = [...script];
+  const runs: Array<{ host: string; argv: ReadonlyArray<string> }> = [];
+  const coolDowns: Array<[string, number]> = [];
+  const avoids: Array<[string, string]> = [];
+  const deps: RemoteDeps = {
+    hosts: () => [LEGION],
+    statuses: async (): Promise<ReadonlyArray<RemoteHostStatus>> => [
+      {
+        name: "legion",
+        reachable: true,
+        accepting: true,
+        wakeable: false,
+        free: { heavy_build: options.free ?? 1, android: 0 },
+        checkedAt: 0,
+      },
+    ],
+    plan: (input) => ({
+      class: "heavy_build",
+      dir: input.cwd,
+      cwdRel: "",
+      wsKey: "fake",
+      avoidKey: "fake-avoid",
+      argvFor: () => [...input.argv],
+    }),
+    run: async (host, plan) => {
+      runs.push({ host: host.name, argv: plan.argvFor(host) });
+      options.onRun?.();
+      const answer = steps.length > 1 ? steps.shift()! : (steps[0] ?? {});
+      return {
+        host: host.name,
+        placed: true,
+        lost: false,
+        code: 0,
+        envFailure: false,
+        tail: "",
+        runMs: 1,
+        ...answer,
+      };
+    },
+    coolDown: (host, ms) => {
+      coolDowns.push([host, ms]);
+    },
+    recordAvoid: (key, reason) => {
+      avoids.push([key, reason]);
+    },
+  };
+  return { deps, runs, coolDowns, avoids };
+}
+
+const remoteInput = (cwd: string): RemoteInput => ({ argv: ["true"], cwd, stdio: "pipe" });
+
+describe("remote hosts", () => {
+  it("runs a queued command on a free remote host without granting this machine's slot", async () => {
+    const home = newHome();
+    const broker = makeBroker(home);
+    const remote = fakeRemote([{ code: 3, tail: "boom\n" }]);
+    const ran = await runUnderBroker({
+      broker,
+      resources: [{ name: "heavy_build" }],
+      argv: ["true"],
+      cwd: home,
+      stdio: "pipe",
+      ownerRef: "TASK-R",
+      remote: remote.deps,
+    });
+    expect(ran.kind).toBe("ran");
+    if (ran.kind !== "ran") return;
+    expect(remote.runs).toEqual([{ host: "legion", argv: ["true"] }]);
+    expect(ran.result.exitCode).toBe(3);
+    expect(ran.result.outcome).toBe("failed");
+    expect(ran.ticket.host).toBe("legion");
+    expect(ran.ticket.slots).toEqual({});
+    expect(describeJob(ran.ticket)).toContain("Ran on: legion");
+    broker.close();
+  });
+
+  it("gives back a run its host refused, in the same place in line, and runs it here once the slot is free", async () => {
+    const home = newHome();
+    const broker = makeBroker(home);
+    const seqs: number[] = [];
+    const remote = fakeRemote([{ placed: false }], {
+      onRun: () => seqs.push(broker.forOwner("TASK-P")[0]!.seq),
+    });
+    const ran = await runUnderBroker({
+      broker,
+      resources: [{ name: "heavy_build" }],
+      argv: ["true"],
+      cwd: home,
+      stdio: "pipe",
+      ownerRef: "TASK-P",
+      remote: remote.deps,
+    });
+    expect(ran.kind).toBe("ran");
+    if (ran.kind !== "ran") return;
+    expect(remote.runs).toHaveLength(1);
+    expect(remote.coolDowns).toEqual([["legion", 60_000]]);
+    expect(seqs).toEqual([ran.ticket.seq]);
+    expect(ran.ticket.host).toBeNull();
+    expect(ran.result.outcome).toBe("ok");
+    broker.close();
+  });
+
+  it("stops offering a command to remote hosts once one refuses it for a reason only this machine can fix", async () => {
+    const home = newHome();
+    const broker = makeBroker(home);
+    const remote = fakeRemote([
+      { code: 127, envFailure: true, tail: "bash: keystore: not found\n" },
+    ]);
+    const ran = await runUnderBroker({
+      broker,
+      resources: [{ name: "heavy_build" }],
+      argv: ["true"],
+      cwd: home,
+      stdio: "pipe",
+      remote: remote.deps,
+    });
+    expect(ran.kind).toBe("ran");
+    if (ran.kind !== "ran") return;
+    expect(remote.runs).toHaveLength(1);
+    expect(remote.avoids).toEqual([["fake-avoid", "bash: keystore: not found"]]);
+    expect(ran.ticket.host).toBeNull();
+    expect(ran.result.exitCode).toBe(0);
+    broker.close();
+  });
+
+  it("sends a lost run back once, and fails the request when the connection is lost again", async () => {
+    const home = newHome();
+    const broker = makeBroker(home);
+    const ticket = broker.enqueue({
+      resources: [{ name: "heavy_build" }],
+      pid: process.pid,
+      label: "lost",
+      runMs: 60_000,
+    });
+    const remote = fakeRemote([{ lost: true, code: 255 }]);
+    expect(await tryRemote(broker, ticket, remoteInput(home), remote.deps)).toEqual({
+      retry: true,
+    });
+    expect(broker.get(ticket.id)!.state).toBe("waiting");
+    expect(await tryRemote(broker, ticket, remoteInput(home), remote.deps)).toMatchObject({
+      ran: { outcome: "failed", exitCode: 255 },
+    });
+    expect(broker.get(ticket.id)!.note).toBe("lost contact with legion twice");
+    expect(remote.runs).toHaveLength(2);
+    broker.close();
+  });
+
+  it("keeps the retry's result when the connection was lost only once", async () => {
+    const home = newHome();
+    const broker = makeBroker(home);
+    const ticket = broker.enqueue({ resources: [{ name: "heavy_build" }], pid: process.pid });
+    const remote = fakeRemote([{ lost: true, code: 255 }, { code: 0 }]);
+    expect(await tryRemote(broker, ticket, remoteInput(home), remote.deps)).toEqual({
+      retry: true,
+    });
+    expect(await tryRemote(broker, ticket, remoteInput(home), remote.deps)).toMatchObject({
+      ran: { outcome: "ok", exitCode: 0 },
+    });
+    expect(broker.get(ticket.id)!.host).toBe("legion");
+    broker.close();
+  });
+
+  it("lets a waiter ahead in line take the only free remote slot before a later one", async () => {
+    const home = newHome();
+    const broker = makeBroker(home);
+    const earlier = broker.enqueue({ resources: [{ name: "heavy_build" }], pid: process.pid });
+    const later = broker.enqueue({ resources: [{ name: "heavy_build" }], pid: process.pid });
+    const remote = fakeRemote([], { free: 1 });
+    expect(await tryRemote(broker, later, remoteInput(home), remote.deps)).toBeNull();
+    expect(remote.runs).toHaveLength(0);
+    expect(broker.get(later.id)!.state).toBe("waiting");
+    expect(await tryRemote(broker, earlier, remoteInput(home), remote.deps)).toMatchObject({
+      ran: { outcome: "ok" },
+    });
+    expect(remote.runs).toHaveLength(1);
+    broker.close();
+  });
+
+  it("does not run remotely a request whose beforeRun says the work is already done", async () => {
+    const home = newHome();
+    const broker = makeBroker(home);
+    const ticket = broker.enqueue({ resources: [{ name: "heavy_build" }], pid: process.pid });
+    const remote = fakeRemote();
+    expect(
+      await tryRemote(broker, ticket, remoteInput(home), remote.deps, {
+        beforeRun: () => false,
+      }),
+    ).toEqual({ superseded: true });
+    expect(remote.runs).toHaveLength(0);
+    expect(broker.get(ticket.id)!.state).toBe("cancelled");
+    broker.close();
+  });
+
+  it("keeps every command here when remote hosts are switched off", async () => {
+    process.env.AGENTQUEUE_REMOTE = "off";
+    const home = newHome();
+    const broker = makeBroker(home);
+    const ticket = broker.enqueue({ resources: [{ name: "heavy_build" }], pid: process.pid });
+    const remote = fakeRemote();
+    expect(await tryRemote(broker, ticket, remoteInput(home), remote.deps)).toBeNull();
+    expect(remote.runs).toHaveLength(0);
+    expect(broker.get(ticket.id)!.state).toBe("waiting");
+    broker.close();
+  });
+
+  it("places a stored job on a free remote host when the runner ticks, before this machine grants it", async () => {
+    const home = newHome();
+    const broker = makeBroker(home);
+    const job = broker.enqueue({
+      resources: [{ name: "heavy_build" }],
+      ownerRef: "TASK-J",
+      job: { command: "echo remote-job", cwd: home },
+    });
+    const remote = fakeRemote();
+    const finished = Promise.withResolvers<Ticket>();
+    const runner = createJobRunner({
+      repo: null,
+      broker,
+      remote: remote.deps,
+      onFinished: (ticket) => finished.resolve(ticket),
+    });
+    expect(await runner.tick()).toEqual([]);
+    const done = await finished.promise;
+    expect(done.id).toBe(job.id);
+    expect(done.host).toBe("legion");
+    expect(done.outcome).toBe("ok");
+    expect(remote.runs).toEqual([{ host: "legion", argv: ["bash", "-c", "echo remote-job"] }]);
+    expect(broker.status().resources.find((r) => r.name === "heavy_build")!.active).toBe(0);
+    broker.close();
+  });
+
+  it("asks the kernel to take a local command before the agents and server under memory pressure", async () => {
+    if (!NodeFS.existsSync("/proc/self/oom_score_adj")) return;
+    const home = newHome();
+    const broker = makeBroker(home);
+    const ran = await runUnderBroker({
+      broker,
+      resources: [{ name: "heavy_build" }],
+      argv: ["cat", "/proc/self/oom_score_adj"],
+      cwd: home,
+      stdio: "pipe",
+      remote: fakeRemote([], { free: 0 }).deps,
+    });
+    expect(ran.kind).toBe("ran");
+    if (ran.kind !== "ran") return;
+    expect(ran.result.tail.trim()).toBe("800");
     broker.close();
   });
 });
