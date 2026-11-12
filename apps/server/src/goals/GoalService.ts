@@ -4144,6 +4144,14 @@ export const make = Effect.gen(function* () {
     return yield* store.list;
   });
 
+  // Older goal chats predate the shell marker. Reapply it from the durable membership list so
+  // clients connected to this or a relayed environment can suppress their completion alerts.
+  yield* Effect.forEach(
+    (yield* store.list).flatMap((goal) => goal.chats.map((chat) => chat.threadId)),
+    (threadId) => threads.markAsGoalThread(threadId).pipe(Effect.ignoreCause),
+    { concurrency: 1 },
+  );
+
   return GoalService.of({
     previewPlan: choose,
     create,

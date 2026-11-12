@@ -18,14 +18,13 @@ import { getProviderOptionCurrentValue, getProviderOptionDescriptors } from "@t3
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Alert, Platform, Pressable, ScrollView as NestedScrollView, View } from "react-native";
+import { Alert, Pressable, ScrollView as NestedScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AppText as Text, AppTextInput as TextInput } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import { ListRow } from "../../components/ui/ListRow";
-import { AndroidScreenHeader } from "../../components/ui/AndroidScreenHeader";
-import { NativeStackScreenOptions } from "../../native/StackHeader";
+import { AppBar } from "../../components/ui/AppBar";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
 import { ThemedSwitch } from "../../components/ui/ThemedSwitch";
 import { cn } from "../../lib/cn";
@@ -133,9 +132,11 @@ function PlanPanel(props: {
   const [failed, setFailed] = useState(false);
   const { environmentId, projectId, queueMode, planPath, onBlockedChange } = props;
   const previewRef = useRef(previewPlan);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- keeps the debounced preview timer on the latest command
   useEffect(() => {
     previewRef.current = previewPlan;
   });
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- debounces the server plan preview while the inputs change
   useEffect(() => {
     let cancelled = false;
     const timer = setTimeout(() => {
@@ -457,17 +458,21 @@ export function GoalForm(props: {
       });
   };
   const saveDraftRef = useRef(saveDraft);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- keeps the draft-save timer and unmount save on the latest form and callback
   useEffect(() => {
     latest.current = current;
     onDraftRef.current = props.onDraft;
     saveDraftRef.current = saveDraft;
   });
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- debounces the server draft save after each edit
   useEffect(() => {
     if (!dirty.current) return;
     const timer = setTimeout(() => saveDraftRef.current(), DRAFT_SAVE_DELAY_MS);
     return () => clearTimeout(timer);
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- each edit restarts the debounce
   }, [form]);
   // Leaving the screen saves what is still waiting for the timer.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- saves the pending draft to the server on unmount
   useEffect(() => () => saveDraftRef.current(), []);
 
   async function finish(submit: (settings: GoalSettings) => Promise<boolean>): Promise<void> {
@@ -484,14 +489,7 @@ export function GoalForm(props: {
 
   return (
     <View collapsable={false} className="flex-1 bg-sheet">
-      {Platform.OS === "android" ? (
-        <>
-          <NativeStackScreenOptions options={{ headerShown: false }} />
-          <AndroidScreenHeader title={props.title} onBack={() => navigation.goBack()} />
-        </>
-      ) : (
-        <NativeStackScreenOptions options={{ title: props.title }} />
-      )}
+      <AppBar title={props.title} onBack={() => navigation.goBack()} />
       <>
         <ScrollView
           contentInsetAdjustmentBehavior="automatic"
@@ -575,6 +573,7 @@ export function GoalForm(props: {
               <AgentCard
                 agent={agent}
                 canRemove={agents.length > 1}
+                // oxlint-disable-next-line react/no-array-index-key -- rows have no id; position is their identity while editing
                 key={`${agent.instanceId}:${index}`}
                 onChange={(next) =>
                   patch({ agents: agents.map((entry, at) => (at === index ? next : entry)) })
@@ -622,6 +621,7 @@ export function GoalForm(props: {
                     agent={{ ...agent, count: 1 }}
                     canRemove
                     counted={false}
+                    // oxlint-disable-next-line react/no-array-index-key -- rows have no id; position is their identity while editing
                     key={`${agent.instanceId}:${index}`}
                     onChange={({ count: _count, ...next }) =>
                       patch({

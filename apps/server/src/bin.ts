@@ -30,6 +30,8 @@ async function loadCliMain(): Promise<typeof import("./binMain.ts")> {
   }
 }
 
+function ignoreOutputError(): void {}
+
 if (
   isEntrypoint({
     moduleUrl: import.meta.url,
@@ -37,10 +39,22 @@ if (
     runtimeMain: import.meta.main,
   })
 ) {
+  // Logs go to stdout and stderr, which may be a closed desktop launcher pipe or a log file on
+  // a full disk. Node emits a failed write as an unhandled stream error that crashes the process
+  // and skips shutdown, so drop the line instead.
+  process.stdout.on("error", ignoreOutputError);
+  process.stderr.on("error", ignoreOutputError);
+
   const command = process.argv[2];
   // Guard sockets before either dispatch path can load outbound-capable modules.
   const { ignoreMacosTypeOfServiceEinval } = await import("./outboundHttp.ts");
   ignoreMacosTypeOfServiceEinval();
+  // The launcher owns shutdown until its child exits, so it bypasses the Effect CLI runtime.
+  // A service unit passes nothing, or on Windows the launcher's own flags; help and anything
+  // else go through the full CLI.
+  const launcher =
+    command === "__service-launcher" ? await import("./cli/serviceLauncher.ts") : undefined;
+  const launcherOptions = launcher?.parseServiceLauncherArgs(process.argv.slice(3));
   if (command === "chat-agents-acp") {
     // An ACP agent the server runs as a local command: stdout carries only protocol messages.
     const { runChatAgentsAcp } = await import("./provider/chatAgentsAcp.ts");
@@ -62,11 +76,8 @@ if (
   } else if (command === "acp-mcp-bridge" || command === "acp-mcp-call") {
     const { runAcpMcpCliFastPath } = await import("./mcp/AcpMcpStdioBridge.ts");
     await runAcpMcpCliFastPath(command, process.argv.slice(3));
-  } else if (command === "__service-launcher" && process.argv.length === 3) {
-    // The launcher owns shutdown until its child exits, so it bypasses the Effect CLI runtime.
-    // The service unit passes no arguments; flags and help go through the full CLI.
-    const { runServiceLauncherCli } = await import("./cli/serviceLauncher.ts");
-    await runServiceLauncherCli();
+  } else if (launcher !== undefined && launcherOptions !== undefined) {
+    await launcher.runServiceLauncherCli(launcherOptions);
   } else {
     const { runCliCommand } = await loadCliMain();
     await runCliCommand();
