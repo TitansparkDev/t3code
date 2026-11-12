@@ -54,6 +54,12 @@ import {
 
 const ANTIGRAVITY_PROVIDER = ProviderDriverKind.make("antigravity");
 
+// Runtime 1.4.x streams no thought summaries, so text written between tool calls is the only
+// progress the user sees before the final answer.
+const ANTIGRAVITY_PROGRESS_UPDATE_INSTRUCTIONS = `<progress_updates>
+The user watches your work live and sees only your tool calls until you write text. While you work, keep them informed in plain sentences: before your first tool call, say in one sentence what you will do first; after you learn something that changes your next step, say what you found and what you will do next, in one or two sentences, before the next tool call. Do not wait until the end to explain. Keep updates short and skip them for routine steps such as reading another file.
+</progress_updates>`;
+
 const AntigravityProviderCapabilitiesV2 = {
   ...AcpProviderCapabilitiesV2,
   sessions: {
@@ -147,7 +153,7 @@ export function makeAntigravityAcpAdapterFlavor(
           options.makeRuntime({
             ...input,
             clientFileReads: true,
-            sessionSystemPromptAppend: PULL_REQUEST_LINKING_INSTRUCTIONS,
+            sessionSystemPromptAppend: `${PULL_REQUEST_LINKING_INSTRUCTIONS}\n\n${ANTIGRAVITY_PROGRESS_UPDATE_INSTRUCTIONS}`,
             additionalDirectories: [options.host.paths.attachmentsDir],
           }),
         )

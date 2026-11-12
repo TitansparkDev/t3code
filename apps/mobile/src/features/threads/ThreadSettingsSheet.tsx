@@ -253,8 +253,24 @@ function SwitchRow(props: {
 }
 
 type ThreadSettingsSubmenuPage =
-  | { readonly kind: "descriptor"; readonly id: string }
+  /** `afterModelPick`: the step right after choosing a model; picking a value saves and closes. */
+  | { readonly kind: "descriptor"; readonly id: string; readonly afterModelPick?: boolean }
   | { readonly kind: "runtime" };
+
+/** The effort-style choice a model offers right after it is picked, if it has more than one value. */
+function modelPickStepDescriptor(option: ModelOption) {
+  if (!option.capabilities || option.isUnavailable) return null;
+  const descriptor = getPromptControlledTraits(
+    getProviderOptionDescriptors({
+      caps: option.capabilities,
+      selections: option.selection.options,
+    }),
+    "",
+  ).primarySelectDescriptor;
+  return descriptor?.type === "select" && selectableChoices(descriptor).length > 1
+    ? descriptor
+    : null;
+}
 
 type ThreadSettingsSessionProps = {
   readonly environmentId: EnvironmentId | null;
@@ -306,6 +322,8 @@ type ThreadSettingsSessionValue = {
   readonly searchQuery: string;
   readonly showLegacy: boolean;
   readonly applyOptionChange: (id: string, value: string | boolean) => void;
+  /** Applies a choice and saves the shown model with it; false when the model can't be saved. */
+  readonly applyOptionChangeAndCommit: (id: string, value: string) => boolean;
   readonly commitPendingModel: () => boolean;
   readonly isApplied: (option: ModelOption) => boolean;
   readonly isDisplayed: (option: ModelOption) => boolean;
@@ -512,9 +530,9 @@ function ThreadSettingsSessionProvider(
   const hasLegacyModels = props.providerGroups.some((group) =>
     group.models.some((model) => model.isLegacy),
   );
-  const commitPendingModel = () => {
-    if (pendingModel) {
-      if (!canCommitPendingModel(pendingModel, props.providerGroups)) {
+  const commitModel = (model: ModelOption | null, prompt: string | null) => {
+    if (model) {
+      if (!canCommitPendingModel(model, props.providerGroups)) {
         Dialog.alert(
           "Model unavailable",
           "Set up this provider on web or desktop, or select another model.",
@@ -522,15 +540,16 @@ function ThreadSettingsSessionProvider(
         return false;
       }
       void Haptics.selectionAsync();
-      props.onSelectModel(pendingModel);
-      if (pendingPrompt !== null && pendingPrompt !== props.prompt) {
-        props.onPromptChange(pendingPrompt);
+      props.onSelectModel(model);
+      if (prompt !== null && prompt !== props.prompt) {
+        props.onPromptChange(prompt);
       }
     }
     return true;
   };
+  const commitPendingModel = () => commitModel(pendingModel, pendingPrompt);
 
-  const applyOptionChange = (id: string, value: string | boolean) => {
+  const resolveOptionChange = (id: string, value: string | boolean) => {
     const descriptor = displayedDescriptors.find((entry) => entry.id === id);
     const change =
       descriptor?.type === "select" && typeof value === "string"
@@ -541,22 +560,28 @@ function ThreadSettingsSessionProvider(
             value,
           )
         : null;
-    if (descriptor?.type === "select") {
-      if (!change) return;
-      if (change.prompt !== displayedPrompt) {
-        if (pendingModel) {
-          setPendingPrompt(change.prompt);
-        } else {
-          props.onPromptChange(change.prompt);
-        }
-      }
-    }
-    const next = change
+    if (descriptor?.type === "select" && !change) return null;
+    const options = change
       ? (change.modelOptions ?? [])
       : applyProviderOptionSelection(displayedDescriptors, { id, value });
-    if (!next) {
-      return;
+    return {
+      prompt: change && change.prompt !== displayedPrompt ? change.prompt : null,
+      options,
+    };
+  };
+
+  const applyOptionChange = (id: string, value: string | boolean) => {
+    const resolved = resolveOptionChange(id, value);
+    if (!resolved) return;
+    if (resolved.prompt !== null) {
+      if (pendingModel) {
+        setPendingPrompt(resolved.prompt);
+      } else {
+        props.onPromptChange(resolved.prompt);
+      }
     }
+    const next = resolved.options;
+    if (!next) return;
     if (pendingModel) {
       rememberModelOptions(pendingModel.selection.instanceId, pendingModel.selection.model, next);
       setPendingModel({
@@ -566,6 +591,26 @@ function ThreadSettingsSessionProvider(
     } else {
       props.onUpdateOptionSelections(next);
     }
+  };
+
+  const applyOptionChangeAndCommit = (id: string, value: string) => {
+    if (!pendingModel) {
+      applyOptionChange(id, value);
+      return true;
+    }
+    const resolved = resolveOptionChange(id, value);
+    if (!resolved) return false;
+    const next = resolved.options;
+    if (next) {
+      rememberModelOptions(pendingModel.selection.instanceId, pendingModel.selection.model, next);
+    }
+    const model = next
+      ? { ...pendingModel, selection: { ...pendingModel.selection, options: next } }
+      : pendingModel;
+    setPendingModel(model);
+    const prompt = resolved.prompt ?? pendingPrompt;
+    setPendingPrompt(prompt);
+    return commitModel(model, prompt);
   };
 
   const toggleProvider = (providerKey: string) => {
@@ -617,6 +662,7 @@ function ThreadSettingsSessionProvider(
     searchQuery,
     showLegacy: showLegacyToggle,
     applyOptionChange,
+    applyOptionChangeAndCommit,
     commitPendingModel,
     isApplied,
     isDisplayed,
@@ -687,7 +733,20 @@ function ThreadSettingsModelListRow(props: {
   readonly isLast: boolean;
 }) {
   const session = useThreadSettingsSession();
-  const onPress = () => session.pressModel(props.option);
+  const navigation = useNavigation<NativeStackNavigationProp<ThreadSettingsPickerStackParams>>();
+  const onPress = () => {
+    session.pressModel(props.option);
+    if (session.manageHidden) return;
+    const descriptor = modelPickStepDescriptor(props.option);
+    if (descriptor) {
+      navigation.navigate("ThreadSettingsChoice", {
+        kind: "descriptor",
+        id: descriptor.id,
+        afterModelPick: true,
+        title: descriptor.label,
+      });
+    }
+  };
 
   return (
     <ModelRow
@@ -1025,6 +1084,7 @@ function ThreadSettingsMainContent(props: {
 function ThreadSettingsChoiceContent(props: {
   readonly submenu: ThreadSettingsSubmenuPage;
   readonly onSelected: () => void;
+  readonly onCommitted: () => void;
 }) {
   const insets = useSafeAreaInsets();
   const session = useThreadSettingsSession();
@@ -1080,6 +1140,12 @@ function ThreadSettingsChoiceContent(props: {
                     "Reasoning controlled by prompt",
                     'Your prompt contains "ultrathink" in the text. Remove it to change this option.',
                   );
+                  return;
+                }
+                if (props.submenu.kind === "descriptor" && props.submenu.afterModelPick) {
+                  if (session.applyOptionChangeAndCommit(activeDescriptor.id, choice.id)) {
+                    props.onCommitted();
+                  }
                   return;
                 }
                 session.applyOptionChange(activeDescriptor.id, choice.id);
@@ -1252,6 +1318,7 @@ function ThreadSettingsModelsScreen() {
 function ThreadSettingsChoiceScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<ThreadSettingsPickerStackParams>>();
   const route = useRoute<RouteProp<ThreadSettingsPickerStackParams, "ThreadSettingsChoice">>();
+  const presentation = useThreadSettingsPickerPresentation();
 
   return (
     <>
@@ -1260,6 +1327,7 @@ function ThreadSettingsChoiceScreen() {
         <ThreadSettingsChoiceContent
           submenu={route.params}
           onSelected={() => navigation.goBack()}
+          onCommitted={presentation.onClose}
         />
       </ScreenContent>
     </>
