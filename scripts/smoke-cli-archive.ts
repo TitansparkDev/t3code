@@ -152,11 +152,12 @@ const smokeCliArchive = Effect.fn("smokeCliArchive")(function* (input: {
   }
 
   const net = yield* NetService.NetService;
-  const requestedPort = Number(process.env.AGENTQUEUE_PORT_BASE ?? 0);
+  const environment = yield* HostProcess.Environment;
+  const requestedPort = Number(environment.AGENTQUEUE_PORT_BASE ?? 0);
   if (!Number.isInteger(requestedPort) || requestedPort < 0 || requestedPort > 65535) {
     return yield* new CliArchiveSmokeError({
       step: "choosing a loopback port",
-      detail: `invalid AGENTQUEUE_PORT_BASE: ${process.env.AGENTQUEUE_PORT_BASE}`,
+      detail: `invalid AGENTQUEUE_PORT_BASE: ${environment.AGENTQUEUE_PORT_BASE}`,
     });
   }
   const port = yield* net.findAvailablePort(requestedPort);

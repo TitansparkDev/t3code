@@ -173,6 +173,12 @@ export type SampleRun = {
   readonly unsupportedNativeTools?: ReadonlyArray<string>;
 };
 
+type EvaluatedSample = SampleRun & {
+  readonly usage: Usage;
+  readonly shellUsage: Usage;
+  readonly transcript: ReadonlyArray<unknown>;
+};
+
 const Rest = [Schema.Record(Schema.String, Schema.Unknown)] as const;
 
 const PriorToolCall = Schema.Struct({
@@ -1624,22 +1630,24 @@ const simulate = Effect.fn("evaluateMcpToolUse.simulate")(function* (
   if (output === undefined) {
     const body = shellRequest(sample, call, config.shellModel);
     if (config.transport === "codex-app-server") {
-      const response = yield* Effect.tryPromise(() =>
-        runNativeCodexTurn({
-          model: config.model,
-          effort: config.effort,
-          codexHome: config.codexHome,
-          developerInstructions: SHELL_PROMPT,
-          // @effect-diagnostics-next-line preferSchemaOverJson:off
-          input: JSON.stringify(body),
-          signal: config.signal,
-          tools: [],
-          maxToolCalls: 0,
-          onToolCall: async () => {
-            throw new Error("Shell simulator does not expose tools.");
-          },
-        }),
-      );
+      const input = yield* encodeJson(body);
+      const response = yield* Effect.tryPromise({
+        try: () =>
+          runNativeCodexTurn({
+            model: config.model,
+            effort: config.effort,
+            codexHome: config.codexHome,
+            developerInstructions: SHELL_PROMPT,
+            input,
+            signal: config.signal,
+            tools: [],
+            maxToolCalls: 0,
+            onToolCall: async () => {
+              throw new Error("Shell simulator does not expose tools.");
+            },
+          }),
+        catch: (cause) => new Cause.UnknownError(cause, "An error occurred in Effect.tryPromise"),
+      });
       sample.unsupportedNativeTools.push(
         ...response.unsupportedNativeTools.map((tool) => `simulator:${tool}`),
       );
@@ -2348,7 +2356,7 @@ const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
     }
   }
   // The transcript (model turns and tool results) shows what the agent saw when a case fails.
-  return {
+  const result: EvaluatedSample = {
     calls,
     text: said.join("\n\n"),
     stopReason,
@@ -2360,6 +2368,7 @@ const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
     shellUsage: sample.shellUsage,
     transcript: input ? transcript : messages.slice(start),
   };
+  return result;
 }, Effect.scoped);
 
 export const nativeCodexToolAlias = (name: string) =>
@@ -2484,31 +2493,33 @@ const runNativeSample = Effect.fn("evaluateMcpToolUse.runNativeSample")(function
     own.output = valueText(result.content);
     return valueText(result.content);
   };
-  const turn = yield* Effect.tryPromise(() =>
-    runNativeCodexTurn({
-      model: config.model,
-      effort: config.effort,
-      codexHome: config.codexHome,
-      maxToolCalls: config.maxSteps * 8,
-      baseInstructions: native.baseInstructions,
-      developerInstructions: native.developerInstructions,
-      input: native.input,
-      tools,
-      onToolCall: async (name, args, signal) => {
-        const evaluatorName = nativeCodexToolName(name);
-        if (evaluatorName === "exec") {
-          const code = isRecord(args) ? valueText(args.code) : valueText(args);
-          return executeCodex(
-            code,
-            codexCatalog(base),
-            (innerName, innerArgs) => answer(innerName, innerArgs, true, signal),
-            sample.codeStore,
-          );
-        }
-        return answerNativeTool(evaluatorName, args, signal);
-      },
-    }),
-  );
+  const turn = yield* Effect.tryPromise({
+    try: () =>
+      runNativeCodexTurn({
+        model: config.model,
+        effort: config.effort,
+        codexHome: config.codexHome,
+        maxToolCalls: config.maxSteps * 8,
+        baseInstructions: native.baseInstructions,
+        developerInstructions: native.developerInstructions,
+        input: native.input,
+        tools,
+        onToolCall: async (name, args, signal) => {
+          const evaluatorName = nativeCodexToolName(name);
+          if (evaluatorName === "exec") {
+            const code = isRecord(args) ? valueText(args.code) : valueText(args);
+            return executeCodex(
+              code,
+              codexCatalog(base),
+              (innerName, innerArgs) => answer(innerName, innerArgs, true, signal),
+              sample.codeStore,
+            );
+          }
+          return answerNativeTool(evaluatorName, args, signal);
+        },
+      }),
+    catch: (cause) => new Cause.UnknownError(cause, "An error occurred in Effect.tryPromise"),
+  });
   const textValue = turn.text;
   for (const blocked of turn.calls.filter((call) =>
     turn.unsupportedNativeTools.includes(call.name),
@@ -2520,7 +2531,7 @@ const runNativeSample = Effect.fn("evaluateMcpToolUse.runNativeSample")(function
       failed: true,
       output: blocked.output,
     });
-  return {
+  const result: EvaluatedSample = {
     calls,
     text: textValue,
     stopReason: turn.status === "completed" ? "end_turn" : turn.status,
@@ -2532,6 +2543,7 @@ const runNativeSample = Effect.fn("evaluateMcpToolUse.runNativeSample")(function
     transcript: [...turn.calls],
     unsupportedNativeTools: [...turn.unsupportedNativeTools, ...sample.unsupportedNativeTools],
   };
+  return result;
 }, Effect.scoped);
 
 type ResultRow = Pick<McpToolUseCase, "id" | "kind" | "pattern"> & {

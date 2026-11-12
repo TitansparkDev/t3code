@@ -7,6 +7,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeTimersPromises from "node:timers/promises";
 import * as NodeUtil from "node:util";
+import * as NodeSqlite from "node:sqlite";
 import { _electron, type ElectronApplication } from "playwright-core";
 
 // A snapshot from an older build on purpose: the packaged server must migrate it forward, as it
@@ -33,8 +34,38 @@ const artifactsDir = NodePath.resolve(values["artifacts-dir"] ?? "desktop-launch
 
 const home = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-desktop-launch-"));
 const t3Home = NodePath.join(home, "t3");
+const fixtureWorkspaceRoot = NodePath.join(home, "workspace");
 NodeFS.mkdirSync(NodePath.join(t3Home, "userdata"), { recursive: true });
-NodeFS.copyFileSync(FIXTURE_DB, NodePath.join(t3Home, "userdata/statev2.sqlite"));
+const fixtureDbPath = NodePath.join(t3Home, "userdata/statev2.sqlite");
+NodeFS.copyFileSync(FIXTURE_DB, fixtureDbPath);
+NodeFS.mkdirSync(fixtureWorkspaceRoot);
+const fixtureDb = new NodeSqlite.DatabaseSync(fixtureDbPath);
+fixtureDb
+  .prepare("UPDATE projection_projects SET workspace_root = ? WHERE project_id = ?")
+  .run(fixtureWorkspaceRoot, "launch-check-project");
+fixtureDb.close();
+const appEnvironment: NodeJS.ProcessEnv = {};
+for (const name of [
+  "HOME",
+  "PATH",
+  "TMPDIR",
+  "TEMP",
+  "TMP",
+  "LANG",
+  "LC_ALL",
+  "DISPLAY",
+  "XAUTHORITY",
+  "WAYLAND_DISPLAY",
+  "XDG_RUNTIME_DIR",
+  "XDG_DATA_DIRS",
+  "DBUS_SESSION_BUS_ADDRESS",
+]) {
+  if (process.env[name] !== undefined) appEnvironment[name] = process.env[name];
+}
+appEnvironment.CODEX_HOME = NodePath.join(home, "codex");
+appEnvironment.CLAUDE_CONFIG_DIR = NodePath.join(home, "claude");
+appEnvironment.GEMINI_HOME = NodePath.join(home, "gemini");
+appEnvironment.GROK_HOME = NodePath.join(home, "grok");
 
 let step = "launching the app";
 let app: ElectronApplication | undefined;
@@ -46,7 +77,7 @@ try {
     // HOME stays real: on macOS a fake HOME has no login keychain, and safeStorage blocks the
     // main process on a keychain dialog. macOS keeps its Electron profile in the runner's HOME.
     env: {
-      ...process.env,
+      ...appEnvironment,
       XDG_CONFIG_HOME: NodePath.join(home, ".config"),
       XDG_DATA_HOME: NodePath.join(home, ".local/share"),
       T3CODE_HOME: t3Home,

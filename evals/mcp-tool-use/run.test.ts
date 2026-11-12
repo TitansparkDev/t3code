@@ -1036,6 +1036,7 @@ it.effect("saves a new secret file for each request and tells the shell simulato
       effort: "high",
       maxSteps: 6,
       shellModel: "claude-haiku-5-5",
+      transport: "responses",
     } as const;
     const request = (id: string, delivery: string) =>
       answerToolCall(sample, config, {
@@ -1086,6 +1087,7 @@ it.effect("saves a pasted value with no card where request_secret takes one", ()
       effort: "high",
       maxSteps: 6,
       shellModel: "claude-haiku-5-5",
+      transport: "responses",
     } as const;
     // A card's mocked outcome does not apply to a value T3 saves without one.
     const sample = makeSample(
@@ -1124,6 +1126,7 @@ it.effect("fails preview calls with T3's errors when browser access is off or a 
       effort: "high",
       maxSteps: 6,
       shellModel: "claude-haiku-5-5",
+      transport: "responses",
     } as const;
     const answer = (id: string, tool: string) => {
       const sample = makeSample(browserCase(id), base);

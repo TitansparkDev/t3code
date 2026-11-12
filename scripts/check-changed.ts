@@ -472,6 +472,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   const filters = (names: ReadonlyArray<string>) => names.flatMap((name) => ["--filter", name]);
   const command = (name: string, args: ReadonlyArray<string>) => ({ name, run: vp(args) });
   const compilerFiles = compilerApps.reduce((count, app) => count + app.names.length, 0);
+  const resourceTicket = yield* Config.option(Config.String("AGENTQUEUE_RESOURCE_TICKET"));
 
   const steps: Array<Step<never>> = [
     ...(runPatchCheck ? [{ name: "unused patches", run: checkPatches }] : []),
@@ -493,7 +494,8 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
             // Fork: typechecks run one package at a time, since each can take several GiB.
             ...command(`typecheck (${affected.length} packages)`, [
               "run",
-              "--cache",
+              // Cached tasks drop the broker ticket and would queue behind their own parent.
+              Option.isSome(resourceTicket) ? "--no-cache" : "--cache",
               "--concurrency-limit",
               "1",
               ...filters(affected),
