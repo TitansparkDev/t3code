@@ -31,6 +31,7 @@ const [
   Config,
   Settings,
   ResourceDiagnostics,
+  TurnItemPositions,
 ] = await Promise.all([
   app("orchestration-v2/ProviderTurnStartService"),
   app("orchestration-v2/ProjectionStore"),
@@ -46,6 +47,7 @@ const [
   app("config"),
   app("serverSettings"),
   app("observability/RuntimeResourceDiagnostics"),
+  app("orchestration-v2/TurnItemPositionStore"),
 ]);
 let current;
 let fullReads = 0;
@@ -83,6 +85,7 @@ const dependencies = Layer.mergeAll(
         throw new Error("full transcript read");
       }),
     hasUnpairedRunInterruptRequest: () => Effect.succeed(false),
+    getRun: (_threadId, runId) => Effect.sync(() => current?.runs.find((run) => run.id === runId)),
     getThreadRecords: (threadId, fields) =>
       Effect.sync(() => {
         NodeAssert.equal(threadId, current.thread.id);
@@ -99,6 +102,7 @@ const dependencies = Layer.mergeAll(
     getRuntimeRecoveryProjection: () => Effect.sync(() => current),
   }),
   Layer.mock(Sessions.ProviderSessionManagerV2)({ open: () => Effect.succeed(session) }),
+  Layer.mock(TurnItemPositions.TurnItemPositionStoreV2)({}),
   Layer.mock(ResourceDiagnostics.RuntimeResourceDiagnostics)({
     begin: ({ runtimeId, runId }) =>
       Effect.sync(() => activeDiagnostics.add(runtimeId + "/" + runId)),
@@ -160,7 +164,7 @@ function fixture(index) {
   );
   refs.push(new WeakRef(history));
   return {
-    thread: { id: "thread", projectId: "project", branch: null, worktreePath: null },
+    thread: { id: "thread", projectId: "project", branch: null, worktreePath: null, lineage: {} },
     runs: [
       {
         id: runId,
