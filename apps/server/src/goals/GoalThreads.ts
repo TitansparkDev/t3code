@@ -7,6 +7,7 @@ import {
   type OrchestrationV2ThreadShell,
   type ProjectId,
   type RuntimeMode,
+  GOAL_THREAD_TAG,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -93,6 +94,8 @@ export class GoalThreads extends Context.Service<
   {
     /** Create the thread and start its first turn. */
     readonly launch: (input: GoalThreadLaunch) => Effect.Effect<void, GoalThreadsError>;
+    /** Mark a pre-existing goal chat so clients can suppress its completion alert. */
+    readonly markAsGoalThread: (threadId: ThreadId) => Effect.Effect<void, GoalThreadsError>;
     /** Say something to an existing thread; it queues behind a running turn. */
     readonly send: (input: GoalThreadSend) => Effect.Effect<void, GoalThreadsError>;
     /** Durably point an idle thread at a task's worktree and branch; a no-op when it already is. */
@@ -213,6 +216,7 @@ const make = Effect.gen(function* () {
           modelSelection: input.modelSelection,
           runtimeMode: input.runtimeMode,
           interactionMode: "default",
+          tags: [GOAL_THREAD_TAG],
           workspaceStrategy:
             input.worktreePath !== null
               ? {
@@ -226,6 +230,16 @@ const make = Effect.gen(function* () {
           creationSource: "server",
         })
         .pipe(Effect.asVoid, failed("launch")),
+    markAsGoalThread: (threadId) =>
+      orchestrator
+        .dispatch({
+          type: "thread.tag.set",
+          commandId: CommandId.make(`goal-marker:${threadId}`),
+          threadId,
+          tag: GOAL_THREAD_TAG,
+          tagged: true,
+        })
+        .pipe(Effect.asVoid, failed("markAsGoalThread")),
     send: Effect.fn("GoalThreads.send")(
       function* (input) {
         const key = input.idempotencyKey ?? (yield* uuid);

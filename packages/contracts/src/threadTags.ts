@@ -12,6 +12,9 @@ export const ThreadTag = TrimmedNonEmptyString.check(
 );
 export type ThreadTag = typeof ThreadTag.Type;
 
+/** Internal marker carried by worker and overseer threads created for autonomous goals. */
+export const GOAL_THREAD_TAG = "t3:goal";
+
 /** Tags read back from storage or a peer. Lenient so a later tag rule never fails a whole thread. */
 export const StoredThreadTags = Schema.Array(Schema.String).pipe(
   Schema.catchDecoding(() => Effect.succeedSome([])),

@@ -16,6 +16,7 @@ import {
   type ChatAttachment,
   CommandId,
   DEFAULT_SERVER_SETTINGS,
+  GOAL_THREAD_TAG,
   GitCommandError,
   MessageId,
   ProjectId,
@@ -303,6 +304,7 @@ function launchInput(input: {
   readonly thread: string;
   readonly message?: string;
   readonly workspace?: ThreadLaunch.ThreadLaunchWorkspaceStrategy;
+  readonly tags?: ReadonlyArray<string>;
 }) {
   return {
     commandId: CommandId.make(input.command),
@@ -313,6 +315,7 @@ function launchInput(input: {
     runtimeMode: "full-access" as const,
     interactionMode: "default" as const,
     workspaceStrategy: input.workspace ?? { type: "root" as const },
+    ...(input.tags === undefined ? {} : { tags: input.tags }),
     ...(input.message === undefined
       ? {}
       : {
@@ -326,6 +329,29 @@ function launchInput(input: {
     creationSource: "web" as const,
   };
 }
+
+it.effect("persists creation tags through the thread projection and shell", () => {
+  const harness = makeHarness();
+  return Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const threads = yield* ThreadManagement.ThreadManagementService;
+    const launched = yield* launches.launch(
+      launchInput({
+        command: "command:goal-tag",
+        thread: "thread:goal-tag",
+        tags: [GOAL_THREAD_TAG],
+      }),
+    );
+    const projection = yield* threads.getThreadProjection(launched.threadId);
+    const snapshot = yield* threads.getShellSnapshot();
+    const awareness = yield* threads.getAgentAwarenessSnapshot(launched.threadId);
+    assert.deepEqual(projection.thread.tags, [GOAL_THREAD_TAG]);
+    assert.deepEqual(snapshot.threads.find((thread) => thread.id === launched.threadId)?.tags, [
+      GOAL_THREAD_TAG,
+    ]);
+    assert.deepEqual(awareness.threads[0]?.tags, [GOAL_THREAD_TAG]);
+  }).pipe(Effect.provide(harness.layer));
+});
 
 it.effect.each(
   (["new", "existing"] as const).flatMap((target) =>

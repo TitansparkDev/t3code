@@ -69,6 +69,17 @@ describe("createThreadNotificationGate", () => {
     expect(notify).toHaveBeenCalledTimes(2);
   });
 
+  it("suppresses only completion notifications when the thread is marked", () => {
+    const { notify, gate } = harness();
+    gate.observe("thread", undefined, working, { ...visible, suppressCompletion: true });
+    gate.observe("thread", working, completed(1), { ...visible, suppressCompletion: true });
+    expect(notify).not.toHaveBeenCalled();
+
+    const input = { ...working, attention: "run-2:input", requestId: "request-2" };
+    gate.observe("thread", completed(1), input, { ...visible, suppressCompletion: true });
+    expect(notify.mock.calls).toEqual([["thread", "input"]]);
+  });
+
   it("notifies each attention once per stretch and still notifies the subsequent completion", () => {
     const { notify, observe } = harness();
     observe(working);

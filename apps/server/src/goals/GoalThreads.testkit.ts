@@ -5,7 +5,12 @@
  *
  * @module goals/GoalThreads.testkit
  */
-import type { ModelSelection, ProjectId, ThreadId } from "@t3tools/contracts";
+import {
+  GOAL_THREAD_TAG,
+  type ModelSelection,
+  type ProjectId,
+  type ThreadId,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -25,6 +30,7 @@ export type OrchestrationCommand =
       readonly runtimeMode: string;
       readonly branch: string | null;
       readonly worktreePath: string | null;
+      readonly tags: ReadonlyArray<string>;
     }
   | {
       readonly type: "thread.turn.start";
@@ -158,6 +164,7 @@ export const layerFromLegacyHarness = (harness: {
             runtimeMode: input.runtimeMode,
             branch: input.branch,
             worktreePath: input.worktreePath,
+            tags: [GOAL_THREAD_TAG],
           });
           yield* harness.dispatch({
             type: "thread.turn.start",
@@ -167,6 +174,7 @@ export const layerFromLegacyHarness = (harness: {
             runtimeMode: input.runtimeMode,
           });
         }),
+      markAsGoalThread: () => Effect.void,
       send: (input) => {
         if (input.idempotencyKey !== undefined && sentKeys.has(input.idempotencyKey)) {
           return Effect.void;

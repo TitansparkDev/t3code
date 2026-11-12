@@ -3,6 +3,7 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import {
   EnvironmentId,
   EventId,
+  GOAL_THREAD_TAG,
   MessageId,
   NodeId,
   type OrchestrationV2DomainEvent,
@@ -1030,6 +1031,21 @@ describe("AgentAwarenessRelay", () => {
       yield* TestClock.adjust("5 seconds");
       yield* relay.drain;
       assert.deepEqual(publications, []);
+    }),
+  );
+
+  it.effect("suppresses completion publishing from the durable goal shell marker", () =>
+    Effect.gen(function* () {
+      const { relay, currentShell, publications } = yield* makeTestRelay();
+      yield* relay.publishThread(THREAD_ID);
+      yield* Ref.set(currentShell, shell({ status: "completed", tags: [GOAL_THREAD_TAG] }));
+      yield* relay.publishThread(THREAD_ID);
+      yield* TestClock.adjust("5 seconds");
+      yield* relay.drain;
+      assert.deepEqual(
+        publications.map((publication) => publication.state?.phase ?? null),
+        ["running", null],
+      );
     }),
   );
 

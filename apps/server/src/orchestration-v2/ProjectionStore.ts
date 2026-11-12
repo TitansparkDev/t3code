@@ -1030,6 +1030,7 @@ export type AgentAwarenessThread = ProjectThreadAwarenessV2Input["thread"] &
     | "activeRunId"
     | "latestRunId"
     | "hasActionableProposedPlan"
+    | "tags"
   >;
 
 type ShellThreadRow = {
@@ -7490,6 +7491,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               latestRunBackgroundWake: state.latestRunBackgroundWake,
               pendingRuntimeRequest: state.pendingRuntimeRequest,
               pendingBackgroundTasks: state.pendingBackgroundTasks,
+              ...(state.thread.tags === undefined ? {} : { tags: state.thread.tags }),
             })),
           ),
         );

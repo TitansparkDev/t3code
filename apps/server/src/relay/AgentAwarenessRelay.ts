@@ -23,6 +23,7 @@ import {
   turnItemUpdateCanEndBackgroundWork,
 } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
+import { GOAL_THREAD_TAG } from "@t3tools/contracts";
 import { withRelayClientTracing } from "@t3tools/shared/relayTracing";
 import { normalizeRelayIssuer, RELAY_ACTIVITY_PUBLISH_TYP } from "@t3tools/shared/relayJwt";
 import * as Cause from "effect/Cause";
@@ -604,7 +605,9 @@ export const make = Effect.gen(function* () {
     }
     // Goal workers and overseers finish without an alert: a card they showed is cleared instead.
     const goalCompletion =
-      resolvedSnapshot.state?.phase === "completed" && (yield* isGoalThread(threadId));
+      resolvedSnapshot.state?.phase === "completed" &&
+      ((Option.isSome(thread) && thread.value.tags?.includes(GOAL_THREAD_TAG) === true) ||
+        (yield* isGoalThread(threadId)));
     const snapshot = goalCompletion ? { ...resolvedSnapshot, state: null } : resolvedSnapshot;
     const publishIdentity = agentAwarenessPublishIdentity(snapshot.state, snapshot.subagentWait);
     const publishedStateByThread = yield* Ref.get(publishedStateByThreadRef);

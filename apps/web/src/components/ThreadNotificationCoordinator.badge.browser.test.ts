@@ -116,6 +116,7 @@ const thread = {
   hasPendingApprovals: false,
   hasPendingUserInput: false,
   pendingRequestId: "request-1",
+  tags: undefined as ReadonlyArray<string> | undefined,
   session: null as { status: string } | null,
   latestTurn: { turnId: "turn", state: "running", completedAt: null as string | null },
 };
@@ -175,6 +176,7 @@ function toV2ThreadShell(input: typeof thread) {
     settledAt: null,
     lastVisitedAt: null,
     deletedAt: null,
+    ...(input.tags === undefined ? {} : { tags: input.tags }),
   };
 }
 
@@ -292,6 +294,29 @@ it("presents completion notifications and sound as soon as the shell completes",
   expect(TestNotification.sent.map((sent) => sent.title)).toEqual(["Thread completed"]);
   expect(state.sound).toHaveBeenCalledWith("completion", expect.any(Function));
 });
+
+it.each(["worker", "overseer"] as const)(
+  "suppresses completion notifications for goal %s threads",
+  async (kind) => {
+    await using app = setup();
+    state.mode = "notifications-and-sound";
+    app.start();
+    state.shells.set(
+      "one",
+      shell({
+        tags: ["t3:goal"],
+        title: `Goal ${kind}`,
+        latestTurn: {
+          turnId: "goal-turn",
+          state: "completed",
+          completedAt: "2026-09-13T07:00:01.000Z",
+        },
+      }),
+    );
+    expect(TestNotification.sent).toHaveLength(0);
+    expect(state.sound).not.toHaveBeenCalled();
+  },
+);
 
 it.each([false, true])(
   "presents one completion when a monitor ends with a final wake (disconnected: %s)",
