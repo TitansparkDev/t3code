@@ -67,6 +67,7 @@ const makeHarness = Effect.fn("RelayDiscoveryTest.makeHarness")(function* () {
   const listFailure = yield* Ref.make<ManagedRelay.ManagedRelayClientError | null>(null);
   const secondListCall = yield* Deferred.make<void>();
   const clerkToken = yield* Ref.make<string | null>("clerk-token");
+  const identityWhileTokenUnavailable = yield* Ref.make(false);
   const sessionIdentity = { accountId: "account-1" };
   const wakeups = yield* SubscriptionRef.make<{
     readonly sequence: number;
@@ -137,9 +138,12 @@ const makeHarness = Effect.fn("RelayDiscoveryTest.makeHarness")(function* () {
         Layer.succeed(
           ClientCapabilities.CloudSession,
           ClientCapabilities.CloudSession.of({
-            identity: Ref.get(clerkToken).pipe(
-              Effect.map((token) =>
-                token === null ? Option.none() : Option.some(sessionIdentity),
+            identity: Effect.all([
+              Ref.get(clerkToken),
+              Ref.get(identityWhileTokenUnavailable),
+            ]).pipe(
+              Effect.map(([token, identityPresent]) =>
+                token === null && !identityPresent ? Option.none() : Option.some(sessionIdentity),
               ),
             ),
             clerkToken: Ref.get(clerkToken).pipe(
@@ -174,6 +178,7 @@ const makeHarness = Effect.fn("RelayDiscoveryTest.makeHarness")(function* () {
     listedEnvironments,
     listFailure,
     clerkToken,
+    identityWhileTokenUnavailable,
     networkStatus,
     secondListCall,
     statusCalls,
@@ -674,6 +679,37 @@ describe("RelayEnvironmentDiscovery", () => {
             environments[0]!.environmentId,
           ),
         ).toBe("unknown");
+      }).pipe(Effect.provide(harness.layer));
+    }),
+  );
+
+  it.effect("reports an unavailable session token for a signed-in account", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      yield* Effect.gen(function* () {
+        const discovery = yield* RelayEnvironmentDiscovery.RelayEnvironmentDiscovery;
+        yield* Ref.set(harness.identityWhileTokenUnavailable, true);
+        yield* Ref.set(harness.clerkToken, null);
+        yield* discovery.refresh;
+
+        const state = yield* SubscriptionRef.get(discovery.state);
+        expect(state.listed).toBe(false);
+        expect(Option.isSome(state.error)).toBe(true);
+        expect(yield* Ref.get(harness.listCalls)).toBe(0);
+
+        const requests = yield* Ref.get(harness.statusRequests);
+        for (const environment of environments) {
+          yield* Deferred.succeed(
+            requests.get(environment.environmentId)!,
+            status(environment, "online"),
+          );
+        }
+        yield* Ref.set(harness.clerkToken, "clerk-token");
+        yield* discovery.refresh;
+        const recovered = yield* SubscriptionRef.get(discovery.state);
+        expect(recovered.listed).toBe(true);
+        expect(recovered.environments.size).toBe(environments.length);
+        expect(Option.isNone(recovered.error)).toBe(true);
       }).pipe(Effect.provide(harness.layer));
     }),
   );

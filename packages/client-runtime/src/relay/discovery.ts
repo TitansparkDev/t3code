@@ -243,6 +243,9 @@ export const make = Effect.fn("RelayEnvironmentDiscovery.make")(function* () {
       if (tokenResult._tag === "Failure") {
         const failure = tokenResult.failure;
         if (failure._tag === "ConnectionBlockedError" && failure.reason === "authentication") {
+          if (Option.isSome(yield* session.identity)) {
+            return yield* failure;
+          }
           if ((yield* Ref.get(accountGeneration)) !== generation) {
             return;
           }
