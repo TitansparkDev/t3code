@@ -462,7 +462,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       if (
         Option.isNone(current.data) ||
         current.status === "deleted" ||
-        !shouldPersistThread(current.data.value, current.history, persistBoundedCache)
+        (!persistBoundedCache && current.history.expanded)
       ) {
         // The consumer may still be waiting out its delay; an expanded thread queues
         // only cache repairs, which must survive leaving the thread.

@@ -1,8 +1,4 @@
-import {
-  ClientCapabilities,
-  PlatformConnectionSource,
-  Persistence,
-} from "@t3tools/client-runtime/platform";
+import { ClientCapabilities, PlatformConnectionSource } from "@t3tools/client-runtime/platform";
 import {
   ConnectionBlockedError,
   ConnectionTransientError,
@@ -29,11 +25,9 @@ import { authClientMetadata } from "../lib/authClientMetadata";
 import * as Runtime from "../lib/runtime";
 import * as MobileStorage from "../persistence/mobile-storage";
 import { appAtomRegistry } from "../state/atom-registry";
-import { clearThreadOutboxEnvironment } from "../state/thread-outbox-removal";
-import { clearComposerDraftsEnvironment } from "../state/use-composer-drafts";
-import { clearThreadComposerErrorsForEnvironment } from "../state/thread-composer-error";
 import { subscribeAndroidBackgroundConnectionWake } from "./android-background";
 import { mobileApplicationActiveWakeup, mobileNativeWakeup } from "./app-state-wakeups";
+import * as EnvironmentOwnedDataCleanup from "./environment-owned-data-cleanup";
 import * as ConnectionStorage from "./storage";
 
 function networkStatus(state: Network.NetworkState): "unknown" | "offline" | "online" {
@@ -278,22 +272,6 @@ const layerPlatformConnectionSource = Layer.succeed(
 const layerProvidedConnectionStorage = ConnectionStorage.layer.pipe(Layer.provide(Runtime.layer));
 const layerProvidedCapabilities = layerCapabilities.pipe(Layer.provide(Runtime.layer));
 
-const layerEnvironmentOwnedDataCleanup = Layer.succeed(
-  Persistence.EnvironmentOwnedDataCleanup,
-  Persistence.EnvironmentOwnedDataCleanup.of({
-    clear: Effect.fn("Persistence.EnvironmentOwnedDataCleanup.clear")((environmentId) =>
-      Effect.all(
-        [
-          Effect.promise(() => clearThreadOutboxEnvironment(environmentId)),
-          Effect.promise(() => clearComposerDraftsEnvironment(environmentId)),
-          Effect.sync(() => clearThreadComposerErrorsForEnvironment(environmentId)),
-        ],
-        { concurrency: "unbounded", discard: true },
-      ),
-    ),
-  }),
-);
-
 type ConnectionPlatformLayerSource =
   | typeof layerProvidedConnectionStorage
   | typeof Runtime.layer
@@ -301,7 +279,7 @@ type ConnectionPlatformLayerSource =
   | typeof layerWakeups
   | typeof layerProvidedCapabilities
   | typeof layerPlatformConnectionSource
-  | typeof layerEnvironmentOwnedDataCleanup;
+  | typeof EnvironmentOwnedDataCleanup.layer;
 
 export const layer: Layer.Layer<
   Layer.Success<ConnectionPlatformLayerSource>,
@@ -314,5 +292,5 @@ export const layer: Layer.Layer<
   layerWakeups,
   layerProvidedCapabilities,
   layerPlatformConnectionSource,
-  layerEnvironmentOwnedDataCleanup,
+  EnvironmentOwnedDataCleanup.layer,
 );

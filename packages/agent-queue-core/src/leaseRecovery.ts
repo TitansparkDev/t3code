@@ -43,17 +43,26 @@ export function preserveWorktreeChanges(
   const gitEnv = { ...process.env, GIT_INDEX_FILE: indexFile };
   try {
     NodeChildProcess.execFileSync("git", ["read-tree", "HEAD"], { cwd: worktreePath, env: gitEnv });
-    NodeChildProcess.execFileSync("git", ["add", "-A"], { cwd: worktreePath, env: gitEnv, stdio: "ignore" });
+    NodeChildProcess.execFileSync("git", ["add", "-A"], {
+      cwd: worktreePath,
+      env: gitEnv,
+      stdio: "ignore",
+    });
     const tree = NodeChildProcess.execFileSync("git", ["write-tree"], {
-      cwd: worktreePath, env: gitEnv, encoding: "utf8",
+      cwd: worktreePath,
+      env: gitEnv,
+      encoding: "utf8",
     }).trim();
     const headTree = NodeChildProcess.execFileSync("git", ["rev-parse", "HEAD^{tree}"], {
-      cwd: worktreePath, encoding: "utf8",
+      cwd: worktreePath,
+      encoding: "utf8",
     }).trim();
     if (tree === headTree) return { saved: false };
-    const commit = NodeChildProcess.execFileSync("git", [
-      "commit-tree", tree, "-p", "HEAD", "-m", `AgentQueue recovery snapshot for ${taskId}`,
-    ], { cwd: worktreePath, encoding: "utf8" }).trim();
+    const commit = NodeChildProcess.execFileSync(
+      "git",
+      ["commit-tree", tree, "-p", "HEAD", "-m", `AgentQueue recovery snapshot for ${taskId}`],
+      { cwd: worktreePath, encoding: "utf8" },
+    ).trim();
     NodeChildProcess.execFileSync("git", ["branch", branch, commit], { cwd: worktreePath });
     return { saved: true, branch };
   } catch {
@@ -131,7 +140,9 @@ export function reconcileExpiredLeases(
       if (!current || isAlive(claim.worker_pid, claim.worker_session_id)) {
         db.exec("ROLLBACK;");
         if (preservation.branch) {
-          NodeChildProcess.execFileSync("git", ["branch", "-D", preservation.branch], { cwd: claim.worktree_path });
+          NodeChildProcess.execFileSync("git", ["branch", "-D", preservation.branch], {
+            cwd: claim.worktree_path,
+          });
         }
         continue;
       }

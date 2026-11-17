@@ -64,24 +64,22 @@ describe("offline pull request cache", () => {
   const otherEnvironment = "other-environment" as import("@t3tools/contracts").EnvironmentId;
 
   it.effect("restores saved records and clears them with the environment", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        yield* Effect.promise(sqliteDatabase);
-        const database = yield* MobileDatabase.make;
-        yield* database.saveCache(environmentId, "pull-request", "v1:list", 1, '{"entries":[]}');
-        yield* database.saveCache(otherEnvironment, "pull-request", "v1:list", 1, "other");
-        expect(yield* database.loadCache(environmentId, "pull-request", "v1:list")).toEqual(
-          Option.some('{"entries":[]}'),
-        );
-        yield* database.clearEnvironmentCache(environmentId);
-        expect((yield* database.loadCache(environmentId, "pull-request", "v1:list"))._tag).toBe(
-          "None",
-        );
-        expect((yield* database.loadCache(otherEnvironment, "pull-request", "v1:list"))._tag).toBe(
-          "Some",
-        );
-      }),
-    ),
+    Effect.gen(function* () {
+      yield* Effect.promise(sqliteDatabase);
+      const database = yield* MobileDatabase.make;
+      yield* database.saveCache(environmentId, "pull-request", "v1:list", 1, '{"entries":[]}');
+      yield* database.saveCache(otherEnvironment, "pull-request", "v1:list", 1, "other");
+      expect(yield* database.loadCache(environmentId, "pull-request", "v1:list")).toEqual(
+        Option.some('{"entries":[]}'),
+      );
+      yield* database.clearEnvironmentCache(environmentId);
+      expect((yield* database.loadCache(environmentId, "pull-request", "v1:list"))._tag).toBe(
+        "None",
+      );
+      expect((yield* database.loadCache(otherEnvironment, "pull-request", "v1:list"))._tag).toBe(
+        "Some",
+      );
+    }),
   );
 });
 

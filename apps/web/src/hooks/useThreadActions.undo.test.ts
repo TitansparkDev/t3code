@@ -18,11 +18,22 @@ const commands = vi.hoisted(() => ({
   unsettle: vi.fn(),
   snooze: vi.fn(),
   unsnooze: vi.fn(),
+  reorderActive: vi.fn(),
 }));
-const router = vi.hoisted(() => ({
-  navigate: vi.fn(async () => {}),
-  state: { location: { href: "/" }, matches: [{ params: {} as Record<string, string> }] },
-}));
+const router = vi.hoisted(() => {
+  const listeners = new Set<(event: { action: { type: string } }) => void>();
+  return {
+    navigate: vi.fn(async () => {}),
+    state: { location: { href: "/" }, matches: [{ params: {} as Record<string, string> }] },
+    history: {
+      listeners,
+      subscribe: (listener: (event: { action: { type: string } }) => void) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+    },
+  };
+});
 vi.mock("../state/use-atom-query-runner", () => ({ useAtomQueryRunner: () => vi.fn() }));
 vi.mock("../state/session", async (original) => ({
   ...(await original<typeof import("../state/session")>()),
@@ -51,6 +62,8 @@ const threadShell = vi.hoisted(() => ({
   title: "Thread",
   pinOrderKey: "a0",
   pinnedAt: null as string | null,
+  activeOrderKey: null as string | null,
+  unsettledAt: null as string | null,
   snoozedUntil: null as string | null,
   projectId: "project",
   environmentId: "undo-env",
@@ -84,6 +97,8 @@ vi.mock("../state/use-atom-command", () => ({
         return commands.snooze;
       case threadEnvironment.unsnooze:
         return commands.unsnooze;
+      case threadEnvironment.reorderActive:
+        return commands.reorderActive;
       default:
         return vi.fn();
     }
@@ -109,6 +124,8 @@ beforeEach(() => {
   router.state.location.href = "/";
   router.state.matches[0]!.params = {};
   threadShell.pinnedAt = null;
+  threadShell.activeOrderKey = null;
+  threadShell.unsettledAt = null;
   threadShell.snoozedUntil = null;
   shellLoaded.current = true;
 });
@@ -247,6 +264,25 @@ describe("archive navigation", () => {
     expect((await archived)._tag).toBe("Success");
     expect(useThreadUndoNotice.getState().notice).toMatchObject({ action: "Archived" });
     expect(router.state.location.href).toBe(route.expected);
+  });
+});
+
+describe("delete navigation", () => {
+  it.each([
+    { type: "REPLACE", by: "the app's missing-thread redirect", fallsBack: true },
+    { type: "PUSH", by: "the user opening another thread", fallsBack: false },
+  ])("falls back: $fallsBack after $by while deleting", async ({ type, fallsBack }) => {
+    router.state.matches[0]!.params = {
+      environmentId: target.environmentId,
+      threadId: target.threadId,
+    };
+    commands.delete.mockImplementation(async () => {
+      for (const listener of router.history.listeners) listener({ action: { type } });
+      return { _tag: "Success", value: undefined };
+    });
+    expect((await useThreadActions().deleteThread(target))._tag).toBe("Success");
+    expect(router.navigate).toHaveBeenCalledTimes(fallsBack ? 1 : 0);
+    expect(router.history.listeners.size).toBe(0);
   });
 });
 

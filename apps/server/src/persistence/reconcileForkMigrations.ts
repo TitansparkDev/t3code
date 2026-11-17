@@ -17,6 +17,10 @@ export const reconcileForkMigrations = Effect.fn("reconcileForkMigrations")(func
   `;
   if (tables.length === 0) return;
   for (const [id, name] of FORK_MIGRATIONS) {
-    yield* sql`DELETE FROM effect_sql_migrations WHERE migration_id = ${id} AND name = ${name}`;
+    const rows =
+      yield* sql`SELECT migration_id FROM effect_sql_migrations WHERE migration_id = ${id} AND name = ${name}`;
+    if (rows.length > 0) {
+      yield* sql`DELETE FROM effect_sql_migrations WHERE migration_id = ${id} AND name = ${name}`;
+    }
   }
 });

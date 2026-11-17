@@ -22,6 +22,7 @@ import {
   ProviderInteractionMode,
   type RunId,
   RuntimeMode,
+  OrchestrationV2LinkedSender,
   ThreadId,
 } from "@t3tools/contracts";
 
@@ -33,6 +34,7 @@ import * as DeviceService from "../device/DeviceService.ts";
 import * as HtmlRender from "../htmlRender/HtmlRender.ts";
 import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecutor.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import * as PullRequestWatchService from "../pullRequest/PullRequestWatchService.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as AnalyticsService from "../telemetry/AnalyticsService.ts";
 import {
@@ -52,6 +54,8 @@ import { PreviewControlsToolkit } from "./toolkits/previewControls/tools.ts";
 import * as PreviewControlsHandlers from "./toolkits/previewControls/handlers.ts";
 import { EnvironmentToolkit } from "./toolkits/environment/tools.ts";
 import * as EnvironmentHandlers from "./toolkits/environment/handlers.ts";
+import { ThemeToolkit } from "./toolkits/theme/tools.ts";
+import * as ThemeHandlers from "./toolkits/theme/handlers.ts";
 import { ProjectToolkit } from "./toolkits/project/tools.ts";
 import { GoalToolkit } from "./toolkits/goal/tools.ts";
 import * as GoalHandlers from "./toolkits/goal/handlers.ts";
@@ -90,7 +94,10 @@ import {
   DeviceStandardToolkit,
 } from "./toolkits/device/tools.ts";
 import * as HtmlHandlers from "./toolkits/html/handlers.ts";
+import { MessageToolkit } from "./toolkits/message/tools.ts";
+import * as MessageHandlers from "./toolkits/message/handlers.ts";
 import { HtmlPreviewTool, HtmlPreviewToolkit, HtmlRenderToolkit } from "./toolkits/html/tools.ts";
+import { MCP_HTTP_PATH } from "../httpCors.ts";
 import { requestUrl } from "../requestUrl.ts";
 
 const mcpResourceMetadataUrl = (request: HttpServerRequest.HttpServerRequest) =>
@@ -198,6 +205,34 @@ const withModeLimit = (
     : { ...invocation, client: { ...invocation.client, narrowedTo: limit.value } };
 };
 
+const decodeSenderThread = Schema.decodeUnknownOption(OrchestrationV2LinkedSender);
+
+/** Records the thread a linked environment calls for; a malformed header only loses the name. */
+const withSenderThread = (
+  invocation: McpInvocationContext.McpInvocationScope,
+  request: HttpServerRequest.HttpServerRequest,
+): McpInvocationContext.McpInvocationScope => {
+  const header = request.headers[McpInvocationContext.SENDER_THREAD_HEADER];
+  if (header === undefined || invocation.client?.linked !== true) return invocation;
+  const [environmentId, threadId, title, ...rest] = header.trim().split("/");
+  if (environmentId === undefined || threadId === undefined || title === undefined)
+    return invocation;
+  if (rest.length > 0) return invocation;
+  let decoded: Option.Option<OrchestrationV2LinkedSender>;
+  try {
+    decoded = decodeSenderThread({
+      environmentId: decodeURIComponent(environmentId),
+      threadId: decodeURIComponent(threadId),
+      title: decodeURIComponent(title),
+    });
+  } catch {
+    return invocation;
+  }
+  return Option.isNone(decoded)
+    ? invocation
+    : { ...invocation, client: { ...invocation.client, senderThread: decoded.value } };
+};
+
 // The Linked environments beta is off here: links wait until it is on again.
 const linkedEnvironmentsOff = HttpServerResponse.jsonUnsafe(
   {
@@ -243,16 +278,20 @@ const makeMcpAuthMiddleware = Effect.gen(function* () {
         offerOAuth: Option.isSome(clients) && !looksLikeProviderToken(token),
       });
     }
-    const asked = withModeLimit(invocation, request);
+    const asked = withModeLimit(withSenderThread(invocation, request), request);
     if (asked === undefined) return invalidModeLimit;
     const limited = McpInvocationContext.withRuntimeModeCeiling(asked, runtimeModeCeiling);
     const linkedEnvironments = yield* linksEnabled;
     if (limited.client?.linked === true && !linkedEnvironments) return linkedEnvironmentsOff;
-    return { ...limited, linkedEnvironments };
+    const origin = Option.getOrUndefined(Option.map(requestUrl(request), (url) => url.origin));
+    return { ...limited, linkedEnvironments, origin };
   });
   // Untraced: a span here would wrap the tool call; the HTTP server span already covers it.
   return Effect.fnUntraced(function* (httpEffect) {
-    const admitted = yield* authenticateRequest(yield* HttpServerRequest.HttpServerRequest);
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    // The transport allows no browser Origin; refuse it before credentials, as the MCP spec requires.
+    if (request.headers.origin !== undefined) return HttpServerResponse.empty({ status: 403 });
+    const admitted = yield* authenticateRequest(request);
     if (HttpServerResponse.isHttpServerResponse(admitted)) return admitted;
     return yield* httpEffect.pipe(
       Effect.provideService(McpInvocationContext.McpInvocationContext, admitted),
@@ -528,6 +567,7 @@ const parameterValidationMessage = (error: unknown) =>
     : undefined;
 
 const isPreviewAutomationError = Schema.is(PreviewAutomationError);
+const isPreviewScreenshotSaveError = Schema.is(PreviewScreenshotSaveError);
 
 const previewSnapshotFailure = Effect.fn("previewSnapshotFailure")(function <E>(
   cause: Cause.Cause<E>,
@@ -545,9 +585,12 @@ const previewSnapshotFailure = Effect.fn("previewSnapshotFailure")(function <E>(
       ? firstFailure._tag
       : "PreviewSnapshotError";
   // Preview errors contain server-authored recovery guidance, never page output.
-  const message = isPreviewAutomationError(firstFailure)
-    ? firstFailure.message
-    : parameterValidationMessage(firstFailure);
+  const message =
+    isPreviewAutomationError(firstFailure) ||
+    isPreviewScreenshotSaveError(firstFailure) ||
+    isOrchestratorMcpFailure(firstFailure)
+      ? firstFailure.message
+      : parameterValidationMessage(firstFailure);
   const result = new McpSchema.CallToolResult({
     isError: true,
     structuredContent: {
@@ -612,17 +655,28 @@ const registerPreviewSnapshot = Effect.fn("McpHttpServer.registerPreviewSnapshot
               const snapshot = encodedResult as SnapshotMetadata & {
                 readonly url: string;
                 readonly screenshot: {
-                  readonly mimeType: "image/png";
-                  readonly data: string;
+                  readonly mimeType?: "image/png";
+                  readonly data?: string;
                   readonly width: number;
                   readonly height: number;
                 };
                 readonly fullScreenshot?: { readonly data: string };
               };
               const { screenshot, fullScreenshot, ...page } = snapshot;
-              const png = new Uint8Array(Buffer.from(screenshot.data, "base64"));
+              const includeImage = payload?.includeImage === true;
+              const needsPixels = payload?.save === true || includeImage;
+              if (needsPixels && (screenshot.mimeType !== "image/png" || !screenshot.data)) {
+                return yield* new OrchestratorMcpFailure({
+                  code: "invalid_request",
+                  message: "Preview snapshot did not contain requested PNG pixels.",
+                });
+              }
+              const png =
+                needsPixels && screenshot.data
+                  ? new Uint8Array(Buffer.from(screenshot.data, "base64"))
+                  : undefined;
               const screenshotPath =
-                payload?.save === true
+                payload?.save === true && png
                   ? yield* saveScreenshot(
                       snapshot.url,
                       fullScreenshot
@@ -631,7 +685,6 @@ const registerPreviewSnapshot = Effect.fn("McpHttpServer.registerPreviewSnapshot
                     )
                   : undefined;
               // Providers replay images on later requests, and some reject them; include images only when requested.
-              const includeImage = payload?.includeImage === true;
               if (screenshotPath !== undefined && !includeImage) {
                 const saved = {
                   url: cutText(snapshot.url, MAX_SNAPSHOT_IDENTIFIER_CHARS),
@@ -646,7 +699,7 @@ const registerPreviewSnapshot = Effect.fn("McpHttpServer.registerPreviewSnapshot
               const metadata = {
                 ...page,
                 screenshot: {
-                  mimeType: screenshot.mimeType,
+                  mimeType: "image/png" as const,
                   width: screenshot.width,
                   height: screenshot.height,
                 },
@@ -675,8 +728,8 @@ const registerPreviewSnapshot = Effect.fn("McpHttpServer.registerPreviewSnapshot
                           text: `Snapshot text was bounded. Omitted: ${bounded.omitted.join("; ")}.`,
                         },
                       ]),
-                  ...(includeImage
-                    ? [{ type: "image" as const, data: png, mimeType: screenshot.mimeType }]
+                  ...(includeImage && png
+                    ? [{ type: "image" as const, data: png, mimeType: "image/png" as const }]
                     : []),
                 ],
               });
@@ -757,7 +810,7 @@ const registerImageTool = Effect.fn("McpHttpServer.registerImageTool")(function*
   R,
 >(
   tool: T,
-  handle: (payload: Tool.Parameters<T>) => Effect.Effect<{ readonly encodedResult: unknown }, E, R>,
+  handle: (payload: Schema.Json) => Effect.Effect<{ readonly encodedResult: unknown }, E, R>,
   provide: (
     effect: Effect.Effect<{ readonly encodedResult: unknown }, E, R>,
   ) => Effect.Effect<
@@ -792,7 +845,7 @@ const registerImageTool = Effect.fn("McpHttpServer.registerImageTool")(function*
           fiber.context,
           McpInvocationContext.McpInvocationContext,
         );
-        return provide(handle(payload as Tool.Parameters<T>)).pipe(
+        return provide(handle(payload)).pipe(
           Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
           Effect.matchCauseEffect({
             onFailure: imageToolFailure(tool.name, operation, failureText),
@@ -1008,21 +1061,16 @@ const withToolAnalytics =
     const scheduledRunOf = (threadId: string, runId: RunId | null) =>
       Option.isNone(threads) || runId === null
         ? Effect.succeed(false)
-        : threads.value
-            .getThreadRecords(ThreadId.make(threadId), ["runs", "messages"], {
+        : Effect.gen(function* () {
+            const id = ThreadId.make(threadId);
+            const { runs } = yield* threads.value.getThreadRecords(id, ["runs"], {
               runIds: [runId],
-              messageRoles: ["user"],
-            })
-            .pipe(
-              Effect.map((records) => {
-                const run = records.runs.find((candidate) => candidate.id === runId);
-                return records.messages.some(
-                  (message) =>
-                    message.id === run?.userMessageId && message.scheduledTaskId !== undefined,
-                );
-              }),
-              Effect.orElseSucceed(() => false),
-            );
+            });
+            const run = runs.find((candidate) => candidate.id === runId);
+            if (run === undefined) return false;
+            const messages = yield* threads.value.getMessagesById(id, [run.userMessageId]);
+            return messages.get(run.userMessageId)?.scheduledTaskId !== undefined;
+          }).pipe(Effect.orElseSucceed(() => false));
     const record =
       /* Request instrumentation already owns the span; keep this helper in that context. */
       Effect.fnUntraced(
@@ -1248,6 +1296,8 @@ export const layerOrchestratorToolkit = toolkitRegistration(
 
 export const layerThreadToolkit = toolkitRegistration(ThreadToolkit, ThreadHandlers.layer);
 
+const layerMessageToolkit = toolkitRegistration(MessageToolkit, MessageHandlers.layer);
+
 const layerWorktreeToolkitRegistration = toolkitRegistration(
   WorktreeToolkit,
   WorktreeHandlers.layer,
@@ -1262,6 +1312,10 @@ const layerEnvironmentToolkit = toolkitRegistration(
   EnvironmentToolkit,
   EnvironmentHandlers.layer,
 ).pipe(Layer.provide(ThreadCommandExecutor.layer));
+
+const layerThemeToolkit = toolkitRegistration(ThemeToolkit, ThemeHandlers.layer).pipe(
+  Layer.provide(ThreadCommandExecutor.layer),
+);
 
 export const layerProjectRegistration = toolkitRegistration(ProjectToolkit, ProjectHandlers.layer);
 
@@ -1282,7 +1336,7 @@ export const layerAttachmentToolkit = toolkitRegistration(
 export const layerPullRequestsToolkit = toolkitRegistration(
   PullRequestsToolkit,
   PullRequestsHandlers.layer,
-);
+).pipe(Layer.provide(PullRequestWatchService.layer));
 
 const layerDeviceStandardToolkitRegistration = toolkitRegistration(
   DeviceStandardToolkit,
@@ -1322,8 +1376,9 @@ export const layerMcpTransport = <RA, RE, RR>(registrations: Layer.Layer<RA, RE,
   McpServer.layerHttp({
     name: "T3 Code",
     version: packageJson.version,
-    path: "/mcp",
-    protocols: [McpProtocol.v2025_06_18],
+    path: MCP_HTTP_PATH,
+    // The first protocol is the fallback for clients that offer an unknown version.
+    protocols: [McpProtocol.v2025_06_18, McpProtocol.v2026_07_28],
     allowSessionTermination: true,
     registrations,
   }).pipe(Layer.provide(layerMcpAuthMiddleware));
@@ -1339,11 +1394,13 @@ export const layerTools = Layer.mergeAll(
   layerGoalRegistration,
   layerEscalationRegistration,
   layerEnvironmentToolkit,
+  layerThemeToolkit,
   layerPreviewControlsRegistration,
   layerWorktreeToolkitRegistration,
   layerPullRequestsToolkit,
   layerDeviceToolkit,
   layerHtmlToolkit,
+  layerMessageToolkit,
 );
 
 const layerToolExposure = Layer.effect(
